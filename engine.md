@@ -134,6 +134,115 @@ Simple integrator debounce at 1ms tick rate:
 - Threshold at ~10ms (10 ticks) for state change
 - Edge detection on debounced state transitions
 
+## Trigger/Gate Signaling
+
+Replaces the old `active` bool in VoiceParams. Core 0 only writes, Core 1 only reads.
+
+```c
+struct VoiceParams {
+    uint32_t phase_inc;
+    int16_t  amplitude;   // base amplitude (velocity)
+    uint8_t  trigger;     // generation counter, incremented on each note-on
+    bool     gate;        // true while key held, false on release
+};
+```
+
+Core 1 keeps `last_trigger[v]` per voice. Detection logic:
+- `trigger != last_trigger && gate` → new note: reset phase, start ADSR attack
+- `!gate && was_gated` → release: transition ADSR to release phase
+- `trigger == last_trigger && gate` → sustain: no change
+
+This handles re-triggers cleanly: rapid off→on produces a new trigger value,
+which Core 1 detects even if it missed the intermediate gate=false.
+
+## ADSR Envelope
+
+Per-voice state machine on Core 1. Envelope level: 0–32767 (15-bit fixed-point).
+
+```
+States: IDLE → ATTACK → DECAY → SUSTAIN → RELEASE → IDLE
+
+IDLE:     level = 0, voice silent
+ATTACK:   level += attack_rate each sample, until level >= 32767
+DECAY:    level -= decay_rate each sample, until level <= sustain_level
+SUSTAIN:  level = sustain_level, held while gate is true
+RELEASE:  level -= release_rate each sample, until level <= 0 → IDLE
+```
+
+Release from any state (attack/decay/sustain) transitions to RELEASE
+using the current level as starting point.
+
+Amplitude chain per sample:
+```
+raw_osc = oscillator output          [-32767 .. 32767]
+scaled  = (raw_osc * amplitude) >> 15   [-32767 .. 32767]
+final   = (scaled * env_level) >> 15    [-32767 .. 32767]
+```
+
+Initial hardcoded ADSR values (Task 1):
+- Attack:  10ms  → rate = 32767 / 441 ≈ 74/sample
+- Decay:   100ms → rate = (32767 - sustain) / 4410 ≈ 2/sample
+- Sustain: 70%   → level = 22937
+- Release: 200ms → rate = 22937 / 8820 ≈ 3/sample
+
+## LFO
+
+Per-voice LFO on Core 1, driven by its own phase accumulator (same 22.10
+fixed-point as oscillator). Reads from sine_table for smooth modulation.
+
+Two destinations (selected per-voice):
+- **Amplitude (tremolo)**: multiplies envelope output
+- **Pitch (vibrato)**: offsets phase_inc per sample
+
+LFO params in VoiceParams: `lfo_rate` (phase_inc), `lfo_depth` (modulation amount).
+LFO phase state on Core 1 only.
+
+## Waveform Types
+
+```c
+enum Waveform : uint8_t { WAVE_SINE, WAVE_SQUARE, WAVE_TRIANGLE, WAVE_SAW, WAVE_NOISE };
+```
+
+All derived from the phase accumulator (no extra tables needed except sine):
+- **Sine**: wavetable lookup with linear interpolation (existing)
+- **Square**: sign of phase, with variable duty cycle
+- **Triangle**: fold phase into ramp-up/ramp-down
+- **Saw**: phase directly scaled to [-32767..32767]
+- **Noise**: LFSR (16-bit Galois), clocked at oscillator frequency
+
+Waveform type stored in VoiceParams, selected by Core 0.
+
+## Implementation Tasks
+
+### Task 1: Trigger/gate + ADSR envelope
+- Replace `active` with `gate`+`trigger` in VoiceParams
+- Update controller.cpp for gate/trigger signaling
+- Add ADSR state machine to audio_engine.cpp
+- Hardcoded ADSR rates, envelope modulates amplitude
+- **Test**: buttons produce notes with attack ramp and release tail
+
+### Task 2: Square waveform
+- Add `Waveform` enum and `waveform` field to VoiceParams
+- Implement square wave in audio_engine.cpp (sign of phase)
+- Assign different waveforms to buttons for testing
+- **Test**: sine on A, square on B, hear difference
+
+### Task 3: LFO → amplitude (tremolo)
+- Add `lfo_rate`, `lfo_depth` fields to VoiceParams
+- Add LFO phase accumulator per voice on Core 1
+- LFO modulates post-envelope amplitude
+- **Test**: one button with tremolo, others without
+
+### Task 4: More waveforms + duty cycle
+- Implement triangle, saw, noise (LFSR)
+- Add `duty_cycle` field to VoiceParams for square wave
+- **Test**: cycle through waveforms on different buttons
+
+### Task 5: LFO → pitch (vibrato)
+- Add LFO destination selector to VoiceParams
+- LFO offsets phase_inc per sample when targeting pitch
+- **Test**: vibrato on one button, tremolo on another
+
 ## Event Queue
 
 Simple fixed-size ring buffer of `ControlMessage`, single-producer (Core 0) single-consumer (Core 0).

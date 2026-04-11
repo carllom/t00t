@@ -49,9 +49,10 @@ void controller_tick(ParamExchange *params) {
             if (new_state) {
                 vp.phase_inc = voice_phase_inc(b.freq_hz);
                 vp.amplitude = b.amplitude;
-                vp.active = true;
+                vp.trigger++;
+                vp.gate = true;
             } else {
-                vp.active = false;
+                vp.gate = false;
             }
             changed = true;
         }

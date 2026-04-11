@@ -13,8 +13,9 @@ static constexpr uint32_t PROFILE_PIN = 2;
 // Only contains values needed for synthesis — no phase state.
 struct VoiceParams {
     uint32_t phase_inc;  // fixed-point phase increment (pre-computed by Core 0)
-    int16_t amplitude;   // output scale (0–32767)
-    bool active;
+    int16_t amplitude;   // base amplitude / velocity (0–32767)
+    uint8_t trigger;     // generation counter, incremented on each note-on
+    bool gate;           // true while key held, false on release
 };
 
 // A complete snapshot of all voice parameters for one render pass.
@@ -38,7 +39,7 @@ struct ParamExchange {
         committed = 0;
         for (int b = 0; b < 2; b++) {
             for (uint32_t v = 0; v < MAX_VOICES; v++) {
-                blocks[b].voices[v] = { 0, 0, false };
+                blocks[b].voices[v] = { 0, 0, 0, false };
             }
         }
     }

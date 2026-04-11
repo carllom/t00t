@@ -1,11 +1,14 @@
 #include "audio_engine.h"
 #include "voice.h"
+#include "envelope.h"
 #include "hardware/gpio.h"
 #include "pico/multicore.h"
 
 // Local voice state — only touched by Core 1
 static uint32_t voice_phase[MAX_VOICES];
-static bool voice_active[MAX_VOICES];
+static uint8_t  last_trigger[MAX_VOICES];
+static bool     voice_gated[MAX_VOICES];
+static Envelope envelope[MAX_VOICES];
 
 // Scratch buffer for mixing (int32_t to avoid overflow during summation)
 static int32_t scratch[SAMPLES_PER_BUFFER];
@@ -16,10 +19,15 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
     gpio_set_dir(PROFILE_PIN, GPIO_OUT);
     gpio_put(PROFILE_PIN, 0);
 
+    // Configure envelope: 10ms attack, 100ms decay, 70% sustain, 200ms release
+    EnvConfig env_cfg = env_config(10, 100, 70, 200);
+
     // Init local state
     for (uint32_t v = 0; v < MAX_VOICES; v++) {
         voice_phase[v] = 0;
-        voice_active[v] = false;
+        last_trigger[v] = 0;
+        voice_gated[v] = false;
+        envelope[v].init();
     }
 
     // Generate wavetable
@@ -39,24 +47,37 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
             scratch[i] = 0;
         }
 
-        // Render all active voices
+        // Render all voices
         for (uint32_t v = 0; v < MAX_VOICES; v++) {
             const VoiceParams &p = vp.voices[v];
 
-            if (!p.active) {
-                voice_active[v] = false;
-                continue;
-            }
-
-            // Reset phase on note-on edge
-            if (!voice_active[v]) {
+            // Detect new note (trigger changed)
+            if (p.trigger != last_trigger[v]) {
+                last_trigger[v] = p.trigger;
                 voice_phase[v] = 0;
-                voice_active[v] = true;
+                envelope[v].trigger();
+                voice_gated[v] = true;
             }
 
-            // Wavetable render with linear interpolation
+            // Detect gate-off edge
+            if (!p.gate && voice_gated[v]) {
+                envelope[v].release();
+                voice_gated[v] = false;
+            } else {
+                voice_gated[v] = p.gate;
+            }
+
+            // Skip silent voices
+            if (!envelope[v].active()) continue;
+
+            // Render with per-sample envelope
             uint32_t phase = voice_phase[v];
+
             for (uint32_t i = 0; i < SAMPLES_PER_BUFFER; i++) {
+                int32_t level = envelope[v].advance(env_cfg);
+                if (level <= 0) break;
+
+                // Oscillator: wavetable with linear interpolation
                 uint32_t idx = (phase >> PHASE_FRAC_BITS) & WAVETABLE_MASK;
                 uint32_t frac = phase & ((1 << PHASE_FRAC_BITS) - 1);
 
@@ -64,7 +85,9 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
                 int16_t s1 = sine_table[(idx + 1) & WAVETABLE_MASK];
                 int32_t sample = s0 + (((int32_t)(s1 - s0) * (int32_t)frac) >> PHASE_FRAC_BITS);
 
-                scratch[i] += (sample * p.amplitude) >> 15;
+                // Amplitude chain: oscillator × velocity × envelope
+                int32_t scaled = (sample * p.amplitude) >> 15;
+                scratch[i] += (scaled * level) >> 15;
 
                 phase += p.phase_inc;
             }
