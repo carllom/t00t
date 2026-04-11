@@ -11,6 +11,7 @@ struct Mixer {
     uint32_t num_active;
 
     void init();
-    Voice *add_voice(float freq_hz, int16_t amplitude);
+    void note_on(uint8_t channel, float freq_hz, int16_t amplitude);
+    void note_off(uint8_t channel);
     void render(int16_t *output, uint32_t num_samples);
 };

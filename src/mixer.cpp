@@ -9,15 +9,18 @@ void Mixer::init() {
     }
 }
 
-Voice *Mixer::add_voice(float freq_hz, int16_t amplitude) {
-    for (uint32_t i = 0; i < MAX_VOICES; i++) {
-        if (!voices[i].active) {
-            voices[i].init(freq_hz, amplitude);
-            num_active++;
-            return &voices[i];
-        }
+void Mixer::note_on(uint8_t channel, float freq_hz, int16_t amplitude) {
+    if (channel >= MAX_VOICES) return;
+    if (!voices[channel].active) num_active++;
+    voices[channel].init(freq_hz, amplitude);
+}
+
+void Mixer::note_off(uint8_t channel) {
+    if (channel >= MAX_VOICES) return;
+    if (voices[channel].active) {
+        voices[channel].active = false;
+        num_active--;
     }
-    return nullptr;
 }
 
 void Mixer::render(int16_t *output, uint32_t num_samples) {

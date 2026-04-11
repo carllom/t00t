@@ -18,6 +18,7 @@ add_executable(t00t
     src/voice.cpp
     src/mixer.cpp
     src/output.cpp
+    src/controller.cpp
 )
 
 target_include_directories(t00t PRIVATE src)

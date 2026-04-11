@@ -5,7 +5,9 @@ UF2 = $(BUILD_DIR)/t00t.uf2
 
 all: $(UF2)
 
-$(UF2): CMakeLists.txt src/main.cpp
+SOURCES = $(wildcard src/*.cpp src/*.h)
+
+$(UF2): CMakeLists.txt $(SOURCES)
 	@mkdir -p $(BUILD_DIR)
 	cd $(BUILD_DIR) && cmake -DPICO_BOARD=vgaboard ..
 	$(MAKE) -C $(BUILD_DIR) -j$(shell nproc)
