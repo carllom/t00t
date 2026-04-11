@@ -1,0 +1,5 @@
+build/
+pico-sdk/
+pico-extras/
+.vscode/
+*.uf2
