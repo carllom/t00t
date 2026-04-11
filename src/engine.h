@@ -19,6 +19,8 @@ struct VoiceParams {
     uint8_t trigger;     // generation counter, incremented on each note-on
     bool gate;           // true while key held, false on release
     Waveform waveform;   // oscillator waveform type
+    uint32_t lfo_rate;   // LFO phase increment (same 22.10 format, 0 = off)
+    int16_t lfo_depth;   // LFO modulation depth (0–32767, 0 = off)
 };
 
 // A complete snapshot of all voice parameters for one render pass.
@@ -42,7 +44,7 @@ struct ParamExchange {
         committed = 0;
         for (int b = 0; b < 2; b++) {
             for (uint32_t v = 0; v < MAX_VOICES; v++) {
-                blocks[b].voices[v] = { 0, 0, 0, false, WAVE_SINE };
+                blocks[b].voices[v] = { 0, 0, 0, false, WAVE_SINE, 0, 0 };
             }
         }
     }

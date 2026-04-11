@@ -14,6 +14,8 @@ struct ButtonState {
     float freq_hz;
     int16_t amplitude;
     Waveform waveform;
+    float lfo_hz;       // LFO rate in Hz (0 = off)
+    int16_t lfo_depth;  // LFO depth (0–32767)
     uint8_t counter;    // integrator debounce counter
     bool debounced;     // current debounced state
 };

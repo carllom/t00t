@@ -6,6 +6,7 @@
 
 // Local voice state — only touched by Core 1
 static uint32_t voice_phase[MAX_VOICES];
+static uint32_t lfo_phase[MAX_VOICES];
 static uint8_t  last_trigger[MAX_VOICES];
 static bool     voice_gated[MAX_VOICES];
 static Envelope envelope[MAX_VOICES];
@@ -25,6 +26,7 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
     // Init local state
     for (uint32_t v = 0; v < MAX_VOICES; v++) {
         voice_phase[v] = 0;
+        lfo_phase[v] = 0;
         last_trigger[v] = 0;
         voice_gated[v] = false;
         envelope[v].init();
@@ -55,6 +57,7 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
             if (p.trigger != last_trigger[v]) {
                 last_trigger[v] = p.trigger;
                 voice_phase[v] = 0;
+                lfo_phase[v] = 0;
                 envelope[v].trigger();
                 voice_gated[v] = true;
             }
@@ -72,6 +75,7 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
 
             // Render with per-sample envelope
             uint32_t phase = voice_phase[v];
+            uint32_t lfo_ph = lfo_phase[v];
 
             for (uint32_t i = 0; i < SAMPLES_PER_BUFFER; i++) {
                 int32_t level = envelope[v].advance(env_cfg);
@@ -81,11 +85,27 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
 
                 // Amplitude chain: oscillator × velocity × envelope
                 int32_t scaled = (sample * p.amplitude) >> 15;
-                scratch[i] += (scaled * level) >> 15;
+                scaled = (scaled * level) >> 15;
+
+                // LFO → amplitude (tremolo)
+                if (p.lfo_depth > 0) {
+                    // LFO output: sine in [-32767..32767]
+                    int32_t lfo_val = osc_sine(lfo_ph);
+                    // Map to modulation: 32767 = full volume, -(depth) = reduced
+                    // mod = 32767 - depth + (lfo_val * depth) >> 15
+                    // When lfo_val=+32767: mod=32767 (unity)
+                    // When lfo_val=-32767: mod=32767-2*depth (minimum)
+                    int32_t mod = 32767 - p.lfo_depth + ((lfo_val * p.lfo_depth) >> 15);
+                    scaled = (scaled * mod) >> 15;
+                    lfo_ph += p.lfo_rate;
+                }
+
+                scratch[i] += scaled;
 
                 phase += p.phase_inc;
             }
             voice_phase[v] = phase;
+            lfo_phase[v] = lfo_ph;
         }
 
         // Clip and interleave into stereo int16_t buffer
