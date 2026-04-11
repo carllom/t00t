@@ -3,9 +3,9 @@
 #include "hardware/gpio.h"
 
 static ButtonState buttons[NUM_BUTTONS] = {
-    { 0,  0, 440.00f, 10000, 0, false },  // A: GPIO 0, A4
-    { 6,  1, 523.25f, 10000, 0, false },  // B: GPIO 6, C5
-    { 11, 2, 659.25f, 10000, 0, false },  // C: GPIO 11, E5
+    { 0,  0, 440.00f, 10000, WAVE_SINE,   0, false },  // A: A4 sine
+    { 6,  1, 523.25f, 10000, WAVE_SQUARE, 0, false },  // B: C5 square
+    { 11, 2, 659.25f, 10000, WAVE_SINE,   0, false },  // C: E5 sine
 };
 
 void controller_init() {
@@ -47,8 +47,9 @@ void controller_tick(ParamExchange *params) {
             b.debounced = new_state;
             VoiceParams &vp = shadow.voices[b.channel];
             if (new_state) {
-                vp.phase_inc = voice_phase_inc(b.freq_hz);
+                vp.phase_inc = osc_phase_inc(b.freq_hz);
                 vp.amplitude = b.amplitude;
+                vp.waveform = b.waveform;
                 vp.trigger++;
                 vp.gate = true;
             } else {

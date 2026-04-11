@@ -1,7 +1,7 @@
 #pragma once
 
 #include "engine.h"
-#include "voice.h"
+#include "osc/common.h"
 #include <cstdint>
 
 // Button definitions for Pimoroni Pico VGA Demo board
@@ -13,6 +13,7 @@ struct ButtonState {
     uint8_t channel;
     float freq_hz;
     int16_t amplitude;
+    Waveform waveform;
     uint8_t counter;    // integrator debounce counter
     bool debounced;     // current debounced state
 };

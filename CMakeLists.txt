@@ -15,7 +15,7 @@ pico_sdk_init()
 
 add_executable(t00t
     src/main.cpp
-    src/voice.cpp
+    src/osc/sine.cpp
     src/envelope.cpp
     src/audio_engine.cpp
     src/output.cpp

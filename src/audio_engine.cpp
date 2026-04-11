@@ -1,5 +1,5 @@
 #include "audio_engine.h"
-#include "voice.h"
+#include "osc/oscillator.h"
 #include "envelope.h"
 #include "hardware/gpio.h"
 #include "pico/multicore.h"
@@ -31,7 +31,7 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
     }
 
     // Generate wavetable
-    voice_init_tables();
+    osc_init_sine();
 
     while (true) {
         // Wait for DMA ISR to tell us which buffer to fill
@@ -77,13 +77,7 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
                 int32_t level = envelope[v].advance(env_cfg);
                 if (level <= 0) break;
 
-                // Oscillator: wavetable with linear interpolation
-                uint32_t idx = (phase >> PHASE_FRAC_BITS) & WAVETABLE_MASK;
-                uint32_t frac = phase & ((1 << PHASE_FRAC_BITS) - 1);
-
-                int16_t s0 = sine_table[idx];
-                int16_t s1 = sine_table[(idx + 1) & WAVETABLE_MASK];
-                int32_t sample = s0 + (((int32_t)(s1 - s0) * (int32_t)frac) >> PHASE_FRAC_BITS);
+                int32_t sample = osc_sample(p.waveform, phase);
 
                 // Amplitude chain: oscillator × velocity × envelope
                 int32_t scaled = (sample * p.amplitude) >> 15;
