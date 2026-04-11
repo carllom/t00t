@@ -15,7 +15,12 @@ pico_sdk_init()
 
 add_executable(t00t
     src/main.cpp
+    src/voice.cpp
+    src/mixer.cpp
+    src/output.cpp
 )
+
+target_include_directories(t00t PRIVATE src)
 
 target_link_libraries(t00t
     pico_stdlib
