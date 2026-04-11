@@ -19,7 +19,7 @@ add_executable(t00t
 
 target_link_libraries(t00t
     pico_stdlib
-    hardware_gpio
+    pico_audio_i2s
 )
 
 # USB serial for debug output, disable UART

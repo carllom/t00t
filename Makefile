@@ -7,7 +7,7 @@ all: $(UF2)
 
 $(UF2): CMakeLists.txt src/main.cpp
 	@mkdir -p $(BUILD_DIR)
-	cd $(BUILD_DIR) && cmake -DPICO_BOARD=pico ..
+	cd $(BUILD_DIR) && cmake -DPICO_BOARD=vgaboard ..
 	$(MAKE) -C $(BUILD_DIR) -j$(shell nproc)
 
 clean:
