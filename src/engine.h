@@ -1,0 +1,62 @@
+#pragma once
+
+#include "audio_common.h"
+#include "hardware/sync.h"
+#include <cstdint>
+
+static constexpr uint32_t MAX_VOICES = 16;
+
+// Profiling pin — GPIO 2, routed to VGA D-sub pin 1 (Red LSB)
+static constexpr uint32_t PROFILE_PIN = 2;
+
+// Voice parameters: written by Core 0, read by Core 1.
+// Only contains values needed for synthesis — no phase state.
+struct VoiceParams {
+    uint32_t phase_inc;  // fixed-point phase increment (pre-computed by Core 0)
+    int16_t amplitude;   // output scale (0–32767)
+    bool active;
+};
+
+// A complete snapshot of all voice parameters for one render pass.
+struct VoiceParamBlock {
+    VoiceParams voices[MAX_VOICES];
+};
+
+// Double-buffered parameter exchange between Core 0 and Core 1.
+//
+// Core 0 writes to the shadow block: param_blocks[1 - committed]
+// Core 0 commits by flipping committed (single byte, atomic on M0+)
+// Core 1 reads param_blocks[committed] at the start of each render pass.
+//
+// No locks: Core 0 never touches the committed block, Core 1 never
+// touches the shadow block. The index flip is a single-byte store.
+struct ParamExchange {
+    VoiceParamBlock blocks[2];
+    volatile uint8_t committed;  // 0 or 1
+
+    void init() {
+        committed = 0;
+        for (int b = 0; b < 2; b++) {
+            for (uint32_t v = 0; v < MAX_VOICES; v++) {
+                blocks[b].voices[v] = { 0, 0, false };
+            }
+        }
+    }
+
+    // Core 0: get the shadow block to write into
+    VoiceParamBlock &shadow() {
+        return blocks[1 - committed];
+    }
+
+    // Core 0: make the shadow visible to Core 1
+    void commit() {
+        __compiler_memory_barrier();
+        committed = 1 - committed;
+        __sev();  // wake Core 1 if it's in WFE
+    }
+
+    // Core 1: get the currently committed block to read from
+    const VoiceParamBlock &active() const {
+        return blocks[committed];
+    }
+};

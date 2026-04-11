@@ -1,26 +1,25 @@
 #pragma once
 
+#include "engine.h"
+#include "voice.h"
 #include <cstdint>
 
-enum class ControlEvent : uint8_t {
-    NONE,
-    NOTE_ON,
-    NOTE_OFF,
+// Button definitions for Pimoroni Pico VGA Demo board
+static constexpr uint32_t NUM_BUTTONS = 3;
+static constexpr uint32_t DEBOUNCE_THRESHOLD = 10;  // 10ms at 1ms tick
+
+struct ButtonState {
+    uint32_t pin;
+    uint8_t channel;
+    float freq_hz;
+    int16_t amplitude;
+    uint8_t counter;    // integrator debounce counter
+    bool debounced;     // current debounced state
 };
 
-struct ControlMessage {
-    ControlEvent event;
-    uint8_t channel;     // voice/note slot
-    float freq_hz;       // for NOTE_ON
-    int16_t amplitude;   // for NOTE_ON
-};
+// Initialize button GPIOs and state
+void controller_init();
 
-static constexpr uint32_t MAX_CONTROL_MESSAGES = 16;
-
-struct Controller {
-    virtual ~Controller() = default;
-    virtual void init() = 0;
-    virtual uint32_t poll(ControlMessage *messages, uint32_t max_messages) = 0;
-};
-
-Controller *create_button_controller();
+// Call once per 1ms tick. Debounces buttons and applies
+// note on/off changes directly to the param shadow block.
+void controller_tick(ParamExchange *params);

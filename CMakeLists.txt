@@ -16,7 +16,7 @@ pico_sdk_init()
 add_executable(t00t
     src/main.cpp
     src/voice.cpp
-    src/mixer.cpp
+    src/audio_engine.cpp
     src/output.cpp
     src/controller.cpp
 )
@@ -26,6 +26,10 @@ target_include_directories(t00t PRIVATE src)
 target_link_libraries(t00t
     pico_stdlib
     pico_audio_i2s
+    pico_multicore
+    hardware_dma
+    hardware_pio
+    hardware_timer
 )
 
 # USB serial for debug output, disable UART

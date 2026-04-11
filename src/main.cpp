@@ -1,46 +1,45 @@
 #include "pico/stdlib.h"
+#include "pico/multicore.h"
+#include "hardware/timer.h"
 #include "output.h"
-#include "mixer.h"
+#include "audio_engine.h"
 #include "controller.h"
 #include <cstdio>
 
-static Mixer mixer;
+static AudioBuffers audio_buffers;
+static ParamExchange param_exchange;
+
+// Core 1 entry: runs audio_engine_run(), never returns
+static void core1_entry() {
+    audio_engine_run(&audio_buffers, &param_exchange);
+}
+
+// 1ms repeating timer callback — runs on Core 0 IRQ context
+static bool timer_callback(repeating_timer_t *rt) {
+    (void)rt;
+    controller_tick(&param_exchange);
+    return true;  // keep repeating
+}
 
 int main() {
     stdio_init_all();
-    voice_init_tables();
 
-    AudioOutput *output = create_i2s_output();
-    if (!output->init()) {
-        panic("audio output init failed");
-    }
+    param_exchange.init();
+    controller_init();
 
-    Controller *ctrl = create_button_controller();
-    ctrl->init();
+    // Start Core 1 (audio synthesis)
+    multicore_launch_core1(core1_entry);
 
-    mixer.init();
+    // Start I2S DMA output — must be after Core 1 is ready to receive FIFO messages
+    i2s_output_init(&audio_buffers);
 
+    // Start 1ms repeating timer for button polling
+    repeating_timer_t tick_timer;
+    add_repeating_timer_ms(-1, timer_callback, nullptr, &tick_timer);
+
+    // Core 0 main loop — sleep, wake on IRQ (timer handles everything)
     while (true) {
-        // Poll controller for note events
-        ControlMessage messages[MAX_CONTROL_MESSAGES];
-        uint32_t msg_count = ctrl->poll(messages, MAX_CONTROL_MESSAGES);
-        for (uint32_t i = 0; i < msg_count; i++) {
-            switch (messages[i].event) {
-                case ControlEvent::NOTE_ON:
-                    mixer.note_on(messages[i].channel, messages[i].freq_hz, messages[i].amplitude);
-                    break;
-                case ControlEvent::NOTE_OFF:
-                    mixer.note_off(messages[i].channel);
-                    break;
-                default:
-                    break;
-            }
-        }
-
-        uint32_t num_samples;
-        int16_t *buffer = output->get_buffer(&num_samples);
-        mixer.render(buffer, num_samples);
-        output->submit_buffer(num_samples);
+        __wfi();
     }
 
     return 0;

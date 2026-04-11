@@ -2,70 +2,62 @@
 #include "pico/stdlib.h"
 #include "hardware/gpio.h"
 
-// Pimoroni Pico VGA Demo board buttons
-static constexpr uint BUTTON_A_PIN = 0;
-static constexpr uint BUTTON_B_PIN = 6;
-static constexpr uint BUTTON_C_PIN = 11;
-
-static constexpr uint NUM_BUTTONS = 3;
-
-struct ButtonDef {
-    uint pin;
-    uint8_t channel;
-    float freq_hz;
-    int16_t amplitude;
+static ButtonState buttons[NUM_BUTTONS] = {
+    { 0,  0, 440.00f, 10000, 0, false },  // A: GPIO 0, A4
+    { 6,  1, 523.25f, 10000, 0, false },  // B: GPIO 6, C5
+    { 11, 2, 659.25f, 10000, 0, false },  // C: GPIO 11, E5
 };
 
-static const ButtonDef button_defs[NUM_BUTTONS] = {
-    { BUTTON_A_PIN, 0, 440.00f, 10000 },  // A4
-    { BUTTON_B_PIN, 1, 523.25f, 10000 },  // C5
-    { BUTTON_C_PIN, 2, 659.25f, 10000 },  // E5
-};
-
-struct ButtonController : Controller {
-    bool prev_state[NUM_BUTTONS];
-
-    void init() override {
-        for (uint32_t i = 0; i < NUM_BUTTONS; i++) {
-            gpio_init(button_defs[i].pin);
-            gpio_set_dir(button_defs[i].pin, GPIO_IN);
-            gpio_pull_down(button_defs[i].pin);
-            prev_state[i] = false;
-        }
+void controller_init() {
+    for (uint32_t i = 0; i < NUM_BUTTONS; i++) {
+        gpio_init(buttons[i].pin);
+        gpio_set_dir(buttons[i].pin, GPIO_IN);
+        gpio_pull_down(buttons[i].pin);
+        buttons[i].counter = 0;
+        buttons[i].debounced = false;
     }
+}
 
-    uint32_t poll(ControlMessage *messages, uint32_t max_messages) override {
-        uint32_t count = 0;
+void controller_tick(ParamExchange *params) {
+    bool changed = false;
+    VoiceParamBlock &shadow = params->shadow();
 
-        for (uint32_t i = 0; i < NUM_BUTTONS && count < max_messages; i++) {
-            // Buttons are active high with pull-down
-            bool pressed = gpio_get(button_defs[i].pin);
+    // Sync shadow from committed state so we apply deltas to current truth
+    shadow = params->active();
 
-            if (pressed && !prev_state[i]) {
-                messages[count++] = {
-                    .event = ControlEvent::NOTE_ON,
-                    .channel = button_defs[i].channel,
-                    .freq_hz = button_defs[i].freq_hz,
-                    .amplitude = button_defs[i].amplitude,
-                };
-            } else if (!pressed && prev_state[i]) {
-                messages[count++] = {
-                    .event = ControlEvent::NOTE_OFF,
-                    .channel = button_defs[i].channel,
-                    .freq_hz = 0,
-                    .amplitude = 0,
-                };
+    for (uint32_t i = 0; i < NUM_BUTTONS; i++) {
+        ButtonState &b = buttons[i];
+        bool raw = gpio_get(b.pin);
+
+        // Integrator debounce: count up when pressed, down when released
+        if (raw) {
+            if (b.counter < DEBOUNCE_THRESHOLD) b.counter++;
+        } else {
+            if (b.counter > 0) b.counter--;
+        }
+
+        bool new_state = b.debounced;
+        if (b.counter >= DEBOUNCE_THRESHOLD) {
+            new_state = true;
+        } else if (b.counter == 0) {
+            new_state = false;
+        }
+
+        if (new_state != b.debounced) {
+            b.debounced = new_state;
+            VoiceParams &vp = shadow.voices[b.channel];
+            if (new_state) {
+                vp.phase_inc = voice_phase_inc(b.freq_hz);
+                vp.amplitude = b.amplitude;
+                vp.active = true;
+            } else {
+                vp.active = false;
             }
-
-            prev_state[i] = pressed;
+            changed = true;
         }
-
-        return count;
     }
-};
 
-static ButtonController button_instance;
-
-Controller *create_button_controller() {
-    return &button_instance;
+    if (changed) {
+        params->commit();
+    }
 }
