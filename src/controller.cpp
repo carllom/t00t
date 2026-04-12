@@ -12,9 +12,9 @@ static const float notes_c[] = { 523.25f, 587.33f, 659.25f, 739.99f };  // C5 D5
 
 static ButtonState buttons[NUM_BUTTONS] = {
     //  pin  amp    wave              duty lfo   dep   pitch pwm  filt_mode   cutoff res    env    lfo_f  sample            notes    num idx voice cnt deb
-    {   0,   10000, WAVE_SAMPLE,      512, 0.0f, 0,    0,    0,   FILTER_LP,  400,   16000, 8000,  0,     &sararr1_sample,  notes_a, 4,  0,  -1,   0, false },
-    {   6,   10000, WAVE_SQUARE_BLEP, 512, 3.0f, 0,    0,    256, FILTER_LP,  800,   20000, 4000,  0,     nullptr,          notes_b, 4,  0,  -1,   0, false },
-    {   11,  10000, WAVE_SAW_BLEP,    512, 2.0f, 0,    0,    0,   FILTER_LP,  200,   24000, 0,     2000,  nullptr,          notes_c, 4,  0,  -1,   0, false },
+    {   0,   10000, WAVE_SAMPLE,      512, 0.0f, 0.0f, 0.0f, 0.0f, FILTER_LP,  400,   16000, 8000,  0.0f,  &sararr1_sample,  notes_a, 4,  0,  -1,   0, false },
+    {   6,   10000, WAVE_SQUARE_BLEP, 512, 3.0f, 0.0f, 0.0f, 0.5f, FILTER_LP,  800,   20000, 4000,  0.0f,  nullptr,          notes_b, 4,  0,  -1,   0, false },
+    {   11,  10000, WAVE_SAW_BLEP,    512, 2.0f, 0.0f, 0.0f, 0.0f, FILTER_LP,  200,   24000, 0,     2000.0f, nullptr,        notes_c, 4,  0,  -1,   0, false },
 };
 
 void controller_init() {
@@ -73,7 +73,7 @@ void controller_tick(ParamExchange *params) {
                     vp.amplitude = b.amplitude;
                     vp.waveform = b.waveform;
                     vp.duty_cycle = b.duty_cycle;
-                    vp.lfo_rate = osc_phase_inc(b.lfo_hz);
+                    vp.lfo_rate = b.lfo_hz;
                     vp.lfo_depth = b.lfo_depth;
                     vp.lfo_pitch_depth = b.lfo_pitch_depth;
                     vp.lfo_pwm_depth = b.lfo_pwm_depth;

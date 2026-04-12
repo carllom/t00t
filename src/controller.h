@@ -14,15 +14,15 @@ struct ButtonState {
     Waveform waveform;
     uint16_t duty_cycle;     // duty cycle for square (0–1023, 512 = 50%)
     float lfo_hz;            // LFO rate in Hz (0 = off)
-    int16_t lfo_depth;       // LFO → amplitude depth (0–32767)
-    int16_t lfo_pitch_depth; // LFO → pitch depth (0–32767)
-    int16_t lfo_pwm_depth;   // LFO → duty cycle depth (0–512)
+    float lfo_depth;         // LFO → amplitude depth (0.0–1.0)
+    float lfo_pitch_depth;   // LFO → pitch depth (0.0–1.0, 0.05 ≈ ±1 semitone)
+    float lfo_pwm_depth;     // LFO → duty cycle depth (0.0–1.0, fraction of range)
     // Filter
     FilterMode filter_mode;
     uint16_t filter_cutoff;    // base cutoff Hz
     uint16_t filter_resonance; // 0–32767
     int16_t filter_env_amount; // envelope → cutoff Hz
-    int16_t lfo_filter_depth;  // LFO → cutoff Hz
+    float lfo_filter_depth;    // LFO → cutoff Hz
     const SampleDef *sample;   // sample definition (nullptr for non-sample waveforms)
     // Note cycling
     const float *notes;      // pointer to note frequency table

@@ -24,16 +24,16 @@ struct VoiceParams {
     bool gate;           // true while key held, false on release
     Waveform waveform;   // oscillator waveform type
     uint16_t duty_cycle;  // duty cycle for square wave (0–1023, 512 = 50%)
-    uint32_t lfo_rate;   // LFO phase increment (same 22.10 format, 0 = off)
-    int16_t lfo_depth;   // LFO → amplitude depth (0–32767, 0 = off)
-    int16_t lfo_pitch_depth; // LFO → pitch depth (0–32767, 0 = off, 1638 ≈ ±1 semitone)
-    int16_t lfo_pwm_depth;   // LFO → duty cycle depth (0–512, 0 = off)
+    float lfo_rate;      // LFO frequency in Hz (0 = off)
+    float lfo_depth;     // LFO → amplitude depth (0.0–1.0, 0 = off)
+    float lfo_pitch_depth; // LFO → pitch depth (0.0–1.0, 0.05 ≈ ±1 semitone)
+    float lfo_pwm_depth;   // LFO → duty cycle depth (0.0–1.0, fraction of full range)
     // Filter
     FilterMode filter_mode;    // filter type (OFF = bypass)
     uint16_t filter_cutoff;    // base cutoff in Hz (20–18000)
     uint16_t filter_resonance; // resonance 0–32767 (0 = none, 32767 = self-oscillation)
     int16_t filter_env_amount; // envelope → cutoff in Hz (signed, ±18000)
-    int16_t lfo_filter_depth;  // LFO → cutoff in Hz (signed, ±18000)
+    float lfo_filter_depth;    // LFO → cutoff in Hz (signed, ±18000)
     const SampleDef *sample;   // sample definition (nullptr for non-sample waveforms)
 };
 
@@ -58,8 +58,9 @@ struct ParamExchange {
         committed = 0;
         for (int b = 0; b < 2; b++) {
             for (uint32_t v = 0; v < MAX_VOICES; v++) {
-                blocks[b].voices[v] = { 0, 0, 0, false, WAVE_SINE, 512, 0, 0, 0, 0,
-                                        FILTER_OFF, 8000, 0, 0, 0, nullptr };
+                blocks[b].voices[v] = { 0, 0, 0, false, WAVE_SINE, 512,
+                                        0.0f, 0.0f, 0.0f, 0.0f,
+                                        FILTER_OFF, 8000, 0, 0, 0.0f, nullptr };
             }
         }
     }
