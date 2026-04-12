@@ -111,7 +111,7 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
                     eff_duty = (uint16_t)d;
                 }
 
-                int32_t sample = osc_sample(p.waveform, phase, eff_duty, noise_lfsr[v]);
+                int32_t sample = osc_sample(p.waveform, phase, eff_duty, noise_lfsr[v], eff_phase_inc);
 
                 // Amplitude chain: oscillator × velocity × envelope
                 int32_t scaled = (sample * p.amplitude) >> 15;

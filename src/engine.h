@@ -9,7 +9,7 @@ static constexpr uint32_t MAX_VOICES = 16;
 // Profiling pin — GPIO 2, routed to VGA D-sub pin 1 (Red LSB)
 static constexpr uint32_t PROFILE_PIN = 2;
 
-enum Waveform : uint8_t { WAVE_SINE, WAVE_SQUARE, WAVE_TRIANGLE, WAVE_SAW, WAVE_NOISE };
+enum Waveform : uint8_t { WAVE_SINE, WAVE_SQUARE, WAVE_TRIANGLE, WAVE_SAW, WAVE_NOISE, WAVE_SQUARE_BLEP, WAVE_SAW_BLEP };
 
 // Voice parameters: written by Core 0, read by Core 1.
 // Only contains values needed for synthesis — no phase state.

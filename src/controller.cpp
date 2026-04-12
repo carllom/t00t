@@ -3,9 +3,9 @@
 #include "hardware/gpio.h"
 
 static ButtonState buttons[NUM_BUTTONS] = {
-    { 0,  0, 440.00f, 10000, WAVE_SAW,      512, 5.0f,  0,     1638, 0,   0, false },  // A: A4 saw + vibrato
-    { 6,  1, 523.25f, 10000, WAVE_SQUARE,    512, 3.0f,  0,     0,    256, 0, false },  // B: C5 square + PWM
-    { 11, 2, 659.25f, 10000, WAVE_TRIANGLE,  512, 5.0f,  16000, 0,    0,   0, false },  // C: E5 triangle + tremolo
+    { 0,  0, 440.00f, 10000, WAVE_SAW_BLEP,    512, 5.0f,  0,     1638, 0,   0, false },  // A: A4 saw BLEP + vibrato
+    { 6,  1, 523.25f, 10000, WAVE_SQUARE_BLEP,  512, 3.0f,  0,     0,    256, 0, false },  // B: C5 square BLEP + PWM
+    { 11, 2, 659.25f, 10000, WAVE_TRIANGLE,     512, 5.0f,  16000, 0,    0,   0, false },  // C: E5 triangle + tremolo
 };
 
 void controller_init() {
