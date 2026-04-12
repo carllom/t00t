@@ -79,12 +79,39 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
             // Render with per-sample envelope
             uint32_t phase = voice_phase[v];
             uint32_t lfo_ph = lfo_phase[v];
+            bool has_lfo = (p.lfo_rate != 0);
 
             for (uint32_t i = 0; i < SAMPLES_PER_BUFFER; i++) {
                 int32_t level = envelope[v].advance(env_cfg);
                 if (level <= 0) break;
 
-                int32_t sample = osc_sample(p.waveform, phase, p.duty_cycle, noise_lfsr[v]);
+                // LFO: compute once, route to multiple destinations
+                int32_t lfo_val = 0;
+                if (has_lfo) {
+                    lfo_val = osc_sine(lfo_ph);
+                    lfo_ph += p.lfo_rate;
+                }
+
+                // LFO → pitch (vibrato): offset phase_inc by ±fraction
+                uint32_t eff_phase_inc = p.phase_inc;
+                if (p.lfo_pitch_depth > 0) {
+                    // pitch_mod in [-depth..+depth], then scale phase_inc
+                    int32_t pitch_mod = (lfo_val * p.lfo_pitch_depth) >> 15;
+                    eff_phase_inc = (uint32_t)((int32_t)p.phase_inc +
+                        (((int32_t)p.phase_inc * pitch_mod) >> 15));
+                }
+
+                // LFO → duty cycle (PWM): offset duty_cycle
+                uint16_t eff_duty = p.duty_cycle;
+                if (p.lfo_pwm_depth > 0) {
+                    int32_t pwm_mod = (lfo_val * p.lfo_pwm_depth) >> 15;
+                    int32_t d = (int32_t)p.duty_cycle + pwm_mod;
+                    if (d < 1) d = 1;
+                    if (d > 1022) d = 1022;
+                    eff_duty = (uint16_t)d;
+                }
+
+                int32_t sample = osc_sample(p.waveform, phase, eff_duty, noise_lfsr[v]);
 
                 // Amplitude chain: oscillator × velocity × envelope
                 int32_t scaled = (sample * p.amplitude) >> 15;
@@ -92,20 +119,13 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
 
                 // LFO → amplitude (tremolo)
                 if (p.lfo_depth > 0) {
-                    // LFO output: sine in [-32767..32767]
-                    int32_t lfo_val = osc_sine(lfo_ph);
-                    // Map to modulation: 32767 = full volume, -(depth) = reduced
-                    // mod = 32767 - depth + (lfo_val * depth) >> 15
-                    // When lfo_val=+32767: mod=32767 (unity)
-                    // When lfo_val=-32767: mod=32767-2*depth (minimum)
                     int32_t mod = 32767 - p.lfo_depth + ((lfo_val * p.lfo_depth) >> 15);
                     scaled = (scaled * mod) >> 15;
-                    lfo_ph += p.lfo_rate;
                 }
 
                 scratch[i] += scaled;
 
-                phase += p.phase_inc;
+                phase += eff_phase_inc;
             }
             voice_phase[v] = phase;
             lfo_phase[v] = lfo_ph;

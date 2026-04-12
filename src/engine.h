@@ -21,7 +21,9 @@ struct VoiceParams {
     Waveform waveform;   // oscillator waveform type
     uint16_t duty_cycle;  // duty cycle for square wave (0–1023, 512 = 50%)
     uint32_t lfo_rate;   // LFO phase increment (same 22.10 format, 0 = off)
-    int16_t lfo_depth;   // LFO modulation depth (0–32767, 0 = off)
+    int16_t lfo_depth;   // LFO → amplitude depth (0–32767, 0 = off)
+    int16_t lfo_pitch_depth; // LFO → pitch depth (0–32767, 0 = off, 1638 ≈ ±1 semitone)
+    int16_t lfo_pwm_depth;   // LFO → duty cycle depth (0–512, 0 = off)
 };
 
 // A complete snapshot of all voice parameters for one render pass.
@@ -45,7 +47,7 @@ struct ParamExchange {
         committed = 0;
         for (int b = 0; b < 2; b++) {
             for (uint32_t v = 0; v < MAX_VOICES; v++) {
-                blocks[b].voices[v] = { 0, 0, 0, false, WAVE_SINE, 512, 0, 0 };
+                blocks[b].voices[v] = { 0, 0, 0, false, WAVE_SINE, 512, 0, 0, 0, 0 };
             }
         }
     }

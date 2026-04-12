@@ -14,11 +14,13 @@ struct ButtonState {
     float freq_hz;
     int16_t amplitude;
     Waveform waveform;
-    uint16_t duty_cycle; // duty cycle for square (0–1023, 512 = 50%)
-    float lfo_hz;       // LFO rate in Hz (0 = off)
-    int16_t lfo_depth;  // LFO depth (0–32767)
-    uint8_t counter;    // integrator debounce counter
-    bool debounced;     // current debounced state
+    uint16_t duty_cycle;    // duty cycle for square (0–1023, 512 = 50%)
+    float lfo_hz;           // LFO rate in Hz (0 = off)
+    int16_t lfo_depth;      // LFO → amplitude depth (0–32767)
+    int16_t lfo_pitch_depth; // LFO → pitch depth (0–32767)
+    int16_t lfo_pwm_depth;   // LFO → duty cycle depth (0–512)
+    uint8_t counter;        // integrator debounce counter
+    bool debounced;         // current debounced state
 };
 
 // Initialize button GPIOs and state
