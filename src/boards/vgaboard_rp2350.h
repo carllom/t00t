@@ -12,6 +12,8 @@
 // For board detection
 #define RASPBERRYPI_VGABOARD
 
+#define HAS_BUTTONS 1
+
 // Audio pins. I2S BCK, LRCK are on the same pins as PWM L/R.
 #define VGABOARD_I2S_DIN_PIN 26
 #define VGABOARD_I2S_BCK_PIN 27

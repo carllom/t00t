@@ -3,10 +3,13 @@
 #include "pico/time.h"
 #include "output.h"
 #include "audio_engine.h"
-#include "controller.h"
 #include "voice_alloc.h"
 #include "midi/midi_controller.h"
 #include "midi/usb_midi.h"
+
+#if HAS_BUTTONS
+#include "controller.h"
+#endif
 
 static AudioBuffers audio_buffers;
 static ParamExchange param_exchange;
@@ -21,7 +24,9 @@ int main() {
 
     param_exchange.init();
     voice_alloc_init();
+#if HAS_BUTTONS
     controller_init();
+#endif
     midi_controller_init();
 
     // Start Core 1 (audio synthesis)
@@ -37,11 +42,13 @@ int main() {
         usb_midi_task();
         usb_midi_poll(&param_exchange);
 
+#if HAS_BUTTONS
         // 1ms button poll
         if (time_reached(next_tick)) {
             next_tick = delayed_by_ms(next_tick, 1);
             controller_tick(&param_exchange);
         }
+#endif
 
         __wfi();  // sleep until next IRQ (USB, timer, etc.)
     }
