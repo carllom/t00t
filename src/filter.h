@@ -7,7 +7,7 @@
 // State-Variable Filter (SVF), SID-style multimode — fixed-point.
 // Two state variables (lowpass, bandpass) produce LP/BP/HP/notch outputs.
 // Uses 2-pass integration for stability at high cutoff + low Q.
-// All integer arithmetic — single-cycle MULS on Cortex-M0+.
+// RP2350 (Cortex-M33): SMULL gives 64-bit intermediates, no clamping needed.
 
 struct SVFilter {
     int32_t lp;   // lowpass state
@@ -20,18 +20,13 @@ struct SVFilter {
 
     // Process one sample (2-pass integration).
     // F_half: Q15 half-frequency coefficient (from svf_compute_f_half)
-    // Q_q14: Q14 damping coefficient (from svf_compute_q)
-    inline int32_t tick(int32_t input, int16_t F_half, int16_t Q_q14, FilterMode mode) {
+    // Q_q15: Q15 damping coefficient (from svf_compute_q)
+    inline int32_t tick(int32_t input, int16_t F_half, int32_t Q_q15, FilterMode mode) {
         int32_t hp;
         for (int pass = 0; pass < 2; pass++) {
-            hp = input - lp - (((int32_t)Q_q14 * bp) >> 14);
-            bp += ((int32_t)F_half * hp) >> 15;
-            lp += ((int32_t)F_half * bp) >> 15;
-            // Clamp between passes to prevent transient overflow at high resonance
-            if (bp > 32767) bp = 32767;
-            if (bp < -32767) bp = -32767;
-            if (lp > 32767) lp = 32767;
-            if (lp < -32767) lp = -32767;
+            hp = input - lp - (int32_t)(((int64_t)Q_q15 * bp) >> 15);
+            bp += (int32_t)(((int64_t)F_half * hp) >> 15);
+            lp += (int32_t)(((int64_t)F_half * bp) >> 15);
         }
 
         switch (mode) {
@@ -54,10 +49,10 @@ inline int16_t svf_compute_f_half(int32_t cutoff_hz) {
     return (int16_t)f;
 }
 
-// Convert resonance (0–32767) to Q14 damping coefficient.
-// 0 → Q=2.0 (32768), 32767 → Q≈0 (2, near self-oscillation).
-inline int16_t svf_compute_q(uint16_t resonance) {
-    int32_t q = 32768 - (int32_t)resonance;
+// Convert resonance (0–32767) to Q15 damping coefficient.
+// 0 → Q=2.0 (65534), 32767 → Q≈0 (2, near self-oscillation).
+inline int32_t svf_compute_q(uint16_t resonance) {
+    int32_t q = 65534 - (int32_t)resonance * 2;
     if (q < 2) q = 2;
-    return (int16_t)q;
+    return q;
 }

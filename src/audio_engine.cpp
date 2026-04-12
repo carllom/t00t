@@ -101,7 +101,7 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
             int16_t lfo_filt_hz = (int16_t)(p.lfo_filter_depth);  // Hz, signed
 
             // Pre-compute filter Q (constant across buffer)
-            int16_t filt_q = 0;
+            int32_t filt_q = 0;
             if (has_filter) {
                 filt_q = svf_compute_q(p.filter_resonance);
             }
