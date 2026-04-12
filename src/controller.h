@@ -23,6 +23,7 @@ struct ButtonState {
     uint16_t filter_resonance; // 0–32767
     int16_t filter_env_amount; // envelope → cutoff Hz
     int16_t lfo_filter_depth;  // LFO → cutoff Hz
+    const SampleDef *sample;   // sample definition (nullptr for non-sample waveforms)
     // Note cycling
     const float *notes;      // pointer to note frequency table
     uint8_t num_notes;       // number of notes in table

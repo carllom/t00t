@@ -1,5 +1,6 @@
 #include "audio_engine.h"
 #include "osc/oscillator.h"
+#include "osc/sample.h"
 #include "envelope.h"
 #include "filter.h"
 #include "hardware/gpio.h"
@@ -121,7 +122,12 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
                     eff_duty = (uint16_t)d;
                 }
 
-                int32_t sample = osc_sample(p.waveform, phase, eff_duty, noise_lfsr[v], eff_phase_inc);
+                int32_t sample;
+                if (p.waveform == WAVE_SAMPLE && p.sample) {
+                    sample = osc_sample_play(p.sample, phase);
+                } else {
+                    sample = osc_sample(p.waveform, phase, eff_duty, noise_lfsr[v], eff_phase_inc);
+                }
 
                 // Amplitude chain: oscillator × velocity × envelope
                 int32_t scaled = (sample * p.amplitude) >> 15;
@@ -152,6 +158,13 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
                 scratch[i] += scaled;
 
                 phase += eff_phase_inc;
+
+                // Handle sample loop/end
+                if (p.waveform == WAVE_SAMPLE && p.sample) {
+                    if (!osc_sample_advance_phase(p.sample, phase)) {
+                        break;  // non-looped sample ended
+                    }
+                }
             }
             voice_phase[v] = phase;
             lfo_phase[v] = lfo_ph;
