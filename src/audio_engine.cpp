@@ -6,6 +6,7 @@
 #include "hardware/gpio.h"
 #include "pico/multicore.h"
 #include <cmath>
+#include <arm_acle.h>
 
 // Local voice state — only touched by Core 1
 static uint32_t voice_phase[MAX_VOICES];
@@ -189,10 +190,7 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
         // Clip and interleave into stereo int16_t buffer
         int16_t *out = i2s_buffer_ptr(buffers, buf_index);
         for (uint32_t i = 0; i < SAMPLES_PER_BUFFER; i++) {
-            int32_t s = scratch[i];
-            if (s > 32767) s = 32767;
-            if (s < -32768) s = -32768;
-            int16_t val = (int16_t)s;
+            int16_t val = (int16_t)__ssat(scratch[i], 16);
             *out++ = val;  // left
             *out++ = val;  // right (mono → both channels)
         }
