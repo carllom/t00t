@@ -21,8 +21,8 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
     gpio_set_dir(PROFILE_PIN, GPIO_OUT);
     gpio_put(PROFILE_PIN, 0);
 
-    // Configure envelope: 10ms attack, 100ms decay, 70% sustain, 200ms release
-    EnvConfig env_cfg = env_config(10, 100, 70, 200);
+    // Configure envelope: 10ms attack, 100ms decay, 70% sustain, 800ms release
+    EnvConfig env_cfg = env_config(10, 100, 70, 800);
 
     // Init local state
     for (uint32_t v = 0; v < MAX_VOICES; v++) {
@@ -143,5 +143,12 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
         }
 
         gpio_put(PROFILE_PIN, 0);
+
+        // Send active-voice bitmap to Core 0 (non-blocking)
+        uint32_t bitmap = 0;
+        for (uint32_t v = 0; v < MAX_VOICES; v++) {
+            if (envelope[v].active()) bitmap |= (1u << v);
+        }
+        multicore_fifo_push_timeout_us(bitmap, 0);
     }
 }

@@ -20,6 +20,7 @@ add_executable(t00t
     src/audio_engine.cpp
     src/output.cpp
     src/controller.cpp
+    src/voice_alloc.cpp
 )
 
 target_include_directories(t00t PRIVATE src)

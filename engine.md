@@ -3,8 +3,8 @@
 ## Overview
 
 Dual-core architecture on RP2040:
-- **Core 0**: Control plane — input polling, event processing, parameter management
-- **Core 1**: Audio plane — synthesis, mixing, buffer filling
+- **Core 0**: Control plane — input polling, event processing, voice allocation, parameter management
+- **Core 1**: Audio plane — synthesis, mixing, buffer filling, active-voice bitmap feedback
 
 ## Pin Allocation
 
@@ -63,20 +63,29 @@ Runs on Core 1 exclusively. Entry point: `audio_engine_run()` (never returns).
 
 ```
 audio_engine_run():
+  init: profiling pin, envelope config, sine wavetable
   loop:
     wait for FIFO message (buffer index to fill)
     set profiling GPIO high
     read committed voice params (atomic snapshot)
     clear mix scratch buffer
-    for each active voice:
-      render into scratch (wavetable + phase accumulator)
-    clip scratch → int16_t stereo interleaved into target buffer
+    for each voice (0..MAX_VOICES-1):
+      detect trigger/gate changes → envelope trigger/release
+      skip if envelope idle
+      per-sample inner loop:
+        advance envelope
+        compute LFO (single sine LFO per voice)
+        apply LFO → pitch (vibrato), duty cycle (PWM), amplitude (tremolo)
+        oscillator sample (dispatch by waveform type)
+        amplitude chain: osc × velocity × envelope × LFO tremolo
+        accumulate into scratch
+    clip scratch → int16_t stereo interleave into target buffer
     clear profiling GPIO
-    signal buffer ready
+    push active-voice bitmap to Core 0 via reverse FIFO
 ```
 
-Voice state (phase accumulators) lives on Core 1 only.
-Voice parameters (freq, amplitude, active) come from Core 0 via the double-buffered param block.
+Voice state (phase accumulators, LFO phase, LFSR, envelopes) lives on Core 1 only.
+Voice parameters come from Core 0 via the double-buffered param block.
 
 ## Core 0 — Control Plane
 
@@ -84,14 +93,15 @@ Wakes on a 1ms hardware timer alarm (repeating). Main loop:
 
 ```
 core0_main():
-  init hardware, start Core 1
+  init hardware, voice allocator, start Core 1
   loop:
     WFE (sleep until timer alarm)
+    voice_alloc_update() — drain reverse FIFO for active bitmap
     poll buttons → debounce → edge detect
+    on press: voice_alloc_allocate() → write params → trigger
+    on release: gate off → voice_alloc_release()
     (future: drain MIDI UART ring buffer)
-    process events → update voice parameter shadow
     commit shadow → flip param double-buffer (atomic flag)
-    housekeeping / debug (low priority)
 ```
 
 ## Voice Parameter Double Buffer
@@ -101,13 +111,20 @@ Core 1 reads from the committed copy at the start of each render pass.
 
 ```c
 struct VoiceParams {
-    uint32_t phase_inc;   // pre-computed by Core 0
-    int16_t  amplitude;
-    bool     active;
+    uint32_t phase_inc;      // fixed-point phase increment (pre-computed by Core 0)
+    int16_t  amplitude;      // base amplitude / velocity (0–32767)
+    uint8_t  trigger;        // generation counter, incremented on each note-on
+    bool     gate;           // true while key held, false on release
+    Waveform waveform;       // oscillator waveform type
+    uint16_t duty_cycle;     // duty cycle for square wave (0–1023, 512 = 50%)
+    uint32_t lfo_rate;       // LFO phase increment (same 22.10 format, 0 = off)
+    int16_t  lfo_depth;      // LFO → amplitude depth (0–32767, 0 = off)
+    int16_t  lfo_pitch_depth; // LFO → pitch depth (0–32767, 0 = off)
+    int16_t  lfo_pwm_depth;  // LFO → duty cycle depth (0–512, 0 = off)
 };
 
 struct VoiceParamBlock {
-    VoiceParams voices[MAX_VOICES];
+    VoiceParams voices[MAX_VOICES];  // MAX_VOICES = 16
 };
 
 // Two copies, atomic flip
@@ -136,19 +153,11 @@ Simple integrator debounce at 1ms tick rate:
 
 ## Trigger/Gate Signaling
 
-Replaces the old `active` bool in VoiceParams. Core 0 only writes, Core 1 only reads.
-
-```c
-struct VoiceParams {
-    uint32_t phase_inc;
-    int16_t  amplitude;   // base amplitude (velocity)
-    uint8_t  trigger;     // generation counter, incremented on each note-on
-    bool     gate;        // true while key held, false on release
-};
-```
+Core 0 only writes, Core 1 only reads. `trigger` is a generation counter
+(uint8_t, wraps), `gate` is a bool.
 
 Core 1 keeps `last_trigger[v]` per voice. Detection logic:
-- `trigger != last_trigger && gate` → new note: reset phase, start ADSR attack
+- `trigger != last_trigger` → new note: reset phase + LFO + LFSR, start ADSR attack
 - `!gate && was_gated` → release: transition ADSR to release phase
 - `trigger == last_trigger && gate` → sustain: no change
 
@@ -174,74 +183,88 @@ using the current level as starting point.
 
 Amplitude chain per sample:
 ```
-raw_osc = oscillator output          [-32767 .. 32767]
-scaled  = (raw_osc * amplitude) >> 15   [-32767 .. 32767]
-final   = (scaled * env_level) >> 15    [-32767 .. 32767]
+raw_osc = osc_sample(waveform, phase, duty_cycle, lfsr, phase_inc)
+scaled  = (raw_osc * amplitude) >> 15
+scaled  = (scaled * env_level) >> 15
+if lfo_depth > 0:
+    mod = 32767 - lfo_depth + (lfo_val * lfo_depth) >> 15
+    scaled = (scaled * mod) >> 15
 ```
 
-Initial hardcoded ADSR values (Task 1):
-- Attack:  10ms  → rate = 32767 / 441 ≈ 74/sample
-- Decay:   100ms → rate = (32767 - sustain) / 4410 ≈ 2/sample
-- Sustain: 70%   → level = 22937
-- Release: 200ms → rate = 22937 / 8820 ≈ 3/sample
+Current ADSR values:
+- Attack:  10ms
+- Decay:   100ms
+- Sustain: 70%
+- Release: 800ms
 
 ## LFO
 
 Per-voice LFO on Core 1, driven by its own phase accumulator (same 22.10
 fixed-point as oscillator). Reads from sine_table for smooth modulation.
+Single LFO per voice with independent depth controls for three destinations:
 
-Two destinations (selected per-voice):
-- **Amplitude (tremolo)**: multiplies envelope output
-- **Pitch (vibrato)**: offsets phase_inc per sample
+- **Amplitude (tremolo)**: `lfo_depth` — multiplies post-envelope amplitude
+- **Pitch (vibrato)**: `lfo_pitch_depth` — offsets phase_inc by ±fraction per sample (1638 ≈ ±1 semitone)
+- **Duty cycle (PWM)**: `lfo_pwm_depth` — sweeps duty_cycle ± around center, clamped 1–1022
 
-LFO params in VoiceParams: `lfo_rate` (phase_inc), `lfo_depth` (modulation amount).
-LFO phase state on Core 1 only.
+LFO params in VoiceParams: `lfo_rate` (phase_inc, shared), three depth fields.
+LFO phase state on Core 1 only. Reset to 0 on trigger.
 
 ## Waveform Types
 
 ```c
-enum Waveform : uint8_t { WAVE_SINE, WAVE_SQUARE, WAVE_TRIANGLE, WAVE_SAW, WAVE_NOISE };
+enum Waveform : uint8_t {
+    WAVE_SINE, WAVE_SQUARE, WAVE_TRIANGLE, WAVE_SAW, WAVE_NOISE,
+    WAVE_SQUARE_BLEP, WAVE_SAW_BLEP
+};
 ```
 
 All derived from the phase accumulator (no extra tables needed except sine):
-- **Sine**: wavetable lookup with linear interpolation (existing)
-- **Square**: sign of phase, with variable duty cycle
-- **Triangle**: fold phase into ramp-up/ramp-down
+- **Sine**: wavetable lookup with linear interpolation (1024-entry table)
+- **Square**: sign of phase, with variable duty cycle (0–1023)
+- **Triangle**: piecewise linear, 4-quarter ramp
 - **Saw**: phase directly scaled to [-32767..32767]
-- **Noise**: LFSR (16-bit Galois), clocked at oscillator frequency
+- **Noise**: 16-bit Galois LFSR (polynomial 0xB400), per-voice state, reseeded on trigger
+- **Square BLEP**: band-limited square via PolyBLEP correction at both edges
+- **Saw BLEP**: band-limited saw via PolyBLEP correction at wrap point
 
-Waveform type stored in VoiceParams, selected by Core 0.
+PolyBLEP smooths discontinuities over one sample on each side using a quadratic
+polynomial residual. Fixed-point Q10 arithmetic, uses RP2040 hardware divider.
+The naive (non-BLEP) variants are kept for intentionally aliased/"crusty" sound.
 
-## Implementation Tasks
+## Dynamic Voice Allocation
 
-### Task 1: Trigger/gate + ADSR envelope
-- Replace `active` with `gate`+`trigger` in VoiceParams
-- Update controller.cpp for gate/trigger signaling
-- Add ADSR state machine to audio_engine.cpp
-- Hardcoded ADSR rates, envelope modulates amplitude
-- **Test**: buttons produce notes with attack ramp and release tail
+16-voice polyphonic allocator on Core 0. Core 1 provides feedback via a
+16-bit active-voice bitmap pushed through the reverse multicore FIFO
+(non-blocking, Core 1 never stalls).
 
-### Task 2: Square waveform
-- Add `Waveform` enum and `waveform` field to VoiceParams
-- Implement square wave in audio_engine.cpp (sign of phase)
-- Assign different waveforms to buttons for testing
-- **Test**: sine on A, square on B, hear difference
+Core 0 drains the FIFO at the start of each tick, keeps latest bitmap as
+`active_mask`, copies to `local_mask` (working copy — newly allocated voices
+get their bit set immediately to prevent double-allocation within one tick).
 
-### Task 3: LFO → amplitude (tremolo)
-- Add `lfo_rate`, `lfo_depth` fields to VoiceParams
-- Add LFO phase accumulator per voice on Core 1
-- LFO modulates post-envelope amplitude
-- **Test**: one button with tremolo, others without
+### Allocation priority
+1. **Silent** — `local_mask` bit clear AND not gated → envelope finished, free slot
+2. **Released** — `local_mask` bit set AND not gated → in release phase, quiet steal
+3. **Oldest active** — `local_mask` bit set AND gated → audible steal, least bad
 
-### Task 4: More waveforms + duty cycle
-- Implement triangle, saw, noise (LFSR)
-- Add `duty_cycle` field to VoiceParams for square wave
-- **Test**: cycle through waveforms on different buttons
+Age tracking uses a uint8_t monotonic counter (incremented per allocation).
+Modular-arithmetic comparison `(int8_t)(a - b) < 0` handles wrap correctly;
+safe with ≤16 concurrent voices (gap never exceeds 128).
 
-### Task 5: LFO → pitch (vibrato)
-- Add LFO destination selector to VoiceParams
-- LFO offsets phase_inc per sample when targeting pitch
-- **Test**: vibrato on one button, tremolo on another
+### Button behavior
+Each button cycles through a table of 4 notes on successive presses.
+Voice is allocated on press, released on release. Long release (800ms)
+ensures multiple voices can be heard simultaneously.
+
+## Performance
+
+Measured duty cycles on GPIO 2 profiling pin:
+
+- Idle: 0.85%
+- Single voice, no LFO: 2-3%
+- Single voice w. LFO: 5-6%
+- 16 voice max usage (unreliable measurement): ~75%
+- <16 voice normal usage (unreliable measurement): 50%
 
 ## Event Queue
 

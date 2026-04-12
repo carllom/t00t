@@ -4,6 +4,7 @@
 #include "output.h"
 #include "audio_engine.h"
 #include "controller.h"
+#include "voice_alloc.h"
 #include <cstdio>
 
 static AudioBuffers audio_buffers;
@@ -25,6 +26,7 @@ int main() {
     stdio_init_all();
 
     param_exchange.init();
+    voice_alloc_init();
     controller_init();
 
     // Start Core 1 (audio synthesis)
