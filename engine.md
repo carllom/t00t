@@ -333,6 +333,7 @@ This is the baseline measurements of the state before switching to RP2350 and up
 | --          | --    | --    | --    | --    | --    | --    |
 | RP2040      | 0.81% | 10.3% | 12.3% | 10.5% | 31.5% | >100% |
 | RP2350 port | 0.56% |  6.3% |  6.7% |  6.1% | 18.0% | ~80%  |
+| float env.  | 0.52% |  6.5% |  6.7% |  6.2% | 18.3% | ~85%  |
 
 ## Event Queue
 

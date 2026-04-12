@@ -94,8 +94,9 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
             }
 
             for (uint32_t i = 0; i < SAMPLES_PER_BUFFER; i++) {
-                int32_t level = envelope[v].advance(env_cfg);
-                if (level <= 0) break;
+                float env_f = envelope[v].advance(env_cfg);
+                if (env_f <= 0.0f) break;
+                int32_t level = (int32_t)(env_f * 32767.0f);
 
                 // LFO: compute once, route to multiple destinations
                 int32_t lfo_val = 0;
