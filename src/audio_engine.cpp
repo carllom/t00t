@@ -1,6 +1,7 @@
 #include "audio_engine.h"
 #include "osc/oscillator.h"
 #include "envelope.h"
+#include "filter.h"
 #include "hardware/gpio.h"
 #include "pico/multicore.h"
 
@@ -11,6 +12,7 @@ static uint16_t noise_lfsr[MAX_VOICES];
 static uint8_t  last_trigger[MAX_VOICES];
 static bool     voice_gated[MAX_VOICES];
 static Envelope envelope[MAX_VOICES];
+static SVFilter filter[MAX_VOICES];
 
 // Scratch buffer for mixing (int32_t to avoid overflow during summation)
 static int32_t scratch[SAMPLES_PER_BUFFER];
@@ -32,6 +34,7 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
         last_trigger[v] = 0;
         voice_gated[v] = false;
         envelope[v].init();
+        filter[v].init();
     }
 
     // Generate wavetable
@@ -62,6 +65,7 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
                 lfo_phase[v] = 0;
                 noise_lfsr[v] = 0xACE1u;
                 envelope[v].trigger();
+                filter[v].init();  // clean filter state on new note
                 voice_gated[v] = true;
             }
 
@@ -80,6 +84,13 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
             uint32_t phase = voice_phase[v];
             uint32_t lfo_ph = lfo_phase[v];
             bool has_lfo = (p.lfo_rate != 0);
+            bool has_filter = (p.filter_mode != FILTER_OFF);
+
+            // Pre-compute filter Q (constant across buffer)
+            int16_t filt_q = 0;
+            if (has_filter) {
+                filt_q = svf_compute_q(p.filter_resonance);
+            }
 
             for (uint32_t i = 0; i < SAMPLES_PER_BUFFER; i++) {
                 int32_t level = envelope[v].advance(env_cfg);
@@ -95,7 +106,6 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
                 // LFO → pitch (vibrato): offset phase_inc by ±fraction
                 uint32_t eff_phase_inc = p.phase_inc;
                 if (p.lfo_pitch_depth > 0) {
-                    // pitch_mod in [-depth..+depth], then scale phase_inc
                     int32_t pitch_mod = (lfo_val * p.lfo_pitch_depth) >> 15;
                     eff_phase_inc = (uint32_t)((int32_t)p.phase_inc +
                         (((int32_t)p.phase_inc * pitch_mod) >> 15));
@@ -121,6 +131,22 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
                 if (p.lfo_depth > 0) {
                     int32_t mod = 32767 - p.lfo_depth + ((lfo_val * p.lfo_depth) >> 15);
                     scaled = (scaled * mod) >> 15;
+                }
+
+                // State-variable filter (fixed-point)
+                if (has_filter) {
+                    // Compute effective cutoff: base + envelope mod + LFO mod
+                    int32_t cutoff = (int32_t)p.filter_cutoff;
+                    if (p.filter_env_amount != 0) {
+                        cutoff += ((int32_t)level * (int32_t)p.filter_env_amount) >> 15;
+                    }
+                    if (p.lfo_filter_depth != 0) {
+                        cutoff += ((int32_t)lfo_val * (int32_t)p.lfo_filter_depth) >> 15;
+                    }
+                    if (cutoff < 20) cutoff = 20;
+                    if (cutoff > 18000) cutoff = 18000;
+                    int16_t filt_f = svf_compute_f_half(cutoff);
+                    scaled = filter[v].tick(scaled, filt_f, filt_q, p.filter_mode);
                 }
 
                 scratch[i] += scaled;

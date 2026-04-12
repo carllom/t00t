@@ -11,6 +11,8 @@ static constexpr uint32_t PROFILE_PIN = 2;
 
 enum Waveform : uint8_t { WAVE_SINE, WAVE_SQUARE, WAVE_TRIANGLE, WAVE_SAW, WAVE_NOISE, WAVE_SQUARE_BLEP, WAVE_SAW_BLEP };
 
+enum FilterMode : uint8_t { FILTER_OFF, FILTER_LP, FILTER_BP, FILTER_HP, FILTER_NOTCH };
+
 // Voice parameters: written by Core 0, read by Core 1.
 // Only contains values needed for synthesis — no phase state.
 struct VoiceParams {
@@ -24,6 +26,12 @@ struct VoiceParams {
     int16_t lfo_depth;   // LFO → amplitude depth (0–32767, 0 = off)
     int16_t lfo_pitch_depth; // LFO → pitch depth (0–32767, 0 = off, 1638 ≈ ±1 semitone)
     int16_t lfo_pwm_depth;   // LFO → duty cycle depth (0–512, 0 = off)
+    // Filter
+    FilterMode filter_mode;    // filter type (OFF = bypass)
+    uint16_t filter_cutoff;    // base cutoff in Hz (20–18000)
+    uint16_t filter_resonance; // resonance 0–32767 (0 = none, 32767 = self-oscillation)
+    int16_t filter_env_amount; // envelope → cutoff in Hz (signed, ±18000)
+    int16_t lfo_filter_depth;  // LFO → cutoff in Hz (signed, ±18000)
 };
 
 // A complete snapshot of all voice parameters for one render pass.
@@ -47,7 +55,8 @@ struct ParamExchange {
         committed = 0;
         for (int b = 0; b < 2; b++) {
             for (uint32_t v = 0; v < MAX_VOICES; v++) {
-                blocks[b].voices[v] = { 0, 0, 0, false, WAVE_SINE, 512, 0, 0, 0, 0 };
+                blocks[b].voices[v] = { 0, 0, 0, false, WAVE_SINE, 512, 0, 0, 0, 0,
+                                        FILTER_OFF, 8000, 0, 0, 0 };
             }
         }
     }

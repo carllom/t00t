@@ -78,6 +78,7 @@ audio_engine_run():
         apply LFO → pitch (vibrato), duty cycle (PWM), amplitude (tremolo)
         oscillator sample (dispatch by waveform type)
         amplitude chain: osc × velocity × envelope × LFO tremolo
+        SVF filter (if enabled): modulate cutoff from envelope + LFO, tick
         accumulate into scratch
     clip scratch → int16_t stereo interleave into target buffer
     clear profiling GPIO
@@ -111,16 +112,21 @@ Core 1 reads from the committed copy at the start of each render pass.
 
 ```c
 struct VoiceParams {
-    uint32_t phase_inc;      // fixed-point phase increment (pre-computed by Core 0)
-    int16_t  amplitude;      // base amplitude / velocity (0–32767)
-    uint8_t  trigger;        // generation counter, incremented on each note-on
-    bool     gate;           // true while key held, false on release
-    Waveform waveform;       // oscillator waveform type
-    uint16_t duty_cycle;     // duty cycle for square wave (0–1023, 512 = 50%)
-    uint32_t lfo_rate;       // LFO phase increment (same 22.10 format, 0 = off)
-    int16_t  lfo_depth;      // LFO → amplitude depth (0–32767, 0 = off)
-    int16_t  lfo_pitch_depth; // LFO → pitch depth (0–32767, 0 = off)
-    int16_t  lfo_pwm_depth;  // LFO → duty cycle depth (0–512, 0 = off)
+    uint32_t phase_inc;        // fixed-point phase increment (pre-computed by Core 0)
+    int16_t  amplitude;        // base amplitude / velocity (0–32767)
+    uint8_t  trigger;          // generation counter, incremented on each note-on
+    bool     gate;             // true while key held, false on release
+    Waveform waveform;         // oscillator waveform type
+    uint16_t duty_cycle;       // duty cycle for square wave (0–1023, 512 = 50%)
+    uint32_t lfo_rate;         // LFO phase increment (same 22.10 format, 0 = off)
+    int16_t  lfo_depth;        // LFO → amplitude depth (0–32767, 0 = off)
+    int16_t  lfo_pitch_depth;  // LFO → pitch depth (0–32767, 0 = off)
+    int16_t  lfo_pwm_depth;    // LFO → duty cycle depth (0–512, 0 = off)
+    FilterMode filter_mode;    // LP, BP, HP, notch, or off (bypass)
+    uint16_t filter_cutoff;    // base cutoff in Hz (20–18000)
+    uint16_t filter_resonance; // resonance 0–32767 (0 = none, 32767 = self-oscillation)
+    int16_t  filter_env_amount;// envelope → cutoff in Hz (signed, ±18000)
+    int16_t  lfo_filter_depth; // LFO → cutoff in Hz (signed, ±18000)
 };
 
 struct VoiceParamBlock {
@@ -189,6 +195,10 @@ scaled  = (scaled * env_level) >> 15
 if lfo_depth > 0:
     mod = 32767 - lfo_depth + (lfo_val * lfo_depth) >> 15
     scaled = (scaled * mod) >> 15
+if filter_mode != OFF:
+    cutoff = base + (env_level * env_amount) >> 15 + (lfo_val * lfo_depth) >> 15
+    F_half = svf_compute_f_half(cutoff)
+    scaled = filter.tick(scaled, F_half, Q_q13, mode)
 ```
 
 Current ADSR values:
@@ -206,8 +216,9 @@ Single LFO per voice with independent depth controls for three destinations:
 - **Amplitude (tremolo)**: `lfo_depth` — multiplies post-envelope amplitude
 - **Pitch (vibrato)**: `lfo_pitch_depth` — offsets phase_inc by ±fraction per sample (1638 ≈ ±1 semitone)
 - **Duty cycle (PWM)**: `lfo_pwm_depth` — sweeps duty_cycle ± around center, clamped 1–1022
+- **Filter cutoff**: `lfo_filter_depth` — offsets cutoff in Hz (signed)
 
-LFO params in VoiceParams: `lfo_rate` (phase_inc, shared), three depth fields.
+LFO params in VoiceParams: `lfo_rate` (phase_inc, shared), four depth fields.
 LFO phase state on Core 1 only. Reset to 0 on trigger.
 
 ## Waveform Types
@@ -231,6 +242,45 @@ All derived from the phase accumulator (no extra tables needed except sine):
 PolyBLEP smooths discontinuities over one sample on each side using a quadratic
 polynomial residual. Fixed-point Q10 arithmetic, uses RP2040 hardware divider.
 The naive (non-BLEP) variants are kept for intentionally aliased/"crusty" sound.
+
+## State-Variable Filter (SVF)
+
+Per-voice SID-style 2-pole (12dB/octave) multimode filter. Produces lowpass,
+bandpass, highpass, and notch outputs from shared state variables.
+
+```c
+enum FilterMode : uint8_t { FILTER_OFF, FILTER_LP, FILTER_BP, FILTER_HP, FILTER_NOTCH };
+```
+
+Implementation: fixed-point SVF with 2-pass integration for stability.
+All integer arithmetic — no floats in the render path.
+
+### Per-sample update (2-pass)
+```
+for pass in 0..1:
+    hp = input - lp - (Q_q13 * bp) >> 13
+    bp += (F_half * hp) >> 15
+    lp += (F_half * bp) >> 15
+clamp bp, lp to ±32767 (soft saturation)
+output = lp | bp | hp | lp+hp depending on mode
+```
+
+### Coefficient computation
+- **F_half** (Q15): `cutoff_hz * 76539 >> 15`, clamped [33, 15564]
+  - Approximation of `π * cutoff / sample_rate`, <0.1% error
+- **Q** (Q13): `16384 - (resonance >> 1)`
+  - resonance=0 → Q=16384 (2.0, no resonance)
+  - resonance=32767 → Q≈1 (near self-oscillation)
+
+### Modulation
+Per-sample cutoff = base_cutoff + (envelope × env_amount >> 15) + (LFO × lfo_filter_depth >> 15),
+clamped 20–18000 Hz. Q is constant per buffer.
+
+Filter state (lp, bp) reset to 0 on voice trigger for clean attacks.
+
+### CPU cost
+~18 integer ops per sample per voice (8 multiplies, shifts, adds).
+Estimated ~1-2% per voice on profiling pin.
 
 ## Dynamic Voice Allocation
 

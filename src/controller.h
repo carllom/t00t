@@ -17,6 +17,13 @@ struct ButtonState {
     int16_t lfo_depth;       // LFO → amplitude depth (0–32767)
     int16_t lfo_pitch_depth; // LFO → pitch depth (0–32767)
     int16_t lfo_pwm_depth;   // LFO → duty cycle depth (0–512)
+    // Filter
+    FilterMode filter_mode;
+    uint16_t filter_cutoff;    // base cutoff Hz
+    uint16_t filter_resonance; // 0–32767
+    int16_t filter_env_amount; // envelope → cutoff Hz
+    int16_t lfo_filter_depth;  // LFO → cutoff Hz
+    // Note cycling
     const float *notes;      // pointer to note frequency table
     uint8_t num_notes;       // number of notes in table
     uint8_t note_index;      // current index into notes (cycles on press)
