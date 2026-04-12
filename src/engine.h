@@ -8,8 +8,8 @@ struct SampleDef;  // forward declaration (defined in osc/sample_def.h)
 
 static constexpr uint32_t MAX_VOICES = 16;
 
-// Profiling pin — GPIO 2, routed to VGA D-sub pin 1 (Red LSB)
-static constexpr uint32_t PROFILE_PIN = 2;
+// Profiling pin — GPIO 22 (moved from GPIO 2 to avoid coupling to Button A on GPIO 0)
+static constexpr uint32_t PROFILE_PIN = 22;
 
 enum Waveform : uint8_t { WAVE_SINE, WAVE_SQUARE, WAVE_TRIANGLE, WAVE_SAW, WAVE_NOISE, WAVE_SQUARE_BLEP, WAVE_SAW_BLEP, WAVE_SAMPLE };
 

@@ -23,9 +23,12 @@ add_executable(t00t
     src/controller.cpp
     src/voice_alloc.cpp
     src/samples.cpp
+    src/midi/midi_controller.cpp
+    src/midi/usb_midi.cpp
+    src/midi/usb_descriptors.c
 )
 
-target_include_directories(t00t PRIVATE src)
+target_include_directories(t00t PRIVATE src src/midi)
 
 target_link_libraries(t00t
     pico_stdlib
@@ -34,10 +37,12 @@ target_link_libraries(t00t
     hardware_dma
     hardware_pio
     hardware_timer
+    tinyusb_device
+    tinyusb_board
 )
 
-# USB serial for debug output, disable UART
-pico_enable_stdio_usb(t00t 1)
+# USB is used for MIDI, not stdio
+pico_enable_stdio_usb(t00t 0)
 pico_enable_stdio_uart(t00t 0)
 
 # Generate .uf2 file for flashing

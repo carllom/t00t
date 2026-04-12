@@ -1,11 +1,12 @@
 #include "pico/stdlib.h"
 #include "pico/multicore.h"
-#include "hardware/timer.h"
+#include "pico/time.h"
 #include "output.h"
 #include "audio_engine.h"
 #include "controller.h"
 #include "voice_alloc.h"
-#include <cstdio>
+#include "midi/midi_controller.h"
+#include "midi/usb_midi.h"
 
 static AudioBuffers audio_buffers;
 static ParamExchange param_exchange;
@@ -15,19 +16,13 @@ static void core1_entry() {
     audio_engine_run(&audio_buffers, &param_exchange);
 }
 
-// 1ms repeating timer callback — runs on Core 0 IRQ context
-static bool timer_callback(repeating_timer_t *rt) {
-    (void)rt;
-    controller_tick(&param_exchange);
-    return true;  // keep repeating
-}
-
 int main() {
-    stdio_init_all();
+    usb_midi_init();
 
     param_exchange.init();
     voice_alloc_init();
     controller_init();
+    midi_controller_init();
 
     // Start Core 1 (audio synthesis)
     multicore_launch_core1(core1_entry);
@@ -35,13 +30,20 @@ int main() {
     // Start I2S DMA output — must be after Core 1 is ready to receive FIFO messages
     i2s_output_init(&audio_buffers);
 
-    // Start 1ms repeating timer for button polling
-    repeating_timer_t tick_timer;
-    add_repeating_timer_ms(-1, timer_callback, nullptr, &tick_timer);
+    // Core 0 main loop: poll USB + MIDI + buttons
+    absolute_time_t next_tick = get_absolute_time();
 
-    // Core 0 main loop — sleep, wake on IRQ (timer handles everything)
     while (true) {
-        __wfi();
+        usb_midi_task();
+        usb_midi_poll(&param_exchange);
+
+        // 1ms button poll
+        if (time_reached(next_tick)) {
+            next_tick = delayed_by_ms(next_tick, 1);
+            controller_tick(&param_exchange);
+        }
+
+        __wfi();  // sleep until next IRQ (USB, timer, etc.)
     }
 
     return 0;
