@@ -1,8 +1,10 @@
-# T00T an experiment in digital synthesis methods and algorithms using Raspberry Pi Pico
+# T00T - RP2350 audio excursions
+
+This is an experiment in digital synthesis methods and algorithms using RP2350 Raspberry Pi Pico 2.
 
 ## Development board 
 
-For ease of use and flexibility (and because I have it) I will be using the Pimoroni Pico Demo card https://pimoroni.com/picovgademo.
+For ease of use and flexibility (and because I have it) I am using the Pimoroni Pico Demo card https://pimoroni.com/picovgademo.
 
 The card has a PCM5100A DAC for line out audio over I2S. It also has an amplifier+jack connected to a PWM output.
 
@@ -15,6 +17,4 @@ Sample code in:
 
 The aim is to create a good foundation for tone generation and to investigate sound generation and hierarchies from a historical perspective. Both by doing approximations of classic sound chips and digital music equipment based on the general principles of working, not the actual implementation.
 
-But we start simple. First setting up a workflow for generating firmware for the raspberry pi pico, then doing a simple generated waveform to verify output.
-
-We work in c++
+The end goal is not necessarily audio quality, but instead efficient and simple real-time audio generation.
