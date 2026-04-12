@@ -316,6 +316,17 @@ Measured duty cycles on GPIO 2 profiling pin:
 - 16 voice max usage (unreliable measurement): ~75%
 - <16 voice normal usage (unreliable measurement): 50%
 
+### Baseline before RP2350
+
+This is the baseline measurements of the state before switching to RP2350 and upgrading the core:
+
+- Idle: 0.81%
+- Voice A: "Fairlight" sample (8-bit converted on the fly to Q15): 10.3%
+- Voice B: Square wave (BLEP) with 3Hz LFO for duty cycle + Filter with Q envelope: 12.3%
+- Voice C: Triangle with LFO controlling amplitude + Filter Q: 10.5%
+- All 3 voices sustaining: 31.5%
+- Intense work will overload the buffer. Moderate use will get it close to 100%
+
 ## Event Queue
 
 Simple fixed-size ring buffer of `ControlMessage`, single-producer (Core 0) single-consumer (Core 0).

@@ -21,6 +21,7 @@ add_executable(t00t
     src/output.cpp
     src/controller.cpp
     src/voice_alloc.cpp
+    src/samples.cpp
 )
 
 target_include_directories(t00t PRIVATE src)

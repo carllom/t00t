@@ -4,12 +4,14 @@
 #include "hardware/sync.h"
 #include <cstdint>
 
+struct SampleDef;  // forward declaration (defined in osc/sample_def.h)
+
 static constexpr uint32_t MAX_VOICES = 16;
 
 // Profiling pin — GPIO 2, routed to VGA D-sub pin 1 (Red LSB)
 static constexpr uint32_t PROFILE_PIN = 2;
 
-enum Waveform : uint8_t { WAVE_SINE, WAVE_SQUARE, WAVE_TRIANGLE, WAVE_SAW, WAVE_NOISE, WAVE_SQUARE_BLEP, WAVE_SAW_BLEP };
+enum Waveform : uint8_t { WAVE_SINE, WAVE_SQUARE, WAVE_TRIANGLE, WAVE_SAW, WAVE_NOISE, WAVE_SQUARE_BLEP, WAVE_SAW_BLEP, WAVE_SAMPLE };
 
 enum FilterMode : uint8_t { FILTER_OFF, FILTER_LP, FILTER_BP, FILTER_HP, FILTER_NOTCH };
 
@@ -32,6 +34,7 @@ struct VoiceParams {
     uint16_t filter_resonance; // resonance 0–32767 (0 = none, 32767 = self-oscillation)
     int16_t filter_env_amount; // envelope → cutoff in Hz (signed, ±18000)
     int16_t lfo_filter_depth;  // LFO → cutoff in Hz (signed, ±18000)
+    const SampleDef *sample;   // sample definition (nullptr for non-sample waveforms)
 };
 
 // A complete snapshot of all voice parameters for one render pass.
@@ -56,7 +59,7 @@ struct ParamExchange {
         for (int b = 0; b < 2; b++) {
             for (uint32_t v = 0; v < MAX_VOICES; v++) {
                 blocks[b].voices[v] = { 0, 0, 0, false, WAVE_SINE, 512, 0, 0, 0, 0,
-                                        FILTER_OFF, 8000, 0, 0, 0 };
+                                        FILTER_OFF, 8000, 0, 0, 0, nullptr };
             }
         }
     }
