@@ -3,9 +3,9 @@
 #include "hardware/gpio.h"
 
 static ButtonState buttons[NUM_BUTTONS] = {
-    { 0,  0, 440.00f, 10000, WAVE_SINE,   0.0f,  0,     0, false },  // A: A4 sine
-    { 6,  1, 523.25f, 10000, WAVE_SQUARE,  0.0f,  0,     0, false },  // B: C5 square
-    { 11, 2, 659.25f, 10000, WAVE_SINE,    5.0f,  16000, 0, false },  // C: E5 sine + tremolo
+    { 0,  0, 440.00f, 10000, WAVE_SAW,      512, 0.0f,  0,     0, false },  // A: A4 saw
+    { 6,  1, 523.25f, 10000, WAVE_SQUARE,    256, 0.0f,  0,     0, false },  // B: C5 square 25% duty
+    { 11, 2, 659.25f, 10000, WAVE_TRIANGLE,  512, 5.0f,  16000, 0, false },  // C: E5 triangle + tremolo
 };
 
 void controller_init() {
@@ -50,6 +50,7 @@ void controller_tick(ParamExchange *params) {
                 vp.phase_inc = osc_phase_inc(b.freq_hz);
                 vp.amplitude = b.amplitude;
                 vp.waveform = b.waveform;
+                vp.duty_cycle = b.duty_cycle;
                 vp.lfo_rate = osc_phase_inc(b.lfo_hz);
                 vp.lfo_depth = b.lfo_depth;
                 vp.trigger++;

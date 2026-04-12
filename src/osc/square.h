@@ -3,9 +3,10 @@
 #include "common.h"
 #include <cstdint>
 
-// Square oscillator: first half of phase cycle = +32767, second = -32767.
+// Square oscillator with variable duty cycle.
+// duty_cycle: 0–1023 threshold within the wavetable (512 = 50%).
 // Returns sample in [-32767..32767].
-inline int32_t osc_square(uint32_t phase) {
+inline int32_t osc_square(uint32_t phase, uint16_t duty_cycle) {
     uint32_t idx = (phase >> PHASE_FRAC_BITS) & WAVETABLE_MASK;
-    return (idx < WAVETABLE_SIZE / 2) ? 32767 : -32767;
+    return (idx < duty_cycle) ? 32767 : -32767;
 }

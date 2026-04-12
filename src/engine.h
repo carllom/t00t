@@ -9,7 +9,7 @@ static constexpr uint32_t MAX_VOICES = 16;
 // Profiling pin — GPIO 2, routed to VGA D-sub pin 1 (Red LSB)
 static constexpr uint32_t PROFILE_PIN = 2;
 
-enum Waveform : uint8_t { WAVE_SINE, WAVE_SQUARE };
+enum Waveform : uint8_t { WAVE_SINE, WAVE_SQUARE, WAVE_TRIANGLE, WAVE_SAW, WAVE_NOISE };
 
 // Voice parameters: written by Core 0, read by Core 1.
 // Only contains values needed for synthesis — no phase state.
@@ -19,6 +19,7 @@ struct VoiceParams {
     uint8_t trigger;     // generation counter, incremented on each note-on
     bool gate;           // true while key held, false on release
     Waveform waveform;   // oscillator waveform type
+    uint16_t duty_cycle;  // duty cycle for square wave (0–1023, 512 = 50%)
     uint32_t lfo_rate;   // LFO phase increment (same 22.10 format, 0 = off)
     int16_t lfo_depth;   // LFO modulation depth (0–32767, 0 = off)
 };
@@ -44,7 +45,7 @@ struct ParamExchange {
         committed = 0;
         for (int b = 0; b < 2; b++) {
             for (uint32_t v = 0; v < MAX_VOICES; v++) {
-                blocks[b].voices[v] = { 0, 0, 0, false, WAVE_SINE, 0, 0 };
+                blocks[b].voices[v] = { 0, 0, 0, false, WAVE_SINE, 512, 0, 0 };
             }
         }
     }

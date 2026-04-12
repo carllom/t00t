@@ -14,6 +14,7 @@ struct ButtonState {
     float freq_hz;
     int16_t amplitude;
     Waveform waveform;
+    uint16_t duty_cycle; // duty cycle for square (0–1023, 512 = 50%)
     float lfo_hz;       // LFO rate in Hz (0 = off)
     int16_t lfo_depth;  // LFO depth (0–32767)
     uint8_t counter;    // integrator debounce counter
