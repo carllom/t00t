@@ -9,7 +9,7 @@ SOURCES = $(wildcard src/*.cpp src/*.h)
 
 $(UF2): CMakeLists.txt $(SOURCES)
 	@mkdir -p $(BUILD_DIR)
-	cd $(BUILD_DIR) && cmake -DPICO_BOARD=vgaboard ..
+	cd $(BUILD_DIR) && cmake -DPICO_BOARD=vgaboard_rp2350 -DPICO_PLATFORM=rp2350 ..
 	$(MAKE) -C $(BUILD_DIR) -j$(shell nproc)
 
 clean:

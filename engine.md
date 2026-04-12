@@ -327,6 +327,13 @@ This is the baseline measurements of the state before switching to RP2350 and up
 - All 3 voices sustaining: 31.5%
 - Intense work will overload the buffer. Moderate use will get it close to 100%
 
+### Performance gain table
+
+| Phase       | Idle  | Voc A | Voc B | Voc C | ABC   | Max   |
+| --          | --    | --    | --    | --    | --    | --    |
+| RP2040      | 0.81% | 10.3% | 12.3% | 10.5% | 31.5% | >100% |
+| RP2350 port | 0.56% |  6.3% |  6.7% |  6.1% | 18.0% | ~80%  |
+
 ## Event Queue
 
 Simple fixed-size ring buffer of `ControlMessage`, single-producer (Core 0) single-consumer (Core 0).

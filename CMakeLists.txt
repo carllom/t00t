@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 3.13)
 
 set(PICO_SDK_PATH ${CMAKE_CURRENT_LIST_DIR}/pico-sdk)
 set(PICO_EXTRAS_PATH ${CMAKE_CURRENT_LIST_DIR}/pico-extras)
+set(PICO_BOARD_HEADER_DIRS ${CMAKE_CURRENT_LIST_DIR}/src/boards)
 
 include(${PICO_SDK_PATH}/external/pico_sdk_import.cmake)
 include(${PICO_EXTRAS_PATH}/external/pico_extras_import.cmake)
