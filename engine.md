@@ -2,28 +2,52 @@
 
 ## Overview
 
-Dual-core architecture on RP2040:
-- **Core 0**: Control plane — input polling, event processing, voice allocation, parameter management
+Dual-core architecture on RP2350 (Raspberry Pi Pico 2):
+- **Core 0**: Control plane — input polling (MIDI + buttons), voice allocation, parameter management
 - **Core 1**: Audio plane — synthesis, mixing, buffer filling, active-voice bitmap feedback
+
+Two board targets are supported, selected at build time via the board header:
+- **`vgaboard_rp2350`** — Pimoroni Pico VGA Demo Base, 3 buttons, I2S DAC on the board, USB MIDI.
+- **`breadboard_rp2350`** — bare Pico 2 + Adafruit PCM5122 I2S breakout, no buttons/VGA, DIN (UART) + USB MIDI.
 
 ## Pin Allocation
 
+Pins differ between the two board targets. Definitions live in
+`src/boards/vgaboard_rp2350.h` and `src/boards/breadboard_rp2350.h`.
+
+### `vgaboard_rp2350` (Pimoroni VGA Demo Base)
+
 | GPIO | Function | Notes |
 |------|----------|-------|
-| 0 | Button A | Shared with VGA color, active-high, pull-down |
+| 0 | Button A | Shared with VGA color base, active-high, pull-down |
 | 1 | *free* | VGA color (unused) |
-| 2 | Profile pin | Synthesis workload measurement (directly probe D-sub pin 1 / Red LSB) |
+| 2 | *free* | VGA color (unused) |
 | 3-4 | *free* | VGA color (unused) |
-| 5 | SD CLK | |
+| 5 | SD CLK | (blocks DIN MIDI on this board) |
 | 6 | Button B | Shared with VGA color |
 | 7-10 | *free* | VGA color (unused) |
 | 11 | Button C | Shared with VGA color |
 | 12-15 | *free* | VGA color (unused) |
-| 16-17 | VGA sync | Unused |
-| 18-22 | SD / UART | |
-| 26 | I2S DATA | PCM5100A DIN |
-| 27 | I2S BCK | PCM5100A bit clock |
-| 28 | I2S LRCK | PCM5100A word select |
+| 16-17 | VGA sync | Sync base (unused) |
+| 18-19 | SD CMD / DAT0 | |
+| 20-21 | UART1 TX / RX | `PICO_DEFAULT_UART` = 1 |
+| 22 | Profile pin | Synthesis workload measurement (probe directly) |
+| 26 | I2S DATA | DAC DIN |
+| 27 | I2S BCK | DAC bit clock (also PWM R) |
+| 28 | I2S LRCK | DAC word select (also PWM L) |
+
+### `breadboard_rp2350` (Pico 2 + Adafruit PCM5122)
+
+| GPIO | Function | Notes |
+|------|----------|-------|
+| 0-1 | UART0 TX / RX | `PICO_DEFAULT_UART` = 0 (debug only) |
+| 5 | DIN MIDI in | UART1 RX, 31250 baud (via optocoupler) |
+| 16 | I2S BCK | PCM5122 BCK (clock pin base) |
+| 17 | I2S LRCK | PCM5122 WSEL (BCK base + 1) |
+| 18 | I2S DATA | PCM5122 DIN |
+| 22 | Profile pin | Synthesis workload measurement (probe on breadboard) |
+
+No buttons, VGA, or SD on the breadboard; control is MIDI-only.
 
 ## Audio Buffer Flow
 
@@ -80,7 +104,7 @@ audio_engine_run():
         amplitude chain: osc × velocity × envelope × LFO tremolo
         SVF filter (if enabled): modulate cutoff from envelope + LFO, tick
         accumulate into scratch
-    clip scratch → int16_t stereo interleave into target buffer
+    clip scratch (__ssat) → int16_t, mono duplicated to L+R of target buffer
     clear profiling GPIO
     push active-voice bitmap to Core 0 via reverse FIFO
 ```
@@ -90,20 +114,39 @@ Voice parameters come from Core 0 via the double-buffered param block.
 
 ## Core 0 — Control Plane
 
-Wakes on a 1ms hardware timer alarm (repeating). Main loop:
+`main()` initializes MIDI transports, the param exchange, the voice allocator,
+buttons (only if `HAS_BUTTONS`), then launches Core 1 and starts the I2S DMA.
+The main loop sleeps on `__wfi()` and services inputs when woken:
 
 ```
-core0_main():
-  init hardware, voice allocator, start Core 1
+main():
+  init MIDI (USB and/or UART), param_exchange.init(), voice_alloc_init()
+  if HAS_BUTTONS: controller_init()
+  launch Core 1 (audio_engine_run), then i2s_output_init()
   loop:
-    WFE (sleep until timer alarm)
-    voice_alloc_update() — drain reverse FIFO for active bitmap
-    poll buttons → debounce → edge detect
-    on press: voice_alloc_allocate() → write params → trigger
-    on release: gate off → voice_alloc_release()
-    (future: drain MIDI UART ring buffer)
-    commit shadow → flip param double-buffer (atomic flag)
+    if MIDI_USB:  usb_midi_task(); usb_midi_poll(params)
+    if MIDI_UART: uart_midi_poll(params)   // drains the UART RX ring buffer
+    if HAS_BUTTONS and 1ms tick elapsed:   // time_reached(next_tick)
+      controller_tick(params)
+    __wfi()  // sleep until next IRQ (USB, UART, timer)
 ```
+
+`controller_tick()` (and the MIDI controller) drive a note on/off into the
+voice allocator. The flow inside `controller_tick()`:
+
+```
+controller_tick(params):
+  voice_alloc_update()                  // drain reverse FIFO for active bitmap
+  shadow = params->active()             // start from current committed truth
+  poll buttons → integrator debounce → edge detect
+    on press:  v = voice_alloc_allocate(); apply preset to shadow.voices[v];
+               phase_inc, trigger++, gate = true
+    on release: shadow.voices[v].gate = false; voice_alloc_release(v)
+  if changed: params->commit()          // flip param double-buffer
+```
+
+There is no separate event queue: edges are applied straight to the shadow
+block and committed in the same tick.
 
 ## Voice Parameter Double Buffer
 
@@ -112,42 +155,50 @@ Core 1 reads from the committed copy at the start of each render pass.
 
 ```c
 struct VoiceParams {
-    uint32_t phase_inc;        // fixed-point phase increment (pre-computed by Core 0)
+    uint32_t phase_inc;        // 22.10 fixed-point phase increment (pre-computed by Core 0)
     int16_t  amplitude;        // base amplitude / velocity (0–32767)
     uint8_t  trigger;          // generation counter, incremented on each note-on
     bool     gate;             // true while key held, false on release
     Waveform waveform;         // oscillator waveform type
     uint16_t duty_cycle;       // duty cycle for square wave (0–1023, 512 = 50%)
-    uint32_t lfo_rate;         // LFO phase increment (same 22.10 format, 0 = off)
-    int16_t  lfo_depth;        // LFO → amplitude depth (0–32767, 0 = off)
-    int16_t  lfo_pitch_depth;  // LFO → pitch depth (0–32767, 0 = off)
-    int16_t  lfo_pwm_depth;    // LFO → duty cycle depth (0–512, 0 = off)
+    float    lfo_rate;         // LFO frequency in Hz (0 = off)
+    float    lfo_depth;        // LFO → amplitude depth (0.0–1.0, 0 = off)
+    float    lfo_pitch_depth;  // LFO → pitch depth (0.0–1.0, 0.05 ≈ ±1 semitone)
+    float    lfo_pwm_depth;    // LFO → duty cycle depth (0.0–1.0, fraction of full range)
     FilterMode filter_mode;    // LP, BP, HP, notch, or off (bypass)
     uint16_t filter_cutoff;    // base cutoff in Hz (20–18000)
     uint16_t filter_resonance; // resonance 0–32767 (0 = none, 32767 = self-oscillation)
     int16_t  filter_env_amount;// envelope → cutoff in Hz (signed, ±18000)
-    int16_t  lfo_filter_depth; // LFO → cutoff in Hz (signed, ±18000)
+    float    lfo_filter_depth; // LFO → cutoff in Hz (signed, ±18000)
+    const SampleDef *sample;   // sample definition (nullptr for non-sample waveforms)
 };
 
 struct VoiceParamBlock {
     VoiceParams voices[MAX_VOICES];  // MAX_VOICES = 16
 };
 
-// Two copies, atomic flip
-VoiceParamBlock param_blocks[2];
-volatile uint8_t committed_index;  // 0 or 1, written by Core 0
+// Double-buffered exchange — two copies plus an atomic index.
+struct ParamExchange {
+    VoiceParamBlock blocks[2];
+    volatile uint8_t committed;  // 0 or 1, written by Core 0
 
-// Core 0 writes to param_blocks[1 - committed_index] (shadow)
-// Core 0 commits: committed_index = 1 - committed_index (with __sev())
-// Core 1 reads: param_blocks[committed_index] at start of render
+    void init();                       // zero both blocks to a SINE/FILTER_OFF default
+    VoiceParamBlock &shadow();         // Core 0: blocks[1 - committed] (write target)
+    void commit();                     // Core 0: barrier, flip committed, __sev()
+    const VoiceParamBlock &active() const;  // Core 1: blocks[committed] (read target)
+};
 ```
 
-No locks needed: Core 0 only writes the shadow (non-committed) block.
-Core 1 only reads the committed block. The flip is a single byte write (atomic on Cortex-M0+).
+No locks needed: Core 0 only writes the shadow (non-committed) block via `shadow()`.
+Core 1 only reads the committed block via `active()`. `commit()` issues a compiler
+memory barrier, flips `committed` (a single-byte store, atomic on the M33), then
+`__sev()` to wake Core 1 if it is in WFE. LFO depths are stored as floats here and
+converted to Q15 once per buffer inside the render loop.
 
 ## Profiling GPIO
 
-GPIO 2 directly on the VGA header. High during synthesis, low while idle.
+GPIO 22 (`PROFILE_PIN`), on both boards. High during synthesis, low while idle.
+(Moved from GPIO 2 to avoid coupling to Button A on GPIO 0.)
 Duty cycle visible on oscilloscope = CPU utilization of audio engine.
 
 ## Debounce
@@ -172,33 +223,43 @@ which Core 1 detects even if it missed the intermediate gate=false.
 
 ## ADSR Envelope
 
-Per-voice state machine on Core 1. Envelope level: 0–32767 (15-bit fixed-point).
+Per-voice state machine on Core 1. Envelope `level` is a float in 0.0–1.0,
+converted to Q15 (`level * 32767`) inside the render loop. Attack is **linear**
+(additive per sample); decay and release are **exponential** (multiplicative
+coefficient per sample) for natural-sounding amplitude curves.
 
 ```
 States: IDLE → ATTACK → DECAY → SUSTAIN → RELEASE → IDLE
 
 IDLE:     level = 0, voice silent
-ATTACK:   level += attack_rate each sample, until level >= 32767
-DECAY:    level -= decay_rate each sample, until level <= sustain_level
+ATTACK:   level += attack_rate, until level >= 1.0 → DECAY
+DECAY:    level = sustain + (level - sustain) * decay_coeff,
+          until within epsilon of sustain_level → SUSTAIN
 SUSTAIN:  level = sustain_level, held while gate is true
-RELEASE:  level -= release_rate each sample, until level <= 0 → IDLE
+RELEASE:  level *= release_coeff, until level < epsilon → IDLE
 ```
 
-Release from any state (attack/decay/sustain) transitions to RELEASE
-using the current level as starting point.
+`EnvConfig` holds `attack_rate`, `decay_coeff`, `sustain_level`, `release_coeff`,
+built from milliseconds via `env_config(attack_ms, decay_ms, sustain_pct, release_ms)`.
+`Envelope` exposes `init()`, `trigger()`, `release()`, `active()`, and
+`advance(cfg)` (returns the current float level). Release from any active state
+transitions to RELEASE using the current level as the starting point.
 
-Amplitude chain per sample:
+Amplitude chain per sample (Core 1 render loop):
 ```
-raw_osc = osc_sample(waveform, phase, duty_cycle, lfsr, phase_inc)
-scaled  = (raw_osc * amplitude) >> 15
-scaled  = (scaled * env_level) >> 15
-if lfo_depth > 0:
+env_f = envelope.advance(cfg)          // float 0.0–1.0
+level = env_f * 32767                   // Q15
+if waveform == WAVE_SAMPLE: raw = osc_sample_play(sample, phase)
+else:                       raw = osc_sample(waveform, phase, duty, lfsr, phase_inc)
+scaled = (raw * amplitude) >> 15
+scaled = (scaled * level) >> 15
+if lfo_depth > 0:                       // tremolo, depth pre-converted to Q15
     mod = 32767 - lfo_depth + (lfo_val * lfo_depth) >> 15
     scaled = (scaled * mod) >> 15
 if filter_mode != OFF:
-    cutoff = base + (env_level * env_amount) >> 15 + (lfo_val * lfo_depth) >> 15
+    cutoff = base + (level * env_amount) >> 15 + (lfo_val * lfo_filter_depth) >> 15
     F_half = svf_compute_f_half(cutoff)
-    scaled = filter.tick(scaled, F_half, Q_q13, mode)
+    scaled = filter.tick(scaled, F_half, Q_q15, mode)
 ```
 
 Current ADSR values:
@@ -209,28 +270,32 @@ Current ADSR values:
 
 ## LFO
 
-Per-voice LFO on Core 1, driven by its own phase accumulator (same 22.10
-fixed-point as oscillator). Reads from sine_table for smooth modulation.
-Single LFO per voice with independent depth controls for three destinations:
+Per-voice LFO on Core 1, driven by a float phase accumulator in [0.0, 1.0)
+advanced by `lfo_rate / SAMPLE_RATE` each sample. The phase is scaled to the
+fixed-point range and read from `sine_table` (`osc_sine`) for a smooth Q15 value.
+Single LFO per voice with independent depth controls for four destinations:
 
 - **Amplitude (tremolo)**: `lfo_depth` — multiplies post-envelope amplitude
-- **Pitch (vibrato)**: `lfo_pitch_depth` — offsets phase_inc by ±fraction per sample (1638 ≈ ±1 semitone)
+- **Pitch (vibrato)**: `lfo_pitch_depth` — offsets `phase_inc` by ±fraction (0.05 ≈ ±1 semitone)
 - **Duty cycle (PWM)**: `lfo_pwm_depth` — sweeps duty_cycle ± around center, clamped 1–1022
 - **Filter cutoff**: `lfo_filter_depth` — offsets cutoff in Hz (signed)
 
-LFO params in VoiceParams: `lfo_rate` (phase_inc, shared), four depth fields.
-LFO phase state on Core 1 only. Reset to 0 on trigger.
+LFO params in VoiceParams: `lfo_rate` (Hz, shared) plus four depth fields.
+`lfo_rate`, `lfo_depth`, `lfo_pitch_depth`, and `lfo_pwm_depth` are floats; the
+inner loop converts the depths to Q15 once per buffer. LFO phase state lives on
+Core 1 only and is reset to 0 on trigger.
 
 ## Waveform Types
 
 ```c
 enum Waveform : uint8_t {
     WAVE_SINE, WAVE_SQUARE, WAVE_TRIANGLE, WAVE_SAW, WAVE_NOISE,
-    WAVE_SQUARE_BLEP, WAVE_SAW_BLEP
+    WAVE_SQUARE_BLEP, WAVE_SAW_BLEP, WAVE_SAMPLE
 };
 ```
 
-All derived from the phase accumulator (no extra tables needed except sine):
+The synthesized waveforms are derived from the phase accumulator (no extra
+tables needed except sine); `WAVE_SAMPLE` plays back PCM data instead:
 - **Sine**: wavetable lookup with linear interpolation (1024-entry table)
 - **Square**: sign of phase, with variable duty cycle (0–1023)
 - **Triangle**: piecewise linear, 4-quarter ramp
@@ -238,6 +303,10 @@ All derived from the phase accumulator (no extra tables needed except sine):
 - **Noise**: 16-bit Galois LFSR (polynomial 0xB400), per-voice state, reseeded on trigger
 - **Square BLEP**: band-limited square via PolyBLEP correction at both edges
 - **Saw BLEP**: band-limited saw via PolyBLEP correction at wrap point
+- **Sample**: PCM playback from a `SampleDef` (signed int8 data shifted to Q15),
+  linearly interpolated, with optional looping; the phase advances at a
+  resampling rate derived from the target vs. base frequency. Dispatched
+  separately via `osc_sample_play()` / `osc_sample_advance_phase()`.
 
 PolyBLEP smooths discontinuities over one sample on each side using a quadratic
 polynomial residual. Fixed-point Q10 arithmetic, uses RP2040 hardware divider.
@@ -253,24 +322,26 @@ enum FilterMode : uint8_t { FILTER_OFF, FILTER_LP, FILTER_BP, FILTER_HP, FILTER_
 ```
 
 Implementation: fixed-point SVF with 2-pass integration for stability.
-All integer arithmetic — no floats in the render path.
+The filter itself is all integer arithmetic. On the RP2350 (Cortex-M33),
+`SMULL` provides 64-bit intermediates, so the multiplies use `int64_t` and
+no intermediate clamping is needed. State (`lp`, `bp`) lives in `SVFilter`
+with `init()` and `tick(input, F_half, Q_q15, mode)`.
 
 ### Per-sample update (2-pass)
 ```
 for pass in 0..1:
-    hp = input - lp - (Q_q13 * bp) >> 13
+    hp = input - lp - (Q_q15 * bp) >> 15
     bp += (F_half * hp) >> 15
     lp += (F_half * bp) >> 15
-clamp bp, lp to ±32767 (soft saturation)
-output = lp | bp | hp | lp+hp depending on mode
+output = lp | bp | hp | lp+hp depending on mode (input if OFF)
 ```
 
 ### Coefficient computation
 - **F_half** (Q15): `cutoff_hz * 76539 >> 15`, clamped [33, 15564]
   - Approximation of `π * cutoff / sample_rate`, <0.1% error
-- **Q** (Q13): `16384 - (resonance >> 1)`
-  - resonance=0 → Q=16384 (2.0, no resonance)
-  - resonance=32767 → Q≈1 (near self-oscillation)
+- **Q** (Q15): `65534 - (resonance << 1)`, clamped to a minimum of 2
+  - resonance=0 → Q=65534 (2.0, no resonance)
+  - resonance=32767 → Q≈0 (near self-oscillation)
 
 ### Modulation
 Per-sample cutoff = base_cutoff + (envelope × env_amount >> 15) + (LFO × lfo_filter_depth >> 15),
@@ -308,7 +379,7 @@ ensures multiple voices can be heard simultaneously.
 
 ## Performance
 
-Measured duty cycles on GPIO 2 profiling pin:
+Measured duty cycles on the profiling pin (`PROFILE_PIN`, now GPIO 22):
 
 - Idle: 0.85%
 - Single voice, no LFO: 2-3%
@@ -338,8 +409,16 @@ This is the baseline measurements of the state before switching to RP2350 and up
 | SMULL filt. | 0.50% |  5.9% |  6.6% |  6.0% | 17.5% | ~90%  | |
 | SSAT env.   | 0.44% |  5.9% |  6.5% |  5.9% | 17.4% | ~90%  | |
 
-## Event Queue
+## MIDI Input
 
-Simple fixed-size ring buffer of `ControlMessage`, single-producer (Core 0) single-consumer (Core 0).
-Events generated by button edges (and future MIDI parser).
-Consumed in the same tick to update the voice parameter shadow.
+Control comes from buttons (VGA board only) and MIDI. There is no intermediate
+event queue — each input source writes the param shadow and commits directly.
+
+- **USB MIDI** (`MIDI_USB`): TinyUSB device; `usb_midi_task()` runs the stack and
+  `usb_midi_poll()` feeds received bytes to the transport-agnostic MIDI controller.
+- **DIN/UART MIDI** (`MIDI_UART`): UART1 RX at 31250 baud. An IRQ fills a ring
+  buffer; `uart_midi_poll()` drains it each main-loop pass. Default-on for the
+  breadboard (GPIO5); off for the VGA board, where GPIO5 is SD_CLK.
+
+Both transports route through `midi_controller_process()`, which parses MIDI
+bytes, maps note on/off to voices via the allocator, and commits the shadow.
