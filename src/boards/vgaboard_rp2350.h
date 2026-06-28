@@ -14,6 +14,17 @@
 
 #define HAS_BUTTONS 1
 
+// --- MIDI transports ---
+// USB only by default: GPIO5 is SD_CLK here, so DIN MIDI on UART1 RX/GPIO5
+// would conflict. To enable DIN MIDI, free GPIO5 and define MIDI_UART=1
+// (and set MIDI_UART_RX_PIN appropriately).
+#ifndef MIDI_USB
+#define MIDI_USB 1
+#endif
+#ifndef MIDI_UART
+#define MIDI_UART 0
+#endif
+
 // Audio pins. I2S BCK, LRCK are on the same pins as PWM L/R.
 #define VGABOARD_I2S_DIN_PIN 26
 #define VGABOARD_I2S_BCK_PIN 27

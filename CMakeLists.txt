@@ -25,10 +25,20 @@ add_executable(t00t
     src/samples.cpp
     src/midi/midi_controller.cpp
     src/midi/usb_midi.cpp
+    src/midi/uart_midi.cpp
     src/midi/usb_descriptors.c
 )
 
 target_include_directories(t00t PRIVATE src src/midi)
+
+# Optional MIDI transport overrides. Each may be 0, 1, or unset/"default"
+# (board header decides). Passed through from the Makefile every configure,
+# so values never get stuck in the CMake cache.
+foreach(_midi MIDI_USB MIDI_UART)
+    if(DEFINED ${_midi} AND NOT ${_midi} STREQUAL "default")
+        target_compile_definitions(t00t PRIVATE ${_midi}=${${_midi}})
+    endif()
+endforeach()
 
 target_link_libraries(t00t
     pico_stdlib

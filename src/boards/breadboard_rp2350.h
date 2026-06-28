@@ -15,6 +15,8 @@
 // Leave CLK Dir jumper open (secondary mode — Pico provides clocks).
 // MCK not connected (PCM5122 auto-generates from BCK).
 //
+// DIN MIDI in (via optocoupler) → UART1 RX, GPIO 5 (pin 7), 31250 baud.
+//
 // Profiling pin: GPIO 22 (directly probe on breadboard)
 
 // -----------------------------------------------------
@@ -31,6 +33,15 @@
 
 // --- No buttons on breadboard ---
 #define HAS_BUTTONS 0
+
+// --- MIDI transports ---
+// DIN MIDI on UART1 RX (GPIO5) is the primary input; USB stays on as a fallback.
+#ifndef MIDI_UART
+#define MIDI_UART 1
+#endif
+#ifndef MIDI_USB
+#define MIDI_USB 1
+#endif
 
 // --- No VGA, no SD ---
 

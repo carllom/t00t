@@ -5,7 +5,21 @@
 #include "audio_engine.h"
 #include "voice_alloc.h"
 #include "midi/midi_controller.h"
+
+// MIDI transport selection — default both on; override in the board header.
+#ifndef MIDI_USB
+#define MIDI_USB 1
+#endif
+#ifndef MIDI_UART
+#define MIDI_UART 1
+#endif
+
+#if MIDI_USB
 #include "midi/usb_midi.h"
+#endif
+#if MIDI_UART
+#include "midi/uart_midi.h"
+#endif
 
 #if HAS_BUTTONS
 #include "controller.h"
@@ -20,7 +34,12 @@ static void core1_entry() {
 }
 
 int main() {
+#if MIDI_USB
     usb_midi_init();
+#endif
+#if MIDI_UART
+    uart_midi_init();  // DIN MIDI on UART1 RX (GPIO5 / pin 7)
+#endif
 
     param_exchange.init();
     voice_alloc_init();
@@ -39,8 +58,13 @@ int main() {
     absolute_time_t next_tick = get_absolute_time();
 
     while (true) {
+#if MIDI_USB
         usb_midi_task();
         usb_midi_poll(&param_exchange);
+#endif
+#if MIDI_UART
+        uart_midi_poll(&param_exchange);
+#endif
 
 #if HAS_BUTTONS
         // 1ms button poll
