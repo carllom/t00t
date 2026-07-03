@@ -12,7 +12,8 @@ static const uint16_t COL_BG     = gfx_rgb(0, 0, 0);
 static const uint16_t COL_TITLE  = gfx_rgb(30, 90, 160);
 static const uint16_t COL_LABEL  = gfx_rgb(110, 120, 140);
 static const uint16_t COL_VALUE  = gfx_rgb(240, 240, 240);
-static const uint16_t COL_ON     = gfx_rgb(60, 220, 90);
+static const uint16_t COL_ON     = gfx_rgb(60, 220, 90);   // held (key down)
+static const uint16_t COL_REL    = gfx_rgb(210, 120, 0);   // releasing (key up, still sounding)
 static const uint16_t COL_OFF    = gfx_rgb(28, 28, 34);
 static const uint16_t COL_LOAD_LO = gfx_rgb(60, 200, 90);
 static const uint16_t COL_LOAD_MID = gfx_rgb(240, 180, 0);
@@ -66,29 +67,39 @@ void display_task() {
     // Change-detection state (force a full first paint).
     static bool     first = true;
     static uint16_t last_mask = 0;
+    static uint16_t last_rel = 0;
     static uint8_t  last_load = 0xFF;
     static MidiUiState last_midi = { 0xFE, 0, 0, 0xFF, 0x7FFF, 0xFF };
 
     uint16_t mask = audio_engine_active_mask();
+    uint16_t rel  = audio_engine_release_mask();
     uint8_t  load = audio_engine_load();
     MidiUiState m;
     midi_controller_ui_state(&m);
 
     char buf[16];
 
-    // Voices: per-cell bar + count.
-    if (first || mask != last_mask) {
+    // Voice cell colour: off / held (green) / releasing (amber).
+    auto cell_col = [](uint16_t active, uint16_t release, int i) -> uint16_t {
+        if (!(active & (1u << i))) return COL_OFF;
+        return (release & (1u << i)) ? COL_REL : COL_ON;
+    };
+
+    // Voices: per-cell bar (redraw a cell when its held/releasing/off state
+    // changes) + active count.
+    if (first || mask != last_mask || rel != last_rel) {
         for (int i = 0; i < MAX_VOICES; i++) {
-            bool on = mask & (1u << i);
-            bool was = last_mask & (1u << i);
-            if (first || on != was) {
-                gfx_fill_rect(i * VCELL_PITCH + 1, VBAR_Y, VCELL_W, VBAR_H,
-                              on ? COL_ON : COL_OFF);
+            uint16_t col = cell_col(mask, rel, i);
+            if (first || col != cell_col(last_mask, last_rel, i)) {
+                gfx_fill_rect(i * VCELL_PITCH + 1, VBAR_Y, VCELL_W, VBAR_H, col);
             }
         }
-        snprintf(buf, sizeof(buf), "%d/%d", __builtin_popcount(mask), MAX_VOICES);
-        draw_val(ROW_VOICES, buf, COL_VALUE);
+        if (first || mask != last_mask) {
+            snprintf(buf, sizeof(buf), "%d/%d", __builtin_popcount(mask), MAX_VOICES);
+            draw_val(ROW_VOICES, buf, COL_VALUE);
+        }
         last_mask = mask;
+        last_rel = rel;
     }
 
     // CPU: percentage + load bar (quantise to avoid churn on tiny EMA wiggles).
