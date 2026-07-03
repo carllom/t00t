@@ -25,6 +25,13 @@
 #include "controller.h"
 #endif
 
+#ifndef HAS_LCD
+#define HAS_LCD 0
+#endif
+#if HAS_LCD
+#include "wslcd/display.h"
+#endif
+
 static AudioBuffers audio_buffers;
 static ParamExchange param_exchange;
 
@@ -53,6 +60,12 @@ int main() {
 
     // Start I2S DMA output — must be after Core 1 is ready to receive FIFO messages
     i2s_output_init(&audio_buffers);
+
+#if HAS_LCD
+    // Core 0 owns the LCD at low priority (audio + MIDI take precedence).
+    display_init();
+    display_bringup_test();
+#endif
 
     // Core 0 main loop: poll USB + MIDI + buttons
     absolute_time_t next_tick = get_absolute_time();

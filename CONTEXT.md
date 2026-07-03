@@ -19,6 +19,10 @@ when switching):
 - **Carl runs the breadboard board.** Build with plain `make`. Do NOT flash a vgaboard UF2
   to it — it produces silence.
 - Profiling pin: GPIO 22 (scope probe; high while Core 1 renders a buffer).
+- **LCD (breadboard only):** Waveshare 1.83" 240×284 IPS, Rev2 = **ST7789P**, on
+  **SPI1** — DC 8, CS 9, CLK 10, DIN 11, RST 12, BL 13 (PWM). Driven by Core 0 at
+  low priority; driver in [src/wslcd/](src/wslcd/). `HAS_LCD` is 1 for breadboard,
+  0 for vgaboard (those pins are VGA colour / Button C there).
 
 ## Build & flash
 
@@ -62,6 +66,25 @@ counter; Core 1 detects a change to (re)start a note.
 - **Presets** ([src/presets.h](src/presets.h)): `VoicePreset` describes a sound; master
   `presets[]` array is the single source of truth, referenced by index. Currently Fairlight
   sample, square PWM, saw filter.
+
+## Display (LCD)
+
+Self-contained driver in [src/wslcd/](src/wslcd/), owned by Core 0 (audio + MIDI
+take precedence). Rolled our own — no ST7789 driver ships with the SDK.
+- [lcd_st7789.cpp](src/wslcd/lcd_st7789.cpp): SPI1 + a dedicated **polled** DMA
+  channel (no IRQ, so it never contends with the audio DMA IRQ). ST7789P init
+  matching the verified Rev2 demo; no GRAM offset (Rev1 needed +20, Rev2 doesn't).
+  SPI at 64 MHz (runs clean on the breadboard jumpers). Backlight PWM on GP13.
+  **CS is framed per transaction** (pulsed high after each command/data burst);
+  holding it low continuously leaves the panel black despite a correct init.
+- [gfx.cpp](src/wslcd/gfx.cpp): tile-based drawing (no full framebuffer) — a small
+  RAM scratch tile, DMA-blitted region by region. `gfx_rgb`/`gfx_fill_rect`/
+  `gfx_text` (8×8 font in [font8x8.h](src/wslcd/font8x8.h)). Colours are
+  byte-swapped ("wire format") RGB565 so the byte-DMA needs no swap.
+- [display.cpp](src/wslcd/display.cpp): Core-0 API. Milestone 1 = bring-up test
+  (colour bars + banner). The future synth UI grows here.
+- If blank/garbled on hardware: lower `LCD_SPI_HZ`, or tune
+  `LCD_COL_OFFSET`/`LCD_ROW_OFFSET`/`LCD_MADCTL` in lcd_st7789.
 
 ## MIDI
 

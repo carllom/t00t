@@ -14,6 +14,9 @@
 
 #define HAS_BUTTONS 1
 
+// No LCD on this board: GP8-13 are VGA colour / Button C.
+#define HAS_LCD 0
+
 // --- MIDI transports ---
 // USB only by default: GPIO5 is SD_CLK here, so DIN MIDI on UART1 RX/GPIO5
 // would conflict. To enable DIN MIDI, free GPIO5 and define MIDI_UART=1
