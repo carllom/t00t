@@ -56,6 +56,8 @@ counter; Core 1 detects a change to (re)start a note.
 
 - **16 voices** (`MAX_VOICES`), dynamic allocation ([src/voice_alloc.h](src/voice_alloc.h)):
   steal priority = silent → released → oldest active, driven by Core 1's active bitmap.
+  Core 0 must call `voice_alloc_update()` once per pass to drain that bitmap: button
+  boards do it in `controller_tick()`, MIDI-only boards do it at the top of the main loop.
 - **Oscillators** ([src/osc/](src/osc/)): sine (wavetable), square, triangle, saw, noise,
   band-limited BLEP square/saw, and sample playback.
 - **Envelope**: ADSR ([src/envelope.cpp](src/envelope.cpp)), per-sample.
@@ -84,11 +86,12 @@ take precedence). Rolled our own — no ST7789 driver ships with the SDK.
 - [display.cpp](src/wslcd/display.cpp): Core-0 API. `display_init()` paints static
   chrome; `display_task()` runs from the main loop, self-limits to ~20 Hz, and
   redraws only changed fields (cheap value-compares when idle). Live UI shows
-  active voices (bar + count), CPU load, last note/velocity, preset, bend, mod.
+  voices (each dot: **fill = sounding, white border = note pressed**), CPU load,
+  last note/velocity, preset, bend, mod.
   `display_bringup_test()` (colour bars + banner) is kept for driver diagnostics.
-- Telemetry it reads: `audio_engine_active_mask()` / `audio_engine_load()`
-  (published by Core 1 as volatile words each buffer — load is an EMA of render
-  time vs the buffer deadline) and `midi_controller_ui_state()`.
+- Telemetry it reads: `voice_alloc_active_mask()` (sounding — Core 1's feedback,
+  drained each pass) and `voice_alloc_gated_mask()` (pressed — Core 0's gate
+  tracking); `audio_engine_load()` (Core 1 render-time EMA); `midi_controller_ui_state()`.
 - If blank/garbled on hardware: lower `LCD_SPI_HZ`, or tune
   `LCD_COL_OFFSET`/`LCD_ROW_OFFSET`/`LCD_MADCTL` in lcd_st7789.
 

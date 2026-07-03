@@ -2,6 +2,7 @@
 #include "lcd_st7789.h"
 #include "gfx.h"
 #include "audio_engine.h"
+#include "voice_alloc.h"
 #include "midi/midi_controller.h"
 #include "presets.h"
 #include "pico/time.h"
@@ -12,9 +13,10 @@ static const uint16_t COL_BG     = gfx_rgb(0, 0, 0);
 static const uint16_t COL_TITLE  = gfx_rgb(30, 90, 160);
 static const uint16_t COL_LABEL  = gfx_rgb(110, 120, 140);
 static const uint16_t COL_VALUE  = gfx_rgb(240, 240, 240);
-static const uint16_t COL_ON     = gfx_rgb(60, 220, 90);   // held (key down)
-static const uint16_t COL_REL    = gfx_rgb(210, 120, 0);   // releasing (key up, still sounding)
-static const uint16_t COL_OFF    = gfx_rgb(28, 28, 34);
+// Voice dot: fill = sounding, border = note pressed/held.
+static const uint16_t COL_SND    = gfx_rgb(60, 220, 90);    // sounding (envelope active)
+static const uint16_t COL_OFF    = gfx_rgb(28, 28, 34);     // silent
+static const uint16_t COL_PRESS  = gfx_rgb(255, 255, 255);  // pressed border
 static const uint16_t COL_LOAD_LO = gfx_rgb(60, 200, 90);
 static const uint16_t COL_LOAD_MID = gfx_rgb(240, 180, 0);
 static const uint16_t COL_LOAD_HI = gfx_rgb(230, 60, 50);
@@ -66,40 +68,41 @@ void display_task() {
 
     // Change-detection state (force a full first paint).
     static bool     first = true;
-    static uint16_t last_mask = 0;
-    static uint16_t last_rel = 0;
+    static uint16_t last_snd = 0;
+    static uint16_t last_gate = 0;
     static uint8_t  last_load = 0xFF;
     static MidiUiState last_midi = { 0xFE, 0, 0, 0xFF, 0x7FFF, 0xFF };
 
-    uint16_t mask = audio_engine_active_mask();
-    uint16_t rel  = audio_engine_release_mask();
+    uint16_t snd  = voice_alloc_active_mask();  // still sounding (envelope active)
+    uint16_t gate = voice_alloc_gated_mask();   // note pressed/held
     uint8_t  load = audio_engine_load();
     MidiUiState m;
     midi_controller_ui_state(&m);
 
     char buf[16];
 
-    // Voice cell colour: off / held (green) / releasing (amber).
-    auto cell_col = [](uint16_t active, uint16_t release, int i) -> uint16_t {
-        if (!(active & (1u << i))) return COL_OFF;
-        return (release & (1u << i)) ? COL_REL : COL_ON;
+    // Draw one voice dot: fill shows "sounding", a border shows "pressed".
+    auto draw_cell = [](int i, bool sounding, bool pressed) {
+        int x = i * VCELL_PITCH + 1;
+        uint16_t fill = sounding ? COL_SND : COL_OFF;
+        gfx_fill_rect(x, VBAR_Y, VCELL_W, VBAR_H, pressed ? COL_PRESS : fill);
+        gfx_fill_rect(x + 2, VBAR_Y + 2, VCELL_W - 4, VBAR_H - 4, fill);
     };
 
-    // Voices: per-cell bar (redraw a cell when its held/releasing/off state
-    // changes) + active count.
-    if (first || mask != last_mask || rel != last_rel) {
+    // Voices: per-cell bar (redraw a cell when its sounding/pressed state
+    // changes) + sounding count.
+    if (first || snd != last_snd || gate != last_gate) {
         for (int i = 0; i < MAX_VOICES; i++) {
-            uint16_t col = cell_col(mask, rel, i);
-            if (first || col != cell_col(last_mask, last_rel, i)) {
-                gfx_fill_rect(i * VCELL_PITCH + 1, VBAR_Y, VCELL_W, VBAR_H, col);
-            }
+            bool s = snd & (1u << i), p = gate & (1u << i);
+            bool ws = last_snd & (1u << i), wp = last_gate & (1u << i);
+            if (first || s != ws || p != wp) draw_cell(i, s, p);
         }
-        if (first || mask != last_mask) {
-            snprintf(buf, sizeof(buf), "%d/%d", __builtin_popcount(mask), MAX_VOICES);
+        if (first || snd != last_snd) {
+            snprintf(buf, sizeof(buf), "%d/%d", __builtin_popcount(snd), MAX_VOICES);
             draw_val(ROW_VOICES, buf, COL_VALUE);
         }
-        last_mask = mask;
-        last_rel = rel;
+        last_snd = snd;
+        last_gate = gate;
     }
 
     // CPU: percentage + load bar (quantise to avoid churn on tiny EMA wiggles).

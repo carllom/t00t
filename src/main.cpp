@@ -70,6 +70,13 @@ int main() {
     absolute_time_t next_tick = get_absolute_time();
 
     while (true) {
+#if !HAS_BUTTONS
+        // Drain Core 1's active-voice feedback before this pass allocates, so the
+        // allocator's silent/released/oldest priority uses fresh state. On button
+        // boards controller_tick() already does this at the start of its tick.
+        voice_alloc_update();
+#endif
+
 #if MIDI_USB
         usb_midi_task();
         usb_midi_poll(&param_exchange);

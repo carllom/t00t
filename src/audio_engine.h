@@ -9,14 +9,9 @@
 void audio_engine_run(AudioBuffers *buffers, ParamExchange *params);
 
 // --- Telemetry, published by Core 1 for a Core 0 display/UI (read-only) ---
-// Single-word reads, atomic on the M33 — no locking needed for a diagnostic.
-
-// Bitmap of voices whose envelope is currently active (bit v = voice v).
-uint16_t audio_engine_active_mask();
-
-// Subset of the active mask: voices in the release phase (note released but
-// still sounding). Active-and-not-in-this-mask means the key is still held.
-uint16_t audio_engine_release_mask();
+// Single-word read, atomic on the M33 — no locking needed for a diagnostic.
+// (The active-voice bitmap is consumed by the voice allocator via the FIFO;
+// query it there — voice_alloc_active_mask() — rather than duplicating it here.)
 
 // Smoothed Core 1 render load as a percentage of the audio buffer period
 // (0–100). Mirrors the PROFILE_PIN duty cycle.

@@ -10,16 +10,12 @@
 #include <arm_acle.h>
 
 // --- Telemetry for the Core 0 UI (published by Core 1) ---
-static volatile uint16_t s_active_mask = 0;
-static volatile uint16_t s_release_mask = 0;
-static volatile uint8_t  s_load_pct = 0;
+static volatile uint8_t s_load_pct = 0;
 
 // Audio buffer period in microseconds — the deadline for rendering one buffer.
 static constexpr uint32_t BUF_PERIOD_US = 1000000u * SAMPLES_PER_BUFFER / SAMPLE_RATE;
 
-uint16_t audio_engine_active_mask()  { return s_active_mask; }
-uint16_t audio_engine_release_mask() { return s_release_mask; }
-uint8_t  audio_engine_load()         { return s_load_pct; }
+uint8_t audio_engine_load() { return s_load_pct; }
 
 // Mod-wheel vibrato: dedicated LFO, independent of the preset LFO.
 static constexpr float   MOD_VIBRATO_HZ = 5.0f;
@@ -237,23 +233,18 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
         uint32_t busy_us = time_us_32() - t_start;
         gpio_put(PROFILE_PIN, 0);
 
-        // Send active-voice bitmap to Core 0 (non-blocking)
+        // Send active-voice bitmap to Core 0 (non-blocking). The allocator drains
+        // this each pass; the UI reads it via voice_alloc_active_mask().
         uint32_t bitmap = 0;
-        uint32_t release_bm = 0;
         for (uint32_t v = 0; v < MAX_VOICES; v++) {
-            if (envelope[v].active()) {
-                bitmap |= (1u << v);
-                if (envelope[v].state == ENV_RELEASE) release_bm |= (1u << v);
-            }
+            if (envelope[v].active()) bitmap |= (1u << v);
         }
         multicore_fifo_push_timeout_us(bitmap, 0);
 
-        // Publish telemetry for the Core 0 UI. Load is an EMA (alpha 1/8) of the
-        // per-buffer render time as a fraction of the buffer deadline.
+        // Publish render load for the UI. EMA (alpha 1/8) of the per-buffer render
+        // time as a fraction of the buffer deadline.
         uint32_t inst = busy_us * 100u / BUF_PERIOD_US;
         if (inst > 100) inst = 100;
         s_load_pct = (uint8_t)((uint32_t)s_load_pct - (s_load_pct >> 3) + (inst >> 3));
-        s_active_mask = (uint16_t)bitmap;
-        s_release_mask = (uint16_t)release_bm;
     }
 }
