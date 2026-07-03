@@ -35,6 +35,7 @@ struct VoiceParams {
     int16_t filter_env_amount; // envelope → cutoff in Hz (signed, ±18000)
     float lfo_filter_depth;    // LFO → cutoff in Hz (signed, ±18000)
     const SampleDef *sample;   // sample definition (nullptr for non-sample waveforms)
+    int16_t mod_depth;         // mod-wheel vibrato depth, Q15 (0 = off) — dedicated LFO on Core 1
 };
 
 // A complete snapshot of all voice parameters for one render pass.
@@ -60,7 +61,7 @@ struct ParamExchange {
             for (uint32_t v = 0; v < MAX_VOICES; v++) {
                 blocks[b].voices[v] = { 0, 0, 0, false, WAVE_SINE, 512,
                                         0.0f, 0.0f, 0.0f, 0.0f,
-                                        FILTER_OFF, 8000, 0, 0, 0.0f, nullptr };
+                                        FILTER_OFF, 8000, 0, 0, 0.0f, nullptr, 0 };
             }
         }
     }

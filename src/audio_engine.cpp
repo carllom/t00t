@@ -8,9 +8,14 @@
 #include <cmath>
 #include <arm_acle.h>
 
+// Mod-wheel vibrato: dedicated LFO, independent of the preset LFO.
+static constexpr float   MOD_VIBRATO_HZ = 5.0f;
+static constexpr int16_t MOD_VIBRATO_MAX_Q15 = 960;  // ~±50 cents at full mod
+
 // Local voice state — only touched by Core 1
 static uint32_t voice_phase[MAX_VOICES];
 static float    lfo_phase[MAX_VOICES];
+static float    mod_lfo_phase[MAX_VOICES];
 static uint16_t noise_lfsr[MAX_VOICES];
 static uint8_t  last_trigger[MAX_VOICES];
 static bool     voice_gated[MAX_VOICES];
@@ -33,6 +38,7 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
     for (uint32_t v = 0; v < MAX_VOICES; v++) {
         voice_phase[v] = 0;
         lfo_phase[v] = 0.0f;
+        mod_lfo_phase[v] = 0.0f;
         noise_lfsr[v] = 0xACE1u;
         last_trigger[v] = 0;
         voice_gated[v] = false;
@@ -66,6 +72,7 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
                 last_trigger[v] = p.trigger;
                 voice_phase[v] = 0;
                 lfo_phase[v] = 0.0f;
+                mod_lfo_phase[v] = 0.0f;
                 noise_lfsr[v] = 0xACE1u;
                 envelope[v].trigger();
                 filter[v].init();  // clean filter state on new note
@@ -86,7 +93,9 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
             // Render with per-sample envelope
             uint32_t phase = voice_phase[v];
             float lfo_ph = lfo_phase[v];
+            float mod_ph = mod_lfo_phase[v];
             bool has_lfo = (p.lfo_rate != 0.0f);
+            bool has_mod = (p.mod_depth > 0);
             bool has_filter = (p.filter_mode != FILTER_OFF);
 
             // Pre-compute LFO phase increment per sample
@@ -94,6 +103,9 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
             if (has_lfo) {
                 lfo_phase_inc = p.lfo_rate / (float)SAMPLE_RATE;
             }
+
+            // Dedicated mod-wheel vibrato LFO increment
+            const float mod_phase_inc = MOD_VIBRATO_HZ / (float)SAMPLE_RATE;
 
             // Pre-convert float LFO depths to Q15 integers for inner loop
             int16_t lfo_depth_q15 = (int16_t)(p.lfo_depth * 32767.0f);
@@ -127,6 +139,18 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
                     int32_t pitch_mod = (lfo_val * lfo_pitch_q15) >> 15;
                     eff_phase_inc = (uint32_t)((int32_t)p.phase_inc +
                         (((int32_t)p.phase_inc * pitch_mod) >> 15));
+                }
+
+                // Mod-wheel vibrato: dedicated LFO on top of any preset pitch mod
+                if (has_mod) {
+                    uint32_t mod_ph_fixed = (uint32_t)(mod_ph * (float)PHASE_CYCLE);
+                    int32_t mod_sine = osc_sine(mod_ph_fixed);
+                    mod_ph += mod_phase_inc;
+                    if (mod_ph >= 1.0f) mod_ph -= 1.0f;
+                    int32_t vib = ((mod_sine * p.mod_depth) >> 15);       // scale by wheel
+                    int32_t frac = (vib * MOD_VIBRATO_MAX_Q15) >> 15;     // ±max depth
+                    eff_phase_inc = (uint32_t)((int32_t)eff_phase_inc +
+                        (((int32_t)eff_phase_inc * frac) >> 15));
                 }
 
                 // LFO → duty cycle (PWM): offset duty_cycle
@@ -185,6 +209,7 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
             }
             voice_phase[v] = phase;
             lfo_phase[v] = lfo_ph;
+            mod_lfo_phase[v] = mod_ph;
         }
 
         // Clip and interleave into stereo int16_t buffer

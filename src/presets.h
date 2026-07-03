@@ -36,6 +36,7 @@ inline void voice_apply_preset(VoiceParams &vp, const VoicePreset &pr) {
     vp.filter_env_amount = pr.filter_env_amount;
     vp.lfo_filter_depth = pr.lfo_filter_depth;
     vp.sample = pr.sample;
+    vp.mod_depth = 0;  // mod-wheel vibrato is a live control, off by default
 }
 
 // Master preset list — single source of truth for all voice configurations.

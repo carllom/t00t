@@ -24,24 +24,24 @@ This places `pico-sdk/` and `pico-extras/` alongside `CMakeLists.txt`, which is 
 
 ## Build
 
-The default build targets the Pimoroni VGA Demo board with RP2350 (Pico 2):
+The default build targets the breadboard variant (Pico 2 + Adafruit PCM5122 DAC, no buttons):
 
 ```bash
 make
 ```
 
-To build for the breadboard variant (Pico 2 + Adafruit PCM5122 DAC, no buttons):
+To build for the Pimoroni VGA Demo board with RP2350 (Pico 2):
 
 ```bash
-make BOARD=breadboard_rp2350
+make BOARD=vgaboard_rp2350
 ```
 
 Available boards:
 
 | `BOARD` value | Hardware | Buttons | DAC |
 |---|---|---|---|
-| `vgaboard_rp2350` (default) | Pimoroni VGA Demo + Pico 2 | A/B/C (GPIO 0, 6, 11) | PCM5100A (GPIO 26–28) |
-| `breadboard_rp2350` | Pico 2 on breadboard | None (MIDI only) | PCM5122 (GPIO 16–18) |
+| `breadboard_rp2350` (default) | Pico 2 on breadboard | None (MIDI only) | PCM5122 (GPIO 16–18) |
+| `vgaboard_rp2350` | Pimoroni VGA Demo + Pico 2 | A/B/C (GPIO 0, 6, 11) | PCM5100A (GPIO 26–28) |
 
 When switching boards, clean first since cmake caches the board selection:
 

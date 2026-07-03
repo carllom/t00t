@@ -1,8 +1,8 @@
 BUILD_DIR = build
 UF2 = $(BUILD_DIR)/t00t.uf2
 
-# Board selection: vgaboard_rp2350 (default) or breadboard_rp2350
-BOARD ?= vgaboard_rp2350
+# Board selection: breadboard_rp2350 (default) or vgaboard_rp2350
+BOARD ?= breadboard_rp2350
 
 # MIDI transport overrides: 0, 1, or "default" (use the board header's default).
 #   make MIDI_USB=0          # DIN-only firmware

@@ -6,19 +6,27 @@
 enum MidiMsgType : uint8_t {
     MIDI_NOTE_OFF = 0,
     MIDI_NOTE_ON  = 1,
+    MIDI_CC       = 2,  // control change
+    MIDI_PITCH_BEND = 3,
+    MIDI_PROGRAM_CHANGE = 4,
 };
 
+// Generic 2-data-byte event. Field meaning depends on type:
+//   NOTE_ON/OFF      : data1 = note,       data2 = velocity
+//   CC               : data1 = controller, data2 = value
+//   PITCH_BEND       : data1 = LSB,        data2 = MSB (14-bit = (data2<<7)|data1)
+//   PROGRAM_CHANGE   : data1 = program,    data2 = 0
 struct MidiEvent {
     MidiMsgType type;
     uint8_t channel;
-    uint8_t note;
-    uint8_t velocity;
+    uint8_t data1;
+    uint8_t data2;
 };
 
 // Transport-agnostic MIDI byte-stream parser.
 // Handles running status and system real-time pass-through.
 // Feeds from USB MIDI stream or UART — same byte format.
-// Currently emits only note on/off events.
+// Emits note on/off, CC, pitch bend, and program change events.
 struct MidiParser {
     uint8_t status;    // current running status byte
     uint8_t data[2];   // data byte accumulator
@@ -66,15 +74,29 @@ struct MidiParser {
         count = 0;
 
         uint8_t hi = status & 0xF0;
-        if (hi == 0x90 && data[1] > 0) {
-            out = { MIDI_NOTE_ON, (uint8_t)(status & 0x0F), data[0], data[1] };
-            return true;
+        uint8_t ch = status & 0x0F;
+        switch (hi) {
+            case 0x90:
+                if (data[1] > 0) {
+                    out = { MIDI_NOTE_ON, ch, data[0], data[1] };
+                } else {
+                    out = { MIDI_NOTE_OFF, ch, data[0], data[1] };  // note-on vel 0
+                }
+                return true;
+            case 0x80:
+                out = { MIDI_NOTE_OFF, ch, data[0], data[1] };
+                return true;
+            case 0xB0:
+                out = { MIDI_CC, ch, data[0], data[1] };
+                return true;
+            case 0xE0:
+                out = { MIDI_PITCH_BEND, ch, data[0], data[1] };
+                return true;
+            case 0xC0:
+                out = { MIDI_PROGRAM_CHANGE, ch, data[0], 0 };
+                return true;
+            default:
+                return false;  // poly AT (0xA0), channel pressure (0xD0) — ignored
         }
-        if (hi == 0x80 || (hi == 0x90 && data[1] == 0)) {
-            out = { MIDI_NOTE_OFF, (uint8_t)(status & 0x0F), data[0], data[1] };
-            return true;
-        }
-
-        return false;  // CC, pitch bend, etc. — ignored for now
     }
 };
