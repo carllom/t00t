@@ -171,6 +171,7 @@ struct VoiceParams {
     int16_t  filter_env_amount;// envelope → cutoff in Hz (signed, ±18000)
     float    lfo_filter_depth; // LFO → cutoff in Hz (signed, ±18000)
     const SampleDef *sample;   // sample definition (nullptr for non-sample waveforms)
+    int16_t  mod_depth;        // mod-wheel vibrato depth, Q15 (0 = off) — dedicated Core 1 LFO
 };
 
 struct VoiceParamBlock {
@@ -284,6 +285,16 @@ LFO params in VoiceParams: `lfo_rate` (Hz, shared) plus four depth fields.
 `lfo_rate`, `lfo_depth`, `lfo_pitch_depth`, and `lfo_pwm_depth` are floats; the
 inner loop converts the depths to Q15 once per buffer. LFO phase state lives on
 Core 1 only and is reset to 0 on trigger.
+
+### Mod-wheel vibrato (dedicated LFO)
+
+Separate from the preset LFO above, each voice has a second, dedicated vibrato
+LFO for the MIDI mod wheel: a fixed 5 Hz (`MOD_VIBRATO_HZ`) sine that modulates
+pitch by up to ~±50 cents (`MOD_VIBRATO_MAX_Q15`) at full wheel. Its depth comes
+from `VoiceParams::mod_depth` (Q15, 0 = off), a live control set by CC1 — it is
+not part of a preset (`voice_apply_preset()` resets it to 0). It stacks on top of
+any preset pitch LFO and runs from its own `mod_lfo_phase[v]` accumulator, also
+reset to 0 on trigger.
 
 ## Waveform Types
 
@@ -422,3 +433,6 @@ event queue — each input source writes the param shadow and commits directly.
 
 Both transports route through `midi_controller_process()`, which parses MIDI
 bytes, maps note on/off to voices via the allocator, and commits the shadow.
+Beyond notes it also handles per-channel **CC1 (mod wheel)** → `mod_depth`
+(vibrato) and **pitch bend** → phase-increment ratio. CC0/CC32 (bank select) are
+stored but not yet used.

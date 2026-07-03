@@ -7,7 +7,7 @@
 // Smooths the step over one sample on each side of the transition.
 // Returns correction scaled to [-32767..32767].
 // Uses Q10 fixed-point internally (matches PHASE_FRAC_BITS).
-// Division uses RP2040 hardware divider (~8 cycles).
+// Division uses the RP2350 hardware divider (~8 cycles).
 inline int32_t polyblep(uint32_t phase_mod, uint32_t phase_inc) {
     if (phase_mod < phase_inc) {
         // Just past the transition: t in [0, 1)
