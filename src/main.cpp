@@ -64,7 +64,6 @@ int main() {
 #if HAS_LCD
     // Core 0 owns the LCD at low priority (audio + MIDI take precedence).
     display_init();
-    display_bringup_test();
 #endif
 
     // Core 0 main loop: poll USB + MIDI + buttons
@@ -85,6 +84,10 @@ int main() {
             next_tick = delayed_by_ms(next_tick, 1);
             controller_tick(&param_exchange);
         }
+#endif
+
+#if HAS_LCD
+        display_task();  // low-priority; self-limits to ~20 Hz, redraws on change
 #endif
 
         __wfi();  // sleep until next IRQ (USB, timer, etc.)

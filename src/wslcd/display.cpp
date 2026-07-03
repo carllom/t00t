@@ -1,11 +1,135 @@
 #include "display.h"
 #include "lcd_st7789.h"
 #include "gfx.h"
+#include "audio_engine.h"
+#include "midi/midi_controller.h"
+#include "presets.h"
+#include "pico/time.h"
+#include <cstdio>
+
+// --- palette (wire-format RGB565) ---
+static const uint16_t COL_BG     = gfx_rgb(0, 0, 0);
+static const uint16_t COL_TITLE  = gfx_rgb(30, 90, 160);
+static const uint16_t COL_LABEL  = gfx_rgb(110, 120, 140);
+static const uint16_t COL_VALUE  = gfx_rgb(240, 240, 240);
+static const uint16_t COL_ON     = gfx_rgb(60, 220, 90);
+static const uint16_t COL_OFF    = gfx_rgb(28, 28, 34);
+static const uint16_t COL_LOAD_LO = gfx_rgb(60, 200, 90);
+static const uint16_t COL_LOAD_MID = gfx_rgb(240, 180, 0);
+static const uint16_t COL_LOAD_HI = gfx_rgb(230, 60, 50);
+
+// --- layout ---
+static constexpr int LABEL_X = 4;
+static constexpr int VAL_X   = 104;
+static constexpr int VAL_CH  = 8;     // value field width in chars (VAL_X..232 @2x)
+static constexpr int ROW_VOICES = 40, ROW_CPU = 88, ROW_NOTE = 136,
+                     ROW_PRESET = 164, ROW_BEND = 192, ROW_MOD = 220;
+static constexpr int VBAR_Y = 64, VBAR_H = 14, VCELL_PITCH = 15, VCELL_W = 13;
+static constexpr int CBAR_X = 4, CBAR_Y = 112, CBAR_W = 232, CBAR_H = 12;
+
+static const char *PRESET_NAMES[PRESET_COUNT] = { "Fairlite", "Sq-PWM", "Saw-Flt" };
+static const char *NOTE_NAMES[12] =
+    { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
+
+// Draw a value into its 8-char field. Padding to VAL_CH clears any longer
+// previous value in a single blit (gfx_text fills the glyph-cell background).
+static void draw_val(int y, const char *raw, uint16_t fg) {
+    char b[VAL_CH + 1];
+    snprintf(b, sizeof(b), "%-*.*s", VAL_CH, VAL_CH, raw);
+    gfx_text(VAL_X, y, b, fg, COL_BG, 2);
+}
 
 void display_init() {
     lcd_init();
-    lcd_fill(gfx_rgb(0, 0, 0));
+    lcd_fill(COL_BG);
+
+    // Title bar + static labels (drawn once). Centre the title so it clears the
+    // panel's rounded corners ("t00t" = 4 chars × 8px × scale 3 = 96px wide).
+    gfx_fill_rect(0, 0, LCD_W, 30, COL_TITLE);
+    gfx_text((LCD_W - 96) / 2, 3, "t00t", gfx_rgb(255, 255, 255), COL_TITLE, 3);
+    gfx_text(0, ROW_VOICES, "VOICES", COL_LABEL, COL_BG, 2);
+    gfx_text(0, ROW_CPU,    "CPU",    COL_LABEL, COL_BG, 2);
+    gfx_text(0, ROW_NOTE,   "NOTE",   COL_LABEL, COL_BG, 2);
+    gfx_text(0, ROW_PRESET, "PRESET", COL_LABEL, COL_BG, 2);
+    gfx_text(0, ROW_BEND,   "BEND",   COL_LABEL, COL_BG, 2);
+    gfx_text(0, ROW_MOD,    "MOD",    COL_LABEL, COL_BG, 2);
+
     lcd_set_backlight(100);
+}
+
+void display_task() {
+    // Self-limit refresh rate; cheap early-out on most main-loop passes.
+    static absolute_time_t next = {0};
+    if (!time_reached(next)) return;
+    next = make_timeout_time_ms(50);   // ~20 Hz
+
+    // Change-detection state (force a full first paint).
+    static bool     first = true;
+    static uint16_t last_mask = 0;
+    static uint8_t  last_load = 0xFF;
+    static MidiUiState last_midi = { 0xFE, 0, 0, 0xFF, 0x7FFF, 0xFF };
+
+    uint16_t mask = audio_engine_active_mask();
+    uint8_t  load = audio_engine_load();
+    MidiUiState m;
+    midi_controller_ui_state(&m);
+
+    char buf[16];
+
+    // Voices: per-cell bar + count.
+    if (first || mask != last_mask) {
+        for (int i = 0; i < MAX_VOICES; i++) {
+            bool on = mask & (1u << i);
+            bool was = last_mask & (1u << i);
+            if (first || on != was) {
+                gfx_fill_rect(i * VCELL_PITCH + 1, VBAR_Y, VCELL_W, VBAR_H,
+                              on ? COL_ON : COL_OFF);
+            }
+        }
+        snprintf(buf, sizeof(buf), "%d/%d", __builtin_popcount(mask), MAX_VOICES);
+        draw_val(ROW_VOICES, buf, COL_VALUE);
+        last_mask = mask;
+    }
+
+    // CPU: percentage + load bar (quantise to avoid churn on tiny EMA wiggles).
+    if (first || (load > last_load ? load - last_load : last_load - load) >= 2) {
+        uint16_t c = load < 50 ? COL_LOAD_LO : (load < 80 ? COL_LOAD_MID : COL_LOAD_HI);
+        snprintf(buf, sizeof(buf), "%d%%", load);
+        draw_val(ROW_CPU, buf, c);
+        int fill = load * CBAR_W / 100;
+        gfx_fill_rect(CBAR_X, CBAR_Y, fill, CBAR_H, c);
+        gfx_fill_rect(CBAR_X + fill, CBAR_Y, CBAR_W - fill, CBAR_H, COL_OFF);
+        last_load = load;
+    }
+
+    // Note + velocity.
+    if (first || m.last_note != last_midi.last_note || m.last_velocity != last_midi.last_velocity) {
+        if (m.last_note == 0xFF) {
+            snprintf(buf, sizeof(buf), "--");
+        } else {
+            int oct = m.last_note / 12 - 1;
+            snprintf(buf, sizeof(buf), "%s%d v%d", NOTE_NAMES[m.last_note % 12], oct, m.last_velocity);
+        }
+        draw_val(ROW_NOTE, buf, COL_VALUE);
+    }
+
+    if (first || m.program != last_midi.program) {
+        const char *name = m.program < PRESET_COUNT ? PRESET_NAMES[m.program] : "?";
+        draw_val(ROW_PRESET, name, COL_VALUE);
+    }
+
+    if (first || m.bend != last_midi.bend) {
+        snprintf(buf, sizeof(buf), "%+d", m.bend);
+        draw_val(ROW_BEND, buf, COL_VALUE);
+    }
+
+    if (first || m.mod != last_midi.mod) {
+        snprintf(buf, sizeof(buf), "%d", m.mod);
+        draw_val(ROW_MOD, buf, COL_VALUE);
+    }
+
+    last_midi = m;
+    first = false;
 }
 
 void display_bringup_test() {

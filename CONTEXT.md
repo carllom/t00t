@@ -81,8 +81,14 @@ take precedence). Rolled our own — no ST7789 driver ships with the SDK.
   RAM scratch tile, DMA-blitted region by region. `gfx_rgb`/`gfx_fill_rect`/
   `gfx_text` (8×8 font in [font8x8.h](src/wslcd/font8x8.h)). Colours are
   byte-swapped ("wire format") RGB565 so the byte-DMA needs no swap.
-- [display.cpp](src/wslcd/display.cpp): Core-0 API. Milestone 1 = bring-up test
-  (colour bars + banner). The future synth UI grows here.
+- [display.cpp](src/wslcd/display.cpp): Core-0 API. `display_init()` paints static
+  chrome; `display_task()` runs from the main loop, self-limits to ~20 Hz, and
+  redraws only changed fields (cheap value-compares when idle). Live UI shows
+  active voices (bar + count), CPU load, last note/velocity, preset, bend, mod.
+  `display_bringup_test()` (colour bars + banner) is kept for driver diagnostics.
+- Telemetry it reads: `audio_engine_active_mask()` / `audio_engine_load()`
+  (published by Core 1 as volatile words each buffer — load is an EMA of render
+  time vs the buffer deadline) and `midi_controller_ui_state()`.
 - If blank/garbled on hardware: lower `LCD_SPI_HZ`, or tune
   `LCD_COL_OFFSET`/`LCD_ROW_OFFSET`/`LCD_MADCTL` in lcd_st7789.
 
