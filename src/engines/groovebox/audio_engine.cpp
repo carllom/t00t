@@ -6,6 +6,7 @@
 #include "envelope.h"
 #include "filter.h"
 #include "ladder.h"
+#include "clap.h"
 #include "fx/delay.h"
 #include "fx/reverb.h"
 #include "hardware/gpio.h"
@@ -32,6 +33,7 @@ static uint8_t  last_trigger[MAX_VOICES];
 static bool     voice_gated[MAX_VOICES];
 static Envelope amp_env[MAX_VOICES];        // amplitude contour
 static Envelope aux_env[MAX_VOICES];        // filter env (303) / pitch env (drums)
+static ClapEnv  clap_env[MAX_VOICES];       // multi-burst contour (clap voice)
 static SVFilter filter[MAX_VOICES];         // drums (BP/HP); metal BP stage
 static SVFilter filter2[MAX_VOICES];        // metal HP stage (second pass)
 static LadderFilter ladder[MAX_VOICES];     // 303 (4-pole resonant LP)
@@ -42,6 +44,13 @@ static int32_t scratch[SAMPLES_PER_BUFFER];
 static FxDelay  fx_delay;
 static FxReverb fx_reverb;
 static uint8_t  s_last_fx_type = 0xFF;
+
+// Clap contour timing (computed once at init). ~10 ms between three re-strikes,
+// then a longer tail.
+static constexpr uint32_t CLAP_INTERVAL = SAMPLE_RATE / 100;  // ~10 ms
+static constexpr uint8_t  CLAP_BURSTS   = 3;
+static float clap_burst_coeff = 0.0f;   // fast burst decay
+static float clap_tail_coeff  = 0.0f;   // slow tail decay
 
 // Start an envelope as a one-shot decay: jump to full and decay to zero using
 // the config's release_coeff (drums, 303 filter env). No attack — the instant
@@ -156,28 +165,52 @@ static void render_noise_drum(uint32_t v, const VoiceParams &p) {
     }
 }
 
-// 808 hats / cymbal: six fixed squares (metal bank) through a resonant band-pass
-// then a high-pass, shaped by a decay envelope. Closed vs open vs crash differ
-// only in decay time and filter corners (from the kit). Six oscillators + two
-// filter passes make this the most expensive voice — but it is one-shot.
+// 808 hats / cymbal / cowbell: a metal-osc sub-range (2 = cowbell, 6 = hats)
+// through a resonant band-pass, then an optional high-pass, shaped by a decay
+// envelope. The filters attenuate a lot, so a makeup gain restores level (more
+// for the two-stage hat path). Six oscillators + two filter passes make the
+// hats the most expensive voice — but they are one-shot.
 static void render_metal(uint32_t v, const VoiceParams &p) {
     int32_t q_bp = svf_compute_q(p.filter_resonance);
     int16_t f_bp = svf_compute_f_half(p.filter_cutoff);
-    int16_t f_hp = svf_compute_f_half(p.filter_cutoff2);
+    bool    do_hp = p.filter_cutoff2 > 0;
+    int16_t f_hp = do_hp ? svf_compute_f_half(p.filter_cutoff2) : (int16_t)0;
     int32_t q_hp = svf_compute_q(0);   // gentle (non-resonant) high-pass
-    uint32_t *ph = metal_phase[v];
+    int32_t makeup = do_hp ? 4 : 2;    // compensate band-pass (+ high-pass) loss
+    uint32_t *ph = &metal_phase[v][p.metal_first];
+    const uint32_t *inc = &metal_inc[p.metal_first];
+    int n = p.metal_count;
     for (uint32_t i = 0; i < SAMPLES_PER_BUFFER; i++) {
         float amp_f = amp_env[v].advance(p.amp_env);
         if (amp_f <= 0.0f) break;
         int32_t level = (int32_t)(amp_f * 32767.0f);
 
-        int32_t s = osc_metal(ph);
-        for (int k = 0; k < METAL_OSC_COUNT; k++) ph[k] += metal_inc[k];
+        int32_t s = osc_metal(ph, n);
+        for (int k = 0; k < n; k++) ph[k] += inc[k];
 
         int32_t scaled = (s * p.amplitude) >> 15;
         scaled = (scaled * level) >> 15;
         scaled = filter[v].tick(scaled, f_bp, q_bp, FILTER_BP);
-        scaled = filter2[v].tick(scaled, f_hp, q_hp, FILTER_HP);
+        if (do_hp) scaled = filter2[v].tick(scaled, f_hp, q_hp, FILTER_HP);
+        scratch[i] += scaled * makeup;
+    }
+}
+
+// 808 hand-clap: white noise through a band-pass, shaped by the multi-burst
+// clap envelope (three fast re-strikes + a tail). Uses clap_env, not amp_env.
+static void render_clap(uint32_t v, const VoiceParams &p) {
+    int32_t q = svf_compute_q(p.filter_resonance);
+    int16_t f = svf_compute_f_half(p.filter_cutoff);
+    for (uint32_t i = 0; i < SAMPLES_PER_BUFFER; i++) {
+        float amp_f = clap_env[v].advance(CLAP_INTERVAL, CLAP_BURSTS,
+                                          clap_burst_coeff, clap_tail_coeff);
+        if (!clap_env[v].active()) break;
+        int32_t level = (int32_t)(amp_f * 32767.0f);
+
+        int32_t s = osc_noise(noise_lfsr[v]);
+        int32_t scaled = (s * p.amplitude) >> 15;
+        scaled = (scaled * level) >> 15;
+        scaled = filter[v].tick(scaled, f, q, p.filter_mode);   // FILTER_BP
         scratch[i] += scaled;
     }
 }
@@ -195,6 +228,7 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
         voice_gated[v] = false;
         amp_env[v].init();
         aux_env[v].init();
+        clap_env[v].init();
         filter[v].init();
         filter2[v].init();
         ladder[v].init();
@@ -203,6 +237,10 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
 
     // Precompute the fixed metal-oscillator phase increments (constant tuning).
     for (int k = 0; k < METAL_OSC_COUNT; k++) metal_inc[k] = osc_phase_inc(METAL_FREQS[k]);
+
+    // Clap contour decay coefficients: ~4 ms bursts, ~130 ms tail.
+    clap_burst_coeff = env_config(0, 0, 0, 4).release_coeff;
+    clap_tail_coeff  = env_config(0, 0, 0, 130).release_coeff;
 
     osc_init_sine();
     fx_delay.init();
@@ -232,8 +270,9 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
                 filter2[v].init();
                 ladder[v].init();
                 for (int k = 0; k < METAL_OSC_COUNT; k++) metal_phase[v][k] = 0;
-                if (p.type == VT_TB303) amp_env[v].trigger();  // gated ADSR
-                else                    env_oneshot(amp_env[v]);// one-shot decay
+                if (p.type == VT_TB303)           amp_env[v].trigger();   // gated ADSR
+                else if (p.type == VT_DRUM_CLAP)  clap_env[v].trigger();  // multi-burst
+                else                              env_oneshot(amp_env[v]);// one-shot decay
                 env_oneshot(aux_env[v]);                        // filter/pitch env
                 voice_gated[v] = true;
             }
@@ -246,7 +285,7 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
                 voice_gated[v] = p.gate;
             }
 
-            if (!amp_env[v].active()) continue;
+            if (!amp_env[v].active() && !clap_env[v].active()) continue;
 
             switch (p.type) {
                 case VT_TB303:      render_303(v, p);         break;
@@ -255,6 +294,7 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
                 case VT_DRUM_SNARE: render_snare(v, p);       break;
                 case VT_DRUM_HAT:   render_noise_drum(v, p);  break;
                 case VT_DRUM_METAL: render_metal(v, p);       break;
+                case VT_DRUM_CLAP:  render_clap(v, p);        break;
                 default:            break;
             }
         }
@@ -281,7 +321,7 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
 
         uint32_t bitmap = 0;
         for (uint32_t v = 0; v < MAX_VOICES; v++) {
-            if (amp_env[v].active()) bitmap |= (1u << v);
+            if (amp_env[v].active() || clap_env[v].active()) bitmap |= (1u << v);
         }
         multicore_fifo_push_timeout_us(bitmap, 0);
 

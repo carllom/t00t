@@ -22,7 +22,8 @@ enum VoiceType : uint8_t {
     VT_DRUM_SNARE,   // two shell tones + noise -> band-pass
     VT_DRUM_HAT,     // noise -> high-pass + decay (closed/open via decay time)
     VT_DRUM_METAL,   // six-square metal bank -> band-pass -> high-pass (808 hats/cymbal)
-    // Future: VT_DRUM_CLAP, VT_DRUM_SAMPLE (909).
+    VT_DRUM_CLAP,    // band-passed noise + multi-burst clap envelope
+    // Future: VT_DRUM_SAMPLE (909).
 };
 
 // Per-voice parameters. Written by Core 0, read by Core 1. A flat struct
@@ -55,6 +56,8 @@ struct VoiceParams {
     int16_t    pitch_env_depth; // aux_env -> pitch, Q15 fraction of base (BD/tom/snare)
     uint16_t   noise_level;     // Q15 noise mix (snare/hat)
     uint16_t   tone_level;      // Q15 tone mix (snare)
+    uint8_t    metal_first;     // first metal-osc index (metal voices)
+    uint8_t    metal_count;     // number of metal oscillators to sum (2 = cowbell, 6 = hats)
 };
 
 // A complete snapshot of all voice parameters for one render pass.

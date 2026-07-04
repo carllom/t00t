@@ -16,10 +16,11 @@ static constexpr float METAL_FREQS[6] = {
 };
 static constexpr int METAL_OSC_COUNT = 6;
 
-// Sum the six squares from their phase accumulators. Caller advances the phases.
-// Output ~[-32767, 32767] (six ±32767 squares summed, then divided by six).
-inline int32_t osc_metal(const uint32_t phase[METAL_OSC_COUNT]) {
+// Sum `count` squares from their phase accumulators. Caller advances the
+// phases. Output ~[-32767, 32767] (count ±32767 squares summed, then divided by
+// count). Hats/cymbal use all six; the cowbell uses a two-oscillator subset.
+inline int32_t osc_metal(const uint32_t *phase, int count) {
     int32_t sum = 0;
-    for (int k = 0; k < METAL_OSC_COUNT; k++) sum += osc_square(phase[k], 512);
-    return sum / METAL_OSC_COUNT;
+    for (int k = 0; k < count; k++) sum += osc_square(phase[k], 512);
+    return count > 0 ? sum / count : 0;
 }

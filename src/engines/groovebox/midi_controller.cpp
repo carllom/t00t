@@ -33,10 +33,25 @@ static float note_to_freq(uint8_t note) {
     return 440.0f * powf(2.0f, (float)(note - 69) / 12.0f);
 }
 
+// Accent: velocities above the threshold get a deeper filter-envelope sweep and
+// extra level, ramping 0..1 across the top of the velocity range — the TB-303's
+// signature accented-step emphasis.
+static constexpr uint8_t ACCENT_VEL_THRESHOLD = 96;
+static constexpr float   ACCENT_ENV_ADD  = 4000.0f;  // extra Hz of filter env at full accent
+static constexpr float   ACCENT_AMP_BOOST = 0.4f;    // up to +40% level at full accent
+
 static void trigger_303(VoiceParamBlock &shadow, uint8_t note, uint8_t velocity) {
     VoiceParams &vp = shadow.voices[GV_303];
     uint32_t inc = (uint32_t)((float)osc_phase_inc(note_to_freq(note)) * g_303_bend);
     apply_303(vp, g_303, inc, velocity);
+
+    float accent = 0.0f;
+    if (velocity > ACCENT_VEL_THRESHOLD)
+        accent = (float)(velocity - ACCENT_VEL_THRESHOLD) / (float)(127 - ACCENT_VEL_THRESHOLD);
+    vp.filter_env_amount = (int16_t)((float)g_303.env_mod + accent * ACCENT_ENV_ADD);
+    int32_t amp = (int32_t)((float)(velocity * 258) * (1.0f + accent * ACCENT_AMP_BOOST));
+    vp.amplitude = (int16_t)(amp > 32767 ? 32767 : amp);
+
     vp.trigger++;
     vp.gate = true;
     g_303_note = note;
