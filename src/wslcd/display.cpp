@@ -25,14 +25,19 @@ static const uint16_t COL_LOAD_HI = gfx_rgb(230, 60, 50);
 static constexpr int LABEL_X = 4;
 static constexpr int VAL_X   = 104;
 static constexpr int VAL_CH  = 8;     // value field width in chars (VAL_X..232 @2x)
-static constexpr int ROW_VOICES = 40, ROW_CPU = 88, ROW_NOTE = 136,
-                     ROW_PRESET = 164, ROW_BEND = 192, ROW_MOD = 220;
-static constexpr int VBAR_Y = 64, VBAR_H = 14, VCELL_PITCH = 15, VCELL_W = 13;
-static constexpr int CBAR_X = 4, CBAR_Y = 112, CBAR_W = 232, CBAR_H = 12;
+static constexpr int ROW_VOICES = 36, ROW_CPU = 76, ROW_NOTE = 116,
+                     ROW_PRESET = 138, ROW_BEND = 160, ROW_MOD = 182,
+                     ROW_FXTYPE = 200, ROW_FXA = 220, ROW_FXB = 240, ROW_FXMIX = 260;
+static constexpr int VBAR_Y = 56, VBAR_H = 14, VCELL_PITCH = 15, VCELL_W = 13;
+static constexpr int CBAR_X = 4, CBAR_Y = 96, CBAR_W = 232, CBAR_H = 12;
 
-static const char *PRESET_NAMES[PRESET_COUNT] = { "Fairlite", "Sq-PWM", "Saw-Flt" };
+static const char *PRESET_NAMES[PRESET_COUNT] = {
+    "Fairlite", "Sq-PWM", "Saw-Flt", "Marimba", "LowStr5", "VoiceAh", "VoiceArr", "VoiceRrr",
+    "Sitar2", "Zither2", "ElecPian",
+};
 static const char *NOTE_NAMES[12] =
     { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
+static const char *FX_NAMES[FX_COUNT] = { "Off", "Delay", "Reverb" };
 
 // Draw a value into its 8-char field. Padding to VAL_CH clears any longer
 // previous value in a single blit (gfx_text fills the glyph-cell background).
@@ -40,6 +45,13 @@ static void draw_val(int y, const char *raw, uint16_t fg) {
     char b[VAL_CH + 1];
     snprintf(b, sizeof(b), "%-*.*s", VAL_CH, VAL_CH, raw);
     gfx_text(VAL_X, y, b, fg, COL_BG, 2);
+}
+
+// Dynamic label at x=0 (padded to 6 chars so a shorter new label clears the old).
+static void draw_label(int y, const char *s) {
+    char b[7];
+    snprintf(b, sizeof(b), "%-6s", s);
+    gfx_text(0, y, b, COL_LABEL, COL_BG, 2);
 }
 
 void display_init() {
@@ -56,6 +68,9 @@ void display_init() {
     gfx_text(0, ROW_PRESET, "PRESET", COL_LABEL, COL_BG, 2);
     gfx_text(0, ROW_BEND,   "BEND",   COL_LABEL, COL_BG, 2);
     gfx_text(0, ROW_MOD,    "MOD",    COL_LABEL, COL_BG, 2);
+    gfx_text(0, ROW_FXTYPE, "FX",     COL_LABEL, COL_BG, 2);
+    gfx_text(0, ROW_FXMIX,  "MIX",    COL_LABEL, COL_BG, 2);
+    // FX param labels (ROW_FXA/ROW_FXB) are drawn by display_task per effect type.
 
     lcd_set_backlight(100);
 }
@@ -71,7 +86,7 @@ void display_task() {
     static uint16_t last_snd = 0;
     static uint16_t last_gate = 0;
     static uint8_t  last_load = 0xFF;
-    static MidiUiState last_midi = { 0xFE, 0, 0, 0xFF, 0x7FFF, 0xFF };
+    static MidiUiState last_midi = { 0xFE, 0, 0, 0xFF, 0x7FFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
 
     uint16_t snd  = voice_alloc_active_mask();  // still sounding (envelope active)
     uint16_t gate = voice_alloc_gated_mask();   // note pressed/held
@@ -140,6 +155,35 @@ void display_task() {
     if (first || m.mod != last_midi.mod) {
         snprintf(buf, sizeof(buf), "%d", m.mod);
         draw_val(ROW_MOD, buf, COL_VALUE);
+    }
+
+    // Effect: type + two type-dependent params + mix. On a type change, repaint
+    // the type value and the two variable labels, and force the values to redraw.
+    bool fx_type_changed = first || m.fx_type != last_midi.fx_type;
+    if (fx_type_changed) {
+        const char *tn = m.fx_type < FX_COUNT ? FX_NAMES[m.fx_type] : "?";
+        draw_val(ROW_FXTYPE, tn, m.fx_type == FX_OFF ? COL_LABEL : COL_LOAD_MID);
+        const char *la = "P1", *lb = "P2";
+        if (m.fx_type == FX_DELAY)  { la = "FBK";  lb = "TIME"; }
+        if (m.fx_type == FX_REVERB) { la = "SIZE"; lb = "DAMP"; }
+        draw_label(ROW_FXA, la);
+        draw_label(ROW_FXB, lb);
+    }
+    if (fx_type_changed || m.fx_p1 != last_midi.fx_p1) {
+        snprintf(buf, sizeof(buf), "%d%%", m.fx_p1 * 100 / 127);
+        draw_val(ROW_FXA, buf, COL_VALUE);
+    }
+    if (fx_type_changed || m.fx_p2 != last_midi.fx_p2) {
+        if (m.fx_type == FX_DELAY) {
+            snprintf(buf, sizeof(buf), "%dms", 20 + m.fx_p2 * 980 / 127);
+        } else {
+            snprintf(buf, sizeof(buf), "%d%%", m.fx_p2 * 100 / 127);
+        }
+        draw_val(ROW_FXB, buf, COL_VALUE);
+    }
+    if (fx_type_changed || m.fx_mix != last_midi.fx_mix) {
+        snprintf(buf, sizeof(buf), "%d%%", m.fx_mix * 100 / 127);
+        draw_val(ROW_FXMIX, buf, m.fx_mix ? COL_LOAD_MID : COL_VALUE);
     }
 
     last_midi = m;
