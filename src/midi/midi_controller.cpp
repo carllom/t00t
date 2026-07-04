@@ -39,6 +39,17 @@ static uint8_t default_preset_for_channel(uint8_t ch) {
     return ch < NUM_CHANNEL_PRESETS ? channel_preset[ch] : channel_preset[NUM_CHANNEL_PRESETS - 1];
 }
 
+// microKORG program numbering: the program-change value's tens digit is the row
+// (0-7) and the ones digit is the column (0-7), so a bank holds programs
+// 0-7, 10-17, ... 70-77 (64 total; columns 8/9 and rows >7 are unused). Bank
+// select adds another 64. Returns a linear slot 0-127, or -1 if the value isn't
+// a valid microKORG program.
+static int microkorg_slot(uint8_t bank, uint8_t pc) {
+    uint8_t row = pc / 10, col = pc % 10;
+    if (row > 7 || col > 7) return -1;
+    return (int)(bank & 1) * 64 + row * 8 + col;
+}
+
 // --- UI snapshot (updated on each event, read by the display) ---
 static MidiUiState ui_state;
 
@@ -202,13 +213,18 @@ void midi_controller_process(const uint8_t *data, uint32_t len, ParamExchange *p
                 changed = true;
                 break;
             }
-            case MIDI_PROGRAM_CHANGE:
-                // Affects future notes only (standard behavior). With a small
-                // preset list, bank select is recorded but not yet applied.
-                channel_program[ev.channel] = ev.data1 % PRESET_COUNT;
-                ui_state.program = channel_program[ev.channel];
-                ui_state.last_channel = ev.channel;
+            case MIDI_PROGRAM_CHANGE: {
+                // microKORG numbering (row = tens digit, col = ones digit) plus
+                // bank select. Affects future notes only. Bank comes from CC0
+                // (MSB) — switch to channel_bank_lsb if the microKORG uses CC32.
+                int slot = microkorg_slot(channel_bank_msb[ev.channel], ev.data1);
+                if (slot >= 0) {
+                    channel_program[ev.channel] = (uint8_t)(slot % PRESET_COUNT);
+                    ui_state.program = channel_program[ev.channel];
+                    ui_state.last_channel = ev.channel;
+                }
                 break;
+            }
         }
     }
 
