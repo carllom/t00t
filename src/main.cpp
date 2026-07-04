@@ -25,6 +25,13 @@
 #include "controller.h"
 #endif
 
+#ifndef HAS_LCD
+#define HAS_LCD 0
+#endif
+#if HAS_LCD
+#include "wslcd/display.h"
+#endif
+
 static AudioBuffers audio_buffers;
 static ParamExchange param_exchange;
 
@@ -54,10 +61,22 @@ int main() {
     // Start I2S DMA output — must be after Core 1 is ready to receive FIFO messages
     i2s_output_init(&audio_buffers);
 
+#if HAS_LCD
+    // Core 0 owns the LCD at low priority (audio + MIDI take precedence).
+    display_init();
+#endif
+
     // Core 0 main loop: poll USB + MIDI + buttons
     absolute_time_t next_tick = get_absolute_time();
 
     while (true) {
+#if !HAS_BUTTONS
+        // Drain Core 1's active-voice feedback before this pass allocates, so the
+        // allocator's silent/released/oldest priority uses fresh state. On button
+        // boards controller_tick() already does this at the start of its tick.
+        voice_alloc_update();
+#endif
+
 #if MIDI_USB
         usb_midi_task();
         usb_midi_poll(&param_exchange);
@@ -72,6 +91,10 @@ int main() {
             next_tick = delayed_by_ms(next_tick, 1);
             controller_tick(&param_exchange);
         }
+#endif
+
+#if HAS_LCD
+        display_task();  // low-priority; self-limits to ~20 Hz, redraws on change
 #endif
 
         __wfi();  // sleep until next IRQ (USB, timer, etc.)
