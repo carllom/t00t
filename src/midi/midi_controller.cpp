@@ -125,10 +125,11 @@ void midi_controller_init() {
     ui_state.program = default_preset_for_channel(0);
     ui_state.bend = 0;
     ui_state.mod = 0;
-    // Match ParamExchange::init() fx defaults (300 ms, ~0.4 fbk, dry).
+    // Match ParamExchange::init() fx defaults (delay, dry, p1=55, p2=36≈300 ms).
+    ui_state.fx_type = FX_DELAY;
     ui_state.fx_mix = 0;
-    ui_state.fx_fbk = 55;
-    ui_state.fx_delay_ms = 300;
+    ui_state.fx_p1 = 55;
+    ui_state.fx_p2 = 36;
 }
 
 void midi_controller_process(const uint8_t *data, uint32_t len, ParamExchange *params) {
@@ -179,25 +180,26 @@ void midi_controller_process(const uint8_t *data, uint32_t len, ParamExchange *p
                         ui_state.last_channel = ev.channel;
                         changed = true;
                         break;
-                    case 73: {  // effect wet/dry mix (global)
-                        shadow.fx.mix_q15 = (int16_t)(ev.data2 * 258);  // 0..~32766
+                    case 74:  // effect type select — split range into FX_COUNT bands
+                        shadow.fx.type = (uint8_t)((uint32_t)ev.data2 * FX_COUNT / 128u);
+                        ui_state.fx_type = shadow.fx.type;
+                        changed = true;
+                        break;
+                    case 73:  // effect wet/dry mix (global)
+                        shadow.fx.mix = ev.data2;
                         ui_state.fx_mix = ev.data2;
                         changed = true;
                         break;
-                    }
-                    case 72: {  // effect feedback (global) — capped below runaway
-                        shadow.fx.feedback_q15 = (int16_t)(ev.data2 * 236);  // max ≈ 0.91
-                        ui_state.fx_fbk = ev.data2;
+                    case 72:  // effect param 1: delay feedback / reverb room size
+                        shadow.fx.p1 = ev.data2;
+                        ui_state.fx_p1 = ev.data2;
                         changed = true;
                         break;
-                    }
-                    case 75: {  // effect delay time (global): 20..1000 ms
-                        uint32_t ms = 20 + (uint32_t)ev.data2 * 980u / 127u;
-                        shadow.fx.delay_samples = (uint16_t)(ms * SAMPLE_RATE / 1000u);
-                        ui_state.fx_delay_ms = (uint16_t)ms;
+                    case 75:  // effect param 2: delay time / reverb damping
+                        shadow.fx.p2 = ev.data2;
+                        ui_state.fx_p2 = ev.data2;
                         changed = true;
                         break;
-                    }
                     case 0:   channel_bank_msb[ev.channel] = ev.data2; break;
                     case 32:  channel_bank_lsb[ev.channel] = ev.data2; break;
                     default:  break;  // other CCs — to be mapped later

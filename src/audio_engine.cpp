@@ -4,6 +4,7 @@
 #include "envelope.h"
 #include "filter.h"
 #include "fx/delay.h"
+#include "fx/reverb.h"
 #include "hardware/gpio.h"
 #include "pico/multicore.h"
 #include "pico/time.h"
@@ -36,7 +37,9 @@ static SVFilter filter[MAX_VOICES];
 static int32_t scratch[SAMPLES_PER_BUFFER];
 
 // Post-mix effect state (Core 1 only)
-static FxDelay fx_delay;
+static FxDelay  fx_delay;
+static FxReverb fx_reverb;
+static uint8_t  s_last_fx_type = 0xFF;  // detect type switch to clear buffers
 
 void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
     // Init profiling pin
@@ -62,8 +65,9 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
     // Generate wavetable
     osc_init_sine();
 
-    // Clear the delay line
+    // Clear effect buffers
     fx_delay.init();
+    fx_reverb.init();
 
     while (true) {
         // Wait for DMA ISR to tell us which buffer to fill
@@ -229,8 +233,17 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
             mod_lfo_phase[v] = mod_ph;
         }
 
-        // Post-mix effect: feedback delay (in place on the mono mix).
-        fx_delay.process(scratch, SAMPLES_PER_BUFFER, vp.fx);
+        // Post-mix effect (delay or reverb, selected by CC74; in place on the
+        // mono mix). Clear the newly selected effect's buffer on a type switch
+        // so a stale tail can't resurface.
+        if (vp.fx.type != s_last_fx_type) {
+            if (vp.fx.type == FX_DELAY)       fx_delay.init();
+            else if (vp.fx.type == FX_REVERB) fx_reverb.init();
+            s_last_fx_type = vp.fx.type;
+        }
+        if (vp.fx.type == FX_DELAY)       fx_delay.process(scratch, SAMPLES_PER_BUFFER, vp.fx);
+        else if (vp.fx.type == FX_REVERB) fx_reverb.process(scratch, SAMPLES_PER_BUFFER, vp.fx);
+        // FX_OFF: leave the mix dry.
 
         // Clip and interleave into stereo int16_t buffer
         int16_t *out = i2s_buffer_ptr(buffers, buf_index);

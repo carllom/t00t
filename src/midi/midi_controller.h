@@ -20,8 +20,9 @@ struct MidiUiState {
     uint8_t program;        // preset index in use on last_channel
     int16_t bend;           // signed offset from centre (-8192..+8191)
     uint8_t mod;            // mod wheel (CC1), 0..127
-    uint8_t  fx_mix;        // delay wet/dry (CC74), 0..127
-    uint8_t  fx_fbk;        // delay feedback (CC73), 0..127
-    uint16_t fx_delay_ms;   // delay time (CC71), milliseconds
+    uint8_t fx_type;        // effect type (CC74): 0=off, 1=delay, 2=reverb
+    uint8_t fx_mix;         // wet/dry (CC73), 0..127
+    uint8_t fx_p1;          // CC72: delay feedback / reverb room size, 0..127
+    uint8_t fx_p2;          // CC75: delay time / reverb damping, 0..127
 };
 void midi_controller_ui_state(MidiUiState *out);

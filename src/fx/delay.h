@@ -23,12 +23,16 @@ struct FxDelay {
     // Process one buffer in place. `scratch` is the mono int32 mix; on return it
     // holds the wet/dry blend (still mono; the caller duplicates to L/R).
     // Fixed cost per sample, independent of voice count.
+    //
+    // Maps the raw controller values: p2 → 20..1000 ms delay time,
+    // p1 → feedback (max ≈ 0.91), mix → wet/dry.
     inline void process(int32_t *scratch, uint32_t n, const EffectParams &fx) {
-        uint32_t target = fx.delay_samples;
+        uint32_t ms = 20 + (uint32_t)fx.p2 * 980u / 127u;
+        uint32_t target = ms * SAMPLE_RATE / 1000u;
         if (target < 1) target = 1;
         if (target > DELAY_LEN - 1) target = DELAY_LEN - 1;
-        int32_t fb  = fx.feedback_q15;
-        int32_t mix = fx.mix_q15;
+        int32_t fb  = (int32_t)fx.p1 * 236;   // Q15, ≤ ~0.91
+        int32_t mix = (int32_t)fx.mix * 258;  // Q15, 0..~32766
 
         for (uint32_t i = 0; i < n; i++) {
             // One-pole glide toward the target length so CC turns don't click.
