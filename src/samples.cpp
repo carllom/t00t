@@ -5,6 +5,9 @@
 #include "../samples/voiceiix/ah2.h"
 #include "../samples/voiceiix/arr.h"
 #include "../samples/voiceiix/rrr.h"
+#include "../samples/plucked/sitar2.h"
+#include "../samples/plucked/zither2.h"
+#include "../samples/pianos/ELECPIAN.h"
 
 const SampleDef sararr1_sample = {
     sararr1_data,
@@ -64,4 +67,34 @@ const SampleDef rrr_sample = {
     (bool)rrr_LOOPED,
     rrr_LOOP_START,
     rrr_LOOP_END
+};
+
+const SampleDef sitar2_sample = {
+    sitar2_data,
+    sitar2_NUM_SAMPLES,
+    sitar2_SAMPLE_RATE,
+    440.0f,
+    (bool)sitar2_LOOPED,
+    sitar2_LOOP_START,
+    sitar2_LOOP_END
+};
+
+const SampleDef zither2_sample = {
+    zither2_data,
+    zither2_NUM_SAMPLES,
+    zither2_SAMPLE_RATE,
+    440.0f,
+    (bool)zither2_LOOPED,
+    zither2_LOOP_START,
+    zither2_LOOP_END
+};
+
+const SampleDef elecpian_sample = {
+    elecpian_data,
+    elecpian_NUM_SAMPLES,
+    elecpian_SAMPLE_RATE,
+    440.0f,
+    (bool)elecpian_LOOPED,
+    elecpian_LOOP_START,
+    elecpian_LOOP_END
 };

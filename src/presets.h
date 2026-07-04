@@ -51,6 +51,9 @@ enum PresetId : uint8_t {
     PRESET_VOICE_AH,    // 5: voice "ah" sample
     PRESET_VOICE_ARR,   // 6: voice "arr" sample
     PRESET_VOICE_RRR,   // 7: voice "rrr" sample
+    PRESET_SITAR2,      // 8: sitar sample
+    PRESET_ZITHER2,     // 9: zither sample
+    PRESET_ELECPIAN,    // 10: electric piano sample
     PRESET_COUNT
 };
 
@@ -67,4 +70,7 @@ static const VoicePreset presets[PRESET_COUNT] = {
     { 10000, WAVE_SAMPLE,      512, 0.0f, 0.0f, 0.0f, 0.0f, FILTER_OFF, 1000, 0, 0, 0.0f, &ah2_sample },      // PRESET_VOICE_AH
     { 10000, WAVE_SAMPLE,      512, 0.0f, 0.0f, 0.0f, 0.0f, FILTER_OFF, 1000, 0, 0, 0.0f, &arr_sample },      // PRESET_VOICE_ARR
     { 10000, WAVE_SAMPLE,      512, 0.0f, 0.0f, 0.0f, 0.0f, FILTER_OFF, 1000, 0, 0, 0.0f, &rrr_sample },      // PRESET_VOICE_RRR
+    { 10000, WAVE_SAMPLE,      512, 0.0f, 0.0f, 0.0f, 0.0f, FILTER_OFF, 1000, 0, 0, 0.0f, &sitar2_sample },   // PRESET_SITAR2
+    { 10000, WAVE_SAMPLE,      512, 0.0f, 0.0f, 0.0f, 0.0f, FILTER_OFF, 1000, 0, 0, 0.0f, &zither2_sample },  // PRESET_ZITHER2
+    { 10000, WAVE_SAMPLE,      512, 0.0f, 0.0f, 0.0f, 0.0f, FILTER_OFF, 1000, 0, 0, 0.0f, &elecpian_sample }, // PRESET_ELECPIAN
 };
