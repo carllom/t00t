@@ -21,7 +21,8 @@ enum VoiceType : uint8_t {
     VT_DRUM_TOM,     // sine + pitch env (lo/mid/hi via tune) — BD generator, retuned
     VT_DRUM_SNARE,   // two shell tones + noise -> band-pass
     VT_DRUM_HAT,     // noise -> high-pass + decay (closed/open via decay time)
-    // Future: VT_DRUM_CLAP, VT_DRUM_METAL (6-square), VT_DRUM_SAMPLE (909).
+    VT_DRUM_METAL,   // six-square metal bank -> band-pass -> high-pass (808 hats/cymbal)
+    // Future: VT_DRUM_CLAP, VT_DRUM_SAMPLE (909).
 };
 
 // Per-voice parameters. Written by Core 0, read by Core 1. A flat struct
@@ -45,7 +46,8 @@ struct VoiceParams {
 
     // Filter (303, hat, snare)
     FilterMode filter_mode;     // LP (303) / HP (hat) / BP (snare) / OFF
-    uint16_t   filter_cutoff;   // base cutoff Hz
+    uint16_t   filter_cutoff;   // base cutoff Hz (303/snare/hat); BP center (metal)
+    uint16_t   filter_cutoff2;  // second corner Hz — HP after the BP (metal only)
     uint16_t   filter_resonance;// 0..32767 (0 = none, 32767 = self-oscillation)
     int16_t    filter_env_amount;// aux_env -> cutoff Hz (303 env mod, signed)
 

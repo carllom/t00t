@@ -2,6 +2,7 @@
 #include "osc/oscillator.h"
 #include "osc/sine.h"
 #include "osc/noise.h"
+#include "osc/metal.h"
 #include "envelope.h"
 #include "filter.h"
 #include "ladder.h"
@@ -24,12 +25,15 @@ uint8_t audio_engine_load() { return s_load_pct; }
 // --- Per-voice state — Core 1 only ---
 static uint32_t voice_phase[MAX_VOICES];
 static uint32_t voice_phase2[MAX_VOICES];   // snare tone 2
+static uint32_t metal_phase[MAX_VOICES][METAL_OSC_COUNT];  // 6-square metal bank
+static uint32_t metal_inc[METAL_OSC_COUNT]; // fixed metal-osc increments (init once)
 static uint16_t noise_lfsr[MAX_VOICES];
 static uint8_t  last_trigger[MAX_VOICES];
 static bool     voice_gated[MAX_VOICES];
 static Envelope amp_env[MAX_VOICES];        // amplitude contour
 static Envelope aux_env[MAX_VOICES];        // filter env (303) / pitch env (drums)
-static SVFilter filter[MAX_VOICES];         // drums (BP/HP)
+static SVFilter filter[MAX_VOICES];         // drums (BP/HP); metal BP stage
+static SVFilter filter2[MAX_VOICES];        // metal HP stage (second pass)
 static LadderFilter ladder[MAX_VOICES];     // 303 (4-pole resonant LP)
 
 static int32_t scratch[SAMPLES_PER_BUFFER];
@@ -152,6 +156,32 @@ static void render_noise_drum(uint32_t v, const VoiceParams &p) {
     }
 }
 
+// 808 hats / cymbal: six fixed squares (metal bank) through a resonant band-pass
+// then a high-pass, shaped by a decay envelope. Closed vs open vs crash differ
+// only in decay time and filter corners (from the kit). Six oscillators + two
+// filter passes make this the most expensive voice — but it is one-shot.
+static void render_metal(uint32_t v, const VoiceParams &p) {
+    int32_t q_bp = svf_compute_q(p.filter_resonance);
+    int16_t f_bp = svf_compute_f_half(p.filter_cutoff);
+    int16_t f_hp = svf_compute_f_half(p.filter_cutoff2);
+    int32_t q_hp = svf_compute_q(0);   // gentle (non-resonant) high-pass
+    uint32_t *ph = metal_phase[v];
+    for (uint32_t i = 0; i < SAMPLES_PER_BUFFER; i++) {
+        float amp_f = amp_env[v].advance(p.amp_env);
+        if (amp_f <= 0.0f) break;
+        int32_t level = (int32_t)(amp_f * 32767.0f);
+
+        int32_t s = osc_metal(ph);
+        for (int k = 0; k < METAL_OSC_COUNT; k++) ph[k] += metal_inc[k];
+
+        int32_t scaled = (s * p.amplitude) >> 15;
+        scaled = (scaled * level) >> 15;
+        scaled = filter[v].tick(scaled, f_bp, q_bp, FILTER_BP);
+        scaled = filter2[v].tick(scaled, f_hp, q_hp, FILTER_HP);
+        scratch[i] += scaled;
+    }
+}
+
 void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
     gpio_init(PROFILE_PIN);
     gpio_set_dir(PROFILE_PIN, GPIO_OUT);
@@ -166,8 +196,13 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
         amp_env[v].init();
         aux_env[v].init();
         filter[v].init();
+        filter2[v].init();
         ladder[v].init();
+        for (int k = 0; k < METAL_OSC_COUNT; k++) metal_phase[v][k] = 0;
     }
+
+    // Precompute the fixed metal-oscillator phase increments (constant tuning).
+    for (int k = 0; k < METAL_OSC_COUNT; k++) metal_inc[k] = osc_phase_inc(METAL_FREQS[k]);
 
     osc_init_sine();
     fx_delay.init();
@@ -194,7 +229,9 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
                 voice_phase2[v] = 0;
                 noise_lfsr[v] = 0xACE1u;
                 filter[v].init();
+                filter2[v].init();
                 ladder[v].init();
+                for (int k = 0; k < METAL_OSC_COUNT; k++) metal_phase[v][k] = 0;
                 if (p.type == VT_TB303) amp_env[v].trigger();  // gated ADSR
                 else                    env_oneshot(amp_env[v]);// one-shot decay
                 env_oneshot(aux_env[v]);                        // filter/pitch env
@@ -217,6 +254,7 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
                 case VT_DRUM_TOM:   render_tonal_drum(v, p);  break;
                 case VT_DRUM_SNARE: render_snare(v, p);       break;
                 case VT_DRUM_HAT:   render_noise_drum(v, p);  break;
+                case VT_DRUM_METAL: render_metal(v, p);       break;
                 default:            break;
             }
         }
