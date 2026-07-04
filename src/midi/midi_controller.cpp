@@ -39,6 +39,17 @@ static uint8_t default_preset_for_channel(uint8_t ch) {
     return ch < NUM_CHANNEL_PRESETS ? channel_preset[ch] : channel_preset[NUM_CHANNEL_PRESETS - 1];
 }
 
+// microKORG program numbering: the program-change value's tens digit is the row
+// (0-7) and the ones digit is the column (0-7), so a bank holds programs
+// 0-7, 10-17, ... 70-77 (64 total; columns 8/9 and rows >7 are unused). Bank
+// select adds another 64. Returns a linear slot 0-127, or -1 if the value isn't
+// a valid microKORG program.
+static int microkorg_slot(uint8_t bank, uint8_t pc) {
+    uint8_t row = pc / 10, col = pc % 10;
+    if (row > 7 || col > 7) return -1;
+    return (int)(bank & 1) * 64 + row * 8 + col;
+}
+
 // --- UI snapshot (updated on each event, read by the display) ---
 static MidiUiState ui_state;
 
@@ -114,6 +125,11 @@ void midi_controller_init() {
     ui_state.program = default_preset_for_channel(0);
     ui_state.bend = 0;
     ui_state.mod = 0;
+    // Match ParamExchange::init() fx defaults (delay, dry, p1=55, p2=36≈300 ms).
+    ui_state.fx_type = FX_DELAY;
+    ui_state.fx_mix = 0;
+    ui_state.fx_p1 = 55;
+    ui_state.fx_p2 = 36;
 }
 
 void midi_controller_process(const uint8_t *data, uint32_t len, ParamExchange *params) {
@@ -164,6 +180,26 @@ void midi_controller_process(const uint8_t *data, uint32_t len, ParamExchange *p
                         ui_state.last_channel = ev.channel;
                         changed = true;
                         break;
+                    case 74:  // effect type select — split range into FX_COUNT bands
+                        shadow.fx.type = (uint8_t)((uint32_t)ev.data2 * FX_COUNT / 128u);
+                        ui_state.fx_type = shadow.fx.type;
+                        changed = true;
+                        break;
+                    case 73:  // effect wet/dry mix (global)
+                        shadow.fx.mix = ev.data2;
+                        ui_state.fx_mix = ev.data2;
+                        changed = true;
+                        break;
+                    case 72:  // effect param 1: delay feedback / reverb room size
+                        shadow.fx.p1 = ev.data2;
+                        ui_state.fx_p1 = ev.data2;
+                        changed = true;
+                        break;
+                    case 75:  // effect param 2: delay time / reverb damping
+                        shadow.fx.p2 = ev.data2;
+                        ui_state.fx_p2 = ev.data2;
+                        changed = true;
+                        break;
                     case 0:   channel_bank_msb[ev.channel] = ev.data2; break;
                     case 32:  channel_bank_lsb[ev.channel] = ev.data2; break;
                     default:  break;  // other CCs — to be mapped later
@@ -179,13 +215,18 @@ void midi_controller_process(const uint8_t *data, uint32_t len, ParamExchange *p
                 changed = true;
                 break;
             }
-            case MIDI_PROGRAM_CHANGE:
-                // Affects future notes only (standard behavior). With a small
-                // preset list, bank select is recorded but not yet applied.
-                channel_program[ev.channel] = ev.data1 % PRESET_COUNT;
-                ui_state.program = channel_program[ev.channel];
-                ui_state.last_channel = ev.channel;
+            case MIDI_PROGRAM_CHANGE: {
+                // microKORG numbering (row = tens digit, col = ones digit) plus
+                // bank select. Affects future notes only. Bank comes from CC0
+                // (MSB) — switch to channel_bank_lsb if the microKORG uses CC32.
+                int slot = microkorg_slot(channel_bank_msb[ev.channel], ev.data1);
+                if (slot >= 0) {
+                    channel_program[ev.channel] = (uint8_t)(slot % PRESET_COUNT);
+                    ui_state.program = channel_program[ev.channel];
+                    ui_state.last_channel = ev.channel;
+                }
                 break;
+            }
         }
     }
 

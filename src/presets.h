@@ -46,6 +46,14 @@ enum PresetId : uint8_t {
     PRESET_FAIRLIGHT,   // 0: Fairlight CMI sample, LP filter
     PRESET_SQUARE_PWM,  // 1: Square BLEP with PWM LFO
     PRESET_SAW_FILTER,  // 2: Saw BLEP with filter LFO
+    PRESET_MARIMBA,     // 3: marimba sample
+    PRESET_LOWSTR5,     // 4: low strings sample
+    PRESET_VOICE_AH,    // 5: voice "ah" sample
+    PRESET_VOICE_ARR,   // 6: voice "arr" sample
+    PRESET_VOICE_RRR,   // 7: voice "rrr" sample
+    PRESET_SITAR2,      // 8: sitar sample
+    PRESET_ZITHER2,     // 9: zither sample
+    PRESET_ELECPIAN,    // 10: electric piano sample
     PRESET_COUNT
 };
 
@@ -56,4 +64,13 @@ static const VoicePreset presets[PRESET_COUNT] = {
     { 10000, WAVE_SQUARE_BLEP, 512, 3.0f, 0.0f, 0.0f, 0.5f, FILTER_LP,  800, 20000, 4000, 0.0f,    nullptr },
     // PRESET_SAW_FILTER: Saw BLEP, filter LFO 2Hz, LP 200Hz, res 24000
     { 10000, WAVE_SAW_BLEP,    512, 2.0f, 0.0f, 0.0f, 0.0f, FILTER_LP,  200, 24000, 0,    2000.0f, nullptr },
+    // Sample presets — clean playback (filter off), tune later as desired.
+    { 10000, WAVE_SAMPLE,      512, 0.0f, 0.0f, 0.0f, 0.0f, FILTER_OFF, 1000, 0, 0, 0.0f, &marimba_sample },  // PRESET_MARIMBA
+    { 10000, WAVE_SAMPLE,      512, 0.0f, 0.0f, 0.0f, 0.0f, FILTER_OFF, 1000, 0, 0, 0.0f, &lowstr5_sample },  // PRESET_LOWSTR5
+    { 10000, WAVE_SAMPLE,      512, 0.0f, 0.0f, 0.0f, 0.0f, FILTER_OFF, 1000, 0, 0, 0.0f, &ah2_sample },      // PRESET_VOICE_AH
+    { 10000, WAVE_SAMPLE,      512, 0.0f, 0.0f, 0.0f, 0.0f, FILTER_OFF, 1000, 0, 0, 0.0f, &arr_sample },      // PRESET_VOICE_ARR
+    { 10000, WAVE_SAMPLE,      512, 0.0f, 0.0f, 0.0f, 0.0f, FILTER_OFF, 1000, 0, 0, 0.0f, &rrr_sample },      // PRESET_VOICE_RRR
+    { 10000, WAVE_SAMPLE,      512, 0.0f, 0.0f, 0.0f, 0.0f, FILTER_OFF, 1000, 0, 0, 0.0f, &sitar2_sample },   // PRESET_SITAR2
+    { 10000, WAVE_SAMPLE,      512, 0.0f, 0.0f, 0.0f, 0.0f, FILTER_OFF, 1000, 0, 0, 0.0f, &zither2_sample },  // PRESET_ZITHER2
+    { 10000, WAVE_SAMPLE,      512, 0.0f, 0.0f, 0.0f, 0.0f, FILTER_OFF, 1000, 0, 0, 0.0f, &elecpian_sample }, // PRESET_ELECPIAN
 };
