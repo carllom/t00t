@@ -25,10 +25,11 @@ static const uint16_t COL_LOAD_HI = gfx_rgb(230, 60, 50);
 static constexpr int LABEL_X = 4;
 static constexpr int VAL_X   = 104;
 static constexpr int VAL_CH  = 8;     // value field width in chars (VAL_X..232 @2x)
-static constexpr int ROW_VOICES = 40, ROW_CPU = 88, ROW_NOTE = 136,
-                     ROW_PRESET = 164, ROW_BEND = 192, ROW_MOD = 220;
-static constexpr int VBAR_Y = 64, VBAR_H = 14, VCELL_PITCH = 15, VCELL_W = 13;
-static constexpr int CBAR_X = 4, CBAR_Y = 112, CBAR_W = 232, CBAR_H = 12;
+static constexpr int ROW_VOICES = 36, ROW_CPU = 76, ROW_NOTE = 116,
+                     ROW_PRESET = 138, ROW_BEND = 160, ROW_MOD = 182,
+                     ROW_DELAY = 204, ROW_FBK = 226, ROW_MIX = 248;
+static constexpr int VBAR_Y = 56, VBAR_H = 14, VCELL_PITCH = 15, VCELL_W = 13;
+static constexpr int CBAR_X = 4, CBAR_Y = 96, CBAR_W = 232, CBAR_H = 12;
 
 static const char *PRESET_NAMES[PRESET_COUNT] = {
     "Fairlite", "Sq-PWM", "Saw-Flt", "Marimba", "LowStr5", "VoiceAh", "VoiceArr", "VoiceRrr",
@@ -58,6 +59,9 @@ void display_init() {
     gfx_text(0, ROW_PRESET, "PRESET", COL_LABEL, COL_BG, 2);
     gfx_text(0, ROW_BEND,   "BEND",   COL_LABEL, COL_BG, 2);
     gfx_text(0, ROW_MOD,    "MOD",    COL_LABEL, COL_BG, 2);
+    gfx_text(0, ROW_DELAY,  "DELAY",  COL_LABEL, COL_BG, 2);
+    gfx_text(0, ROW_FBK,    "FBK",    COL_LABEL, COL_BG, 2);
+    gfx_text(0, ROW_MIX,    "MIX",    COL_LABEL, COL_BG, 2);
 
     lcd_set_backlight(100);
 }
@@ -73,7 +77,7 @@ void display_task() {
     static uint16_t last_snd = 0;
     static uint16_t last_gate = 0;
     static uint8_t  last_load = 0xFF;
-    static MidiUiState last_midi = { 0xFE, 0, 0, 0xFF, 0x7FFF, 0xFF };
+    static MidiUiState last_midi = { 0xFE, 0, 0, 0xFF, 0x7FFF, 0xFF, 0xFF, 0xFF, 0xFFFF };
 
     uint16_t snd  = voice_alloc_active_mask();  // still sounding (envelope active)
     uint16_t gate = voice_alloc_gated_mask();   // note pressed/held
@@ -142,6 +146,20 @@ void display_task() {
     if (first || m.mod != last_midi.mod) {
         snprintf(buf, sizeof(buf), "%d", m.mod);
         draw_val(ROW_MOD, buf, COL_VALUE);
+    }
+
+    // Effect (feedback delay).
+    if (first || m.fx_delay_ms != last_midi.fx_delay_ms) {
+        snprintf(buf, sizeof(buf), "%dms", m.fx_delay_ms);
+        draw_val(ROW_DELAY, buf, COL_VALUE);
+    }
+    if (first || m.fx_fbk != last_midi.fx_fbk) {
+        snprintf(buf, sizeof(buf), "%d%%", m.fx_fbk * 100 / 127);
+        draw_val(ROW_FBK, buf, COL_VALUE);
+    }
+    if (first || m.fx_mix != last_midi.fx_mix) {
+        snprintf(buf, sizeof(buf), "%d%%", m.fx_mix * 100 / 127);
+        draw_val(ROW_MIX, buf, m.fx_mix ? COL_LOAD_MID : COL_VALUE);
     }
 
     last_midi = m;
