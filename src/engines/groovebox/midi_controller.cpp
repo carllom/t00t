@@ -25,6 +25,28 @@ static Tb303Preset g_303;          // mutated live by CCs
 static int         g_303_note = -1; // currently sounding 303 note (-1 = none)
 static float       g_303_bend = 1.0f;
 
+// Held-note stack for monophonic last-note priority + legato. Overlapping notes
+// slide (portamento); releasing back to a still-held note slides to it.
+static uint8_t held_note[16];
+static uint8_t held_vel[16];
+static uint8_t held_count = 0;
+
+static void held_push(uint8_t note, uint8_t vel) {
+    if (held_count < 16) { held_note[held_count] = note; held_vel[held_count] = vel; held_count++; }
+}
+static void held_remove(uint8_t note) {
+    for (uint8_t i = 0; i < held_count; i++) {
+        if (held_note[i] == note) {
+            for (uint8_t j = i; j + 1 < held_count; j++) {
+                held_note[j] = held_note[j + 1];
+                held_vel[j]  = held_vel[j + 1];
+            }
+            held_count--;
+            return;
+        }
+    }
+}
+
 // --- UI snapshot ---
 static MidiUiState ui_state;
 void midi_controller_ui_state(MidiUiState *out) { *out = ui_state; }
@@ -40,7 +62,10 @@ static constexpr uint8_t ACCENT_VEL_THRESHOLD = 96;
 static constexpr float   ACCENT_ENV_ADD  = 4000.0f;  // extra Hz of filter env at full accent
 static constexpr float   ACCENT_AMP_BOOST = 0.4f;    // up to +40% level at full accent
 
-static void trigger_303(VoiceParamBlock &shadow, uint8_t note, uint8_t velocity) {
+// Play a 303 note. slide = glide pitch from the previous note (legato);
+// retrigger = restart phase + envelopes (a fresh, non-legato note).
+static void play_303(VoiceParamBlock &shadow, uint8_t note, uint8_t velocity,
+                     bool slide, bool retrigger) {
     VoiceParams &vp = shadow.voices[GV_303];
     uint32_t inc = (uint32_t)((float)osc_phase_inc(note_to_freq(note)) * g_303_bend);
     apply_303(vp, g_303, inc, velocity);
@@ -52,8 +77,9 @@ static void trigger_303(VoiceParamBlock &shadow, uint8_t note, uint8_t velocity)
     int32_t amp = (int32_t)((float)(velocity * 258) * (1.0f + accent * ACCENT_AMP_BOOST));
     vp.amplitude = (int16_t)(amp > 32767 ? 32767 : amp);
 
-    vp.trigger++;
+    vp.slide = slide;
     vp.gate = true;
+    if (retrigger) vp.trigger++;   // fresh note: Core 1 resets phase + envelopes
     g_303_note = note;
 
     ui_state.last_note = note;
@@ -81,6 +107,7 @@ void midi_controller_init() {
     g_303 = tb303_default;
     g_303_note = -1;
     g_303_bend = 1.0f;
+    held_count = 0;
 
     ui_state.last_note = 0xFF;
     ui_state.last_velocity = 0;
@@ -110,19 +137,28 @@ void midi_controller_process(const uint8_t *data, uint32_t len, ParamExchange *p
                 if (ev.channel == DRUM_CHANNEL) {
                     trigger_drum(shadow, ev.data1, ev.data2);
                 } else {
-                    trigger_303(shadow, ev.data1, ev.data2);
+                    // Mono 303: a note played while another is held slides
+                    // (legato); a fresh note retriggers.
+                    bool legato = held_count > 0;
+                    held_push(ev.data1, ev.data2);
+                    play_303(shadow, ev.data1, ev.data2, legato, !legato);
                 }
                 changed = true;
                 break;
 
             case MIDI_NOTE_OFF:
                 if (ev.channel != DRUM_CHANNEL) {
-                    // 303: release only if this is the note currently sounding.
-                    if ((int)ev.data1 == g_303_note) {
-                        shadow.voices[GV_303].gate = false;
+                    held_remove(ev.data1);
+                    if (held_count == 0) {
+                        shadow.voices[GV_303].gate = false;   // last note released
                         g_303_note = -1;
-                        changed = true;
+                    } else {
+                        // Legato back to the most recent still-held note.
+                        uint8_t n = held_note[held_count - 1];
+                        uint8_t v = held_vel[held_count - 1];
+                        play_303(shadow, n, v, true, false);
                     }
+                    changed = true;
                 }
                 // Drums are one-shot: note-off is ignored.
                 break;
