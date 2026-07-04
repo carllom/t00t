@@ -6,7 +6,7 @@
 
 #include <stdint.h>
 
-#define sararr1_SAMPLE_RATE 16000
+#define sararr1_SAMPLE_RATE 14254
 #define sararr1_NUM_SAMPLES 16384
 #define sararr1_LOOPED 1
 #define sararr1_LOOP_START 2176

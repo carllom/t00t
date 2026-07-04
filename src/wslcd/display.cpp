@@ -30,7 +30,9 @@ static constexpr int ROW_VOICES = 40, ROW_CPU = 88, ROW_NOTE = 136,
 static constexpr int VBAR_Y = 64, VBAR_H = 14, VCELL_PITCH = 15, VCELL_W = 13;
 static constexpr int CBAR_X = 4, CBAR_Y = 112, CBAR_W = 232, CBAR_H = 12;
 
-static const char *PRESET_NAMES[PRESET_COUNT] = { "Fairlite", "Sq-PWM", "Saw-Flt" };
+static const char *PRESET_NAMES[PRESET_COUNT] = {
+    "Fairlite", "Sq-PWM", "Saw-Flt", "Marimba", "LowStr5", "VoiceAh", "VoiceArr", "VoiceRrr",
+};
 static const char *NOTE_NAMES[12] =
     { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
 
