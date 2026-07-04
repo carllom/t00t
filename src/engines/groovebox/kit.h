@@ -118,6 +118,7 @@ inline void apply_303(VoiceParams &vp, const Tb303Preset &p, uint32_t phase_inc,
     vp.type = VT_TB303;
     vp.amplitude = (int16_t)(velocity * 258);
     vp.phase_inc = phase_inc;
+    vp.slide = false;   // caller sets true for legato slides
     vp.phase_inc2 = 0;
     vp.waveform = p.waveform;
     vp.duty_cycle = 512;

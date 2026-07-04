@@ -26,6 +26,7 @@ uint8_t audio_engine_load() { return s_load_pct; }
 // --- Per-voice state — Core 1 only ---
 static uint32_t voice_phase[MAX_VOICES];
 static uint32_t voice_phase2[MAX_VOICES];   // snare tone 2
+static float    glide_inc[MAX_VOICES];      // 303: current (gliding) phase increment
 static uint32_t metal_phase[MAX_VOICES][METAL_OSC_COUNT];  // 6-square metal bank
 static uint32_t metal_inc[METAL_OSC_COUNT]; // fixed metal-osc increments (init once)
 static uint16_t noise_lfsr[MAX_VOICES];
@@ -52,6 +53,10 @@ static constexpr uint8_t  CLAP_BURSTS   = 3;
 static float clap_burst_coeff = 0.0f;   // fast burst decay
 static float clap_tail_coeff  = 0.0f;   // slow tail decay
 
+// 303 portamento: one-pole glide coefficient per sample (~20 ms time constant,
+// ~60 ms audible slide) toward the target pitch.
+static constexpr float SLIDE_COEFF = 0.0011f;
+
 // Start an envelope as a one-shot decay: jump to full and decay to zero using
 // the config's release_coeff (drums, 303 filter env). No attack — the instant
 // onset is characteristic of analog drum machines.
@@ -66,6 +71,8 @@ static inline void env_oneshot(Envelope &e) {
 // filter env that sweeps the cutoff down from base+env_mod to base.
 static void render_303(uint32_t v, const VoiceParams &p) {
     uint32_t phase = voice_phase[v];
+    float ginc = glide_inc[v];
+    float target = (float)p.phase_inc;
     float res = (float)p.filter_resonance * (1.0f / 32767.0f);   // 0..1
     for (uint32_t i = 0; i < SAMPLES_PER_BUFFER; i++) {
         float amp_f = amp_env[v].advance(p.amp_env);
@@ -73,7 +80,12 @@ static void render_303(uint32_t v, const VoiceParams &p) {
         float aux_f = aux_env[v].advance(p.aux_env);   // 1 -> 0
         int32_t level = (int32_t)(amp_f * 32767.0f);
 
-        int32_t s = osc_sample(p.waveform, phase, p.duty_cycle, noise_lfsr[v], p.phase_inc);
+        // Portamento: glide toward the target pitch, or snap when not sliding.
+        if (p.slide) ginc += (target - ginc) * SLIDE_COEFF;
+        else         ginc = target;
+        uint32_t eff_inc = (uint32_t)ginc;
+
+        int32_t s = osc_sample(p.waveform, phase, p.duty_cycle, noise_lfsr[v], eff_inc);
         int32_t scaled = (s * p.amplitude) >> 15;
         scaled = (scaled * level) >> 15;
 
@@ -84,9 +96,10 @@ static void render_303(uint32_t v, const VoiceParams &p) {
         // Ladder works on normalized floats; scale Q15 <-> [-1, 1].
         float out = ladder[v].tick((float)scaled * (1.0f / 32768.0f), cutoff, res);
         scratch[i] += (int32_t)(out * 32768.0f);
-        phase += p.phase_inc;
+        phase += eff_inc;
     }
     voice_phase[v] = phase;
+    glide_inc[v] = ginc;
 }
 
 // BD / tom: sine with a fast downward pitch sweep and an amp decay.
@@ -223,6 +236,7 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
     for (uint32_t v = 0; v < MAX_VOICES; v++) {
         voice_phase[v] = 0;
         voice_phase2[v] = 0;
+        glide_inc[v] = 0.0f;
         noise_lfsr[v] = 0xACE1u;
         last_trigger[v] = 0;
         voice_gated[v] = false;
@@ -265,6 +279,7 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
                 last_trigger[v] = p.trigger;
                 voice_phase[v] = 0;
                 voice_phase2[v] = 0;
+                glide_inc[v] = (float)p.phase_inc;   // fresh note: snap pitch (no glide)
                 noise_lfsr[v] = 0xACE1u;
                 filter[v].init();
                 filter2[v].init();

@@ -34,6 +34,7 @@ struct VoiceParams {
     VoiceType type;      // instrument type (VT_SILENT = silent)
     uint8_t   trigger;   // generation counter, ++ on each note-on
     bool      gate;      // held (303); one-shot drums ignore it
+    bool      slide;     // 303: glide pitch toward phase_inc instead of snapping
     int16_t   amplitude; // velocity 0..32767
 
     uint32_t  phase_inc;   // primary oscillator pitch (303 / BD / tom / snare tone 1)
