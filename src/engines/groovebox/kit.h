@@ -19,8 +19,9 @@ enum GrooveVoice : uint8_t {
     GV_TOM_LO = 4,
     GV_TOM_MID = 5,
     GV_TOM_HI = 6,
-    GV_HAT_CLOSED = 9,   // chokes GV_HAT_OPEN (shared 808 hi-hat circuit)
-    GV_HAT_OPEN   = 10,
+    GV_HAT   = 9,   // shared closed/open hi-hat — re-trigger cuts the previous
+                    // hit, mirroring the 808's single hi-hat circuit (the choke)
+    GV_CRASH = 11,
 };
 
 // --- Drum kit instrument --------------------------------------------------
@@ -33,23 +34,26 @@ struct KitInstrument {
     uint16_t  amp_decay_ms;  // amplitude one-shot decay
     uint16_t  pitch_decay_ms;// pitch-envelope decay (BD/tom/snare)
     int16_t   pitch_env_depth;   // Q15 fraction of base pitch swept downward (0 = none)
-    FilterMode filter_mode;  // HP (hat) / BP (snare) / OFF
-    uint16_t  filter_cutoff;
+    FilterMode filter_mode;  // HP (hat) / BP (snare, metal) / OFF
+    uint16_t  filter_cutoff;     // cutoff Hz (snare/hat); BP center (metal)
+    uint16_t  filter_cutoff2;    // HP corner Hz after the BP (metal only)
     uint16_t  filter_resonance;
     uint16_t  noise_level;   // Q15 noise mix (snare/hat)
     uint16_t  tone_level;    // Q15 tone mix (snare)
 };
 
-// 808-flavoured kit. GM-ish note mapping on the drum channel.
+// 808-flavoured kit. GM-ish note mapping on the drum channel. Closed (42) and
+// open (46) hi-hat share GV_HAT so a closed hit cuts a ringing open hat.
 static const KitInstrument kit_808[] = {
-    // note voice        type          freq  freq2  aDec pDec  pDepth   filter      cut   res    noise  tone
-    {  36, GV_BD,        VT_DRUM_BD,    55.0f, 0.0f,  400,  55,  22937, FILTER_OFF,    0,     0,      0,      0 }, // Bass drum
-    {  38, GV_SNARE,     VT_DRUM_SNARE,180.0f,330.0f,180,  40,   6553, FILTER_BP,  2000, 12000,  26214,  16384 }, // Snare
-    {  41, GV_TOM_LO,    VT_DRUM_TOM,   90.0f, 0.0f,  320,  60,  16384, FILTER_OFF,    0,     0,      0,      0 }, // Low tom
-    {  45, GV_TOM_MID,   VT_DRUM_TOM,  130.0f, 0.0f,  300,  60,  16384, FILTER_OFF,    0,     0,      0,      0 }, // Mid tom
-    {  48, GV_TOM_HI,    VT_DRUM_TOM,  180.0f, 0.0f,  280,  55,  16384, FILTER_OFF,    0,     0,      0,      0 }, // Hi tom
-    {  42, GV_HAT_CLOSED,VT_DRUM_HAT,    0.0f, 0.0f,   45,   0,      0, FILTER_HP,  8000,  6000,  32767,      0 }, // Closed hat
-    {  46, GV_HAT_OPEN,  VT_DRUM_HAT,    0.0f, 0.0f,  350,   0,      0, FILTER_HP,  8000,  6000,  32767,      0 }, // Open hat
+    // note voice     type          freq  freq2  aDec pDec  pDepth   filter      cut  cut2  res    noise  tone
+    {  36, GV_BD,     VT_DRUM_BD,    55.0f, 0.0f,  400,  55,  22937, FILTER_OFF,    0,    0,     0,      0,      0 }, // Bass drum
+    {  38, GV_SNARE,  VT_DRUM_SNARE,180.0f,330.0f,180,  40,   6553, FILTER_BP,  2000,    0, 12000,  26214,  16384 }, // Snare
+    {  41, GV_TOM_LO, VT_DRUM_TOM,   90.0f, 0.0f,  320,  60,  16384, FILTER_OFF,    0,    0,     0,      0,      0 }, // Low tom
+    {  45, GV_TOM_MID,VT_DRUM_TOM,  130.0f, 0.0f,  300,  60,  16384, FILTER_OFF,    0,    0,     0,      0,      0 }, // Mid tom
+    {  48, GV_TOM_HI, VT_DRUM_TOM,  180.0f, 0.0f,  280,  55,  16384, FILTER_OFF,    0,    0,     0,      0,      0 }, // Hi tom
+    {  42, GV_HAT,    VT_DRUM_METAL,  0.0f, 0.0f,   45,   0,      0, FILTER_BP,  9000, 7000, 16000,      0,      0 }, // Closed hat
+    {  46, GV_HAT,    VT_DRUM_METAL,  0.0f, 0.0f,  350,   0,      0, FILTER_BP,  9000, 7000, 16000,      0,      0 }, // Open hat
+    {  49, GV_CRASH,  VT_DRUM_METAL,  0.0f, 0.0f, 1200,   0,      0, FILTER_BP,  5000, 3500, 14000,      0,      0 }, // Crash cymbal
 };
 static constexpr uint32_t KIT_808_COUNT = sizeof(kit_808) / sizeof(kit_808[0]);
 
@@ -74,6 +78,7 @@ inline void apply_kit(VoiceParams &vp, const KitInstrument &k, uint8_t velocity)
     vp.aux_env = env_config(0, 0, 0, k.pitch_decay_ms);
     vp.filter_mode = k.filter_mode;
     vp.filter_cutoff = k.filter_cutoff;
+    vp.filter_cutoff2 = k.filter_cutoff2;
     vp.filter_resonance = k.filter_resonance;
     vp.filter_env_amount = 0;
     vp.pitch_env_depth = k.pitch_env_depth;
@@ -112,6 +117,7 @@ inline void apply_303(VoiceParams &vp, const Tb303Preset &p, uint32_t phase_inc,
     vp.aux_env = env_config(0, 0, 0, p.env_decay_ms);   // one-shot filter env
     vp.filter_mode = FILTER_LP;
     vp.filter_cutoff = p.cutoff;
+    vp.filter_cutoff2 = 0;
     vp.filter_resonance = p.resonance;
     vp.filter_env_amount = p.env_mod;
     vp.pitch_env_depth = 0;

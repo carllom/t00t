@@ -53,12 +53,8 @@ static void trigger_drum(VoiceParamBlock &shadow, uint8_t note, uint8_t velocity
     apply_kit(vp, *k, velocity);
     vp.trigger++;
     vp.gate = true;
-
-    // Closed hat chokes the open hat (shared 808 hi-hat circuit): cut its gate
-    // so its envelope releases quickly on the next render.
-    if (k->voice == GV_HAT_CLOSED) {
-        shadow.voices[GV_HAT_OPEN].gate = false;
-    }
+    // Closed and open hi-hat share GV_HAT, so a closed hit re-triggers the same
+    // voice and naturally cuts a ringing open hat — no explicit choke needed.
 
     ui_state.last_note = note;
     ui_state.last_velocity = velocity;
