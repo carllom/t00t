@@ -3,6 +3,7 @@
 #include "osc/sample.h"
 #include "envelope.h"
 #include "filter.h"
+#include "fx/delay.h"
 #include "hardware/gpio.h"
 #include "pico/multicore.h"
 #include "pico/time.h"
@@ -34,6 +35,9 @@ static SVFilter filter[MAX_VOICES];
 // Scratch buffer for mixing (int32_t to avoid overflow during summation)
 static int32_t scratch[SAMPLES_PER_BUFFER];
 
+// Post-mix effect state (Core 1 only)
+static FxDelay fx_delay;
+
 void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
     // Init profiling pin
     gpio_init(PROFILE_PIN);
@@ -57,6 +61,9 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
 
     // Generate wavetable
     osc_init_sine();
+
+    // Clear the delay line
+    fx_delay.init();
 
     while (true) {
         // Wait for DMA ISR to tell us which buffer to fill
@@ -221,6 +228,9 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
             lfo_phase[v] = lfo_ph;
             mod_lfo_phase[v] = mod_ph;
         }
+
+        // Post-mix effect: feedback delay (in place on the mono mix).
+        fx_delay.process(scratch, SAMPLES_PER_BUFFER, vp.fx);
 
         // Clip and interleave into stereo int16_t buffer
         int16_t *out = i2s_buffer_ptr(buffers, buf_index);

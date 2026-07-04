@@ -65,6 +65,10 @@ counter; Core 1 detects a change to (re)start a note.
   with envelope- and LFO-modulated cutoff.
 - **Modulation**: per-preset LFO → amplitude (tremolo) / pitch (vibrato) / PWM / filter cutoff;
   plus a dedicated mod-wheel vibrato LFO (5 Hz) independent of the preset LFO.
+- **Effects** ([src/fx/delay.h](src/fx/delay.h)): global feedback **delay**, a post-mix insert
+  on Core 1 (fixed cost, ~1 voice). Params ride the `ParamExchange` block as `EffectParams`
+  (delay length, feedback, wet/dry). MIDI **CC71 = time (20–1000 ms), CC73 = feedback,
+  CC74 = mix**; default dry (mix 0). 128 KB delay line (`.bss`). Reverb is the planned next pass.
 - **Presets** ([src/presets.h](src/presets.h)): `VoicePreset` describes a sound; master
   `presets[]` array is the single source of truth, referenced by index. Currently Fairlight
   sample, square PWM, saw filter.

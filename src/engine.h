@@ -38,9 +38,17 @@ struct VoiceParams {
     int16_t mod_depth;         // mod-wheel vibrato depth, Q15 (0 = off) — dedicated LFO on Core 1
 };
 
+// Global effect parameters (feedback delay). Written by Core 0, read by Core 1.
+struct EffectParams {
+    uint16_t delay_samples;  // target delay length in samples (>= 1)
+    int16_t  feedback_q15;   // echo feedback, 0..~30000 (< 32768 = stable)
+    int16_t  mix_q15;        // wet/dry, 0 = fully dry, 32767 = fully wet
+};
+
 // A complete snapshot of all voice parameters for one render pass.
 struct VoiceParamBlock {
     VoiceParams voices[MAX_VOICES];
+    EffectParams fx;
 };
 
 // Double-buffered parameter exchange between Core 0 and Core 1.
@@ -63,6 +71,9 @@ struct ParamExchange {
                                         0.0f, 0.0f, 0.0f, 0.0f,
                                         FILTER_OFF, 8000, 0, 0, 0.0f, nullptr, 0 };
             }
+            // Default: ~300 ms delay, moderate feedback, fully dry (mix = 0)
+            // so the effect is silent until CC74 opens it.
+            blocks[b].fx = { 13230, 13000, 0 };
         }
     }
 
