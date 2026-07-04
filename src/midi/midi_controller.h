@@ -1,6 +1,6 @@
 #pragma once
 
-#include "../engine.h"
+#include "engine.h"
 #include <cstdint>
 
 // Transport-agnostic MIDI controller.

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "../engine.h"
+#include "engine.h"
 
 // USB MIDI transport — thin wrapper around TinyUSB.
 // Reads raw MIDI bytes and feeds them to midi_controller.

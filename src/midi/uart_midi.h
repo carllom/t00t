@@ -1,6 +1,6 @@
 #pragma once
 
-#include "../engine.h"
+#include "engine.h"
 
 // DIN (serial) MIDI transport — UART at 31250 baud.
 // Default wiring: UART1 RX on GPIO5 (pin 7), via optocoupler.

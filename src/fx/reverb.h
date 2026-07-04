@@ -1,6 +1,6 @@
 #pragma once
 
-#include "engine.h"        // EffectParams
+#include "engine_base.h"   // EffectParams
 #include <cstdint>
 #include <arm_acle.h>      // __ssat
 
