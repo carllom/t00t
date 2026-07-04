@@ -4,6 +4,7 @@
 #include "osc/noise.h"
 #include "envelope.h"
 #include "filter.h"
+#include "ladder.h"
 #include "fx/delay.h"
 #include "fx/reverb.h"
 #include "hardware/gpio.h"
@@ -28,7 +29,8 @@ static uint8_t  last_trigger[MAX_VOICES];
 static bool     voice_gated[MAX_VOICES];
 static Envelope amp_env[MAX_VOICES];        // amplitude contour
 static Envelope aux_env[MAX_VOICES];        // filter env (303) / pitch env (drums)
-static SVFilter filter[MAX_VOICES];
+static SVFilter filter[MAX_VOICES];         // drums (BP/HP)
+static LadderFilter ladder[MAX_VOICES];     // 303 (4-pole resonant LP)
 
 static int32_t scratch[SAMPLES_PER_BUFFER];
 
@@ -47,11 +49,11 @@ static inline void env_oneshot(Envelope &e) {
 
 // --- Per-type render paths. Each accumulates into scratch[]. -------------
 
-// 303: saw/square through the resonant LP, amp ADSR, one-shot filter env that
-// sweeps the cutoff down from base+env_mod to base.
+// 303: saw/square through the 4-pole resonant ladder LP, amp ADSR, one-shot
+// filter env that sweeps the cutoff down from base+env_mod to base.
 static void render_303(uint32_t v, const VoiceParams &p) {
     uint32_t phase = voice_phase[v];
-    int32_t q = svf_compute_q(p.filter_resonance);
+    float res = (float)p.filter_resonance * (1.0f / 32767.0f);   // 0..1
     for (uint32_t i = 0; i < SAMPLES_PER_BUFFER; i++) {
         float amp_f = amp_env[v].advance(p.amp_env);
         if (amp_f <= 0.0f) break;
@@ -62,12 +64,13 @@ static void render_303(uint32_t v, const VoiceParams &p) {
         int32_t scaled = (s * p.amplitude) >> 15;
         scaled = (scaled * level) >> 15;
 
-        int32_t cutoff = (int32_t)p.filter_cutoff + (int32_t)(aux_f * (float)p.filter_env_amount);
-        if (cutoff < 20) cutoff = 20;
-        if (cutoff > 18000) cutoff = 18000;
-        scaled = filter[v].tick(scaled, svf_compute_f_half(cutoff), q, p.filter_mode);
+        float cutoff = (float)p.filter_cutoff + aux_f * (float)p.filter_env_amount;
+        if (cutoff < 20.0f) cutoff = 20.0f;
+        if (cutoff > 18000.0f) cutoff = 18000.0f;
 
-        scratch[i] += scaled;
+        // Ladder works on normalized floats; scale Q15 <-> [-1, 1].
+        float out = ladder[v].tick((float)scaled * (1.0f / 32768.0f), cutoff, res);
+        scratch[i] += (int32_t)(out * 32768.0f);
         phase += p.phase_inc;
     }
     voice_phase[v] = phase;
@@ -163,6 +166,7 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
         amp_env[v].init();
         aux_env[v].init();
         filter[v].init();
+        ladder[v].init();
     }
 
     osc_init_sine();
@@ -190,6 +194,7 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
                 voice_phase2[v] = 0;
                 noise_lfsr[v] = 0xACE1u;
                 filter[v].init();
+                ladder[v].init();
                 if (p.type == VT_TB303) amp_env[v].trigger();  // gated ADSR
                 else                    env_oneshot(amp_env[v]);// one-shot decay
                 env_oneshot(aux_env[v]);                        // filter/pitch env

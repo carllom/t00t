@@ -118,15 +118,17 @@ void midi_controller_process(const uint8_t *data, uint32_t len, ParamExchange *p
 
             case MIDI_CC:
                 switch (ev.data1) {
-                    case 16: {  // 303 cutoff: 0..127 -> 100..5000 Hz
-                        g_303.cutoff = (uint16_t)(100 + (uint32_t)ev.data2 * 4900u / 127u);
+                    case 1: {   // mod wheel -> 303 cutoff, exponential 100..10000 Hz
+                        float t = (float)ev.data2 * (1.0f / 127.0f);
+                        g_303.cutoff = (uint16_t)(100.0f * powf(100.0f, t));
                         if (shadow.voices[GV_303].type == VT_TB303)
                             shadow.voices[GV_303].filter_cutoff = g_303.cutoff;
+                        ui_state.mod = ev.data2;
                         changed = true;
                         break;
                     }
-                    case 17: {  // 303 resonance: 0..127 -> 0..32766
-                        g_303.resonance = (uint16_t)(ev.data2 * 258);
+                    case 71: {  // CC71 -> 303 resonance (linear, capped for stability)
+                        g_303.resonance = (uint16_t)(ev.data2 * 237);  // max ~0.92
                         if (shadow.voices[GV_303].type == VT_TB303)
                             shadow.voices[GV_303].filter_resonance = g_303.resonance;
                         changed = true;
