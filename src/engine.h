@@ -38,11 +38,17 @@ struct VoiceParams {
     int16_t mod_depth;         // mod-wheel vibrato depth, Q15 (0 = off) — dedicated LFO on Core 1
 };
 
-// Global effect parameters (feedback delay). Written by Core 0, read by Core 1.
+// Effect selector. CC74 picks the type; the same three knobs (CC72/73/75) then
+// drive whichever effect is active.
+enum EffectType : uint8_t { FX_OFF, FX_DELAY, FX_REVERB, FX_COUNT };
+
+// Global effect parameters. Written by Core 0, read by Core 1. The three params
+// are raw 0..127 controller values; each effect maps them to its own scale.
 struct EffectParams {
-    uint16_t delay_samples;  // target delay length in samples (>= 1)
-    int16_t  feedback_q15;   // echo feedback, 0..~30000 (< 32768 = stable)
-    int16_t  mix_q15;        // wet/dry, 0 = fully dry, 32767 = fully wet
+    uint8_t type;   // EffectType (CC74)
+    uint8_t mix;    // CC73: wet/dry — 0 = dry, 127 = full wet
+    uint8_t p1;     // CC72: delay feedback / reverb room size
+    uint8_t p2;     // CC75: delay time  / reverb damping
 };
 
 // A complete snapshot of all voice parameters for one render pass.
@@ -71,9 +77,9 @@ struct ParamExchange {
                                         0.0f, 0.0f, 0.0f, 0.0f,
                                         FILTER_OFF, 8000, 0, 0, 0.0f, nullptr, 0 };
             }
-            // Default: ~300 ms delay, moderate feedback, fully dry (mix = 0)
-            // so the effect is silent until CC74 opens it.
-            blocks[b].fx = { 13230, 13000, 0 };
+            // Default: delay selected, ~300 ms (p2=36) / moderate feedback
+            // (p1=55), fully dry (mix=0) so it's silent until CC73 opens it.
+            blocks[b].fx = { FX_DELAY, 0, 55, 36 };
         }
     }
 
