@@ -9,6 +9,11 @@ enum MidiMsgType : uint8_t {
     MIDI_CC       = 2,  // control change
     MIDI_PITCH_BEND = 3,
     MIDI_PROGRAM_CHANGE = 4,
+    // System real-time (single byte, no channel/data) — for the sequencer clock.
+    MIDI_CLOCK    = 5,  // 0xF8, 24 per quarter note
+    MIDI_START    = 6,  // 0xFA
+    MIDI_CONTINUE = 7,  // 0xFB
+    MIDI_STOP     = 8,  // 0xFC
 };
 
 // Generic 2-data-byte event. Field meaning depends on type:
@@ -47,8 +52,17 @@ struct MidiParser {
 
     // Feed one byte. Returns true if a note on/off event was completed.
     bool feed(uint8_t byte, MidiEvent &out) {
-        // System real-time (0xF8-0xFF): pass through, don't affect state
-        if (byte >= 0xF8) return false;
+        // System real-time (0xF8-0xFF): single-byte, may arrive mid-message.
+        // Emit the transport messages; leave running status untouched.
+        if (byte >= 0xF8) {
+            switch (byte) {
+                case 0xF8: out = { MIDI_CLOCK,    0, 0, 0 }; return true;
+                case 0xFA: out = { MIDI_START,    0, 0, 0 }; return true;
+                case 0xFB: out = { MIDI_CONTINUE, 0, 0, 0 }; return true;
+                case 0xFC: out = { MIDI_STOP,     0, 0, 0 }; return true;
+                default:   return false;   // active sensing (0xFE), reset (0xFF)
+            }
+        }
 
         // System common (0xF0-0xF7): cancel running status
         if (byte >= 0xF0) {

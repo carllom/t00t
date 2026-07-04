@@ -2,6 +2,7 @@
 #include "midi_parser.h"
 #include "engine.h"
 #include "kit.h"
+#include "patterns.h"
 #include "osc/common.h"
 #include <cmath>
 
@@ -13,12 +14,22 @@
 // Shares the transport-agnostic MidiParser and the midi_controller.h interface;
 // the transports (usb/uart) call midi_controller_process() unchanged.
 
-static constexpr uint8_t DRUM_CHANNEL = 9;   // MIDI channel 10 (0-indexed)
+static constexpr uint8_t DRUM_CHANNEL    = 9;    // MIDI channel 10 (0-indexed)
+static constexpr uint8_t PATTERN_CHANNEL = 15;   // MIDI channel 16 — pattern toggles
+static constexpr uint8_t PULSES_PER_STEP = 6;    // 24 PPQN / 4 = 16th-note steps
 
 static constexpr uint16_t PITCH_BEND_CENTER = 8192;
 static constexpr float    PITCH_BEND_RANGE_SEMITONES = 2.0f;
 
 static MidiParser midi_parser;
+
+// --- Sequencer state (Core 0) ---
+static bool    seq_playing = false;      // a pattern is armed/looping
+static uint8_t seq_index = 0;            // which pattern
+static uint8_t seq_step = 0;             // current step
+static uint8_t seq_pulse = 0;            // clock pulses within the current step
+static bool    seq_clock_running = true; // MIDI transport running (start/stop)
+static bool    seq_prev_slide = false;   // previous step's slide flag (glide into this step)
 
 // --- TB-303 live state ---
 static Tb303Preset g_303;          // mutated live by CCs
@@ -102,12 +113,64 @@ static void trigger_drum(VoiceParamBlock &shadow, uint8_t note, uint8_t velocity
     ui_state.last_channel = DRUM_CHANNEL;
 }
 
+// --- Sequencer ------------------------------------------------------------
+
+static void seq_stop(VoiceParamBlock &shadow) {
+    seq_playing = false;
+    seq_prev_slide = false;
+    shadow.voices[GV_303].gate = false;
+    g_303_note = -1;
+}
+
+// Play the current step's 303 event (or gate off on a rest). SEQ_SLIDE marks a
+// note that glides *into the next* step (303 convention), so a step is played
+// legato when the previous step was a slide.
+static void seq_play_step(VoiceParamBlock &shadow) {
+    const SeqPattern &pat = seq_patterns[seq_index];
+    const SeqStep &st = pat.steps[seq_step % pat.length];
+    if (st.note == 0) {
+        shadow.voices[GV_303].gate = false;   // rest
+        g_303_note = -1;
+        seq_prev_slide = false;               // a rest breaks the slide chain
+        return;
+    }
+    // Glide into this note if the previous step requested a slide (and there is
+    // a note to glide from — can't slide out of a rest).
+    bool slide = seq_prev_slide && (g_303_note >= 0);
+    uint8_t vel = (st.flags & SEQ_ACCENT) ? 122 : 90;
+    play_303(shadow, st.note, vel, slide, !slide);
+    seq_prev_slide = (st.flags & SEQ_SLIDE) != 0;
+}
+
+// Key on the pattern channel toggles its pattern: pressing a new pattern's key
+// switches to it; pressing the playing pattern's key stops.
+static void seq_toggle(VoiceParamBlock &shadow, uint8_t note) {
+    if (note < SEQ_PATTERN_BASE_NOTE) return;
+    uint8_t idx = note - SEQ_PATTERN_BASE_NOTE;
+    if (idx >= SEQ_PATTERN_COUNT) return;
+    if (seq_playing && seq_index == idx) {
+        seq_stop(shadow);
+    } else {
+        seq_index = idx;
+        seq_playing = true;
+        seq_step = 0;
+        seq_pulse = 0;   // next clock pulse plays step 0
+        seq_prev_slide = false;
+    }
+}
+
 void midi_controller_init() {
     midi_parser.init();
     g_303 = tb303_default;
     g_303_note = -1;
     g_303_bend = 1.0f;
     held_count = 0;
+    seq_playing = false;
+    seq_index = 0;
+    seq_step = 0;
+    seq_pulse = 0;
+    seq_clock_running = true;
+    seq_prev_slide = false;
 
     ui_state.last_note = 0xFF;
     ui_state.last_velocity = 0;
@@ -136,6 +199,8 @@ void midi_controller_process(const uint8_t *data, uint32_t len, ParamExchange *p
             case MIDI_NOTE_ON:
                 if (ev.channel == DRUM_CHANNEL) {
                     trigger_drum(shadow, ev.data1, ev.data2);
+                } else if (ev.channel == PATTERN_CHANNEL) {
+                    seq_toggle(shadow, ev.data1);
                 } else {
                     // Mono 303: a note played while another is held slides
                     // (legato); a fresh note retriggers.
@@ -147,7 +212,7 @@ void midi_controller_process(const uint8_t *data, uint32_t len, ParamExchange *p
                 break;
 
             case MIDI_NOTE_OFF:
-                if (ev.channel != DRUM_CHANNEL) {
+                if (ev.channel != DRUM_CHANNEL && ev.channel != PATTERN_CHANNEL) {
                     held_remove(ev.data1);
                     if (held_count == 0) {
                         shadow.voices[GV_303].gate = false;   // last note released
@@ -223,6 +288,36 @@ void midi_controller_process(const uint8_t *data, uint32_t len, ParamExchange *p
 
             case MIDI_PROGRAM_CHANGE:
                 // Kit / preset switching — to be added with the 909 kit.
+                break;
+
+            case MIDI_CLOCK:
+                // 24 PPQN. Advance a 16th-note step every 6 pulses; the step
+                // plays on its first pulse.
+                if (seq_playing && seq_clock_running) {
+                    if (seq_pulse == 0) { seq_play_step(shadow); changed = true; }
+                    if (++seq_pulse >= PULSES_PER_STEP) {
+                        seq_pulse = 0;
+                        seq_step = (uint8_t)((seq_step + 1) % seq_patterns[seq_index].length);
+                    }
+                }
+                break;
+
+            case MIDI_START:      // transport start — realign to the downbeat
+                seq_step = 0;
+                seq_pulse = 0;
+                seq_clock_running = true;
+                seq_prev_slide = false;
+                break;
+
+            case MIDI_CONTINUE:
+                seq_clock_running = true;
+                break;
+
+            case MIDI_STOP:       // halt advancing and silence the 303
+                seq_clock_running = false;
+                shadow.voices[GV_303].gate = false;
+                g_303_note = -1;
+                changed = true;
                 break;
         }
     }
