@@ -35,3 +35,7 @@ void voice_alloc_init();
 void voice_alloc_update();
 int  voice_alloc_allocate();
 void voice_alloc_release(int v);
+
+// Voice-state queries for a display/UI (Core 0). Valid after voice_alloc_update().
+uint16_t voice_alloc_active_mask();  // bit v = voice v is still sounding (Core 1 feedback)
+uint16_t voice_alloc_gated_mask();   // bit v = voice v has a held/pressed note

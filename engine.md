@@ -46,8 +46,16 @@ Pins differ between the two board targets. Definitions live in
 | 17 | I2S LRCK | PCM5122 WSEL (BCK base + 1) |
 | 18 | I2S DATA | PCM5122 DIN |
 | 22 | Profile pin | Synthesis workload measurement (probe on breadboard) |
+| 8 | LCD DC | Waveshare 1.83" data/command |
+| 9 | LCD CS | Chip select (manual GPIO) |
+| 10 | LCD CLK | SPI1 SCK |
+| 11 | LCD DIN | SPI1 TX (MOSI) |
+| 12 | LCD RST | Reset |
+| 13 | LCD BL | Backlight (PWM) |
 
-No buttons, VGA, or SD on the breadboard; control is MIDI-only.
+No buttons, VGA, or SD on the breadboard; control is MIDI-only. The optional
+1.83" 240×284 IPS LCD (ST7789P) is driven by Core 0 at low priority — see the
+`src/wslcd/` driver.
 
 ## Audio Buffer Flow
 

@@ -39,6 +39,13 @@ static uint8_t default_preset_for_channel(uint8_t ch) {
     return ch < NUM_CHANNEL_PRESETS ? channel_preset[ch] : channel_preset[NUM_CHANNEL_PRESETS - 1];
 }
 
+// --- UI snapshot (updated on each event, read by the display) ---
+static MidiUiState ui_state;
+
+void midi_controller_ui_state(MidiUiState *out) {
+    *out = ui_state;
+}
+
 // Map a 14-bit pitch bend value to a phase_inc multiplier.
 static float bend_to_ratio(uint16_t bend14) {
     float semitones = ((float)bend14 - (float)PITCH_BEND_CENTER) / (float)PITCH_BEND_CENTER
@@ -56,6 +63,11 @@ static void midi_voice_on(VoiceParamBlock &shadow, int v, uint8_t note, uint8_t 
     voice_base_inc[v] = base;
     voice_channel[v] = channel;
     voice_held[v] = true;
+
+    ui_state.last_note = note;
+    ui_state.last_velocity = velocity;
+    ui_state.last_channel = channel;
+    ui_state.program = channel_program[channel];
 
     VoiceParams &vp = shadow.voices[v];
     voice_apply_preset(vp, pr);
@@ -96,6 +108,12 @@ void midi_controller_init() {
         channel_bank_msb[ch] = 0;
         channel_bank_lsb[ch] = 0;
     }
+    ui_state.last_note = 0xFF;
+    ui_state.last_velocity = 0;
+    ui_state.last_channel = 0;
+    ui_state.program = default_preset_for_channel(0);
+    ui_state.bend = 0;
+    ui_state.mod = 0;
 }
 
 void midi_controller_process(const uint8_t *data, uint32_t len, ParamExchange *params) {
@@ -142,6 +160,8 @@ void midi_controller_process(const uint8_t *data, uint32_t len, ParamExchange *p
                     case 1:  // mod wheel → vibrato depth
                         channel_mod[ev.channel] = (int16_t)(ev.data2 * 258);  // 0..127 → ~0..32766
                         apply_channel_mod(shadow, ev.channel);
+                        ui_state.mod = ev.data2;
+                        ui_state.last_channel = ev.channel;
                         changed = true;
                         break;
                     case 0:   channel_bank_msb[ev.channel] = ev.data2; break;
@@ -154,6 +174,8 @@ void midi_controller_process(const uint8_t *data, uint32_t len, ParamExchange *p
                 uint16_t bend14 = (uint16_t)(ev.data1 | (ev.data2 << 7));
                 channel_bend_ratio[ev.channel] = bend_to_ratio(bend14);
                 apply_channel_bend(shadow, ev.channel);
+                ui_state.bend = (int16_t)((int)bend14 - PITCH_BEND_CENTER);
+                ui_state.last_channel = ev.channel;
                 changed = true;
                 break;
             }
@@ -161,6 +183,8 @@ void midi_controller_process(const uint8_t *data, uint32_t len, ParamExchange *p
                 // Affects future notes only (standard behavior). With a small
                 // preset list, bank select is recorded but not yet applied.
                 channel_program[ev.channel] = ev.data1 % PRESET_COUNT;
+                ui_state.program = channel_program[ev.channel];
+                ui_state.last_channel = ev.channel;
                 break;
         }
     }

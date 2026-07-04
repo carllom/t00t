@@ -34,6 +34,15 @@
 // --- No buttons on breadboard ---
 #define HAS_BUTTONS 0
 
+// --- Waveshare 1.83" 240x280 LCD (Rev2 = ST7789P) on SPI1 ---
+#define HAS_LCD 1
+#define LCD_DC_PIN   8
+#define LCD_CS_PIN   9
+#define LCD_CLK_PIN  10   // SPI1 SCK
+#define LCD_MOSI_PIN 11   // SPI1 TX
+#define LCD_RST_PIN  12
+#define LCD_BL_PIN   13   // backlight (PWM)
+
 // --- MIDI transports ---
 // DIN MIDI on UART1 RX (GPIO5) is the primary input; USB stays on as a fallback.
 #ifndef MIDI_UART

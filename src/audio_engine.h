@@ -7,3 +7,12 @@
 // waiting for DMA buffer-fill requests via multicore FIFO.
 // Never returns.
 void audio_engine_run(AudioBuffers *buffers, ParamExchange *params);
+
+// --- Telemetry, published by Core 1 for a Core 0 display/UI (read-only) ---
+// Single-word read, atomic on the M33 — no locking needed for a diagnostic.
+// (The active-voice bitmap is consumed by the voice allocator via the FIFO;
+// query it there — voice_alloc_active_mask() — rather than duplicating it here.)
+
+// Smoothed Core 1 render load as a percentage of the audio buffer period
+// (0–100). Mirrors the PROFILE_PIN duty cycle.
+uint8_t audio_engine_load();

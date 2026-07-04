@@ -71,3 +71,13 @@ void voice_alloc_init()          { alloc.init(); }
 void voice_alloc_update()        { alloc.update(); }
 int  voice_alloc_allocate()      { return alloc.allocate(); }
 void voice_alloc_release(int v)  { alloc.release(v); }
+
+uint16_t voice_alloc_active_mask() { return alloc.active_mask; }
+
+uint16_t voice_alloc_gated_mask() {
+    uint16_t m = 0;
+    for (uint32_t v = 0; v < MAX_VOICES; v++) {
+        if (alloc.voice_gated[v]) m |= (1u << v);
+    }
+    return m;
+}

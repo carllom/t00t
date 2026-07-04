@@ -27,9 +27,12 @@ add_executable(t00t
     src/midi/usb_midi.cpp
     src/midi/uart_midi.cpp
     src/midi/usb_descriptors.c
+    src/wslcd/lcd_st7789.cpp
+    src/wslcd/gfx.cpp
+    src/wslcd/display.cpp
 )
 
-target_include_directories(t00t PRIVATE src src/midi)
+target_include_directories(t00t PRIVATE src src/midi src/wslcd)
 
 # Optional MIDI transport overrides. Each may be 0, 1, or unset/"default"
 # (board header decides). Passed through from the Makefile every configure,
@@ -47,6 +50,8 @@ target_link_libraries(t00t
     hardware_dma
     hardware_pio
     hardware_timer
+    hardware_spi
+    hardware_pwm
     tinyusb_device
     tinyusb_board
 )
