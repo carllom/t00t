@@ -14,11 +14,21 @@ set(CMAKE_CXX_STANDARD 17)
 
 pico_sdk_init()
 
+# Synthesis engine selection. Each engine lives in src/engines/<name>/ and
+# provides its own engine.h (VoiceParams/ParamExchange), audio_engine.cpp
+# (Core 1 render loop), and preset/kit tables. Shared enums and constants live
+# in src/engine_base.h; the reusable DSP layer (osc/, filter.h, fx/) depends
+# only on that. Override with -DT00T_ENGINE=<name>.
+if(NOT DEFINED T00T_ENGINE)
+    set(T00T_ENGINE "subtractive")
+endif()
+message(STATUS "T00T synthesis engine: ${T00T_ENGINE}")
+
 add_executable(t00t
     src/main.cpp
     src/osc/sine.cpp
     src/envelope.cpp
-    src/audio_engine.cpp
+    src/engines/${T00T_ENGINE}/audio_engine.cpp
     src/output.cpp
     src/controller.cpp
     src/voice_alloc.cpp
@@ -32,7 +42,9 @@ add_executable(t00t
     src/wslcd/display.cpp
 )
 
-target_include_directories(t00t PRIVATE src src/midi src/wslcd)
+# The selected engine directory is on the include path so `#include "engine.h"`
+# (and its preset/kit headers) resolve to that engine's copy.
+target_include_directories(t00t PRIVATE src src/midi src/wslcd src/engines/${T00T_ENGINE})
 
 # Optional MIDI transport overrides. Each may be 0, 1, or unset/"default"
 # (board header decides). Passed through from the Makefile every configure,

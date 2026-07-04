@@ -1,6 +1,6 @@
 #pragma once
 
-#include "engine.h"
+#include "engine_base.h"
 #include <cstdint>
 
 // Dynamic voice allocator — runs on Core 0.
