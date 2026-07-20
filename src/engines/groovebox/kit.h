@@ -26,6 +26,25 @@ enum GrooveVoice : uint8_t {
     GV_CRASH = 11,
 };
 
+// --- Drum trigger notes (MIDI channel 10) ---------------------------------
+// The BeatStep Pro drum sequencer's 16 pads span notes 36 (C1) .. 51 (D#2),
+// one instrument per pad; unused pads stay silent. GM-standard notes are kept
+// where they already fall in range (BD/snare/clap/hats/toms/crash); the 808
+// cowbell, whose GM note (56) is out of range, is relocated to a free pad.
+// Reassign a drum by changing its note here — kit_808 references these names.
+enum DrumNote : uint8_t {
+    DN_BD      = 36,   // C1  — bass drum
+    DN_COWBELL = 37,   // C#1 — cowbell (GM 56 falls outside 36..51)
+    DN_SNARE   = 38,   // D1  — snare
+    DN_CLAP    = 39,   // D#1 — hand clap
+    DN_TOM_LO  = 41,   // F1  — low tom
+    DN_HAT_CL  = 42,   // F#1 — closed hi-hat
+    DN_TOM_MID = 45,   // A1  — mid tom
+    DN_HAT_OP  = 46,   // A#1 — open hi-hat
+    DN_TOM_HI  = 48,   // C2  — hi tom
+    DN_CRASH   = 49,   // C#2 — crash cymbal
+};
+
 // --- Drum kit instrument --------------------------------------------------
 struct KitInstrument {
     uint8_t   note;          // MIDI note (on the drum channel) that triggers it
@@ -49,17 +68,17 @@ struct KitInstrument {
 // 808-flavoured kit. GM-ish note mapping on the drum channel. Closed (42) and
 // open (46) hi-hat share GV_HAT so a closed hit cuts a ringing open hat.
 static const KitInstrument kit_808[] = {
-    // note voice     type          freq  freq2  aDec pDec  pDepth   filter      cut  cut2  res    noise  tone  mFirst mCount
-    {  36, GV_BD,     VT_DRUM_BD,    55.0f, 0.0f,  400,  55,  22937, FILTER_OFF,    0,    0,     0,      0,      0,   0, 0 }, // Bass drum
-    {  38, GV_SNARE,  VT_DRUM_SNARE,180.0f,330.0f,180,  40,   6553, FILTER_BP,  2000,    0, 12000,  26214,  16384,  0, 0 }, // Snare
-    {  39, GV_CLAP,   VT_DRUM_CLAP,   0.0f, 0.0f,    0,   0,      0, FILTER_BP,  1000,    0, 14000,      0,      0,   0, 0 }, // Hand clap
-    {  41, GV_TOM_LO, VT_DRUM_TOM,   90.0f, 0.0f,  320,  60,  16384, FILTER_OFF,    0,    0,     0,      0,      0,   0, 0 }, // Low tom
-    {  45, GV_TOM_MID,VT_DRUM_TOM,  130.0f, 0.0f,  300,  60,  16384, FILTER_OFF,    0,    0,     0,      0,      0,   0, 0 }, // Mid tom
-    {  48, GV_TOM_HI, VT_DRUM_TOM,  180.0f, 0.0f,  280,  55,  16384, FILTER_OFF,    0,    0,     0,      0,      0,   0, 0 }, // Hi tom
-    {  56, GV_COWBELL,VT_DRUM_METAL,  0.0f, 0.0f,  300,   0,      0, FILTER_BP,  1200,    0, 20000,      0,      0,   4, 2 }, // Cowbell (540+800 Hz)
-    {  42, GV_HAT,    VT_DRUM_METAL,  0.0f, 0.0f,   45,   0,      0, FILTER_BP,  9000, 7000, 16000,      0,      0,   0, 6 }, // Closed hat
-    {  46, GV_HAT,    VT_DRUM_METAL,  0.0f, 0.0f,  350,   0,      0, FILTER_BP,  9000, 7000, 16000,      0,      0,   0, 6 }, // Open hat
-    {  49, GV_CRASH,  VT_DRUM_METAL,  0.0f, 0.0f, 1200,   0,      0, FILTER_BP,  5000, 3500, 14000,      0,      0,   0, 6 }, // Crash cymbal
+    //   note      voice     type          freq  freq2  aDec pDec  pDepth   filter      cut  cut2  res    noise  tone  mFirst mCount
+    { DN_BD,      GV_BD,     VT_DRUM_BD,    55.0f, 0.0f,  400,  55,  22937, FILTER_OFF,    0,    0,     0,      0,      0,   0, 0 }, // Bass drum
+    { DN_SNARE,   GV_SNARE,  VT_DRUM_SNARE,180.0f,330.0f,180,  40,   6553, FILTER_BP,  2000,    0, 12000,  26214,  16384,  0, 0 }, // Snare
+    { DN_CLAP,    GV_CLAP,   VT_DRUM_CLAP,   0.0f, 0.0f,    0,   0,      0, FILTER_BP,  1000,    0, 14000,      0,      0,   0, 0 }, // Hand clap
+    { DN_TOM_LO,  GV_TOM_LO, VT_DRUM_TOM,   90.0f, 0.0f,  320,  60,  16384, FILTER_OFF,    0,    0,     0,      0,      0,   0, 0 }, // Low tom
+    { DN_TOM_MID, GV_TOM_MID,VT_DRUM_TOM,  130.0f, 0.0f,  300,  60,  16384, FILTER_OFF,    0,    0,     0,      0,      0,   0, 0 }, // Mid tom
+    { DN_TOM_HI,  GV_TOM_HI, VT_DRUM_TOM,  180.0f, 0.0f,  280,  55,  16384, FILTER_OFF,    0,    0,     0,      0,      0,   0, 0 }, // Hi tom
+    { DN_COWBELL, GV_COWBELL,VT_DRUM_METAL,  0.0f, 0.0f,  300,   0,      0, FILTER_BP,  1200,    0, 20000,      0,      0,   4, 2 }, // Cowbell (540+800 Hz)
+    { DN_HAT_CL,  GV_HAT,    VT_DRUM_METAL,  0.0f, 0.0f,   45,   0,      0, FILTER_BP,  9000, 7000, 16000,      0,      0,   0, 6 }, // Closed hat
+    { DN_HAT_OP,  GV_HAT,    VT_DRUM_METAL,  0.0f, 0.0f,  350,   0,      0, FILTER_BP,  9000, 7000, 16000,      0,      0,   0, 6 }, // Open hat
+    { DN_CRASH,   GV_CRASH,  VT_DRUM_METAL,  0.0f, 0.0f, 1200,   0,      0, FILTER_BP,  5000, 3500, 14000,      0,      0,   0, 6 }, // Crash cymbal
 };
 static constexpr uint32_t KIT_808_COUNT = sizeof(kit_808) / sizeof(kit_808[0]);
 
