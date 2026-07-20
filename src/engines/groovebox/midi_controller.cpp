@@ -18,6 +18,23 @@ static constexpr uint8_t DRUM_CHANNEL    = 9;    // MIDI channel 10 (0-indexed)
 static constexpr uint8_t PATTERN_CHANNEL = 15;   // MIDI channel 16 — pattern toggles
 static constexpr uint8_t PULSES_PER_STEP = 6;    // 24 PPQN / 4 = 16th-note steps
 
+// --- Arturia BeatStep Pro control map ------------------------------------
+// The BSP's 16 encoders send CC 16..31 (absolute mode). Grid is 2x8: top row
+// 16..23, bottom row 24..31. Encoders read raw 0..127. Reassign a control by
+// changing its CC number here — nothing else references the raw numbers.
+enum BspCC : uint8_t {
+    CC_303_CUTOFF = 16,   // knob 1  — filter cutoff (live)
+    CC_303_RESO   = 17,   // knob 2  — filter resonance (live)
+    CC_303_ENVMOD = 18,   // knob 3  — filter env amount (next note)
+    CC_303_DECAY  = 19,   // knob 4  — filter env decay (next note)
+    CC_303_ACCENT = 20,   // knob 5  — accent depth (next note)
+    CC_303_WAVE   = 21,   // knob 6  — saw <-> square (next note)
+    CC_FX_TYPE    = 24,   // knob 9  — effect select
+    CC_FX_MIX     = 25,   // knob 10 — effect wet/dry
+    CC_FX_P1      = 26,   // knob 11 — effect param 1
+    CC_FX_P2      = 27,   // knob 12 — effect param 2
+};
+
 static constexpr uint16_t PITCH_BEND_CENTER = 8192;
 static constexpr float    PITCH_BEND_RANGE_SEMITONES = 2.0f;
 
@@ -35,6 +52,7 @@ static bool    seq_prev_slide = false;   // previous step's slide flag (glide in
 static Tb303Preset g_303;          // mutated live by CCs
 static int         g_303_note = -1; // currently sounding 303 note (-1 = none)
 static float       g_303_bend = 1.0f;
+static float       g_303_accent = 1.0f; // accent depth scaler (CC), 0..1
 
 // Held-note stack for monophonic last-note priority + legato. Overlapping notes
 // slide (portamento); releasing back to a still-held note slides to it.
@@ -84,6 +102,7 @@ static void play_303(VoiceParamBlock &shadow, uint8_t note, uint8_t velocity,
     float accent = 0.0f;
     if (velocity > ACCENT_VEL_THRESHOLD)
         accent = (float)(velocity - ACCENT_VEL_THRESHOLD) / (float)(127 - ACCENT_VEL_THRESHOLD);
+    accent *= g_303_accent;   // CC-controlled accent depth (0 = flat, 1 = full)
     vp.filter_env_amount = (int16_t)((float)g_303.env_mod + accent * ACCENT_ENV_ADD);
     int32_t amp = (int32_t)((float)(velocity * 258) * (1.0f + accent * ACCENT_AMP_BOOST));
     vp.amplitude = (int16_t)(amp > 32767 ? 32767 : amp);
@@ -164,6 +183,7 @@ void midi_controller_init() {
     g_303 = tb303_default;
     g_303_note = -1;
     g_303_bend = 1.0f;
+    g_303_accent = 1.0f;
     held_count = 0;
     seq_playing = false;
     seq_index = 0;
@@ -228,10 +248,10 @@ void midi_controller_process(const uint8_t *data, uint32_t len, ParamExchange *p
                 // Drums are one-shot: note-off is ignored.
                 break;
 
-            case MIDI_CC:
+            case MIDI_CC: {
+                float t = (float)ev.data2 * (1.0f / 127.0f);   // normalized 0..1
                 switch (ev.data1) {
-                    case 1: {   // mod wheel -> 303 cutoff, exponential 100..10000 Hz
-                        float t = (float)ev.data2 * (1.0f / 127.0f);
+                    case CC_303_CUTOFF: {   // 303 cutoff, exponential 100..10000 Hz (live)
                         g_303.cutoff = (uint16_t)(100.0f * powf(100.0f, t));
                         if (shadow.voices[GV_303].type == VT_TB303)
                             shadow.voices[GV_303].filter_cutoff = g_303.cutoff;
@@ -239,29 +259,45 @@ void midi_controller_process(const uint8_t *data, uint32_t len, ParamExchange *p
                         changed = true;
                         break;
                     }
-                    case 71: {  // CC71 -> 303 resonance (linear, capped for stability)
+                    case CC_303_RESO: {  // 303 resonance (linear, capped for stability, live)
                         g_303.resonance = (uint16_t)(ev.data2 * 237);  // max ~0.92
                         if (shadow.voices[GV_303].type == VT_TB303)
                             shadow.voices[GV_303].filter_resonance = g_303.resonance;
                         changed = true;
                         break;
                     }
-                    case 74:  // effect type select
+                    case CC_303_ENVMOD:  // 303 filter env amount, 0..8000 Hz (next note)
+                        g_303.env_mod = (int16_t)(ev.data2 * 63);
+                        changed = true;
+                        break;
+                    case CC_303_DECAY:   // 303 filter env decay, exp 50..2500 ms (next note)
+                        g_303.env_decay_ms = (uint16_t)(50.0f * powf(50.0f, t));
+                        changed = true;
+                        break;
+                    case CC_303_ACCENT:  // 303 accent depth, 0..1 (next note)
+                        g_303_accent = t;
+                        changed = true;
+                        break;
+                    case CC_303_WAVE:    // 303 oscillator: saw < 64 <= square (next note)
+                        g_303.waveform = (ev.data2 < 64) ? WAVE_SAW : WAVE_SQUARE;
+                        changed = true;
+                        break;
+                    case CC_FX_TYPE:  // effect type select
                         shadow.fx.type = (uint8_t)((uint32_t)ev.data2 * FX_COUNT / 128u);
                         ui_state.fx_type = shadow.fx.type;
                         changed = true;
                         break;
-                    case 73:  // effect wet/dry mix
+                    case CC_FX_MIX:  // effect wet/dry mix
                         shadow.fx.mix = ev.data2;
                         ui_state.fx_mix = ev.data2;
                         changed = true;
                         break;
-                    case 72:  // effect param 1
+                    case CC_FX_P1:  // effect param 1
                         shadow.fx.p1 = ev.data2;
                         ui_state.fx_p1 = ev.data2;
                         changed = true;
                         break;
-                    case 75:  // effect param 2
+                    case CC_FX_P2:  // effect param 2
                         shadow.fx.p2 = ev.data2;
                         ui_state.fx_p2 = ev.data2;
                         changed = true;
@@ -269,6 +305,7 @@ void midi_controller_process(const uint8_t *data, uint32_t len, ParamExchange *p
                     default: break;
                 }
                 break;
+            }
 
             case MIDI_PITCH_BEND: {
                 if (ev.channel != DRUM_CHANNEL) {
