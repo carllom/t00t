@@ -43,6 +43,8 @@ struct VoiceParams {
     Waveform  waveform;    // primary osc for 303 (WAVE_SAW / WAVE_SQUARE)
     uint16_t  duty_cycle;  // square duty (0..1023, 512 = 50%)
 
+    float     drive;       // 303: ladder input overdrive (1.0 = clean; accent adds)
+
     EnvConfig amp_env;     // amplitude contour (ADSR for 303, one-shot decay for drums)
     EnvConfig aux_env;     // one-shot decay: filter env (303) OR pitch env (drums)
 

@@ -74,6 +74,13 @@ static void render_303(uint32_t v, const VoiceParams &p) {
     float ginc = glide_inc[v];
     float target = (float)p.phase_inc;
     float res = (float)p.filter_resonance * (1.0f / 32767.0f);   // 0..1
+
+    // Overdrive: push the ladder input above unity so its internal cubic
+    // soft-clip (ladder.h) generates harmonics — the "acid bite". A makeup
+    // gain trims the level back (partial, so louder passages stay gritty).
+    // drive == 1.0 is bit-identical to the clean path. Accent raises it.
+    float drive = p.drive < 1.0f ? 1.0f : p.drive;
+    float makeup = 1.0f / (1.0f + (drive - 1.0f) * 0.5f);
     for (uint32_t i = 0; i < SAMPLES_PER_BUFFER; i++) {
         float amp_f = amp_env[v].advance(p.amp_env);
         if (amp_f <= 0.0f) break;
@@ -93,8 +100,9 @@ static void render_303(uint32_t v, const VoiceParams &p) {
         if (cutoff < 20.0f) cutoff = 20.0f;
         if (cutoff > 18000.0f) cutoff = 18000.0f;
 
-        // Ladder works on normalized floats; scale Q15 <-> [-1, 1].
-        float out = ladder[v].tick((float)scaled * (1.0f / 32768.0f), cutoff, res);
+        // Ladder works on normalized floats; scale Q15 <-> [-1, 1], drive in.
+        float in = (float)scaled * (1.0f / 32768.0f) * drive;
+        float out = ladder[v].tick(in, cutoff, res) * makeup;
         scratch[i] += (int32_t)(out * 32768.0f);
         phase += eff_inc;
     }

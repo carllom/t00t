@@ -29,6 +29,7 @@ enum BspCC : uint8_t {
     CC_303_DECAY  = 19,   // knob 4  — filter env decay (next note)
     CC_303_ACCENT = 20,   // knob 5  — accent depth (next note)
     CC_303_WAVE   = 21,   // knob 6  — saw <-> square (next note)
+    CC_303_DRIVE  = 22,   // knob 7  — ladder overdrive / bite (next note)
     CC_FX_TYPE    = 24,   // knob 9  — effect select
     CC_FX_MIX     = 25,   // knob 10 — effect wet/dry
     CC_FX_P1      = 26,   // knob 11 — effect param 1
@@ -90,6 +91,8 @@ static float note_to_freq(uint8_t note) {
 static constexpr uint8_t ACCENT_VEL_THRESHOLD = 96;
 static constexpr float   ACCENT_ENV_ADD  = 4000.0f;  // extra Hz of filter env at full accent
 static constexpr float   ACCENT_AMP_BOOST = 0.4f;    // up to +40% level at full accent
+static constexpr float   ACCENT_DRIVE_ADD = 2.0f;    // extra ladder overdrive at full accent
+static constexpr float   MAX_303_DRIVE   = 6.0f;     // clamp base+accent drive
 
 // Play a 303 note. slide = glide pitch from the previous note (legato);
 // retrigger = restart phase + envelopes (a fresh, non-legato note).
@@ -106,6 +109,10 @@ static void play_303(VoiceParamBlock &shadow, uint8_t note, uint8_t velocity,
     vp.filter_env_amount = (int16_t)((float)g_303.env_mod + accent * ACCENT_ENV_ADD);
     int32_t amp = (int32_t)((float)(velocity * 258) * (1.0f + accent * ACCENT_AMP_BOOST));
     vp.amplitude = (int16_t)(amp > 32767 ? 32767 : amp);
+
+    // Accent also snarls the filter harder (on top of the base drive knob).
+    float drive = g_303.drive + accent * ACCENT_DRIVE_ADD;
+    vp.drive = drive > MAX_303_DRIVE ? MAX_303_DRIVE : drive;
 
     vp.slide = slide;
     vp.gate = true;
@@ -280,6 +287,10 @@ void midi_controller_process(const uint8_t *data, uint32_t len, ParamExchange *p
                         break;
                     case CC_303_WAVE:    // 303 oscillator: saw < 64 <= square (next note)
                         g_303.waveform = (ev.data2 < 64) ? WAVE_SAW : WAVE_SQUARE;
+                        changed = true;
+                        break;
+                    case CC_303_DRIVE:   // 303 ladder overdrive, 1.0..4.0 (next note)
+                        g_303.drive = 1.0f + 3.0f * t;
                         changed = true;
                         break;
                     case CC_FX_TYPE:  // effect type select
