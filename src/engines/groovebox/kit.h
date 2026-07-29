@@ -124,13 +124,14 @@ struct Tb303Preset {
     uint16_t amp_decay_ms;
     uint8_t  amp_sustain_pct;
     uint16_t amp_release_ms;
+    float    drive;         // ladder overdrive, 1.0 = clean (accent adds on top)
 };
 
 // Default acid bass. Uses the existing 2-pole SVF LP for now (P0); the 4-pole
 // ladder filter lands in a later phase for the authentic squelch.
 static const Tb303Preset tb303_default = {
     WAVE_SAW, 500, 28000, 5000, 300,
-    3, 200, 80, 120
+    3, 200, 80, 120, 1.0f
 };
 
 inline void apply_303(VoiceParams &vp, const Tb303Preset &p, uint32_t phase_inc, uint8_t velocity) {
@@ -141,6 +142,7 @@ inline void apply_303(VoiceParams &vp, const Tb303Preset &p, uint32_t phase_inc,
     vp.phase_inc2 = 0;
     vp.waveform = p.waveform;
     vp.duty_cycle = 512;
+    vp.drive = p.drive;   // play_303 folds accent in on top
     vp.amp_env = env_config(p.amp_attack_ms, p.amp_decay_ms, p.amp_sustain_pct, p.amp_release_ms);
     vp.aux_env = env_config(0, 0, 0, p.env_decay_ms);   // one-shot filter env
     vp.filter_mode = FILTER_LP;
