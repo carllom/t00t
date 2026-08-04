@@ -4,6 +4,9 @@ UF2 = $(BUILD_DIR)/t00t.uf2
 # Board selection: breadboard_rp2350 (default) or vgaboard_rp2350
 BOARD ?= breadboard_rp2350
 
+# Synthesis engine: subtractive (default) or groovebox
+ENGINE ?= subtractive
+
 # MIDI transport overrides: 0, 1, or "default" (use the board header's default).
 #   make MIDI_USB=0          # DIN-only firmware
 #   make MIDI_UART=0         # USB-only firmware
@@ -11,7 +14,8 @@ MIDI_USB  ?= default
 MIDI_UART ?= default
 
 CMAKE_FLAGS = -DPICO_BOARD=$(BOARD) -DPICO_PLATFORM=rp2350 \
-              -DMIDI_USB=$(MIDI_USB) -DMIDI_UART=$(MIDI_UART)
+              -DMIDI_USB=$(MIDI_USB) -DMIDI_UART=$(MIDI_UART) \
+              -DT00T_ENGINE=$(ENGINE)
 
 .PHONY: all clean flash
 

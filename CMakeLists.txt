@@ -14,25 +14,53 @@ set(CMAKE_CXX_STANDARD 17)
 
 pico_sdk_init()
 
+# Synthesis engine selection. Each engine lives in src/engines/<name>/ and
+# provides its own engine.h (VoiceParams/ParamExchange), audio_engine.cpp
+# (Core 1 render loop), and preset/kit tables. Shared enums and constants live
+# in src/engine_base.h; the reusable DSP layer (osc/, filter.h, fx/) depends
+# only on that. Override with -DT00T_ENGINE=<name>.
+if(NOT DEFINED T00T_ENGINE)
+    set(T00T_ENGINE "subtractive")
+endif()
+message(STATUS "T00T synthesis engine: ${T00T_ENGINE}")
+
+# An engine may provide its own MIDI routing (fixed drum map, mono voices, …).
+# If it does, use it; otherwise fall back to the shared subtractive controller.
+if(EXISTS ${CMAKE_CURRENT_LIST_DIR}/src/engines/${T00T_ENGINE}/midi_controller.cpp)
+    set(ENGINE_MIDI_CONTROLLER src/engines/${T00T_ENGINE}/midi_controller.cpp)
+else()
+    set(ENGINE_MIDI_CONTROLLER src/midi/midi_controller.cpp)
+endif()
+
+# The VGA-board button controller maps buttons to presets, so it only builds
+# for engines that ship a presets.h (subtractive). The groovebox targets the
+# buttonless breadboard and omits it.
+set(ENGINE_OPTIONAL_SOURCES "")
+if(EXISTS ${CMAKE_CURRENT_LIST_DIR}/src/engines/${T00T_ENGINE}/presets.h)
+    list(APPEND ENGINE_OPTIONAL_SOURCES src/controller.cpp)
+endif()
+
 add_executable(t00t
     src/main.cpp
     src/osc/sine.cpp
     src/envelope.cpp
-    src/audio_engine.cpp
+    src/engines/${T00T_ENGINE}/audio_engine.cpp
     src/output.cpp
-    src/controller.cpp
     src/voice_alloc.cpp
     src/samples.cpp
-    src/midi/midi_controller.cpp
+    ${ENGINE_MIDI_CONTROLLER}
+    ${ENGINE_OPTIONAL_SOURCES}
     src/midi/usb_midi.cpp
     src/midi/uart_midi.cpp
     src/midi/usb_descriptors.c
     src/wslcd/lcd_st7789.cpp
     src/wslcd/gfx.cpp
-    src/wslcd/display.cpp
+    src/engines/${T00T_ENGINE}/display.cpp
 )
 
-target_include_directories(t00t PRIVATE src src/midi src/wslcd)
+# The selected engine directory is on the include path so `#include "engine.h"`
+# (and its preset/kit headers) resolve to that engine's copy.
+target_include_directories(t00t PRIVATE src src/midi src/wslcd src/engines/${T00T_ENGINE})
 
 # Optional MIDI transport overrides. Each may be 0, 1, or unset/"default"
 # (board header decides). Passed through from the Makefile every configure,
