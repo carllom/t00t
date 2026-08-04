@@ -1,19 +1,12 @@
 #pragma once
 
-#include "audio_common.h"
+#include "engine_base.h"
 #include "hardware/sync.h"
 #include <cstdint>
 
-struct SampleDef;  // forward declaration (defined in osc/sample_def.h)
-
-static constexpr uint32_t MAX_VOICES = 16;
-
-// Profiling pin — GPIO 22 (moved from GPIO 2 to avoid coupling to Button A on GPIO 0)
-static constexpr uint32_t PROFILE_PIN = 22;
-
-enum Waveform : uint8_t { WAVE_SINE, WAVE_SQUARE, WAVE_TRIANGLE, WAVE_SAW, WAVE_NOISE, WAVE_SQUARE_BLEP, WAVE_SAW_BLEP, WAVE_SAMPLE };
-
-enum FilterMode : uint8_t { FILTER_OFF, FILTER_LP, FILTER_BP, FILTER_HP, FILTER_NOTCH };
+// Subtractive engine — the general-purpose synth (ADSR + LFO + SVF + osc
+// dispatch). Shared enums/constants (Waveform, FilterMode, EffectParams,
+// MAX_VOICES, PROFILE_PIN) live in engine_base.h.
 
 // Voice parameters: written by Core 0, read by Core 1.
 // Only contains values needed for synthesis — no phase state.
@@ -36,19 +29,6 @@ struct VoiceParams {
     float lfo_filter_depth;    // LFO → cutoff in Hz (signed, ±18000)
     const SampleDef *sample;   // sample definition (nullptr for non-sample waveforms)
     int16_t mod_depth;         // mod-wheel vibrato depth, Q15 (0 = off) — dedicated LFO on Core 1
-};
-
-// Effect selector. CC74 picks the type; the same three knobs (CC72/73/75) then
-// drive whichever effect is active.
-enum EffectType : uint8_t { FX_OFF, FX_DELAY, FX_REVERB, FX_COUNT };
-
-// Global effect parameters. Written by Core 0, read by Core 1. The three params
-// are raw 0..127 controller values; each effect maps them to its own scale.
-struct EffectParams {
-    uint8_t type;   // EffectType (CC74)
-    uint8_t mix;    // CC73: wet/dry — 0 = dry, 127 = full wet
-    uint8_t p1;     // CC72: delay feedback / reverb room size
-    uint8_t p2;     // CC75: delay time  / reverb damping
 };
 
 // A complete snapshot of all voice parameters for one render pass.

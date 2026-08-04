@@ -1,7 +1,7 @@
 #include "midi_controller.h"
 #include "midi_parser.h"
 #include "../voice_alloc.h"
-#include "../presets.h"
+#include "presets.h"
 #include "../osc/common.h"
 #include "../osc/sample.h"
 #include <cmath>
