@@ -14,7 +14,9 @@
 
 struct SampleDef;  // forward declaration (defined in osc/sample_def.h)
 
-static constexpr uint32_t MAX_VOICES = 16;
+// MAX_VOICES is engine-specific (tracker/speech/FM want different voice
+// counts) and is defined by each engine's own engine.h, before its
+// #include "engine_base.h".
 
 // Profiling pin — GPIO 22 (moved from GPIO 2 to avoid coupling to Button A on GPIO 0)
 static constexpr uint32_t PROFILE_PIN = 22;

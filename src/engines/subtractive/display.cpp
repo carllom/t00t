@@ -83,13 +83,13 @@ void display_task() {
 
     // Change-detection state (force a full first paint).
     static bool     first = true;
-    static uint16_t last_snd = 0;
-    static uint16_t last_gate = 0;
+    static uint32_t last_snd = 0;
+    static uint32_t last_gate = 0;
     static uint8_t  last_load = 0xFF;
     static MidiUiState last_midi = { 0xFE, 0, 0, 0xFF, 0x7FFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
 
-    uint16_t snd  = voice_alloc_active_mask();  // still sounding (envelope active)
-    uint16_t gate = voice_alloc_gated_mask();   // note pressed/held
+    uint32_t snd  = voice_alloc_active_mask();  // still sounding (envelope active)
+    uint32_t gate = voice_alloc_gated_mask();   // note pressed/held
     uint8_t  load = audio_engine_load();
     MidiUiState m;
     midi_controller_ui_state(&m);
