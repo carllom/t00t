@@ -103,13 +103,18 @@ def cmd_convert(args: argparse.Namespace) -> None:
         print(f"xm2t00t: {args.input}: {exc}", file=sys.stderr)
         sys.exit(1)
 
-    ident = _sanitize_ident(os.path.basename(args.output))
-    header_path = args.output + "_blob.h"
-    with open(header_path, "w") as f:
-        f.write(render_blob_header(ident, blob))
+    if args.raw_blob:
+        with open(args.raw_blob, "wb") as f:
+            f.write(blob)
+        print(f"Wrote {args.raw_blob} ({len(blob)} bytes, raw blob)")
+    if not args.raw_blob_only:
+        ident = _sanitize_ident(os.path.basename(args.output))
+        header_path = args.output + "_blob.h"
+        with open(header_path, "w") as f:
+            f.write(render_blob_header(ident, blob))
+        print(f"Wrote {header_path} ({len(blob)} bytes, array `{ident}_blob_data`)")
 
     print(format_dump(song))
-    print(f"\nWrote {header_path} ({len(blob)} bytes, array `{ident}_blob_data`)")
 
 
 def cmd_gen_header(args: argparse.Namespace) -> None:
@@ -127,6 +132,12 @@ def main(argv=None) -> None:
     p_convert.add_argument("output", help="output path prefix; writes <output>_blob.h")
     p_convert.add_argument("--budget-kb", type=int, default=bf.DEFAULT_SRAM_BUDGET_BYTES // 1024,
                             help="SRAM sample-data budget in KB (default: %(default)s, per tracker.md)")
+    p_convert.add_argument("--raw-blob", metavar="PATH", default=None,
+                            help="also write the raw binary blob to PATH (#17: consumed at runtime "
+                                 "by tools/host_render's reference-diff harness, which loads an "
+                                 "arbitrary corpus module without recompiling)")
+    p_convert.add_argument("--raw-blob-only", action="store_true",
+                            help="skip the linkable _blob.h header, write only --raw-blob")
     p_convert.set_defaults(func=cmd_convert)
 
     p_dump = sub.add_parser("dump", help="print song structure only; writes nothing")

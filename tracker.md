@@ -477,6 +477,58 @@ against a host build of the same mixer). This is the only sane way to chase FT2'
 idiosyncrasies: `E60` loop behaviour, envelope handling on note-off, portamento
 with a changed instrument, arpeggio wraparound at high speeds.
 
+**Implemented (#17).** `python3 tools/host_render/diff_xm.py` is the one-command
+harness: for each module (the checked-in synthetic fixtures in
+`tools/xm2t00t/xm_synth.py`, plus whatever real corpus is in `xm/`), it converts
+to a blob, renders the device path via `tools/host_render/render_xm_device`
+(the real `src/engines/tracker/player.h` + `mixer.h`, not a copy), renders the
+reference via `openmpt123 --filter 2` (linear interpolation, matching
+`mix_voice()` exactly), and diffs the two WAVs.
+
+- **Tolerance metric**: windowed RMS-in-dB (512-frame windows) relative to the
+  reference's peak, computed *after* correcting for a measured global level
+  scalar (`gain_ratio`, least-squares best fit) between our engine's raw
+  vol/64-of-full-scale channel-volume convention and libopenmpt's default XM
+  render level — a real, ~11-20 dB, and apparently song-dependent gap
+  (`gain_ratio` varies a lot across the real corpus; worth its own
+  investigation later, e.g. whether libopenmpt's default XM mix level applies
+  headroom keyed off channel count) that is a level-*convention* question, not
+  a correctness one, so it's reported rather than silently baked into the
+  engine. Threshold is **-10 dB**, set empirically off the two synthetic
+  fixtures (see `diff_xm.py`'s `THRESHOLD_DB` comment for the measurements):
+  the only windows that come anywhere close are the ones straddling a
+  note-on/retrigger boundary — two independently-implemented declick ramps
+  settling to the same target along different sample paths — never a
+  sustained region. A wrong note or dropped trigger replaces the signal with
+  something uncorrelated at comparable amplitude (error at or above 0 dB), so
+  -10 dB stays unambiguously on the correct side of that gap.
+- **Divergence localization**: `render_xm_device` emits a per-tick CSV trace
+  (frame → order/pattern/row/tick + any note triggers that tick); the first
+  window that exceeds tolerance is mapped back to the nearest preceding trace
+  entry, so a failure reads as "order 2 (pattern 5) row 12 tick 0, channels
+  3 and 7", not just a sample offset.
+- **Regression corpus**: `tools/xm2t00t/xm_synth.py` builds two small,
+  byte-valid `.xm` files from code (not checked-in binaries — `xm/` stays
+  gitignored, real Mod Archive corpus, matching `test_xm2t00t.py`'s existing
+  convention), deliberately staying inside the notes-only player's scope
+  (center panning throughout — `pan.h`'s equal-power law vs whatever law FT2
+  actually used is a real, permanent, out-of-scope divergence for this
+  harness, not a bug). Both pass at -10 dB. The real corpus is run and
+  reported too, but only informationally: any module using effects or
+  envelopes (i.e. nearly all of them) diverges the moment it needs one, which
+  is exactly the point — `#19`-`#22` get a concrete, located baseline to work
+  against instead of starting from nothing.
+
+This slice also caught a real bug in `mixer.h` (#15/#16, already shipped):
+`wrap_loop()` read/wrote `v->pos` while the loop that had just advanced
+position was still holding the new value in a local — a wrap partway through
+a multi-sample `mix_voice()` call (anything larger than one sub-block, i.e.
+every real call from `tracker_render_buffer()`) discarded the advance and
+wrapped from a stale position instead. Invisible to #15/#16's own tests
+(`n == 1` per call in the loop-wrap test never reaches the buggy branch;
+`test_full_mix()` only asserts aggregate stats), caught immediately by a
+waveform-accurate reference diff. Fixed in `mixer.h`.
+
 ---
 
 ## Display
@@ -554,18 +606,23 @@ engine first — where the voice loop is simple enough to get right in an aftern
       IRQ overhead is not measurable at this sample rate; 512 would only add
       latency (11.6ms round-trip -> 23.2ms) for no offsetting benefit, so
       256 stays the default for every engine.
+- [x] **Ring depth: 2 tick slots** (#17, resolving open question 1 below).
+      `player.h`'s `TickRing` picked the 2-slot side of the tradeoff: 20 ms of
+      slack per tick is sufficient, and the host reference-diff harness that
+      drives the ring today is single-threaded (produce, then immediately
+      consume — no lookahead benefit from more slots). #18 inherits the
+      constant as-is for the real cross-core case; nothing observed so far
+      argues for 4.
 
 ---
 
 ## Open Questions
 
-1. **Ring depth** — 2 or 4 tick slots? 2 is sufficient given 20 ms of slack;
-   4 costs little and is more forgiving of tempo extremes.
-2. **Global effects** — the existing delay/reverb/overdrive could run as a stereo
+1. **Global effects** — the existing delay/reverb/overdrive could run as a stereo
    send. Not XM-spec behaviour, but the engine is retro-lo-fi by intent. Costs
    budget, but #16 confirmed the 32-voice mixer leaves ~20 points of Core 1
    headroom, so this is now affordable to revisit.
-3. **Ping-pong loop implementation** — direction flag with mirrored read inside
+2. **Ping-pong loop implementation** — direction flag with mirrored read inside
    `samples_to_loop_end()`, or unroll the loop region at conversion time and pay
    the memory?
 
@@ -583,7 +640,14 @@ Prerequisites are more interesting than the tracker itself. Do them first:
    work, not architecture work.
 3. Host converter: parse XM, emit blob, dump song structure.
 4. TickBlock ring + `player_tick()` on Core 0. Order list, speed/BPM, note
-   triggering, **no effects**. It already sounds like music here.
+   triggering, **no effects**. It already sounds like music here. Player
+   *logic* (order/pattern walk, note triggering, `TickBlock`/`TickRing`
+   shapes) landed early as `src/engines/tracker/player.h`, pulled forward by
+   #17 so its reference-diff harness had a real player to drive instead of a
+   copy — verified via the harness against `openmpt123` and via
+   `render_xm_device`'s own unit tests. Still open for #18: the actual
+   cross-core wiring (multicore FIFO ack, atomics/barriers on the ring),
+   flash→SRAM sample loading at song load, and transport (play/stop/seek).
 5. The effects covering ~90% of real usage: `0` arpeggio, `1`/`2` porta, `3` tone
    porta, `4` vibrato, `A` volume slide, `C` set volume, `B` jump, `D` pattern
    break, `F` speed/tempo.

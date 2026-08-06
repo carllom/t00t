@@ -123,6 +123,15 @@ inline void mix_voice(TrackerVoice *v, int32_t *acc, uint32_t n) {
 
         n -= run;
         if (n > 0) {
+            // wrap_loop() reads/writes v->pos, not the local `pos` this loop
+            // has been advancing -- write it back first, or a wrap partway
+            // through a multi-sample call (n > 1 requested past the loop
+            // end, e.g. any call from tracker_render_buffer() with more than
+            // one sub-block's worth of frames) discards every step taken in
+            // this call and wraps from a stale position instead (#17: caught
+            // by the openmpt123 reference-diff harness, not by any test that
+            // only ever calls with n == 1 or checks aggregate stats).
+            v->pos = pos;
             wrap_loop(v);
             pos = v->pos;
             if (!v->active) break;
@@ -170,6 +179,15 @@ inline void mix_voice_nearest(TrackerVoice *v, int32_t *acc, uint32_t n) {
 
         n -= run;
         if (n > 0) {
+            // wrap_loop() reads/writes v->pos, not the local `pos` this loop
+            // has been advancing -- write it back first, or a wrap partway
+            // through a multi-sample call (n > 1 requested past the loop
+            // end, e.g. any call from tracker_render_buffer() with more than
+            // one sub-block's worth of frames) discards every step taken in
+            // this call and wraps from a stale position instead (#17: caught
+            // by the openmpt123 reference-diff harness, not by any test that
+            // only ever calls with n == 1 or checks aggregate stats).
+            v->pos = pos;
             wrap_loop(v);
             pos = v->pos;
             if (!v->active) break;
