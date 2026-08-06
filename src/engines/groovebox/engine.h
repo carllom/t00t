@@ -2,7 +2,6 @@
 
 #include "engine_base.h"
 #include "envelope.h"       // EnvConfig (pre-baked per note by Core 0)
-#include "hardware/sync.h"
 #include <cstdint>
 
 // Groovebox engine — a TB-303-style acid bass plus an 808/909-style drum
@@ -63,38 +62,8 @@ struct VoiceParams {
     uint8_t    metal_count;     // number of metal oscillators to sum (2 = cowbell, 6 = hats)
 };
 
-// A complete snapshot of all voice parameters for one render pass.
-struct VoiceParamBlock {
-    VoiceParams voices[MAX_VOICES];
-    EffectParams fx;
-};
+// Default voice is zero-init — VoiceType 0 is VT_SILENT, so this is the
+// generic engine_base.h default already. No specialization needed.
 
-// Double-buffered parameter exchange between Core 0 and Core 1.
-// Same lock-free mechanism as the subtractive engine — only the payload
-// differs. Core 0 writes the shadow, flips committed, __sev()s Core 1.
-struct ParamExchange {
-    VoiceParamBlock blocks[2];
-    volatile uint8_t committed;  // 0 or 1
-
-    void init() {
-        committed = 0;
-        for (int b = 0; b < 2; b++) {
-            for (uint32_t v = 0; v < MAX_VOICES; v++) {
-                blocks[b].voices[v] = VoiceParams{};  // zero → VT_SILENT
-            }
-            // Default: delay selected, ~300 ms / moderate feedback, fully dry
-            // (mix=0) so it's silent until CC73 opens it. Matches subtractive.
-            blocks[b].fx = { FX_DELAY, 0, 55, 36 };
-        }
-    }
-
-    VoiceParamBlock &shadow() { return blocks[1 - committed]; }
-
-    void commit() {
-        __compiler_memory_barrier();
-        committed = 1 - committed;
-        __sev();
-    }
-
-    const VoiceParamBlock &active() const { return blocks[committed]; }
-};
+using VoiceParamBlock = VoiceParamBlockT<VoiceParams>;
+using ParamExchange = ParamExchangeT<VoiceParams>;
