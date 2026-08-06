@@ -428,6 +428,16 @@ This is the baseline measurements of the state before switching to RP2350 and up
 | SMULL filt. | 0.50% |  5.9% |  6.6% |  6.0% | 17.5% | ~90%  | |
 | SSAT env.   | 0.44% |  5.9% |  6.5% |  5.9% | 17.4% | ~90%  | |
 
+The following measurements were measured after a couple of additions: envelopes, effects, modularization (`subtractive` and `groovebox`).
+The baseline reflects the state on 2026-08-06 prior to implementing `tracker`, `speech` and `fm` modules and the subblock optimizations.
+
+| Phase       | Idle  | Voc A | Voc B | Voc C | ABC   | Max   | Comment |
+| - | - | - | - | - | - | - | - |
+| no FX       | 0.48% |  6.4% |  6.9% |  6.3% |   -   | ~94%  | |
+| Delay FX    | 1.66% |  7.5% |  8.1% |  7.4% |   -   | ~94%  | |
+| Reverb FX   |  8.2% | 14.1% | 14.6% | 14.0% |   -   | ~94%  | |
+| LFO(vibrato)| 0.48% |  7.2% |  7.7% |  7.1% |   -   | ~94%  | Pitch LFO through modwheel. No FX |
+
 ## MIDI Input
 
 Control comes from buttons (VGA board only) and MIDI. There is no intermediate
