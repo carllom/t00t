@@ -1,8 +1,11 @@
 #pragma once
 
+#include <cstdint>
+
+static constexpr uint32_t MAX_VOICES = 16;
+
 #include "engine_base.h"
 #include "envelope.h"       // EnvConfig (pre-baked per note by Core 0)
-#include <cstdint>
 
 // Groovebox engine — a TB-303-style acid bass plus an 808/909-style drum
 // machine sharing one 16-voice render pass. Unlike the subtractive engine

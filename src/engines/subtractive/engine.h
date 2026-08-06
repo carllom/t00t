@@ -1,12 +1,15 @@
 #pragma once
 
-#include "engine_base.h"
 #include <cstdint>
+
+static constexpr uint32_t MAX_VOICES = 16;
+
+#include "engine_base.h"
 
 // Subtractive engine — the general-purpose synth (ADSR + LFO + SVF + osc
 // dispatch). Shared enums/constants (Waveform, FilterMode, EffectParams,
-// MAX_VOICES, PROFILE_PIN) and the VoiceParamBlockT/ParamExchangeT
-// mechanism live in engine_base.h.
+// PROFILE_PIN) and the VoiceParamBlockT/ParamExchangeT mechanism live in
+// engine_base.h.
 
 // Voice parameters: written by Core 0, read by Core 1.
 // Only contains values needed for synthesis — no phase state.
