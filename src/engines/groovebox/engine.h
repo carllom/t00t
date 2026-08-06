@@ -38,6 +38,7 @@ struct VoiceParams {
     bool      gate;      // held (303); one-shot drums ignore it
     bool      slide;     // 303: glide pitch toward phase_inc instead of snapping
     int16_t   amplitude; // velocity 0..32767
+    int16_t   pan;       // Q15 pan: -32768 = full left, 0 = center, 32767 = full right
 
     uint32_t  phase_inc;   // primary oscillator pitch (303 / BD / tom / snare tone 1)
     uint32_t  phase_inc2;  // secondary oscillator pitch (snare tone 2)

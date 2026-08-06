@@ -5,6 +5,7 @@
 #include "filter.h"
 #include "fx/delay.h"
 #include "fx/reverb.h"
+#include "pan.h"
 #include "hardware/gpio.h"
 #include "pico/multicore.h"
 #include "pico/time.h"
@@ -33,8 +34,12 @@ static bool     voice_gated[MAX_VOICES];
 static Envelope envelope[MAX_VOICES];
 static SVFilter filter[MAX_VOICES];
 
-// Scratch buffer for mixing (int32_t to avoid overflow during summation)
-static int32_t scratch[SAMPLES_PER_BUFFER];
+// Stereo dry mix (int32_t to avoid overflow during summation); each voice's
+// contribution is split L/R by its pan coefficient. `fx_buf` is the mono
+// send/return scratch for the post-mix effect (mono send / stereo return).
+static int32_t dry_l[SAMPLES_PER_BUFFER];
+static int32_t dry_r[SAMPLES_PER_BUFFER];
+static int32_t fx_buf[SAMPLES_PER_BUFFER];
 
 // Post-mix effect state (Core 1 only)
 static FxDelay  fx_delay;
@@ -79,9 +84,10 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
         // Snapshot committed params
         const VoiceParamBlock &vp = params->active();
 
-        // Clear scratch
+        // Clear the stereo dry mix
         for (uint32_t i = 0; i < SAMPLES_PER_BUFFER; i++) {
-            scratch[i] = 0;
+            dry_l[i] = 0;
+            dry_r[i] = 0;
         }
 
         // Render all voices
@@ -139,6 +145,10 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
             if (has_filter) {
                 filt_q = svf_compute_q(p.filter_resonance);
             }
+
+            // Pre-compute this voice's stereo pan gains (constant across buffer)
+            int32_t gain_l, gain_r;
+            pan_gains_q15(p.pan, gain_l, gain_r);
 
             for (uint32_t i = 0; i < SAMPLES_PER_BUFFER; i++) {
                 float env_f = envelope[v].advance(env_cfg);
@@ -217,7 +227,8 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
                     scaled = filter[v].tick(scaled, filt_f, filt_q, p.filter_mode);
                 }
 
-                scratch[i] += scaled;
+                dry_l[i] += (int32_t)(((int64_t)scaled * gain_l) >> 15);
+                dry_r[i] += (int32_t)(((int64_t)scaled * gain_r) >> 15);
 
                 phase += eff_phase_inc;
 
@@ -233,24 +244,37 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
             mod_lfo_phase[v] = mod_ph;
         }
 
-        // Post-mix effect (delay or reverb, selected by CC74; in place on the
-        // mono mix). Clear the newly selected effect's buffer on a type switch
-        // so a stale tail can't resurface.
+        // Post-mix effect (delay or reverb, selected by CC74). Mono send /
+        // stereo return: downmix the stereo dry mix to mono, run the
+        // (still-mono) effect on it, then add its wet output identically to
+        // both channels — only the dry path carries per-voice pan. Clear the
+        // newly selected effect's buffer on a type switch so a stale tail
+        // can't resurface.
+        bool has_fx = (vp.fx.type == FX_DELAY || vp.fx.type == FX_REVERB);
         if (vp.fx.type != s_last_fx_type) {
             if (vp.fx.type == FX_DELAY)       fx_delay.init();
             else if (vp.fx.type == FX_REVERB) fx_reverb.init();
             s_last_fx_type = vp.fx.type;
         }
-        if (vp.fx.type == FX_DELAY)       fx_delay.process(scratch, SAMPLES_PER_BUFFER, vp.fx);
-        else if (vp.fx.type == FX_REVERB) fx_reverb.process(scratch, SAMPLES_PER_BUFFER, vp.fx);
-        // FX_OFF: leave the mix dry.
+        if (has_fx) {
+            for (uint32_t i = 0; i < SAMPLES_PER_BUFFER; i++) {
+                fx_buf[i] = (dry_l[i] + dry_r[i]) >> 1;
+            }
+            if (vp.fx.type == FX_DELAY) fx_delay.process(fx_buf, SAMPLES_PER_BUFFER, vp.fx);
+            else                        fx_reverb.process(fx_buf, SAMPLES_PER_BUFFER, vp.fx);
+        }
 
-        // Clip and interleave into stereo int16_t buffer
+        // Clip, add the wet return to both channels, and interleave into stereo int16_t.
         int16_t *out = i2s_buffer_ptr(buffers, buf_index);
         for (uint32_t i = 0; i < SAMPLES_PER_BUFFER; i++) {
-            int16_t val = (int16_t)__ssat(scratch[i], 16);
-            *out++ = val;  // left
-            *out++ = val;  // right (mono → both channels)
+            int32_t l = dry_l[i];
+            int32_t r = dry_r[i];
+            if (has_fx) {
+                l += fx_buf[i];
+                r += fx_buf[i];
+            }
+            *out++ = (int16_t)__ssat(l, 16);
+            *out++ = (int16_t)__ssat(r, 16);
         }
 
         uint32_t busy_us = time_us_32() - t_start;
