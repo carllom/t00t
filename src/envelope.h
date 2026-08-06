@@ -81,4 +81,46 @@ struct Envelope {
         }
         return level;
     }
+
+    // Advance by `n` samples in one O(1) step, for sub-block-rate rendering:
+    // the caller linearly ramps every intermediate sample between the level
+    // before this call and the value returned, rather than calling advance()
+    // n times (see the subtractive engine's sub-block rendering, issue #12).
+    // Attack is linear so this is exact; decay/release need the caller to
+    // pass the n-sample-ahead coefficient (coeff^n), precomputed once since
+    // n is fixed — recomputing pow() here every call would defeat the point.
+    // A state transition that would land mid-block (e.g. attack completing)
+    // is deferred to the next block boundary instead of the exact sample;
+    // bounded by one sub-block's length (~1.45 ms at n=64), inaudible.
+    inline float advance_block(const EnvConfig &cfg, float decay_coeff_n,
+                                float release_coeff_n, uint32_t n) {
+        switch (state) {
+            case ENV_ATTACK:
+                level += cfg.attack_rate * (float)n;
+                if (level >= 1.0f) {
+                    level = 1.0f;
+                    state = ENV_DECAY;
+                }
+                break;
+            case ENV_DECAY:
+                level = cfg.sustain_level + (level - cfg.sustain_level) * decay_coeff_n;
+                if (level - cfg.sustain_level < 0.0001f) {
+                    level = cfg.sustain_level;
+                    state = ENV_SUSTAIN;
+                }
+                break;
+            case ENV_SUSTAIN:
+                break;
+            case ENV_RELEASE:
+                level *= release_coeff_n;
+                if (level < 0.0001f) {
+                    level = 0.0f;
+                    state = ENV_IDLE;
+                }
+                break;
+            case ENV_IDLE:
+                break;
+        }
+        return level;
+    }
 };

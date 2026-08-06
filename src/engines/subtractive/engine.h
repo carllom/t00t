@@ -1,12 +1,15 @@
 #pragma once
 
-#include "engine_base.h"
-#include "hardware/sync.h"
 #include <cstdint>
+
+static constexpr uint32_t MAX_VOICES = 16;
+
+#include "engine_base.h"
 
 // Subtractive engine — the general-purpose synth (ADSR + LFO + SVF + osc
 // dispatch). Shared enums/constants (Waveform, FilterMode, EffectParams,
-// MAX_VOICES, PROFILE_PIN) live in engine_base.h.
+// PROFILE_PIN) and the VoiceParamBlockT/ParamExchangeT mechanism live in
+// engine_base.h.
 
 // Voice parameters: written by Core 0, read by Core 1.
 // Only contains values needed for synthesis — no phase state.
@@ -29,54 +32,17 @@ struct VoiceParams {
     float lfo_filter_depth;    // LFO → cutoff in Hz (signed, ±18000)
     const SampleDef *sample;   // sample definition (nullptr for non-sample waveforms)
     int16_t mod_depth;         // mod-wheel vibrato depth, Q15 (0 = off) — dedicated LFO on Core 1
+    int16_t pan;                // Q15 pan: -32768 = full left, 0 = center, 32767 = full right (CC10)
 };
 
-// A complete snapshot of all voice parameters for one render pass.
-struct VoiceParamBlock {
-    VoiceParams voices[MAX_VOICES];
-    EffectParams fx;
-};
+// Default voice: audible-ready sine at a sane cutoff, everything else off,
+// centered pan.
+template <>
+inline VoiceParams voice_params_default<VoiceParams>() {
+    return { 0, 0, 0, false, WAVE_SINE, 512,
+             0.0f, 0.0f, 0.0f, 0.0f,
+             FILTER_OFF, 8000, 0, 0, 0.0f, nullptr, 0, 0 };
+}
 
-// Double-buffered parameter exchange between Core 0 and Core 1.
-//
-// Core 0 writes to the shadow block: param_blocks[1 - committed]
-// Core 0 commits by flipping committed (single byte, atomic on M0+)
-// Core 1 reads param_blocks[committed] at the start of each render pass.
-//
-// No locks: Core 0 never touches the committed block, Core 1 never
-// touches the shadow block. The index flip is a single-byte store.
-struct ParamExchange {
-    VoiceParamBlock blocks[2];
-    volatile uint8_t committed;  // 0 or 1
-
-    void init() {
-        committed = 0;
-        for (int b = 0; b < 2; b++) {
-            for (uint32_t v = 0; v < MAX_VOICES; v++) {
-                blocks[b].voices[v] = { 0, 0, 0, false, WAVE_SINE, 512,
-                                        0.0f, 0.0f, 0.0f, 0.0f,
-                                        FILTER_OFF, 8000, 0, 0, 0.0f, nullptr, 0 };
-            }
-            // Default: delay selected, ~300 ms (p2=36) / moderate feedback
-            // (p1=55), fully dry (mix=0) so it's silent until CC73 opens it.
-            blocks[b].fx = { FX_DELAY, 0, 55, 36 };
-        }
-    }
-
-    // Core 0: get the shadow block to write into
-    VoiceParamBlock &shadow() {
-        return blocks[1 - committed];
-    }
-
-    // Core 0: make the shadow visible to Core 1
-    void commit() {
-        __compiler_memory_barrier();
-        committed = 1 - committed;
-        __sev();  // wake Core 1 if it's in WFE
-    }
-
-    // Core 1: get the currently committed block to read from
-    const VoiceParamBlock &active() const {
-        return blocks[committed];
-    }
-};
+using VoiceParamBlock = VoiceParamBlockT<VoiceParams>;
+using ParamExchange = ParamExchangeT<VoiceParams>;

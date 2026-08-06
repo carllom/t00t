@@ -428,6 +428,51 @@ This is the baseline measurements of the state before switching to RP2350 and up
 | SMULL filt. | 0.50% |  5.9% |  6.6% |  6.0% | 17.5% | ~90%  | |
 | SSAT env.   | 0.44% |  5.9% |  6.5% |  5.9% | 17.4% | ~90%  | |
 
+The following measurements were measured after a couple of additions: envelopes, effects, modularization (`subtractive` and `groovebox`).
+The baseline reflects the state on 2026-08-06 prior to implementing `tracker`, `speech` and `fm` modules and the subblock optimizations.
+Max is measured when using all 16 voice channels.
+
+| Phase       | Idle  | Voc A | Voc B | Voc C | ABC   | Max   | Comment |
+| - | - | - | - | - | - | - | - |
+| no FX       | 0.48% |  6.4% |  6.9% |  6.3% |   -   | ~90%  | |
+| Delay FX    | 1.66% |  7.5% |  8.1% |  7.4% |   -   | ~90%  | |
+| Reverb FX   |  8.2% | 14.1% | 14.6% | 14.0% |   -   | ~90%  | |
+| LFO(vibrato)| 0.48% |  7.2% |  7.7% |  7.1% |   -   | ~90%  | Pitch LFO through modwheel. No FX |
+| | | | | | | | |
+| no FX       | 0.53% |  6.9% |  7.4% |  6.8% |   -   | ~90%  | After pan fix (issue #11). Slight (~0.5% for active voice, 0.05% idle) raise in CPU |
+| Delay FX    |  2.1% |  8.4% |  8.9% |  8.3% |   -   | ~90%  | After pan fix (issue #11). As above |
+| Reverb FX   |  8.4% | 14.8% | 15.3% | 14.7% |   -   | ~90%  | After pan fix (issue #11). As above |
+| | | | | | | | |
+| no FX       |  0.6% |  5.9% |  5.7% |  5.1% |   -   | ~86/80/70%  | After subchunk fix (issue #12). Max is depending on voice used (A/B/C). Major improvement for modulator-heavy voices (Voice C)! |
+| Delay FX    |  2.1% |  7.3% |  7.2% |  6.6% |   -   | ~86/80/70%  | After subchunk fix (issue #12) |
+| Reverb FX   |  8.5% | 13.7% | 13.6% | 13.0% |   -   | ~94/90/81%  | After subchunk fix (issue #12) |
+| LFO(vibrato)|  0.6% |  5.9% |  5.7% |  5.1% |   -   | ~86/80/70%  | After subchunk fix (issue #12). Pitch LFO through modwheel. No FX. No measurable overhead for vibrato! |
+
+## Host DSP Tooling
+
+`tools/host_render/` (issue #5 phase 2) is a standalone CMake project — no
+pico-sdk, host compiler — for verifying pure-DSP common-layer headers by
+rendering them to WAV instead of on real hardware. `make host` configures and
+builds it into `tools/host_render/build/` (git-ignored, same as the device
+`build/`); binaries there also write their WAV output alongside themselves.
+
+This exists so tracker/speech/FM module work has a host-render harness to
+build on (speech.md calls this "the single most valuable test"), and so new
+common-layer DSP components can be proven correct before they're wired into
+any real-time engine, instead of validating them by ear against a rewrite of
+a working sound.
+
+First consumer: `src/res2p.h`, a two-pole resonator for the speech module's
+formant cascade and (pending backport) the groovebox's 808 toms/congas/
+cowbell. `render_res2p` sweeps 1600 (frequency, bandwidth) pairs across the
+ranges both callers need and asserts every pole lands inside the unit circle,
+then renders impulse responses at three representative tunings and checks
+measured ringing frequency (zero-crossing rate, <5% error) and decay (late-
+window RMS < 10% of early-window RMS). All checks pass as of 2026-08-06.
+`res2p.h` is not yet wired into the groovebox — that backport, and the 808
+before/after diff, is speech.md P0, done independently once speech work
+starts.
+
 ## MIDI Input
 
 Control comes from buttons (VGA board only) and MIDI. There is no intermediate
@@ -442,5 +487,6 @@ event queue — each input source writes the param shadow and commits directly.
 Both transports route through `midi_controller_process()`, which parses MIDI
 bytes, maps note on/off to voices via the allocator, and commits the shadow.
 Beyond notes it also handles per-channel **CC1 (mod wheel)** → `mod_depth`
-(vibrato) and **pitch bend** → phase-increment ratio. CC0/CC32 (bank select) are
-stored but not yet used.
+(vibrato), **CC10 (pan)** → `pan` (subtractive engine only; live, applied to
+held voices immediately), and **pitch bend** → phase-increment ratio. CC0/CC32
+(bank select) are stored but not yet used.
