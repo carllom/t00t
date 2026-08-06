@@ -3,3 +3,6 @@ pico-sdk/
 pico-extras/
 .vscode/
 *.uf2
+lcdex/
+xm/
+__pycache__/

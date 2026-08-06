@@ -515,6 +515,87 @@ window RMS < 10% of early-window RMS). All checks pass as of 2026-08-06.
 before/after diff, is speech.md P0, done independently once speech work
 starts.
 
+## xm2t00t Host Converter (#14)
+
+`tools/xm2t00t/` — a pure-Python, stdlib-only tool (no CMake project, unlike
+`host_render/`) that turns a `.xm` module into a t00t-native binary blob. Per
+tracker.md, the device never parses XM: this runs once, offline, at build
+time. `tracker.md`'s "Multi-format support" section is why this is Python and
+not C++ — it says adding MOD/S3M later is "mostly host-side Python", which
+only makes sense if the XM loader already is.
+
+```
+xm2t00t.py convert <in.xm> <out_prefix>   # writes <out_prefix>_blob.h (a linkable
+                                            # `static const uint8_t ..._blob_data[]`
+                                            # array, same convention as samples/*.h),
+                                            # prints the song-structure dump, applies
+                                            # the Q18.14 + SRAM checks below
+xm2t00t.py dump <in.xm>                    # prints the dump only, writes nothing
+xm2t00t.py gen-header <out.h>              # (re)generate blob_format.h from
+                                            # blob_format.py, the format's source of truth
+```
+
+### Blob format
+
+Single flat blob, fixed-size headers, every offset a byte offset from blob
+start (never a pointer) — `blob_format.py` declares every struct once and is
+used both to pack the blob and to generate `blob_format.h`, its C++ mirror,
+so the two views of the layout can't drift apart.
+`SongHeader -> order_table, PatternHeader[]+Event[] (6 bytes/cell), InstrumentHeader[]
+(keymap, envelopes in tick units, vibrato) -> SampleHeader[]`, each sample
+carrying a precomputed 96-entry Q8.24 note -> increment table (`periods.py`,
+linear and Amiga frequency modes) so the device never runs period math. XM
+effects (including the `Exy`/`Xxy`/`Fxx` commands that overload one letter for
+several meanings) are normalized into named `Effect`/`VolEffect` enums
+(`effects.py`) rather than left as raw nibbles for the device to switch on.
+`sample_data_offset`/`sample_data_bytes` mark one uninterrupted PCM+guard-byte
+region (guard = loop-start value if looped, last value if one-shot) meant for
+a straight `memcpy` into SRAM — nothing else is interleaved into it.
+
+v1 hard limits, both enforced at convert time with an actionable message and
+a non-zero exit (no blob written): any single sample over the Q18.14 cap
+(262,144 frames), or total sample data over an SRAM budget (`--budget-kb`,
+default 380 KB — tracker.md's stated 350-400 KB after code/stacks/DMA/mixer
+scratch). No dynamic-loading simulator yet (tracker.md: phase 2) — just a
+static sum, per tracker.md's "v1 requires the module to fit in SRAM".
+
+Not wired into `CMakeLists.txt` — #14 is host-only by design; a later mixer
+issue links `blob_format.h`/a converted song into the tracker engine build.
+
+**Caveat**: the Amiga-mode period table and both modes' finetune handling are
+implemented from XM/FT2's public, well-documented formulas and sanity-checked
+(note C-4, finetune 0 -> exactly 8363 Hz, the XM reference; one octave up
+doubles the frequency) — not verified bit-exact against a real FT2 period
+dump. That precision matters once something plays these increments back (the
+mixer issue), not for a v1 loader.
+
+### Validation
+
+`python3 tools/xm2t00t/test_xm2t00t.py` — unit checks (period/effect/struct
+sanity, the two rejection paths) always run; corpus-dependent checks run
+against whatever `.xm` files are in `xm/` (gitignored — third-party
+copyrighted modules aren't committed; populate it yourself, e.g. from Mod
+Archive, and re-run) and skip cleanly if that directory is empty:
+
+- Song structure (channels/orders/patterns/instruments/samples counts) vs
+  both `openmpt123 --info`'s stdout and libopenmpt's C API directly
+  (`openmpt_ref.py`, `ctypes` over `libopenmpt.so.0` — no Python binding
+  needed), the latter also diffing the exact order-\>pattern list.
+- Delta-decode round-trip: a second, independently-coded implementation of
+  XM's delta decode (explicit signed arithmetic + wrap loop, vs. the
+  converter's unsigned mod-256/65536 accumulate) compared byte-for-byte
+  against the converter's own decode, over every sample in the corpus.
+- Guard-byte correctness and full blob self-consistency (re-reading the
+  emitted bytes with `blob_format.py` and diffing every header field, the
+  order table, pattern row counts, and sample PCM against the source parse).
+
+Verified against 5 real modules (2026-08-07): `118in64.xm` (18ch),
+`bzl-hscr.xm` (16ch), `dubmood_-_mario_airlines_keygen_edit.xm` (12ch),
+`kenny_beltrey_-_positrons.xm` (32ch — tracker.md's max), `records.xm`
+(16ch). All match `openmpt123 --info` and libopenmpt exactly; all pass every
+check above; all convert well under the default SRAM budget (93-241 KB of a
+380 KB budget).
+
 ## MIDI Input
 
 Control comes from buttons (VGA board only) and MIDI. There is no intermediate
