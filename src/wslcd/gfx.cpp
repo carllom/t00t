@@ -19,15 +19,8 @@ void gfx_fill_rect(int x, int y, int w, int h, uint16_t color) {
     if (x1 <= x || y1 <= y) return;
     int pw = x1 - x;
 
-    // Fill one tile band with the colour, blit it repeatedly down the rect.
-    int band = TILE_H;
-    for (int i = 0; i < pw * band; i++) s_tile[i] = color;
-
     lcd_set_window(x, y, x1 - 1, y1 - 1);
-    for (int row = y; row < y1; row += band) {
-        int rows = (row + band <= y1) ? band : (y1 - row);
-        lcd_blit(s_tile, pw * rows);
-    }
+    lcd_fill_window(color, (uint32_t)pw * (y1 - y));
 }
 
 int gfx_text(int x, int y, const char *s, uint16_t fg, uint16_t bg, int scale) {
