@@ -531,6 +531,29 @@ engine first — where the voice loop is simple enough to get right in an aftern
 - [x] Pan moves into `VoiceNoteBase`; output stage becomes true stereo
 - [x] Host converter owns loading, normalisation, and size reduction
 - [x] v1 requires the module to fit in SRAM; dynamic loading is phase 2
+- [x] **32 channels confirmed as the honest target** (#16). Measured on
+      `breadboard_rp2350`, profiling pin, 256-frame DMA buffer, including one
+      voice on a deliberately tight 4-sample loop to catch
+      `samples_to_loop_end()`'s worst case: 8v 8.20%, 16v 15.3%, 24v 22.8%,
+      32v 30.1%. Per-voice cost is flat across all four points at
+      **~31.5 cycles/frame** (0.92% of Core 1), inside the 25-40 predicted
+      range and comfortably under the ≤50%-of-Core-1 goal — 32 voices leaves
+      ~20 points of headroom for a limiter or a global effect send. See
+      `engine.md`'s tracker performance table for the full numbers.
+- [x] **Interpolation: linear, no nearest-neighbour build flag** (#16).
+      Nearest-neighbour measured 20.1% at 32 voices vs linear's 30.1% —
+      ~20.8 cycles/frame/voice vs ~31.5, a real 33% saving — and does audibly
+      alias, as expected. Not adopted: linear already clears the 50% budget
+      with room to spare, so there's no pressure trading it away for. The
+      code (`mix_voice_nearest()` in `mixer.h`) stays in place, proven and
+      ready to wire behind a flag later if a future voice-count push needs
+      the headroom.
+- [x] **DMA buffer size: keep 256** (#16). Idle duty cycle — the number that
+      isolates fixed per-buffer/IRQ overhead — measured identical at 256 and
+      512 (0.52% both), as did every voice-count point re-checked at 512.
+      IRQ overhead is not measurable at this sample rate; 512 would only add
+      latency (11.6ms round-trip -> 23.2ms) for no offsetting benefit, so
+      256 stays the default for every engine.
 
 ---
 
@@ -538,15 +561,11 @@ engine first — where the voice loop is simple enough to get right in an aftern
 
 1. **Ring depth** — 2 or 4 tick slots? 2 is sufficient given 20 ms of slack;
    4 costs little and is more forgiving of tempo extremes.
-2. **Interpolation** — linear is assumed throughout. Nearest-neighbour is
-   cheaper, aliases audibly, and is arguably more period-correct. Worth a build
-   flag once the budget is measured?
-3. **Global effects** — the existing delay/reverb/overdrive could run as a stereo
+2. **Global effects** — the existing delay/reverb/overdrive could run as a stereo
    send. Not XM-spec behaviour, but the engine is retro-lo-fi by intent. Costs
-   budget; defer until the 32-voice measurement is in.
-4. **DMA buffer size** — keep 256, or raise to 512 now that control resolution is
-   decoupled from it?
-5. **Ping-pong loop implementation** — direction flag with mirrored read inside
+   budget, but #16 confirmed the 32-voice mixer leaves ~20 points of Core 1
+   headroom, so this is now affordable to revisit.
+3. **Ping-pong loop implementation** — direction flag with mirrored read inside
    `samples_to_loop_end()`, or unroll the loop region at conversion time and pay
    the memory?
 
@@ -557,10 +576,11 @@ engine first — where the voice loop is simple enough to get right in an aftern
 Prerequisites are more interesting than the tracker itself. Do them first:
 
 1. **Stereo output path**; pan in `VoiceNoteBase`.
-2. **Stripped 32-voice sample mixer**, sub-block structured, fed by a hardcoded
+2. ~~**Stripped 32-voice sample mixer**, sub-block structured, fed by a hardcoded
    test pattern. **Read the profiling pin.** This single measurement decides
-   whether 32 or 16 channels is the honest target, and everything after it is
-   format work rather than architecture work.
+   whether 32 or 16 channels is the honest target~~ — done (#15/#16). 32
+   channels confirmed at ~30% of Core 1; everything after this is format
+   work, not architecture work.
 3. Host converter: parse XM, emit blob, dump song structure.
 4. TickBlock ring + `player_tick()` on Core 0. Order list, speed/BPM, note
    triggering, **no effects**. It already sounds like music here.

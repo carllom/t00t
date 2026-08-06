@@ -170,7 +170,59 @@ static bool test_oneshot_end() {
     return ok;
 }
 
-// --- Test 4: the full hardcoded 32-voice configuration (#15 acceptance) ---
+// --- Test 4: mix_voice_nearest() skips interpolation entirely (#16) ---
+//
+// Non-constant sample data + a non-integer increment (ratio 1.5, so every
+// other step lands on a non-zero fractional position) makes nearest and
+// linear diverge predictably. Checks mix_voice_nearest()'s output against
+// the un-interpolated s[idx] exactly, and cross-checks against mix_voice()
+// on an identical voice to confirm the two genuinely differ where the
+// fractional position is non-zero -- i.e. that nearest is really skipping
+// the lerp, not coincidentally matching it.
+static bool test_nearest_neighbor() {
+    static const int8_t data[7] = { 0, 100, -100, 40, -40, 20, 20 };  // [6]=guard (last value)
+    TrackerSample sample = { data, 6, 0, 6, false };
+
+    auto make_voice = [&]() {
+        TrackerVoice v{};
+        v.active = true;
+        v.sample = &sample;
+        v.pos = 0;
+        v.inc = tracker_latch_inc((uint32_t)(1.5f * (float)(1u << TRACKER_INC_FRAC_BITS)));  // ratio 1.5
+        v.cur_volL = v.cur_volR = v.tgt_volL = v.tgt_volR = 32767;
+        return v;
+    };
+    TrackerVoice vn = make_voice();
+    TrackerVoice vl = make_voice();
+
+    bool ok = true;
+    bool saw_divergence = false;
+    for (int step = 0; step < 4; step++) {
+        uint32_t idx = vn.pos >> TRACKER_POS_FRAC_BITS;
+        uint32_t frac = vn.pos & ((1u << TRACKER_POS_FRAC_BITS) - 1);
+        int32_t expected = ((int32_t)data[idx] << 8) * 32767 >> 15;
+
+        int32_t accn[2] = { 0, 0 };
+        mix_voice_nearest(&vn, accn, 1);
+        if (accn[0] != expected || accn[1] != expected) {
+            printf("  FAIL step %d: nearest got L=%d R=%d, want %d (idx=%u)\n", step, accn[0], accn[1], expected, idx);
+            ok = false;
+        }
+
+        int32_t accl[2] = { 0, 0 };
+        mix_voice(&vl, accl, 1);
+        if (frac != 0 && accl[0] != accn[0]) saw_divergence = true;
+    }
+    if (!saw_divergence) {
+        printf("  FAIL: nearest and linear never diverged -- test isn't exercising the lerp\n");
+        ok = false;
+    }
+    printf("  %s: nearest matches un-interpolated s[idx] exactly, diverges from linear at fractional positions\n",
+           ok ? "PASS" : "FAIL");
+    return ok;
+}
+
+// --- Test 5: the full hardcoded 32-voice configuration (#15 acceptance) ---
 //
 // Same shape as tracker/audio_engine.cpp's setup_test_voices(): half looped,
 // half one-shot, +-1 octave detuned chorus per half, panned across the
@@ -280,6 +332,9 @@ int main() {
 
     printf("\n== one-shot end-of-sample ==\n");
     ok = test_oneshot_end() && ok;
+
+    printf("\n== nearest-neighbour vs linear interpolation ==\n");
+    ok = test_nearest_neighbor() && ok;
 
     printf("\n== full 32-voice hardcoded configuration ==\n");
     ok = test_full_mix() && ok;

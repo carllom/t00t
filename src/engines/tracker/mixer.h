@@ -134,6 +134,53 @@ inline void mix_voice(TrackerVoice *v, int32_t *acc, uint32_t n) {
     v->cur_volR = volR;
 }
 
+// Nearest-neighbour sibling of mix_voice() (#16, tracker.md open question 2):
+// same loop-wrap/end-of-sample structure, but the inner sample fetch skips
+// the interpolation lerp entirely. Exists to measure whether the saving is
+// worth a build flag -- see engine.md's tracker interpolation measurement.
+inline void mix_voice_nearest(TrackerVoice *v, int32_t *acc, uint32_t n) {
+    if (!v->active || n == 0) return;
+
+    int32_t volL = v->cur_volL, volR = v->cur_volR;
+    int32_t dL = (v->tgt_volL - volL) / (int32_t)n;
+    int32_t dR = (v->tgt_volR - volR) / (int32_t)n;
+
+    uint32_t pos = v->pos;
+    const uint32_t inc = v->inc;
+    const int8_t *s = v->sample->data;
+    const uint32_t end_pos = (v->sample->looped ? v->sample->loop_end : v->sample->num_samples)
+                              << TRACKER_POS_FRAC_BITS;
+
+    while (n > 0) {
+        uint32_t run = samples_to_loop_end(pos, end_pos, inc);
+        if (run > n) run = n;
+
+        for (uint32_t i = 0; i < run; i++) {
+            uint32_t idx = pos >> TRACKER_POS_FRAC_BITS;
+            int32_t smp = (int32_t)s[idx] << 8;
+
+            acc[0] += (smp * volL) >> 15;
+            acc[1] += (smp * volR) >> 15;
+            acc += 2;
+
+            pos += inc;
+            volL += dL;
+            volR += dR;
+        }
+
+        n -= run;
+        if (n > 0) {
+            wrap_loop(v);
+            pos = v->pos;
+            if (!v->active) break;
+        }
+    }
+
+    v->pos = pos;
+    v->cur_volL = volL;
+    v->cur_volR = volR;
+}
+
 // Stub tick timer: no player/TickBlock ring yet (those land in build order
 // steps 3-5), but sub-blocks must still be cut short at tick boundaries so
 // that mechanism is proven now rather than retrofitted later.
@@ -170,10 +217,12 @@ inline int16_t tracker_clip16(int32_t x) {
 // Outer render loop (tracker.md "Render loop"): cuts each buffer into
 // sub-blocks no larger than TRACKER_SUBBLOCK, also cut short at whatever
 // `tick` boundary falls inside it. `out` is interleaved stereo int16_t,
-// `frames` long in samples-per-channel.
+// `frames` long in samples-per-channel. `nearest` picks mix_voice_nearest()
+// over mix_voice() for every voice this call -- decided once per buffer, not
+// per sample, so it costs nothing in the hot path either way.
 inline void __not_in_flash_func(tracker_render_buffer)(
     TrackerVoice *voices, uint32_t num_voices,
-    int16_t *out, uint32_t frames, TrackerTickState &tick) {
+    int16_t *out, uint32_t frames, TrackerTickState &tick, bool nearest = false) {
     uint32_t done = 0;
     while (done < frames) {
         if (tick.remaining == 0) tick.remaining = tick.samples_per_tick;
@@ -185,7 +234,11 @@ inline void __not_in_flash_func(tracker_render_buffer)(
         int32_t accum[TRACKER_SUBBLOCK * 2];
         for (uint32_t i = 0; i < n * 2; i++) accum[i] = 0;
 
-        for (uint32_t v = 0; v < num_voices; v++) mix_voice(&voices[v], accum, n);
+        if (nearest) {
+            for (uint32_t v = 0; v < num_voices; v++) mix_voice_nearest(&voices[v], accum, n);
+        } else {
+            for (uint32_t v = 0; v < num_voices; v++) mix_voice(&voices[v], accum, n);
+        }
 
         for (uint32_t i = 0; i < n; i++) {
             out[(done + i) * 2 + 0] = tracker_clip16(accum[i * 2 + 0]);

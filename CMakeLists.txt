@@ -80,6 +80,12 @@ foreach(_midi MIDI_USB MIDI_UART)
     endif()
 endforeach()
 
+# DMA/mixer buffer size override (#16: 256 vs 512 IRQ-overhead measurement).
+# Unset/"default" keeps audio_common.h's built-in 256.
+if(DEFINED DMA_BUFFER_SIZE AND NOT DMA_BUFFER_SIZE STREQUAL "default")
+    target_compile_definitions(t00t PRIVATE T00T_SAMPLES_PER_BUFFER=${DMA_BUFFER_SIZE})
+endif()
+
 # See ENGINE_VOICE_ALLOC above — tells main.cpp to skip the voice_alloc calls
 # it would otherwise fail to link against on the tracker build.
 if(T00T_ENGINE STREQUAL "tracker")
