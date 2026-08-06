@@ -3,8 +3,17 @@
 #include "pico/time.h"
 #include "output.h"
 #include "audio_engine.h"
-#include "voice_alloc.h"
 #include "midi/midi_controller.h"
+
+// Not every engine has a dynamic voice allocator — the tracker engine assigns
+// channel N to voice N directly, so voice_alloc.cpp isn't linked into that
+// build (set by CMakeLists.txt) and these calls must compile out too.
+#ifndef HAS_VOICE_ALLOC
+#define HAS_VOICE_ALLOC 1
+#endif
+#if HAS_VOICE_ALLOC
+#include "voice_alloc.h"
+#endif
 
 // MIDI transport selection — default both on; override in the board header.
 #ifndef MIDI_USB
@@ -49,7 +58,9 @@ int main() {
 #endif
 
     param_exchange.init();
+#if HAS_VOICE_ALLOC
     voice_alloc_init();
+#endif
 #if HAS_BUTTONS
     controller_init();
 #endif
@@ -70,7 +81,7 @@ int main() {
     absolute_time_t next_tick = get_absolute_time();
 
     while (true) {
-#if !HAS_BUTTONS
+#if !HAS_BUTTONS && HAS_VOICE_ALLOC
         // Drain Core 1's active-voice feedback before this pass allocates, so the
         // allocator's silent/released/oldest priority uses fresh state. On button
         // boards controller_tick() already does this at the start of its tick.

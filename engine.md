@@ -448,6 +448,48 @@ Max is measured when using all 16 voice channels.
 | Reverb FX   |  8.5% | 13.7% | 13.6% | 13.0% |   -   | ~94/90/81%  | After subchunk fix (issue #12) |
 | LFO(vibrato)|  0.6% |  5.9% |  5.7% |  5.1% |   -   | ~86/80/70%  | After subchunk fix (issue #12). Pitch LFO through modwheel. No FX. No measurable overhead for vibrato! |
 
+## Tracker Engine (build skeleton, #13)
+
+Third build-time engine (`make ENGINE=tracker`, `breadboard_rp2350` default),
+proving the build seam and `tracker.md`'s deviations from the shared layer
+model before any XM/mixer logic exists:
+
+- `MAX_VOICES = 32`, defined in `src/engines/tracker/engine.h` ahead of its
+  `#include "engine_base.h"`, per #10. Only this engine — subtractive and
+  groovebox stay at 16.
+- `voice_alloc` is not used: in XM, channel N is voice N (fixed assignment,
+  no allocation/stealing/age tracking). `src/voice_alloc.cpp` is excluded
+  from the link entirely (`CMakeLists.txt`'s `ENGINE_VOICE_ALLOC`, empty for
+  `T00T_ENGINE STREQUAL "tracker"`); `main.cpp`'s calls into it compile out
+  behind `HAS_VOICE_ALLOC` (defined `0` only for this engine).
+- `fx/delay.h` / `fx/reverb.h` are not `#include`d by
+  `src/engines/tracker/audio_engine.cpp`, so neither is linked — their
+  combined ~128 KB of `.bss` must never compete with the tracker's future
+  350-400 KB sample budget.
+- `src/engines/tracker/display.cpp` and `midi_controller.cpp` are stubs (no
+  UI, no note routing yet) so the shared `gfx.cpp` path and MIDI transports
+  still link.
+- Sound source: voice 0 is a hardcoded, always-on 440 Hz test tone (centre
+  pan, through the shared stereo output tail) — a build/boot smoke test, not
+  a mixer. Voices 1-31 are unused placeholders. `PROFILE_PIN` (GPIO 22) is
+  bracketed around the render call, ready for the 32-voice measurement slice.
+
+Measured with `arm-none-eabi-size` on a clean `rm -rf build && make
+ENGINE=tracker`, and confirmed via `nm` that no `voice_alloc`/`FxDelay`/
+`FxReverb` symbols appear in the binary:
+
+| Engine | text | bss | dec |
+|---|---|---|---|
+| tracker (skeleton) | 25,328 | 10,284 | 35,612 |
+| subtractive (default) | 206,040 | 198,344 | 404,384 |
+| groovebox | 55,516 | 199,764 | 255,280 |
+
+The subtractive/groovebox `.bss` figures are dominated by the sample corpus
+and wavetables baked into those engines, not by `voice_alloc`/delay/reverb —
+this skeleton has none of that yet. `make`, `make ENGINE=groovebox`, and
+`make ENGINE=tracker` all build clean from a fresh `build/`; the first two
+are unchanged in size from before #13.
+
 ## Host DSP Tooling
 
 `tools/host_render/` (issue #5 phase 2) is a standalone CMake project — no
