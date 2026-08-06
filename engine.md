@@ -448,6 +448,31 @@ Max is measured when using all 16 voice channels.
 | Reverb FX   |  8.5% | 13.7% | 13.6% | 13.0% |   -   | ~94/90/81%  | After subchunk fix (issue #12) |
 | LFO(vibrato)|  0.6% |  5.9% |  5.7% |  5.1% |   -   | ~86/80/70%  | After subchunk fix (issue #12). Pitch LFO through modwheel. No FX. No measurable overhead for vibrato! |
 
+## Host DSP Tooling
+
+`tools/host_render/` (issue #5 phase 2) is a standalone CMake project — no
+pico-sdk, host compiler — for verifying pure-DSP common-layer headers by
+rendering them to WAV instead of on real hardware. `make host` configures and
+builds it into `tools/host_render/build/` (git-ignored, same as the device
+`build/`); binaries there also write their WAV output alongside themselves.
+
+This exists so tracker/speech/FM module work has a host-render harness to
+build on (speech.md calls this "the single most valuable test"), and so new
+common-layer DSP components can be proven correct before they're wired into
+any real-time engine, instead of validating them by ear against a rewrite of
+a working sound.
+
+First consumer: `src/res2p.h`, a two-pole resonator for the speech module's
+formant cascade and (pending backport) the groovebox's 808 toms/congas/
+cowbell. `render_res2p` sweeps 1600 (frequency, bandwidth) pairs across the
+ranges both callers need and asserts every pole lands inside the unit circle,
+then renders impulse responses at three representative tunings and checks
+measured ringing frequency (zero-crossing rate, <5% error) and decay (late-
+window RMS < 10% of early-window RMS). All checks pass as of 2026-08-06.
+`res2p.h` is not yet wired into the groovebox — that backport, and the 808
+before/after diff, is speech.md P0, done independently once speech work
+starts.
+
 ## MIDI Input
 
 Control comes from buttons (VGA board only) and MIDI. There is no intermediate
