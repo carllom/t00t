@@ -430,6 +430,7 @@ This is the baseline measurements of the state before switching to RP2350 and up
 
 The following measurements were measured after a couple of additions: envelopes, effects, modularization (`subtractive` and `groovebox`).
 The baseline reflects the state on 2026-08-06 prior to implementing `tracker`, `speech` and `fm` modules and the subblock optimizations.
+Max is measured when using all 16 voice channels.
 
 | Phase       | Idle  | Voc A | Voc B | Voc C | ABC   | Max   | Comment |
 | - | - | - | - | - | - | - | - |
@@ -437,10 +438,15 @@ The baseline reflects the state on 2026-08-06 prior to implementing `tracker`, `
 | Delay FX    | 1.66% |  7.5% |  8.1% |  7.4% |   -   | ~90%  | |
 | Reverb FX   |  8.2% | 14.1% | 14.6% | 14.0% |   -   | ~90%  | |
 | LFO(vibrato)| 0.48% |  7.2% |  7.7% |  7.1% |   -   | ~90%  | Pitch LFO through modwheel. No FX |
+| | | | | | | | |
 | no FX       | 0.53% |  6.9% |  7.4% |  6.8% |   -   | ~90%  | After pan fix (issue #11). Slight (~0.5% for active voice, 0.05% idle) raise in CPU |
 | Delay FX    |  2.1% |  8.4% |  8.9% |  8.3% |   -   | ~90%  | After pan fix (issue #11). As above |
 | Reverb FX   |  8.4% | 14.8% | 15.3% | 14.7% |   -   | ~90%  | After pan fix (issue #11). As above |
-
+| | | | | | | | |
+| no FX       |  0.6% |  5.9% |  5.7% |  5.1% |   -   | ~86/80/70%  | After subchunk fix (issue #12). Max is depending on voice used (A/B/C). Major improvement for modulator-heavy voices (Voice C)! |
+| Delay FX    |  2.1% |  7.3% |  7.2% |  6.6% |   -   | ~86/80/70%  | After subchunk fix (issue #12) |
+| Reverb FX   |  8.5% | 13.7% | 13.6% | 13.0% |   -   | ~94/90/81%  | After subchunk fix (issue #12) |
+| LFO(vibrato)|  0.6% |  5.9% |  5.7% |  5.1% |   -   | ~86/80/70%  | After subchunk fix (issue #12). Pitch LFO through modwheel. No FX. No measurable overhead for vibrato! |
 
 ## MIDI Input
 
