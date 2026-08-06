@@ -32,6 +32,7 @@ static constexpr float PITCH_BEND_RANGE_SEMITONES = 2.0f;
 static uint8_t channel_program[NUM_CHANNELS];   // current preset index per channel
 static float   channel_bend_ratio[NUM_CHANNELS]; // phase_inc multiplier (1.0 = centered)
 static int16_t channel_mod[NUM_CHANNELS];        // mod-wheel vibrato depth, Q15
+static int16_t channel_pan[NUM_CHANNELS];        // CC10 pan, Q15 (-32768=L .. 0=center .. 32767=R)
 static uint8_t channel_bank_msb[NUM_CHANNELS];   // CC0  — stored for future use
 static uint8_t channel_bank_lsb[NUM_CHANNELS];   // CC32 — stored for future use
 
@@ -85,6 +86,7 @@ static void midi_voice_on(VoiceParamBlock &shadow, int v, uint8_t note, uint8_t 
     vp.phase_inc = (uint32_t)((float)base * channel_bend_ratio[channel]);
     vp.amplitude = (int16_t)(velocity * 258);  // override with velocity
     vp.mod_depth = channel_mod[channel];
+    vp.pan = channel_pan[channel];
     vp.trigger++;
     vp.gate = true;
 }
@@ -108,6 +110,15 @@ static void apply_channel_mod(VoiceParamBlock &shadow, uint8_t channel) {
     }
 }
 
+// Push pan (CC10) to every held voice on a channel.
+static void apply_channel_pan(VoiceParamBlock &shadow, uint8_t channel) {
+    for (uint32_t v = 0; v < MAX_VOICES; v++) {
+        if (voice_held[v] && voice_channel[v] == channel) {
+            shadow.voices[v].pan = channel_pan[channel];
+        }
+    }
+}
+
 void midi_controller_init() {
     midi_parser.init();
     for (int i = 0; i < 128; i++) midi_note_voice[i] = -1;
@@ -116,6 +127,7 @@ void midi_controller_init() {
         channel_program[ch] = default_preset_for_channel(ch);
         channel_bend_ratio[ch] = 1.0f;
         channel_mod[ch] = 0;
+        channel_pan[ch] = 0;
         channel_bank_msb[ch] = 0;
         channel_bank_lsb[ch] = 0;
     }
@@ -177,6 +189,12 @@ void midi_controller_process(const uint8_t *data, uint32_t len, ParamExchange *p
                         channel_mod[ev.channel] = (int16_t)(ev.data2 * 258);  // 0..127 → ~0..32766
                         apply_channel_mod(shadow, ev.channel);
                         ui_state.mod = ev.data2;
+                        ui_state.last_channel = ev.channel;
+                        changed = true;
+                        break;
+                    case 10:  // pan (CC10) — 0=full left, 64=center, 127=full right
+                        channel_pan[ev.channel] = (int16_t)(((int32_t)ev.data2 - 64) * 512);
+                        apply_channel_pan(shadow, ev.channel);
                         ui_state.last_channel = ev.channel;
                         changed = true;
                         break;

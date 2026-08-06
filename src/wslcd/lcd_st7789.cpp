@@ -26,6 +26,7 @@
 
 static int s_dma_chan = -1;
 static uint s_bl_slice;
+static uint16_t s_pixel;   // ring-wrapped DMA source for solid fills
 
 // --- init-table encoding -------------------------------------------------
 // Byte stream: <cmd> <flags|len> <len data bytes...> [<delay_ms> if DELAY set].
@@ -190,10 +191,36 @@ void lcd_blit(const uint16_t *buf, uint32_t npix) {
     lcd_blit_wait();
 }
 
+// Fill the current window from a single wire-format pixel, ring-wrapped over
+// the whole transfer (source address wraps every 2 bytes) so no RAM tile is
+// needed regardless of fill size.
+void lcd_fill_window(uint16_t color, uint32_t npix) {
+    s_pixel = color;
+
+    spi_drain();
+    gpio_put(LCD_CS_PIN, 0);
+    gpio_put(LCD_DC_PIN, 1);
+
+    dma_channel_config c = dma_channel_get_default_config(s_dma_chan);
+    channel_config_set_transfer_data_size(&c, DMA_SIZE_8);
+    channel_config_set_read_increment(&c, true);
+    channel_config_set_write_increment(&c, false);
+    channel_config_set_dreq(&c, DREQ_SPI1_TX);
+    channel_config_set_ring(&c, false, 1);   // wrap read addr every 2 bytes
+
+    dma_channel_configure(
+        s_dma_chan, &c,
+        &spi_get_hw(spi1)->dr,
+        &s_pixel,
+        npix * 2,                    // bytes
+        true);                       // start now
+
+    dma_channel_wait_for_finish_blocking(s_dma_chan);
+    spi_drain();
+    gpio_put(LCD_CS_PIN, 1);
+}
+
 void lcd_fill(uint16_t color) {
-    // Stream a small repeated run so we don't need a full framebuffer.
-    static uint16_t row[LCD_W];
-    for (uint16_t i = 0; i < LCD_W; i++) row[i] = color;
     lcd_set_window(0, 0, LCD_W - 1, LCD_H - 1);
-    for (uint16_t y = 0; y < LCD_H; y++) lcd_blit(row, LCD_W);
+    lcd_fill_window(color, (uint32_t)LCD_W * LCD_H);
 }

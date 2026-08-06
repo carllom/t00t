@@ -36,11 +36,13 @@ struct FxReverb {
         }
     }
 
-    // Process one buffer in place. Maps controller values: p1 → room size
-    // (comb feedback 0.70..0.98), p2 → damping, mix → wet/dry.
+    // Mono send / stereo return: `scratch` enters as the mono downmix of the
+    // stereo dry mix and drives the (still-mono) reverb network; on return it
+    // holds the wet contribution only (no dry component), which the caller
+    // adds identically to both output channels. Maps controller values:
+    // p1 → room size (comb feedback 0.70..0.98), p2 → damping, mix → wet level.
     inline void process(int32_t *scratch, uint32_t n, const EffectParams &fx) {
         float wetknob  = fx.mix / 127.0f;
-        float dry_gain = 1.0f - wetknob;
         float wet_gain = wetknob * 3.0f;                    // Freeverb scalewet
         float feedback = 0.70f + (fx.p1 / 127.0f) * 0.28f;  // room size
         float damp1    = (fx.p2 / 127.0f) * 0.4f;           // damping
@@ -48,8 +50,8 @@ struct FxReverb {
         const float gain = 0.015f;                          // Freeverb fixedgain
 
         for (uint32_t i = 0; i < n; i++) {
-            float dry = (float)__ssat(scratch[i], 16);
-            float in  = dry * gain;
+            float send = (float)__ssat(scratch[i], 16);
+            float in   = send * gain;
 
             float out = 0.0f;
             for (int c = 0; c < NCOMB; c++) {
@@ -66,7 +68,7 @@ struct FxReverb {
                 if (++aidx[a] >= ASZ[a]) aidx[a] = 0;
                 out = o;
             }
-            scratch[i] = (int32_t)(dry * dry_gain + out * wet_gain);
+            scratch[i] = (int32_t)(out * wet_gain);
         }
     }
 };
