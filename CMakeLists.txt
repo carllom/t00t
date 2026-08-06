@@ -40,13 +40,22 @@ if(EXISTS ${CMAKE_CURRENT_LIST_DIR}/src/engines/${T00T_ENGINE}/presets.h)
     list(APPEND ENGINE_OPTIONAL_SOURCES src/controller.cpp)
 endif()
 
+# The tracker engine has no dynamic voice allocation — channel N is voice N,
+# fixed, per tracker.md's "Deviation From the Existing Layer Model" — so
+# voice_alloc.cpp is left out of that build entirely (#13). main.cpp's calls
+# into it are compiled out via HAS_VOICE_ALLOC below.
+set(ENGINE_VOICE_ALLOC src/voice_alloc.cpp)
+if(T00T_ENGINE STREQUAL "tracker")
+    set(ENGINE_VOICE_ALLOC "")
+endif()
+
 add_executable(t00t
     src/main.cpp
     src/osc/sine.cpp
     src/envelope.cpp
     src/engines/${T00T_ENGINE}/audio_engine.cpp
     src/output.cpp
-    src/voice_alloc.cpp
+    ${ENGINE_VOICE_ALLOC}
     src/samples.cpp
     ${ENGINE_MIDI_CONTROLLER}
     ${ENGINE_OPTIONAL_SOURCES}
@@ -70,6 +79,12 @@ foreach(_midi MIDI_USB MIDI_UART)
         target_compile_definitions(t00t PRIVATE ${_midi}=${${_midi}})
     endif()
 endforeach()
+
+# See ENGINE_VOICE_ALLOC above — tells main.cpp to skip the voice_alloc calls
+# it would otherwise fail to link against on the tracker build.
+if(T00T_ENGINE STREQUAL "tracker")
+    target_compile_definitions(t00t PRIVATE HAS_VOICE_ALLOC=0)
+endif()
 
 target_link_libraries(t00t
     pico_stdlib
