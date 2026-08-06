@@ -32,14 +32,16 @@ struct VoiceParams {
     float lfo_filter_depth;    // LFO → cutoff in Hz (signed, ±18000)
     const SampleDef *sample;   // sample definition (nullptr for non-sample waveforms)
     int16_t mod_depth;         // mod-wheel vibrato depth, Q15 (0 = off) — dedicated LFO on Core 1
+    int16_t pan;                // Q15 pan: -32768 = full left, 0 = center, 32767 = full right (CC10)
 };
 
-// Default voice: audible-ready sine at a sane cutoff, everything else off.
+// Default voice: audible-ready sine at a sane cutoff, everything else off,
+// centered pan.
 template <>
 inline VoiceParams voice_params_default<VoiceParams>() {
     return { 0, 0, 0, false, WAVE_SINE, 512,
              0.0f, 0.0f, 0.0f, 0.0f,
-             FILTER_OFF, 8000, 0, 0, 0.0f, nullptr, 0 };
+             FILTER_OFF, 8000, 0, 0, 0.0f, nullptr, 0, 0 };
 }
 
 using VoiceParamBlock = VoiceParamBlockT<VoiceParams>;

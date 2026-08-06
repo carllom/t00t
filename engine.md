@@ -433,10 +433,14 @@ The baseline reflects the state on 2026-08-06 prior to implementing `tracker`, `
 
 | Phase       | Idle  | Voc A | Voc B | Voc C | ABC   | Max   | Comment |
 | - | - | - | - | - | - | - | - |
-| no FX       | 0.48% |  6.4% |  6.9% |  6.3% |   -   | ~94%  | |
-| Delay FX    | 1.66% |  7.5% |  8.1% |  7.4% |   -   | ~94%  | |
-| Reverb FX   |  8.2% | 14.1% | 14.6% | 14.0% |   -   | ~94%  | |
-| LFO(vibrato)| 0.48% |  7.2% |  7.7% |  7.1% |   -   | ~94%  | Pitch LFO through modwheel. No FX |
+| no FX       | 0.48% |  6.4% |  6.9% |  6.3% |   -   | ~90%  | |
+| Delay FX    | 1.66% |  7.5% |  8.1% |  7.4% |   -   | ~90%  | |
+| Reverb FX   |  8.2% | 14.1% | 14.6% | 14.0% |   -   | ~90%  | |
+| LFO(vibrato)| 0.48% |  7.2% |  7.7% |  7.1% |   -   | ~90%  | Pitch LFO through modwheel. No FX |
+| no FX       | 0.53% |  6.9% |  7.4% |  6.8% |   -   | ~90%  | After pan fix (issue #11). Slight (~0.5% for active voice, 0.05% idle) raise in CPU |
+| Delay FX    |  2.1% |  8.4% |  8.9% |  8.3% |   -   | ~90%  | After pan fix (issue #11). As above |
+| Reverb FX   |  8.4% | 14.8% | 15.3% | 14.7% |   -   | ~90%  | After pan fix (issue #11). As above |
+
 
 ## MIDI Input
 
@@ -452,5 +456,6 @@ event queue — each input source writes the param shadow and commits directly.
 Both transports route through `midi_controller_process()`, which parses MIDI
 bytes, maps note on/off to voices via the allocator, and commits the shadow.
 Beyond notes it also handles per-channel **CC1 (mod wheel)** → `mod_depth`
-(vibrato) and **pitch bend** → phase-increment ratio. CC0/CC32 (bank select) are
-stored but not yet used.
+(vibrato), **CC10 (pan)** → `pan` (subtractive engine only; live, applied to
+held voices immediately), and **pitch bend** → phase-increment ratio. CC0/CC32
+(bank select) are stored but not yet used.
