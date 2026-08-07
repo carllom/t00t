@@ -33,12 +33,17 @@ struct VoiceParams {
     uint8_t  trigger;    // generation counter, incremented on each note-on
     bool     gate;       // true while voice should sound
     int16_t  pan;        // Q15 pan: -32768 = full left, 0 = center, 32767 = full right
-    uint8_t  phoneme;    // Vowel index (phonemes.h) -- SPEECH_HOLD phoneme keyboard, #28
+    uint8_t  phoneme;    // Phoneme index (phonemes.h) -- SPEECH_HOLD phoneme keyboard, #28
+    // Live tract parameters (#29, speech.md "formant_shift"/"bandwidth_scale"):
+    // Q8.8, 256 = 1.0x (neutral). Latest-wins like the rest of VoiceParams --
+    // tract.h ramps them per sub-block so a CC sweep can't zipper.
+    int16_t  formant_shift;
+    int16_t  bandwidth_scale;
 };
 
 template <>
 inline VoiceParams voice_params_default<VoiceParams>() {
-    return { 0, 0, 0, false, 0, 0 };
+    return { 0, 0, 0, false, 0, 0, 256, 256 };
 }
 
 using VoiceParamBlock = VoiceParamBlockT<VoiceParams>;

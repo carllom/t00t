@@ -10,7 +10,7 @@
 #include <cstdio>
 
 // Speech status display (Core 0, low priority). Mirrors the groovebox
-// display's chrome (buttonless breadboard, no presets.h) with a VOWEL row
+// display's chrome (buttonless breadboard, no presets.h) with a PHON row
 // in place of MODE -- speech.md's Open Question #4 ("current phoneme ...
 // is the obvious answer and is cheap at ~10 Hz redraw"), and doubles as the
 // debug visibility #28 needed: confirms program-change is actually landing
@@ -30,13 +30,16 @@ static const uint16_t COL_LOAD_HI = gfx_rgb(230, 60, 50);
 
 static constexpr int VAL_X  = 104;
 static constexpr int VAL_CH = 8;
-static constexpr int ROW_VOICES = 36, ROW_CPU = 76, ROW_NOTE = 116, ROW_VOWEL = 138;
+static constexpr int ROW_VOICES = 36, ROW_CPU = 76, ROW_NOTE = 116, ROW_PHONEME = 138;
 static constexpr int VBAR_Y = 56, VCELL_PITCH = 15, VCELL_W = 13, VBAR_H = 14;
 static constexpr int CBAR_X = 4, CBAR_Y = 96, CBAR_W = 232, CBAR_H = 12;
 
 static const char *NOTE_NAMES[12] =
     { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
-static const char *VOWEL_NAMES[VOWEL_COUNT] = { "/i/", "/e/", "/a/", "/o/", "/u/" };
+static const char *PHONEME_NAMES[PHONEME_COUNT] = {
+    "/i/", "/e/", "/a/", "/o/", "/u/",
+    "/s/", "/sh/", "/f/", "/z/", "/v/", "/m/", "/n/",
+};
 
 static void draw_val(int y, const char *raw, uint16_t fg) {
     char b[VAL_CH + 1];
@@ -53,7 +56,7 @@ void display_init() {
     gfx_text(0, ROW_VOICES, "VOICES", COL_LABEL, COL_BG, 2);
     gfx_text(0, ROW_CPU,    "CPU",    COL_LABEL, COL_BG, 2);
     gfx_text(0, ROW_NOTE,   "NOTE",   COL_LABEL, COL_BG, 2);
-    gfx_text(0, ROW_VOWEL,  "VOWEL",  COL_LABEL, COL_BG, 2);
+    gfx_text(0, ROW_PHONEME, "PHON",  COL_LABEL, COL_BG, 2);
 
     lcd_set_backlight(100);
 }
@@ -112,13 +115,13 @@ void display_task() {
     }
 
     // The whole point of this row (#28 debugging): m.program is
-    // channel_vowel[channel] at the moment of the *last note-on* -- so this
+    // channel_phoneme[channel] at the moment of the *last note-on* -- so this
     // updates on note-on, not on program change itself (matches "affects
     // future notes only"). If PC really isn't landing, this value will
     // never move no matter how many program changes are sent.
     if (first || m.program != last_midi.program) {
-        const char *name = m.program < VOWEL_COUNT ? VOWEL_NAMES[m.program] : "?";
-        draw_val(ROW_VOWEL, name, COL_VALUE);
+        const char *name = m.program < PHONEME_COUNT ? PHONEME_NAMES[m.program] : "?";
+        draw_val(ROW_PHONEME, name, COL_VALUE);
     }
 
     last_midi = m;

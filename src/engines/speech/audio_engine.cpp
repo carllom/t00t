@@ -7,13 +7,13 @@
 #include "pico/time.h"
 #include <arm_acle.h>
 
-// Phoneme keyboard (#28, speech.md P1 "SPEECH_HOLD"): MAX_VOICES=4
-// independent formant-cascade voices, each driven straight from
-// VoiceParams (phase_inc = glottal pitch, phoneme = sustained vowel, gate =
-// held/released) with no segment sequencer -- one MIDI note is one
-// sustained phoneme. render.h's speech_render_voice() is the shared
-// device/host render core (tools/host_render/render_speech.cpp calls the
-// same function to render each vowel to WAV).
+// Phoneme keyboard (#28 cascade, #29 full tract, speech.md P1 "SPEECH_HOLD"):
+// MAX_VOICES=4 independent tract voices, each driven straight from
+// VoiceParams (phase_inc = glottal pitch, phoneme = sustained vowel/
+// fricative/nasal, gate = held/released) with no segment sequencer -- one
+// MIDI note is one sustained phoneme. render.h's speech_render_voice() is
+// the shared device/host render core (tools/host_render/render_speech.cpp
+// calls the same function to render each phoneme to WAV).
 
 static volatile uint8_t s_load_pct = 0;
 
@@ -85,6 +85,7 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
             const VoiceParams &p = vp.voices[v];
             speech_render_voice(voices[v], p.phase_inc, (float)SPEECH_RATE, p.trigger,
                                  p.amplitude, p.gate, p.phoneme, p.pan,
+                                 p.formant_shift, p.bandwidth_scale,
                                  dry_l, dry_r, NATIVE_SAMPLES_PER_BUFFER);
             // speech.md: "hold the bit set until the phoneme sequence
             // completes, regardless of gate" -- P1 has no utterance to
