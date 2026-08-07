@@ -1,6 +1,7 @@
 #pragma once
 
 #include "excitation.h"
+#include "osc/noise.h"
 #include "osc/sine.h"
 #include "pan.h"
 #include "phonemes.h"
@@ -44,17 +45,22 @@ inline void speech_render_test_tone(uint32_t &phase, uint32_t phase_inc, int16_t
 // parameter constancy, not of output.
 static constexpr uint32_t SPEECH_SUBBLOCK = 64;
 
-// Headroom applied to the glottal excitation before it hits the formant
-// cascade: each res2p stage has unity DC gain, but a narrow-bandwidth
-// resonator has real gain at its own resonant frequency (roughly 1/(1-r)),
-// and five of them in series compounds that. Without this the cascade
-// clips well before `amplitude` reaches its nominal full-scale value.
-// Tuned empirically in tools/host_render/render_speech.cpp against the
-// five vowel targets in phonemes.h.
+// Headroom applied to both excitation sources (glottal pulse and LFSR
+// noise, #29) before they hit the tract: each res2p stage has unity DC
+// gain, but a narrow-bandwidth resonator has real gain at its own resonant
+// frequency (roughly 1/(1-r)), and five of them in series (the cascade)
+// compounds that. Without this the cascade clips well before `amplitude`
+// reaches its nominal full-scale value. Tuned empirically in
+// tools/host_render/render_speech.cpp against every phoneme in phonemes.h,
+// not just the five vowels -- the fricative/nasal branches share this
+// headroom rather than getting their own (checked peak stays well under
+// full scale for all twelve, run_fricative_checks()/run_voiced_fricative_
+// checks()/run_nasal_checks()'s clip checks).
 static constexpr float SPEECH_EXCITATION_HEADROOM = 1.0f / 12.0f;
 
-// Renders `native_frames` samples of one voice's formant-cascade output
-// (#28) at the engine's native rate, panned and zero-order-held x2 into the
+// Renders `native_frames` samples of one voice's full tract output (#28
+// cascade, #29 parallel fricative/nasal branches + mixed excitation) at the
+// engine's native rate, panned and zero-order-held x2 into the
 // (output-rate-sized) dry_l/dry_r accumulators -- callers must clear those
 // buffers themselves and may call this once per active voice, since it
 // accumulates (+=) rather than overwrites. `sv` is this voice's persistent
@@ -64,11 +70,16 @@ static constexpr float SPEECH_EXCITATION_HEADROOM = 1.0f / 12.0f;
 // -- a change vs. `sv.last_trigger` means a new note, so the tract snaps
 // straight to the new phoneme's target and clears filter/phase state
 // (tract_retrigger()) instead of gliding from whatever the previous note
-// left behind.
+// left behind. `formant_shift`/`bandwidth_scale` are raw Q8.8 (256 = 1.0x,
+// see tract.h's tract_cc_to_q8_8()) live parameters -- updated every call
+// regardless of trigger/phoneme, so a CC sweep reaches a held note.
 inline void speech_render_voice(SpeechVoice &sv, uint32_t phase_inc, float fs, uint8_t trigger,
                                  int16_t amplitude, bool gate, uint8_t phoneme, int16_t pan,
+                                 int16_t formant_shift, int16_t bandwidth_scale,
                                  int32_t *dry_l, int32_t *dry_r, uint32_t native_frames) {
-    const FormantTarget &tgt = VOWEL_TARGETS[phoneme % VOWEL_COUNT];
+    const FormantTarget &tgt = PHONEME_TARGETS[phoneme % PHONEME_COUNT];
+    sv.formant_shift_tgt = (float)formant_shift * (1.0f / 256.0f);
+    sv.bandwidth_scale_tgt = (float)bandwidth_scale * (1.0f / 256.0f);
     if (trigger != sv.last_trigger) {
         sv.last_trigger = trigger;
         sv.last_phoneme = phoneme;
@@ -84,7 +95,8 @@ inline void speech_render_voice(SpeechVoice &sv, uint32_t phase_inc, float fs, u
     // Amplitude declick time constant: fast enough (~100 samples, ~4.5 ms at
     // SPEECH_RATE) that gate on/off doesn't thump, slow enough to stay well
     // under the tract's own ~12-15 ms glide so it never sounds like part of
-    // the formant transition.
+    // the formant transition. Shared by both excitation sources so av/af
+    // set the *balance* between them and gate/velocity scale both equally.
     constexpr float AMP_SMOOTH_COEFF = 0.01f;
 
     uint32_t n = 0;
@@ -97,10 +109,13 @@ inline void speech_render_voice(SpeechVoice &sv, uint32_t phase_inc, float fs, u
 
         for (uint32_t i = 0; i < k; i++) {
             sv.cur_amp += (amp_tgt - sv.cur_amp) * AMP_SMOOTH_COEFF;
-            float excitation = glottal_pulse(sv.glottal_phase) * sv.cur_amp;
+
+            float voiced_src = glottal_pulse(sv.glottal_phase) * sv.av * sv.cur_amp;
+            float noise_f = (float)osc_noise(sv.noise_lfsr) * (1.0f / 32768.0f);
+            float noise_src = noise_f * sv.af * sv.cur_amp;
             sv.glottal_phase += phase_inc;
 
-            int32_t sample = (int32_t)tract_process(sv, excitation);
+            int32_t sample = (int32_t)tract_process_mixed(sv, voiced_src, noise_src);
             int32_t l = (sample * gain_l) >> 15;
             int32_t r = (sample * gain_r) >> 15;
             uint32_t o = (n + i) * 2;
