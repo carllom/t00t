@@ -29,7 +29,7 @@
 static bool test_ramp_linearity() {
     static int8_t flat_data[TRACKER_SUBBLOCK + 2];
     for (auto &b : flat_data) b = 100;  // constant -> interpolated sample is always 100<<8
-    TrackerSample flat = { flat_data, TRACKER_SUBBLOCK + 1, 0, TRACKER_SUBBLOCK + 1, false };
+    TrackerSample flat = { flat_data, TRACKER_SUBBLOCK + 1, 0, TRACKER_SUBBLOCK + 1, TRACKER_LOOP_NONE };
 
     TrackerVoice v{};
     v.active = true;
@@ -84,7 +84,7 @@ static bool test_ramp_linearity() {
 // read.
 static bool test_loop_wrap() {
     static const int8_t data[9] = { 0, 10, 20, 30, 40, 50, 60, 70, 20 };  // [8]=guard (loop_start value, unused here since loop_end<8)
-    TrackerSample sample = { data, 8, 2, 6, true };
+    TrackerSample sample = { data, 8, 2, 6, TRACKER_LOOP_FORWARD };
 
     TrackerVoice v{};
     v.active = true;
@@ -125,10 +125,103 @@ static bool test_loop_wrap() {
     return ok && seen_wrap;
 }
 
+// --- Test 2b: ping-pong loop bounces within [loop_start, loop_end), never
+// overruns either side (#21) ---
+//
+// Same 8-sample buffer/[2,6) region as test_loop_wrap() but with an
+// increment (6 samples/step) larger than the loop region (loop_len=4
+// samples) -- tracker.md's own "deliberately tight ... loop" measurement
+// convention (#16) pushed to ping-pong's worst case, so wrap_ping_pong()'s
+// multi-reflection path (more than one bounce per call) actually gets
+// exercised, not just a single mirror.
+static bool test_pingpong_wrap() {
+    static const int8_t data[9] = { 0, 10, 20, 30, 40, 50, 60, 70, 10 };  // [8]=guard (loop_start value)
+    TrackerSample sample = { data, 8, 2, 6, TRACKER_LOOP_PINGPONG };
+
+    TrackerVoice v{};
+    v.active = true;
+    v.sample = &sample;
+    v.pos = 2u << TRACKER_POS_FRAC_BITS;  // start at loop_start, matching a real trigger
+    v.backward = false;
+    v.inc = tracker_latch_inc(6u * (1u << TRACKER_INC_FRAC_BITS));  // ratio 6.0 -> 6 samples/step in Q18.14
+    v.cur_volL = v.cur_volR = v.tgt_volL = v.tgt_volR = 32767;
+
+    bool ok = true;
+    bool seen_forward_to_backward = false, seen_backward_to_forward = false;
+    bool prev_backward = v.backward;
+    for (int step = 0; step < 60; step++) {
+        // mix_voice() guarantees v.pos strictly inside [loop_start_pos,
+        // loop_end_pos) between calls for a ping-pong voice (never left
+        // at/past a boundary the way a plain forward loop's lazy overshoot-
+        // then-wrap can -- wrap_ping_pong() is called unconditionally after
+        // every batch instead, see its header comment), so idx must stay
+        // inside [2,6) before every call.
+        uint32_t idx = v.pos >> TRACKER_POS_FRAC_BITS;
+        if (idx < 2 || idx >= 6) {
+            printf("  FAIL step %d: idx=%u outside [2,6) before a call\n", step, idx);
+            ok = false;
+        }
+
+        int32_t acc[2] = { 0, 0 };
+        mix_voice(&v, acc, 1);
+
+        if (prev_backward != v.backward) {
+            if (v.backward) seen_forward_to_backward = true;
+            else seen_backward_to_forward = true;
+        }
+        prev_backward = v.backward;
+    }
+    bool bounced = seen_forward_to_backward && seen_backward_to_forward;
+    printf("  %s: 60 steps through a [2,6) ping-pong loop at 6x rate (loop shorter than one increment), "
+           "stayed in-bounds, bounced=%s\n", ok && bounced ? "PASS" : "FAIL", bounced ? "yes" : "no");
+    return ok && bounced;
+}
+
+// --- Test 2c: ping-pong at an increment that divides the loop length
+// exactly, so every bounce lands on an *exact* integer sample boundary
+// (#21 regression) ---
+//
+// wrap_ping_pong()'s reflection pivot is deliberately offset by one Q18.14
+// unit specifically to avoid a fixed point at a zero-overshoot landing --
+// without it, this exact configuration (loop_len=4, inc=2 -- every bounce
+// lands precisely on loop_start_pos or loop_end_pos with zero fractional
+// remainder) hangs mix_voice() forever. Any regression to the textbook
+// `2*boundary - pos` reflection formula reproduces that hang here.
+static bool test_pingpong_exact_boundary() {
+    static const int8_t data[9] = { 0, 10, 20, 30, 40, 50, 60, 70, 10 };
+    TrackerSample sample = { data, 8, 2, 6, TRACKER_LOOP_PINGPONG };
+
+    TrackerVoice v{};
+    v.active = true;
+    v.sample = &sample;
+    v.pos = 2u << TRACKER_POS_FRAC_BITS;
+    v.backward = false;
+    v.inc = tracker_latch_inc(2u * (1u << TRACKER_INC_FRAC_BITS));  // ratio 2.0 -- divides loop_len(4) exactly
+    v.cur_volL = v.cur_volR = v.tgt_volL = v.tgt_volR = 32767;
+
+    bool ok = true;
+    bool bounced = false;
+    bool prev_backward = v.backward;
+    for (int step = 0; step < 100; step++) {
+        uint32_t idx = v.pos >> TRACKER_POS_FRAC_BITS;
+        if (idx < 2 || idx >= 6) {
+            printf("  FAIL step %d: idx=%u outside [2,6) before a call\n", step, idx);
+            ok = false;
+        }
+        int32_t acc[2] = { 0, 0 };
+        mix_voice(&v, acc, 1);  // must return -- a fixed-point regression here is an infinite loop, not a wrong answer
+        if (prev_backward != v.backward) bounced = true;
+        prev_backward = v.backward;
+    }
+    printf("  %s: 100 steps at an exact-integer-boundary-aligned rate completed without hanging, bounced=%s\n",
+           ok && bounced ? "PASS" : "FAIL", bounced ? "yes" : "no");
+    return ok && bounced;
+}
+
 // --- Test 3: one-shot sample goes inactive exactly at its end, no overrun ---
 static bool test_oneshot_end() {
     static const int8_t guarded[9] = { 1, 2, 3, 4, 5, 6, 7, 8, 8 };  // guard = last value
-    TrackerSample sample = { guarded, 8, 0, 8, false };
+    TrackerSample sample = { guarded, 8, 0, 8, TRACKER_LOOP_NONE };
 
     TrackerVoice v{};
     v.active = true;
@@ -181,7 +274,7 @@ static bool test_oneshot_end() {
 // the lerp, not coincidentally matching it.
 static bool test_nearest_neighbor() {
     static const int8_t data[7] = { 0, 100, -100, 40, -40, 20, 20 };  // [6]=guard (last value)
-    TrackerSample sample = { data, 6, 0, 6, false };
+    TrackerSample sample = { data, 6, 0, 6, TRACKER_LOOP_NONE };
 
     auto make_voice = [&]() {
         TrackerVoice v{};
@@ -241,8 +334,8 @@ static bool test_full_mix() {
     for (uint32_t i = 0; i < sararr1_NUM_SAMPLES; i++) sample_ram[i] = sararr1_data[i];
     sample_ram[sararr1_NUM_SAMPLES] = sararr1_data[sararr1_NUM_SAMPLES - 1];
 
-    TrackerSample looped  = { sample_ram, sararr1_NUM_SAMPLES, sararr1_LOOP_START, sararr1_LOOP_END, true };
-    TrackerSample oneshot = { sample_ram, sararr1_NUM_SAMPLES, 0, sararr1_NUM_SAMPLES, false };
+    TrackerSample looped  = { sample_ram, sararr1_NUM_SAMPLES, sararr1_LOOP_START, sararr1_LOOP_END, TRACKER_LOOP_FORWARD };
+    TrackerSample oneshot = { sample_ram, sararr1_NUM_SAMPLES, 0, sararr1_NUM_SAMPLES, TRACKER_LOOP_NONE };
 
     TrackerVoice voices[MAX_VOICES];
     const float base_ratio = (float)sararr1_SAMPLE_RATE / (float)SAMPLE_RATE;
@@ -329,6 +422,12 @@ int main() {
 
     printf("\n== forward loop wrap bounds ==\n");
     ok = test_loop_wrap() && ok;
+
+    printf("\n== ping-pong loop wrap bounds + bounce (#21) ==\n");
+    ok = test_pingpong_wrap() && ok;
+
+    printf("\n== ping-pong at an exact integer boundary (#21 regression) ==\n");
+    ok = test_pingpong_exact_boundary() && ok;
 
     printf("\n== one-shot end-of-sample ==\n");
     ok = test_oneshot_end() && ok;

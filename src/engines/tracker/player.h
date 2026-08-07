@@ -25,10 +25,11 @@
 // host or device is the whole point (tracker.md: "Any divergence between the
 // host and device render paths defeats the purpose").
 //
-// Effect column commands NOT in #19/#20's scope (E-subcommands, tremolo,
-// retrig, tremor, global volume, effect-column panning slide, 9xx sample
-// offset, ping-pong loops, ...) are still no-ops here -- tracker.md's "long
-// tail of FT2 quirks" (#21/#22). Key-off (note 97) does not cut a voice
+// Effect column commands NOT in #19/#20/#21's scope (E-subcommands, tremolo,
+// retrig, tremor, global volume, effect-column panning slide, ...) are still
+// no-ops here -- tracker.md's "long tail of FT2 quirks" (#22). #21 adds 9xx
+// sample offset (tracker_trigger_note()) and ping-pong loops (mixer.h's
+// wrap_ping_pong()). Key-off (note 97) does not cut a voice
 // directly: it only marks the channel key_off, which the envelope/fadeout
 // machinery (tracker_resolve_envelope_volpan()) consumes every tick from
 // then on -- an instrument with an enabled volume envelope releases through
@@ -70,7 +71,7 @@ struct ChannelTick {
     uint32_t inc;                 // Q8.24, 0 = channel silent
     int32_t tgt_volL, tgt_volR;   // Q15, post-pan
     uint32_t sample_id;           // global sample index (SongHeader's sample table)
-    uint32_t start_pos;           // Q18.14; always 0 until #21's 9xx sample offset
+    uint32_t start_pos;           // Q18.14; 0 unless this tick's trigger carried a #21 9xx sample offset
     uint8_t trigger;              // generation counter, bumped on note-on
     uint8_t flags;                // ChannelTickFlags
 };
@@ -148,6 +149,13 @@ struct PlayerChannelState {
     uint8_t porta_down_memory = 0;
     uint8_t tone_porta_memory = 0;
     uint8_t volslide_memory = 0;
+    // #21: 9xx sample-offset memory. Unlike porta/tone-porta/volslide's
+    // memory (substituted whenever the effect is restated, param or not),
+    // this one is only ever written on a row that both carries 9xx *and*
+    // actually triggers a note (tracker_trigger_note()'s own comment) --
+    // verified against openmpt123: "the effect memory of the Offset command
+    // is only updated when the command is placed next to a note."
+    uint8_t sample_offset_memory = 0;
     uint8_t vibrato_speed = 0;
     uint8_t vibrato_depth = 0;
     uint8_t vibrato_pos = 0;  // 0..255, advances by vibrato_speed each active tick
@@ -573,6 +581,26 @@ inline void tracker_trigger_note(const SongHeader *song, const Event &ev,
     if (!res.ok) return;
     const SampleHeader &sh = *res.sh;
 
+    // #21: 9xx sample offset. Memory is written here unconditionally (any
+    // 9xx next to this note updates it, even if the resulting offset turns
+    // out to be past the sample's end below) -- only a 9xx with *no* note on
+    // its row leaves the memory untouched, which is why this lives inside
+    // the successful-trigger path rather than being decoded up front.
+    uint32_t start_pos = 0;
+    if ((Effect)ev.effect == Effect::SAMPLE_OFFSET) {
+        if (ev.effect_param != 0) pcs.sample_offset_memory = ev.effect_param;
+        uint32_t offset_samples = (uint32_t)pcs.sample_offset_memory * 256u;
+        // FT2/openmpt123: an offset at or past the sample's length silently
+        // suppresses the whole trigger (verified against openmpt123 -- "notes
+        // with offset commands beyond the sample length are never
+        // triggered") rather than clamping to the end or wrapping. The
+        // channel is left exactly as tracker_resolve_note_sample()'s other
+        // "nothing to play" cases leave it -- pcs.instrument above already
+        // latched, nothing else touched.
+        if (offset_samples >= sh.length) return;
+        start_pos = offset_samples << TRACKER_POS_FRAC_BITS;
+    }
+
     const uint8_t *base = tracker_blob_base(song);
     const uint32_t *incs = reinterpret_cast<const uint32_t *>(base + sh.note_increments_offset);
     pcs.inc = incs[ev.note - 1];
@@ -606,7 +634,7 @@ inline void tracker_trigger_note(const SongHeader *song, const Event &ev,
 
     pcs.trigger++;
     ct.flags |= TICK_NOTE_ON;
-    ct.start_pos = 0;
+    ct.start_pos = start_pos;
 }
 
 // Resolves the volume column's tick-0 behaviour against `pcs` -- called for
@@ -1119,7 +1147,7 @@ inline void tracker_build_resident_samples(const SongHeader *song, const int8_t 
         const SampleHeader &sh = samples[i];
         out[i] = TrackerSample{
             sample_data_base + (sh.data_offset - sample_data_base_offset),
-            sh.length, sh.loop_start, sh.loop_end, sh.loop_type != 0,
+            sh.length, sh.loop_start, sh.loop_end, (uint8_t)sh.loop_type,
         };
     }
 }
@@ -1144,6 +1172,11 @@ inline void tracker_apply_tick(const TickBlock &tb, const TrackerSample *residen
             v.pos = ct.start_pos;
             v.inc = tracker_latch_inc(ct.inc);
             v.active = true;
+            // #21: every real trigger starts a ping-pong sample playing
+            // forward, even one retargeted mid-loop-region by a 9xx offset
+            // (start_pos) -- FT2/openmpt123 never trigger a note already
+            // mid-bounce.
+            v.backward = false;
         } else if (v.active) {
             v.inc = tracker_latch_inc(ct.inc);
             // ct.inc == 0 means this channel hasn't been (re)triggered since
