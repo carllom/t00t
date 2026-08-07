@@ -40,13 +40,31 @@ if(EXISTS ${CMAKE_CURRENT_LIST_DIR}/src/engines/${T00T_ENGINE}/presets.h)
     list(APPEND ENGINE_OPTIONAL_SOURCES src/controller.cpp)
 endif()
 
+# The tracker engine has no dynamic voice allocation — channel N is voice N,
+# fixed, per tracker.md's "Deviation From the Existing Layer Model" — so
+# voice_alloc.cpp is left out of that build entirely (#13). main.cpp's calls
+# into it are compiled out via HAS_VOICE_ALLOC below.
+set(ENGINE_VOICE_ALLOC src/voice_alloc.cpp)
+if(T00T_ENGINE STREQUAL "tracker")
+    set(ENGINE_VOICE_ALLOC "")
+endif()
+
+# The tracker engine's Core 0 player task (#18): song load, TickBlock ring,
+# transport. Only tracker links it; main.cpp's calls into it are compiled
+# out for other engines via HAS_TRACKER_PLAYER below.
+set(ENGINE_TRACKER_PLAYER "")
+if(T00T_ENGINE STREQUAL "tracker")
+    set(ENGINE_TRACKER_PLAYER src/engines/tracker/player_task.cpp)
+endif()
+
 add_executable(t00t
     src/main.cpp
     src/osc/sine.cpp
     src/envelope.cpp
     src/engines/${T00T_ENGINE}/audio_engine.cpp
     src/output.cpp
-    src/voice_alloc.cpp
+    ${ENGINE_VOICE_ALLOC}
+    ${ENGINE_TRACKER_PLAYER}
     src/samples.cpp
     ${ENGINE_MIDI_CONTROLLER}
     ${ENGINE_OPTIONAL_SOURCES}
@@ -70,6 +88,21 @@ foreach(_midi MIDI_USB MIDI_UART)
         target_compile_definitions(t00t PRIVATE ${_midi}=${${_midi}})
     endif()
 endforeach()
+
+# DMA/mixer buffer size override (#16: 256 vs 512 IRQ-overhead measurement).
+# Unset/"default" keeps audio_common.h's built-in 256.
+if(DEFINED DMA_BUFFER_SIZE AND NOT DMA_BUFFER_SIZE STREQUAL "default")
+    target_compile_definitions(t00t PRIVATE T00T_SAMPLES_PER_BUFFER=${DMA_BUFFER_SIZE})
+endif()
+
+# See ENGINE_VOICE_ALLOC above — tells main.cpp to skip the voice_alloc calls
+# it would otherwise fail to link against on the tracker build.
+if(T00T_ENGINE STREQUAL "tracker")
+    target_compile_definitions(t00t PRIVATE HAS_VOICE_ALLOC=0)
+    # See ENGINE_TRACKER_PLAYER above — tells main.cpp to call into
+    # player_task.cpp's Core 0 song load / ring / transport hooks.
+    target_compile_definitions(t00t PRIVATE HAS_TRACKER_PLAYER=1)
+endif()
 
 target_link_libraries(t00t
     pico_stdlib

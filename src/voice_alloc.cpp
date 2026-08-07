@@ -17,7 +17,7 @@ void VoiceAllocator::update() {
     // Drain FIFO (Core 1 → Core 0), keep latest value
     uint32_t val;
     while (multicore_fifo_pop_timeout_us(0, &val)) {
-        active_mask = (uint16_t)val;
+        active_mask = val;
     }
     // Start local copy from Core 1's view
     local_mask = active_mask;
@@ -72,10 +72,10 @@ void voice_alloc_update()        { alloc.update(); }
 int  voice_alloc_allocate()      { return alloc.allocate(); }
 void voice_alloc_release(int v)  { alloc.release(v); }
 
-uint16_t voice_alloc_active_mask() { return alloc.active_mask; }
+uint32_t voice_alloc_active_mask() { return alloc.active_mask; }
 
-uint16_t voice_alloc_gated_mask() {
-    uint16_t m = 0;
+uint32_t voice_alloc_gated_mask() {
+    uint32_t m = 0;
     for (uint32_t v = 0; v < MAX_VOICES; v++) {
         if (alloc.voice_gated[v]) m |= (1u << v);
     }

@@ -1,9 +1,11 @@
 #pragma once
 
+#include <cstdint>
+
+static constexpr uint32_t MAX_VOICES = 16;
+
 #include "engine_base.h"
 #include "envelope.h"       // EnvConfig (pre-baked per note by Core 0)
-#include "hardware/sync.h"
-#include <cstdint>
 
 // Groovebox engine — a TB-303-style acid bass plus an 808/909-style drum
 // machine sharing one 16-voice render pass. Unlike the subtractive engine
@@ -36,6 +38,7 @@ struct VoiceParams {
     bool      gate;      // held (303); one-shot drums ignore it
     bool      slide;     // 303: glide pitch toward phase_inc instead of snapping
     int16_t   amplitude; // velocity 0..32767
+    int16_t   pan;       // Q15 pan: -32768 = full left, 0 = center, 32767 = full right
 
     uint32_t  phase_inc;   // primary oscillator pitch (303 / BD / tom / snare tone 1)
     uint32_t  phase_inc2;  // secondary oscillator pitch (snare tone 2)
@@ -63,38 +66,8 @@ struct VoiceParams {
     uint8_t    metal_count;     // number of metal oscillators to sum (2 = cowbell, 6 = hats)
 };
 
-// A complete snapshot of all voice parameters for one render pass.
-struct VoiceParamBlock {
-    VoiceParams voices[MAX_VOICES];
-    EffectParams fx;
-};
+// Default voice is zero-init — VoiceType 0 is VT_SILENT, so this is the
+// generic engine_base.h default already. No specialization needed.
 
-// Double-buffered parameter exchange between Core 0 and Core 1.
-// Same lock-free mechanism as the subtractive engine — only the payload
-// differs. Core 0 writes the shadow, flips committed, __sev()s Core 1.
-struct ParamExchange {
-    VoiceParamBlock blocks[2];
-    volatile uint8_t committed;  // 0 or 1
-
-    void init() {
-        committed = 0;
-        for (int b = 0; b < 2; b++) {
-            for (uint32_t v = 0; v < MAX_VOICES; v++) {
-                blocks[b].voices[v] = VoiceParams{};  // zero → VT_SILENT
-            }
-            // Default: delay selected, ~300 ms / moderate feedback, fully dry
-            // (mix=0) so it's silent until CC73 opens it. Matches subtractive.
-            blocks[b].fx = { FX_DELAY, 0, 55, 36 };
-        }
-    }
-
-    VoiceParamBlock &shadow() { return blocks[1 - committed]; }
-
-    void commit() {
-        __compiler_memory_barrier();
-        committed = 1 - committed;
-        __sev();
-    }
-
-    const VoiceParamBlock &active() const { return blocks[committed]; }
-};
+using VoiceParamBlock = VoiceParamBlockT<VoiceParams>;
+using ParamExchange = ParamExchangeT<VoiceParams>;

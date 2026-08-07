@@ -63,22 +63,27 @@ struct KitInstrument {
     uint16_t  tone_level;    // Q15 tone mix (snare)
     uint8_t   metal_first;   // first metal-osc index (metal voices)
     uint8_t   metal_count;   // metal oscillators to sum (2 = cowbell, 6 = hats/cymbal)
+    int16_t   pan;           // Q15 pan: -32768 = full left .. 0 center .. 32767 full right
 };
 
 // 808-flavoured kit. GM-ish note mapping on the drum channel. Closed (42) and
-// open (46) hi-hat share GV_HAT so a closed hit cuts a ringing open hat.
+// open (46) hi-hat share GV_HAT so a closed hit cuts a ringing open hat (and
+// so both share one pan position — same physical hi-hat). Kick/snare stay
+// centered (the rhythmic anchor); toms sweep across the field low-to-high in
+// the classic left-to-right tom fill; the rest sit off-center so the kit
+// reads as stereo rather than a mono pile in the middle.
 static const KitInstrument kit_808[] = {
-    //   note      voice     type          freq  freq2  aDec pDec  pDepth   filter      cut  cut2  res    noise  tone  mFirst mCount
-    { DN_BD,      GV_BD,     VT_DRUM_BD,    55.0f, 0.0f,  400,  55,  22937, FILTER_OFF,    0,    0,     0,      0,      0,   0, 0 }, // Bass drum
-    { DN_SNARE,   GV_SNARE,  VT_DRUM_SNARE,180.0f,330.0f,180,  40,   6553, FILTER_BP,  2000,    0, 12000,  26214,  16384,  0, 0 }, // Snare
-    { DN_CLAP,    GV_CLAP,   VT_DRUM_CLAP,   0.0f, 0.0f,    0,   0,      0, FILTER_BP,  1000,    0, 14000,      0,      0,   0, 0 }, // Hand clap
-    { DN_TOM_LO,  GV_TOM_LO, VT_DRUM_TOM,   90.0f, 0.0f,  320,  60,  16384, FILTER_OFF,    0,    0,     0,      0,      0,   0, 0 }, // Low tom
-    { DN_TOM_MID, GV_TOM_MID,VT_DRUM_TOM,  130.0f, 0.0f,  300,  60,  16384, FILTER_OFF,    0,    0,     0,      0,      0,   0, 0 }, // Mid tom
-    { DN_TOM_HI,  GV_TOM_HI, VT_DRUM_TOM,  180.0f, 0.0f,  280,  55,  16384, FILTER_OFF,    0,    0,     0,      0,      0,   0, 0 }, // Hi tom
-    { DN_COWBELL, GV_COWBELL,VT_DRUM_METAL,  0.0f, 0.0f,  300,   0,      0, FILTER_BP,  1200,    0, 20000,      0,      0,   4, 2 }, // Cowbell (540+800 Hz)
-    { DN_HAT_CL,  GV_HAT,    VT_DRUM_METAL,  0.0f, 0.0f,   45,   0,      0, FILTER_BP,  9000, 7000, 16000,      0,      0,   0, 6 }, // Closed hat
-    { DN_HAT_OP,  GV_HAT,    VT_DRUM_METAL,  0.0f, 0.0f,  350,   0,      0, FILTER_BP,  9000, 7000, 16000,      0,      0,   0, 6 }, // Open hat
-    { DN_CRASH,   GV_CRASH,  VT_DRUM_METAL,  0.0f, 0.0f, 1200,   0,      0, FILTER_BP,  5000, 3500, 14000,      0,      0,   0, 6 }, // Crash cymbal
+    //   note      voice     type          freq  freq2  aDec pDec  pDepth   filter      cut  cut2  res    noise  tone  mFirst mCount   pan
+    { DN_BD,      GV_BD,     VT_DRUM_BD,    55.0f, 0.0f,  400,  55,  22937, FILTER_OFF,    0,    0,     0,      0,      0,   0, 0,      0 }, // Bass drum — center
+    { DN_SNARE,   GV_SNARE,  VT_DRUM_SNARE,180.0f,330.0f,180,  40,   6553, FILTER_BP,  2000,    0, 12000,  26214,  16384,  0, 0,      0 }, // Snare — center
+    { DN_CLAP,    GV_CLAP,   VT_DRUM_CLAP,   0.0f, 0.0f,    0,   0,      0, FILTER_BP,  1000,    0, 14000,      0,      0,   0, 0,  -8000 }, // Hand clap — slightly left
+    { DN_TOM_LO,  GV_TOM_LO, VT_DRUM_TOM,   90.0f, 0.0f,  320,  60,  16384, FILTER_OFF,    0,    0,     0,      0,      0,   0, 0, -16000 }, // Low tom — left
+    { DN_TOM_MID, GV_TOM_MID,VT_DRUM_TOM,  130.0f, 0.0f,  300,  60,  16384, FILTER_OFF,    0,    0,     0,      0,      0,   0, 0,      0 }, // Mid tom — center
+    { DN_TOM_HI,  GV_TOM_HI, VT_DRUM_TOM,  180.0f, 0.0f,  280,  55,  16384, FILTER_OFF,    0,    0,     0,      0,      0,   0, 0,  16000 }, // Hi tom — right
+    { DN_COWBELL, GV_COWBELL,VT_DRUM_METAL,  0.0f, 0.0f,  300,   0,      0, FILTER_BP,  1200,    0, 20000,      0,      0,   4, 2,  12000 }, // Cowbell — right
+    { DN_HAT_CL,  GV_HAT,    VT_DRUM_METAL,  0.0f, 0.0f,   45,   0,      0, FILTER_BP,  9000, 7000, 16000,      0,      0,   0, 6,   8000 }, // Closed hat — slight right
+    { DN_HAT_OP,  GV_HAT,    VT_DRUM_METAL,  0.0f, 0.0f,  350,   0,      0, FILTER_BP,  9000, 7000, 16000,      0,      0,   0, 6,   8000 }, // Open hat — matches closed
+    { DN_CRASH,   GV_CRASH,  VT_DRUM_METAL,  0.0f, 0.0f, 1200,   0,      0, FILTER_BP,  5000, 3500, 14000,      0,      0,   0, 6, -12000 }, // Crash cymbal — left
 };
 static constexpr uint32_t KIT_808_COUNT = sizeof(kit_808) / sizeof(kit_808[0]);
 
@@ -95,6 +100,7 @@ inline const KitInstrument *kit_find(const KitInstrument *kit, uint32_t count, u
 inline void apply_kit(VoiceParams &vp, const KitInstrument &k, uint8_t velocity) {
     vp.type = k.type;
     vp.amplitude = (int16_t)(velocity * 258);      // 0..127 -> ~0..32766
+    vp.pan = k.pan;
     vp.phase_inc  = k.freq  > 0.0f ? osc_phase_inc(k.freq)  : 0;
     vp.phase_inc2 = k.freq2 > 0.0f ? osc_phase_inc(k.freq2) : 0;
     vp.waveform = WAVE_SINE;
@@ -137,6 +143,7 @@ static const Tb303Preset tb303_default = {
 inline void apply_303(VoiceParams &vp, const Tb303Preset &p, uint32_t phase_inc, uint8_t velocity) {
     vp.type = VT_TB303;
     vp.amplitude = (int16_t)(velocity * 258);
+    vp.pan = 0;   // bass stays centered
     vp.phase_inc = phase_inc;
     vp.slide = false;   // caller sets true for legato slides
     vp.phase_inc2 = 0;
