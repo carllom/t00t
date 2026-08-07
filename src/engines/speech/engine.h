@@ -63,11 +63,22 @@ struct VoiceParams {
     uint8_t    utterance;
     SpeechMode mode;
     uint8_t    rate;  // Q4.4 segment-duration scale, 16 = 1.0x nominal
+    // #36 (speech.md P4 "MIDI Mapping"/"Vibrato LFO"/"Jitter and shimmer").
+    // All four are live, same push-to-held-voices treatment as
+    // formant_shift/bandwidth_scale above -- midi_controller.cpp's CC
+    // handlers for CC1/CC24/CC25/CC26/CC76 write straight into a held
+    // voice's shadow copy, not just the per-channel default for future
+    // notes.
+    uint8_t  jitter;      // 0-255, 0 = perfectly periodic pitch period (excitation.h)
+    uint8_t  shimmer;     // 0-255, 0 = perfectly periodic amplitude (excitation.h)
+    float    lfo_rate;    // vibrato LFO rate, Hz, 0 = off (excitation.h VIBRATO_*)
+    float    lfo_depth;   // vibrato depth, 0.0-1.0
 };
 
 template <>
 inline VoiceParams voice_params_default<VoiceParams>() {
-    return { 0, 0, 0, false, 0, 0, 256, 256, SPEECH_NO_UTTERANCE, SPEECH_MODE_GATED, 16 };
+    return { 0, 0, 0, false, 0, 0, 256, 256, SPEECH_NO_UTTERANCE, SPEECH_MODE_GATED, 16,
+             0, 0, 0.0f, 0.0f };
 }
 
 using VoiceParamBlock = VoiceParamBlockT<VoiceParams>;

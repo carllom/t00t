@@ -31,6 +31,24 @@ enum SpeechMode : uint8_t {
 // phoneme-keyboard path, not sequencing one of utterance.h's SPEECH_UTTERANCES.
 static constexpr uint8_t SPEECH_NO_UTTERANCE = 0xFF;
 
+// Live `rate` CC range (#36, speech.md "CC map"): same tract_cc_to_q8_8()
+// shape as formant_shift/bandwidth_scale (tract.h), but the target format is
+// VoiceParams::rate's Q4.4 (16 == 1.0x), not Q8.8, since speech_seg_
+// duration_samples() above already expects Q4.4. 0.25x..4x covers
+// "noticeably slower" to "noticeably faster" without letting a fast phoneme
+// round down to a zero-length segment (speech_seg_duration_samples() floors
+// at 1 sample regardless, but 4x is already a stress case, not a typical
+// performance setting).
+inline constexpr float SPEECH_RATE_CC_MIN = 0.25f, SPEECH_RATE_CC_MAX = 4.0f;
+
+inline uint8_t speech_rate_cc_to_q4_4(uint8_t cc) {
+    float v = SPEECH_RATE_CC_MIN + (SPEECH_RATE_CC_MAX - SPEECH_RATE_CC_MIN) * (float)cc / 127.0f;
+    float q = v * 16.0f + 0.5f;
+    if (q < 1.0f) q = 1.0f;      // never 0 -- see speech_seg_duration_samples()'s own floor
+    if (q > 255.0f) q = 255.0f;
+    return (uint8_t)q;
+}
+
 // A hardcoded utterance: a phoneme string plus the segment index note-off
 // jumps to under SPEECH_MODE_GATED (defaults to the last segment when a
 // caller doesn't pick one explicitly, per #30 -- see utterance.h). Not

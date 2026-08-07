@@ -64,6 +64,14 @@ struct SpeechVoice {
     float    cur_amp = 0.0f;          // smoothed toward gate target, declicks on/off
     uint8_t  last_trigger = 0xFF;     // forces tract_retrigger() on first render
     uint8_t  last_phoneme = 0xFF;     // forces a target load on first render
+    // #36 vibrato/jitter/shimmer state (speech.md P4, excitation.h). Reset
+    // on retrigger, not on a plain segment/phoneme target change -- these
+    // track the *note*, the same lifetime as glottal_phase above, not the
+    // phoneme currently sounding.
+    float    lfo_phase = 0.0f;         // vibrato LFO phase, 0..1 (excitation.h)
+    uint32_t glot_cycle_inc = 0;       // this glottal cycle's jittered phase increment
+    float    glot_cycle_amp = 1.0f;    // this glottal cycle's shimmer amplitude multiplier
+    uint16_t jitter_lfsr = 0xF00Du;    // separate seed from noise_lfsr -- must be nonzero
     // #34 segment sequencer state (speech.md P3). Unused by speech_render_voice()
     // (#28's SPEECH_HOLD phoneme keyboard has no segments to sequence); only
     // speech_render_voice_seq() (render.h) touches these.
@@ -98,6 +106,13 @@ inline void tract_retrigger(SpeechVoice &sv, const FormantTarget &t) {
     sv.bandwidth_scale = sv.bandwidth_scale_tgt;
     sv.glottal_phase = 0;
     sv.cur_amp = 0.0f;
+    // #36: vibrato restarts at phase 0 (sine == 0, no pitch jump on
+    // trigger, same reasoning the subtractive engine's LFO retrigger uses);
+    // shimmer's multiplier resets to unity. glot_cycle_inc is deliberately
+    // left to the caller (render.h sets it from the note's actual phase_inc
+    // on the same trigger edge) -- tract.h has no phase_inc to seed it with.
+    sv.lfo_phase = 0.0f;
+    sv.glot_cycle_amp = 1.0f;
 }
 
 // Phoneme changed while the voice is already sounding: just move the
