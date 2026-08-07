@@ -205,20 +205,29 @@ struct SpeechVoice {
 ```
 
 ```cpp
-// Generated data — phonemes.h
+// Generated data — phonemes.h (src/engines/speech/phoneme_def.h, #32)
 struct PhonemeDef {
-    uint16_t F[SPEECH_FORMANTS];  // Hz
-    uint8_t  B[SPEECH_FORMANTS];  // Hz / 4, range 0-1020
-    uint8_t  av, af, an;          // voiced, fricative, nasal amplitude (0-255)
+    uint16_t F[SPEECH_FORMANTS];      // Hz
+    uint16_t fric_F, nasal_F;          // Hz — parallel-branch targets (#29)
+    uint8_t  B[SPEECH_FORMANTS];      // Hz / 4, range 0-1020
+    uint8_t  fric_B, nasal_B;          // Hz / 4
+    uint8_t  av, af, an;                // voiced, fricative, nasal amplitude (0-255)
     uint8_t  duration_ms;
-    uint8_t  flags;               // bit 0 PLOSIVE, bit 1 STOP_CLOSURE, bit 2 TRANSITION_FAST,
-                                   // bit 3 SUSTAINABLE (reserved by #30, unread until P4 — see
-                                   // "Singing mode" under Settled Decisions)
+    uint8_t  flags;                     // bit 0 PLOSIVE, bit 1 STOP_CLOSURE, bit 2 TRANSITION_FAST,
+                                         // bit 3 SUSTAINABLE (reserved by #30, unread until P4 — see
+                                         // "Singing mode" under Settled Decisions)
 };
 ```
 
-16 bytes per phoneme. A 64-phoneme set is 1 KB. Utterances are byte strings of
-phoneme indices; a 20-word phrase is well under 200 bytes.
+Extended by #32 from the sketch above (fric_F/fric_B/nasal_F/nasal_B added): this
+struct predates #29's parallel fricative/nasal branches, which need a per-phoneme
+fricative/nasal pole (e.g. /s/ vs /sh/'s `fric_F` is their whole distinguishing
+feature) that the original 16-byte sketch had no field for.
+
+26 bytes per phoneme (`sizeof(PhonemeDef)`, no padding — see phoneme_def.h). #32's
+initial CSV-authored set is 48 phonemes, 1248 bytes; still negligible in flash at
+double that. Utterances are byte strings of phoneme indices; a 20-word phrase is
+well under 200 bytes.
 
 ---
 
@@ -421,6 +430,17 @@ Follows the tracker converter pattern. A Python tool, `tools/speechgen.py`:
 Keeping the rules engine host-side is the same decision as keeping the XM loader
 host-side, and for the same reason.
 
+**#32 landed the first half**: `speechgen.py gen` parses `tools/speech_phonemes.csv`
+(48 phonemes — vowels, fricatives, nasals, plosive closure/burst pairs, affricates,
+approximants) into `phonemes.h`, failing loudly on any row that would wrap a
+`uint8_t`/`uint16_t` rather than truncating silently. Verification reuses
+`tools/host_render/render_speech.cpp`: it renders every row to a WAV in one command,
+and for the vowels, cross-checks the measured F1/F2 against
+`tools/host_render/vowel_reference.h` (generated from `speech_vowel_reference.csv`,
+an *independently*-committed published-values table — comparing a measurement
+against the same number that authored it proves nothing). The phrase list / letter-
+to-sound half (`phrases.h`) is still open, tracked separately.
+
 ---
 
 ## Performance Budget
@@ -617,6 +637,10 @@ Listed for completeness; no new work.
 - [x] `SUSTAINABLE` flag reserved as bit 3 of `PhonemeDef.flags` (#30): cheap now
       while the table is docs-only, expensive to retrofit once a CSV exists. Not read
       until P4. See "Singing mode / `SUSTAINABLE` (#30 decision)"
+- [x] `PhonemeDef` extended with `fric_F`/`fric_B`/`nasal_F`/`nasal_B` (#32): the
+      original 16-byte sketch predates #29's parallel branches and had no field for
+      a per-phoneme fricative/nasal pole. 26 bytes/phoneme now; still negligible.
+      See "Generated data — phonemes.h" above.
 - [x] `MAX_SPEECH_VOICES = 8` (#31): measured ~93.5 cycles/frame/voice (2.75%),
       flat from 1 to 8 voices on real `breadboard_rp2350` hardware, with both the
       fricative branch and a live formant_shift/bandwidth_scale sweep costing

@@ -118,7 +118,7 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
             // -- and mark it so speech_render_voice() below doesn't redo the
             // same work on every buffer of the phase.
             trigger++;
-            const FormantTarget &t = PHONEME_TARGETS[ph.phoneme % PHONEME_COUNT];
+            FormantTarget t = phoneme_unpack(PHONEME_TARGETS[ph.phoneme % PHONEME_COUNT]);  // #32
             for (uint32_t v = 0; v < ph.voice_count; v++) {
                 tract_retrigger(voices[v], t);
                 voices[v].last_trigger = trigger;

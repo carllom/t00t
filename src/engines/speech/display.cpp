@@ -36,10 +36,9 @@ static constexpr int CBAR_X = 4, CBAR_Y = 96, CBAR_W = 232, CBAR_H = 12;
 
 static const char *NOTE_NAMES[12] =
     { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
-static const char *PHONEME_NAMES[PHONEME_COUNT] = {
-    "/i/", "/e/", "/a/", "/o/", "/u/",
-    "/s/", "/sh/", "/f/", "/z/", "/v/", "/m/", "/n/",
-};
+// PHONEME_LABELS (phonemes.h, #32) replaces this row's old hand-typed,
+// 12-entry copy -- that copy would have silently gone stale the moment the
+// generated table grew past it.
 
 static void draw_val(int y, const char *raw, uint16_t fg) {
     char b[VAL_CH + 1];
@@ -120,7 +119,7 @@ void display_task() {
     // future notes only"). If PC really isn't landing, this value will
     // never move no matter how many program changes are sent.
     if (first || m.program != last_midi.program) {
-        const char *name = m.program < PHONEME_COUNT ? PHONEME_NAMES[m.program] : "?";
+        const char *name = m.program < PHONEME_COUNT ? PHONEME_LABELS[m.program] : "?";
         draw_val(ROW_PHONEME, name, COL_VALUE);
     }
 
