@@ -666,9 +666,58 @@ Prerequisites are more interesting than the tracker itself. Do them first:
    `xm_synth.notes_basic()`) auto-plays on boot; swapping in a real module
    from `xm/` for a listening test is a one-command manual regenerate. It
    already sounds like music here.
-5. The effects covering ~90% of real usage: `0` arpeggio, `1`/`2` porta, `3` tone
+5. ~~The effects covering ~90% of real usage: `0` arpeggio, `1`/`2` porta, `3` tone
    porta, `4` vibrato, `A` volume slide, `C` set volume, `B` jump, `D` pattern
-   break, `F` speed/tempo.
+   break, `F` speed/tempo.~~ — done (#19). All ten land in
+   `player.h`'s `player_produce_tick()` as per-channel state machines, tick
+   0 vs later-tick semantics enforced by only ever calling
+   `tracker_apply_pitch_vol_effect()` when `!row_boundary` (arpeggio's own
+   tick-0 contribution is 0 either way, so it's included in that same gate
+   rather than special-cased). Pitch effects needed real period math on
+   Core 0 for the first time — `tracker_note_to_period()`/
+   `tracker_period_to_inc()` are a runtime C++ port of
+   `tools/xm2t00t/periods.py`'s linear/Amiga formulas (double-precision, not
+   fixed-point: 32 channels of `pow()` at ~50 Hz is nowhere near Core 0's
+   budget) — but a channel with no active pitch effect still latches
+   straight from the precomputed `note_increments` table, byte-identical to
+   pre-#19 output. `B`/`D` share one row-level pending-jump/pending-break
+   pair in `PlayerState`, resolved at the row's last tick so "B and D on the
+   same row" (different channels) composes naturally: jump's order, break's
+   row.
+   - **Effect memory is per-command, not global**: porta up/down and tone
+     porta each keep a separate memory slot (`PlayerChannelState`), matching
+     FT2 rather than sharing one. A continuous effect (porta, tone porta,
+     vibrato, volume slide) must be restated every row it runs on — an empty
+     effect column on a later row correctly stops it, it does not coast on
+     the previous row's memory.
+   - **Verified against `openmpt123`** via one new synthetic fixture per
+     effect in `tools/xm2t00t/xm_synth.py` (`tools/host_render/diff_xm.py`'s
+     asserted set), plus targeted C++ unit tests in `render_xm_device.cpp`
+     for state the audio diff can't cheaply pin down (exact `B`+`D` landing
+     row, trigger-generation counter untouched by tone portamento, volume
+     clamp/memory). The diff harness caught two real bugs no unit test
+     would have: porta/tone-porta sliding pitch 4x too fast (a published
+     FT2 pseudocode `*4` was double-applying a period-scale correction
+     `periods.py`'s convention doesn't need), and arpeggio applying its two
+     offset nibbles in the opposite order from `openmpt123`. It also turned
+     up a latent mixer crash (division by zero) once pitch became runtime-
+     computed instead of table-only: an unbounded portamento could round
+     `inc` down to the format's own "channel silent" sentinel (0) for a
+     voice that was still very much active — fixed by flooring
+     `tracker_period_to_inc()`'s output above `mixer.h`'s Q8.24→Q18.14
+     latch-shift's own floor.
+   - **Vibrato is the one deliberately-approximate case.** The sine table
+     values and the overall mechanism (per-tick position advance, waveform
+     lookup, sign flip at half-cycle, phase reset on retrigger) are real
+     FT2 conventions, but the exact position-to-table-index rate constant
+     was calibrated empirically (pitch-tracking a long held run against
+     `openmpt123`) rather than sourced with certainty, because a continuous
+     oscillation has no settling point to converge on the way porta/tone
+     porta do — any small rate mismatch is permanent phase drift, not noise
+     that damps out. `vibrato_basic`'s fixture is deliberately one gentle,
+     short row for exactly this reason (see the fixture's own docstring);
+     getting this bit-exact against libopenmpt is explicitly the "long tail
+     of FT2 quirks" (step 7 below), not this step's bar.
 6. Instruments, envelopes, key-off (note 97), the volume column, ping-pong loops.
 7. Long tail of FT2 quirks, chased against `openmpt123` reference renders.
 8. Retrofit sub-block rendering to the subtractive engine.
