@@ -532,8 +532,8 @@ reference via `openmpt123 --filter 2` (linear interpolation, matching
   harness, not a bug). Both pass at -10 dB. The real corpus is run and
   reported too, but only informationally: any module using effects or
   envelopes (i.e. nearly all of them) diverges the moment it needs one, which
-  is exactly the point — `#19`-`#22` get a concrete, located baseline to work
-  against instead of starting from nothing.
+  is exactly the point — `#19`-`#22`/`#25` get a concrete, located baseline
+  to work against instead of starting from nothing.
 
 This slice also caught a real bug in `mixer.h` (#15/#16, already shipped):
 `wrap_loop()` read/wrote `v->pos` while the loop that had just advanced
@@ -695,11 +695,14 @@ engine first — where the voice loop is simple enough to get right in an aftern
    playing through to its natural end ever clears `active`. Harmless for a
    short demo loop, but a real multi-minute song that racks up key-offs
    without retriggering those channels would burn Core 1 cycles on voices
-   nobody can hear. Fix is presumably either (a) `ECx` note-cut (currently a
-   no-op, `TICK_NOTE_CUT` is declared but never set — tracker.md's "long
-   tail" #22 territory), or (b) having the envelope/fadeout machinery itself
-   clear `active` once a key-off's volume has fully decayed to 0 with no
-   possibility of a sustain/loop bringing it back up. Not scoped to any
+   nobody can hear. `ECx` note-cut landed in #22 and does silence a channel
+   at an exact tick (`tracker_apply_tick_note_cut()`, `TICK_NOTE_CUT` is now
+   really set) -- but it only zeroes `vol64`, same as key-off's own
+   near-instant no-envelope cut; it does **not** clear the mixer voice's
+   `active` either, so it doesn't close this gap by itself. Fix is
+   presumably having the envelope/fadeout machinery (or `ECx`'s handler)
+   itself clear `active` once a channel's volume has fully decayed to 0 with
+   no possibility of a sustain/loop bringing it back up. Not scoped to any
    issue yet.
 
 ---
@@ -904,6 +907,60 @@ Prerequisites are more interesting than the tracker itself. Do them first:
      Decisions entry above for the numbers and for the key-off/voice-
      lifecycle finding the measurement run turned up along the way (Open
      Questions item 2).
-8. Long tail of FT2 quirks, chased against `openmpt123` reference renders.
-9. Retrofit sub-block rendering to the subtractive engine.
-10. (Phase 2) Deterministic simulator → load schedule → dynamic sample loading.
+8. ~~Remaining `Exy` sub-commands.~~ — done and closed (#22, split from the
+   original "FT2 quirk tail" issue 2026-08-08: the bounded/mechanical
+   sub-commands below landed and closed here, the four named quirks and
+   open-ended corpus-chasing were split out to #25, see step 9). `E1x`/`E2x`
+   (fine porta up/down) and
+   `EAx`/`EBx` (fine volume slide up/down) apply once, at tick 0 only, own
+   memory slots separate from the continuous `1xx`/`2xx`/`Axy` commands.
+   `E9x`/`Rxy` (retrigger) landed as the *general* Rxy form — full
+   volume-change table, not just E9x's plain fixed-interval case — since
+   both effect-column letters decode to the same `Effect::RETRIG_NOTE`
+   enum value and E9x's decode already reaches that shared code with the
+   volume-change nibble zeroed (effects.py strips it), so handling Rxy
+   properly was no extra work, not scope creep. `ECx`/`EDx`/`EEx` (note
+   cut, note delay, pattern delay) are invisible to Core 1 and only change
+   what Core 0 reads or how long it holds a row/tick, same category as
+   `Bxx`/`Dxx`'s existing row-level pending-effect handling: `EDx` defers a
+   row's *entire* tick-0 processing (trigger, volume column, everything —
+   it occupies the whole effect column slot, so nothing else can coexist
+   with it on that cell anyway) to the tick within the row its param
+   names; `EEx` holds the current row for `param` additional full-speed
+   passes, with the held repeats' own tick 0s falling through to normal
+   *continuation* handling (not a re-trigger) via one adjusted
+   `row_boundary` computation (`tick_in_row == 0 && !pattern_delay_holding`)
+   that every other per-channel dispatch already keyed off, rather than
+   needing pattern-delay-specific branches sprinkled through
+   `player_produce_tick()`.
+   - **`E3x` (glissando control) was tried and reverted.** The mechanism
+     (a persistent per-channel flag) was trivial, but snapping tone
+     portamento's audible pitch to the nearest semitone each tick is not
+     spec-clear enough to be bounded: two reasonable implementations
+     (snapping a local copy for output only, vs. snapping the persisting
+     glide state itself) both diverged from `openmpt123` within 1-2 ticks
+     of the glide starting. Genuinely diff-driven quirk work, not the
+     mechanical case the rest of this step turned out to be — moved to
+     step 9's deferred list instead of force-fit or left half-working.
+   - **Verified against `openmpt123`**: one new fixture per command
+     (`fine_slides_basic`, `retrig_basic`, `note_cut_basic`,
+     `note_delay_basic`, `pattern_delay_basic`) in `xm_synth.py`, asserted
+     in `diff_xm.py` alongside every earlier fixture — all pass. Exact
+     tick-scheduling behaviour the audio diff can't cheaply pin down (the
+     precise delay/cut/retrigger tick, the exact row-hold length) gets a
+     targeted C++ unit test in `render_xm_device.cpp` per command, matching
+     the #19-#21 precedent — all pass.
+9. Long tail of FT2 quirks, chased against `openmpt123` reference renders --
+   tracked in **#25** (split out of #22, 2026-08-08, so #22 could close on
+   its own done scope), **deferred, not scheduled**: `E60` pattern loop
+   (including nested/interacting cases), `E3x` glissando control, envelope
+   handling on note-off, portamento with a changed instrument, arpeggio
+   wraparound at high speeds, and the open-ended corpus-driven work beyond
+   those (run the regression set, find the first divergence, fix it, add the
+   module to the set, repeat until a stated corpus of >=10 real modules
+   passes). No natural completion point, so picking this back up is a
+   deliberate decision, not automatic follow-on from anything else. #25
+   blocks step 10 (#23) as a result.
+10. Retrofit sub-block rendering to the subtractive engine.
+11. (Phase 2) Deterministic simulator → load schedule → dynamic sample
+    loading -- blocked by step 9 (#23 needs settled player semantics first).

@@ -25,11 +25,21 @@
 // host or device is the whole point (tracker.md: "Any divergence between the
 // host and device render paths defeats the purpose").
 //
-// Effect column commands NOT in #19/#20/#21's scope (E-subcommands, tremolo,
-// retrig, tremor, global volume, effect-column panning slide, ...) are still
-// no-ops here -- tracker.md's "long tail of FT2 quirks" (#22). #21 adds 9xx
-// sample offset (tracker_trigger_note()) and ping-pong loops (mixer.h's
-// wrap_ping_pong()). Key-off (note 97) does not cut a voice
+// #21 adds 9xx sample offset (tracker_trigger_note()) and ping-pong loops
+// (mixer.h's wrap_ping_pong()). #22 adds the remaining bounded Exy
+// sub-commands -- fine porta (E1x/E2x), fine volslide (EAx/EBx), note cut
+// (ECx, tracker_apply_tick_note_cut()), note delay (EDx,
+// player_produce_tick()'s row_boundary dispatch), pattern delay (EEx, same
+// function's rollover), and retrigger (E9x/Rxy,
+// tracker_apply_tick_retrigger()). Still no-ops: glissando control (E3x --
+// tried, reverted: two reasonable snap-to-semitone implementations both
+// diverged from openmpt123 within a couple of ticks, which makes this
+// genuinely diff-driven quirk work, not the bounded/mechanical case the rest
+// of this slice is), tremolo, tremor, global volume, effect-column panning
+// slide, and the four named FT2 quirks (E60 pattern loop, envelope-on-
+// note-off, portamento-with-instrument-change, arpeggio wraparound) --
+// deliberately deferred, tracker.md's "long tail of FT2 quirks" (#25, split
+// out of #22 2026-08-08). Key-off (note 97) does not cut a voice
 // directly: it only marks the channel key_off, which the envelope/fadeout
 // machinery (tracker_resolve_envelope_volpan()) consumes every tick from
 // then on -- an instrument with an enabled volume envelope releases through
@@ -58,7 +68,7 @@ static constexpr uint32_t TRACKER_MAX_CHANNELS = 32;
 enum ChannelTickFlags : uint8_t {
     TICK_NOTE_ON  = 0x01,  // (re)triggered this tick -- reset position, latch inc
     TICK_KEY_OFF  = 0x02,  // note-off (XM note 97) -- pre-envelope: volume target cut to 0
-    TICK_NOTE_CUT = 0x04,  // reserved for a future issue's ECx (Note Cut); never set by this player
+    TICK_NOTE_CUT = 0x04,  // #22: ECx (Note Cut) fired this tick -- vol64 was just zeroed
 };
 
 // One channel's state as of this tick. Restated every tick, not just on
@@ -160,6 +170,19 @@ struct PlayerChannelState {
     uint8_t vibrato_depth = 0;
     uint8_t vibrato_pos = 0;  // 0..255, advances by vibrato_speed each active tick
 
+    // #22: remaining Exy sub-commands. Fine porta/volslide (E1x/E2x/EAx/EBx)
+    // apply once, at tick 0 only -- own memory slots, separate from the
+    // continuous 1xx/2xx/Axy commands' (FT2 does not share them).
+    uint8_t fine_porta_up_memory = 0;
+    uint8_t fine_porta_down_memory = 0;
+    uint8_t fine_volslide_up_memory = 0;
+    uint8_t fine_volslide_down_memory = 0;
+    // EDx: tick within the *current* row this channel's trigger is deferred
+    // to; 0xFF = no delay pending. Set at the row's genuine tick 0 (instead
+    // of processing the row immediately) and consumed the tick it matches --
+    // see player_produce_tick()'s row_boundary dispatch.
+    uint8_t note_delay_tick = 0xFF;
+
     // Resolved once at tick 0 from this row's event (memory already
     // substituted for a zero param), consumed by every later tick of the
     // row. An XM continuous effect must be restated every row it runs on --
@@ -209,6 +232,13 @@ struct PlayerState {
     uint32_t jump_target_order = 0;
     bool break_pending = false;
     uint32_t break_row = 0;
+
+    // #22 EEx (pattern delay): extra full-speed passes still owed on the
+    // current row, and whether *this* call's tick_in_row == 0 is one of
+    // those held repeats rather than a genuine new row -- see
+    // player_produce_tick()'s row_boundary computation and rollover logic.
+    uint32_t pattern_delay_remaining = 0;
+    bool pattern_delay_holding = false;
 };
 
 // tracker.md "Fxx tempo changes ... samples_per_tick": 44100 * 2.5 / bpm,
@@ -388,7 +418,7 @@ enum : uint32_t {
 // division on 1990s hardware, not for behavioural reasons). Equivalent for
 // well-formed envelopes, which is the overwhelming majority; loop-end/
 // sustain-point coincidence edge cases are exactly the kind of "classic FT2
-// divergence point" tracker.md defers to the quirk tail (#22).
+// divergence point" tracker.md defers to the quirk tail (#25).
 inline double tracker_envelope_tick(const EnvelopePoint *points, uint32_t count,
                                      uint32_t flags, uint32_t sustain_idx,
                                      uint32_t loop_start_idx, uint32_t loop_end_idx,
@@ -474,7 +504,7 @@ static constexpr int8_t TRACKER_AUTOVIB_SINE[256] = {
 // unreliable for anything but the smallest params. Indices 10..15 are
 // effectively unused by real modules (the format only defines 0..9) but
 // filled in for safety rather than left to read garbage. Long-tail
-// precision here belongs to #22, same as the manual vibrato effect's own
+// precision here belongs to #25, same as the manual vibrato effect's own
 // "not chased to bit-exactness" caveat.
 static constexpr uint8_t TRACKER_VOLCOL_TONEPORTA_RATE[16] = {
     0, 1, 4, 8, 16, 32, 64, 96, 128, 255, 255, 255, 255, 255, 255, 255,
@@ -815,6 +845,62 @@ inline void tracker_process_effects_tick0(const SongHeader *song, PlayerState &s
         case Effect::SET_BPM:
             st.samples_per_tick = tracker_samples_per_tick(param);
             break;
+
+        // #22: remaining Exy sub-commands.
+        case Effect::FINE_PORTA_UP:
+            // Applied once, here, at tick 0 -- unlike the continuous 1xx
+            // (tracker_tick_period()'s PORTA_UP case), which reapplies every
+            // tick of ticks 1..speed-1. Own memory slot: FT2 does not share
+            // it with 1xx's.
+            if (param != 0) pcs.fine_porta_up_memory = param;
+            pcs.period -= (double)pcs.fine_porta_up_memory;
+            tracker_clamp_period(pcs.period);
+            pcs.inc = tracker_period_to_inc(pcs.period, linear);
+            break;
+        case Effect::FINE_PORTA_DOWN:
+            if (param != 0) pcs.fine_porta_down_memory = param;
+            pcs.period += (double)pcs.fine_porta_down_memory;
+            tracker_clamp_period(pcs.period);
+            pcs.inc = tracker_period_to_inc(pcs.period, linear);
+            break;
+        case Effect::FINE_VOLSLIDE_UP: {
+            if (param != 0) pcs.fine_volslide_up_memory = param;
+            int32_t v = (int32_t)pcs.vol64 + (int32_t)pcs.fine_volslide_up_memory;
+            pcs.vol64 = (uint32_t)(v > 64 ? 64 : v);
+            break;
+        }
+        case Effect::FINE_VOLSLIDE_DOWN: {
+            if (param != 0) pcs.fine_volslide_down_memory = param;
+            int32_t v = (int32_t)pcs.vol64 - (int32_t)pcs.fine_volslide_down_memory;
+            pcs.vol64 = (uint32_t)(v < 0 ? 0 : v);
+            break;
+        }
+        case Effect::NOTE_CUT:
+            // Not instant -- fires later, on tick_in_row == param (0 cuts
+            // immediately, on this same tick). tracker_apply_tick_note_cut()
+            // consumes this every tick, including tick 0, since a param-0
+            // cut must apply to the very trigger this row just produced.
+            pcs.active_effect = Effect::NOTE_CUT;
+            pcs.active_param = param;
+            break;
+        case Effect::RETRIG_NOTE:
+            // Shared enum value for both the top-level Rxy effect (full
+            // param byte: high nibble = volume-change type, low nibble =
+            // tick interval) and the Exy-decomposed E9x (effects.py already
+            // zeroes the high nibble when decoding E9x, so it always reaches
+            // here as "interval only, no volume change" -- the same code
+            // handles both correctly with no extra branching).
+            pcs.active_effect = Effect::RETRIG_NOTE;
+            pcs.active_param = param;  // no memory -- must restate every row, matching arpeggio's precedent
+            break;
+        case Effect::PATTERN_DELAY:
+            // Row-level, like Bxx/Dxx above -- last channel wins if more
+            // than one carries it (same left-to-right convention). Consumed
+            // at the rollover in player_produce_tick(), not here: this row's
+            // own tick 0 has already fully run by the time the rollover
+            // decides whether to hold or advance.
+            st.pattern_delay_remaining = param;
+            break;
         default:
             break;
     }
@@ -966,6 +1052,64 @@ inline void tracker_apply_tick_volume_effects(PlayerChannelState &pcs) {
     }
 }
 
+// #22 ECx: fires exactly once, on the tick within the row that matches
+// active_param (0 cuts on the trigger tick itself) -- checked every tick,
+// including tick 0, unlike the other continuation effects above which only
+// ever run on ticks 1..speed-1. tick_in_row only ever increases within a
+// row, so this can't refire later in the same row once it's matched, and
+// active_effect is reset to NONE at the next row's own tick 0 regardless.
+inline void tracker_apply_tick_note_cut(PlayerChannelState &pcs, ChannelTick &ct, uint32_t tick_in_row) {
+    if (pcs.active_effect == Effect::NOTE_CUT && tick_in_row == pcs.active_param) {
+        pcs.vol64 = 0;
+        ct.flags |= TICK_NOTE_CUT;
+    }
+}
+
+// #22 E9x/Rxy retrigger volume-change table, keyed by the param's high
+// nibble -- standard XM/FT2 table (additive for 1-5/9-D, multiplicative for
+// 6/7/E/F, no-op for 0/8). E9x always reaches here with this nibble zeroed
+// (effects.py's decode strips it), so the table's 0x0 "no change" entry is
+// what makes E9x's plain fixed-interval retrigger fall out of the same code
+// as Rxy's fuller form for free.
+inline void tracker_retrig_apply_volume(PlayerChannelState &pcs, uint8_t volchg) {
+    int32_t v = (int32_t)pcs.vol64;
+    switch (volchg) {
+        case 0x1: v -= 1; break;
+        case 0x2: v -= 2; break;
+        case 0x3: v -= 4; break;
+        case 0x4: v -= 8; break;
+        case 0x5: v -= 16; break;
+        case 0x6: v = (v * 2) / 3; break;
+        case 0x7: v = v / 2; break;
+        case 0x9: v += 1; break;
+        case 0xA: v += 2; break;
+        case 0xB: v += 4; break;
+        case 0xC: v += 8; break;
+        case 0xD: v += 16; break;
+        case 0xE: v = (v * 3) / 2; break;
+        case 0xF: v = v * 2; break;
+        default: break;  // 0x0, 0x8 -- no change
+    }
+    if (v < 0) v = 0;
+    if (v > 64) v = 64;
+    pcs.vol64 = (uint32_t)v;
+}
+
+// #22 E9x/Rxy: ticks 1..speed-1 only (tick 0 already got this row's own
+// natural trigger, if any -- matching arpeggio/vibrato's tick-0 exclusion).
+// Retriggers the *currently playing* sample from position 0 at its current
+// pitch -- no note/instrument re-resolution, just the same generation-bump/
+// TICK_NOTE_ON/start_pos=0 shape tracker_trigger_note() ends with.
+inline void tracker_apply_tick_retrigger(PlayerChannelState &pcs, ChannelTick &ct, uint32_t tick_in_row) {
+    if (pcs.active_effect != Effect::RETRIG_NOTE || tick_in_row == 0) return;
+    uint8_t interval = pcs.active_param & 0x0F;
+    if (interval == 0 || tick_in_row % interval != 0) return;
+    tracker_retrig_apply_volume(pcs, pcs.active_param >> 4);
+    pcs.trigger++;
+    ct.flags |= TICK_NOTE_ON;
+    ct.start_pos = 0;
+}
+
 // Runs every tick (tick 0 included, independent of any pattern effect):
 // advances the volume/panning envelopes and fadeout, and resolves the
 // result into `pcs.volL`/`pcs.volR` (Q15, post-pan) -- the FT2 formula this
@@ -1037,7 +1181,16 @@ inline bool player_produce_tick(PlayerState &st, const SongHeader *song, TickBlo
     uint32_t pat_idx = orders[st.order_idx];
     const PatternHeader &pat = tracker_pattern_table(song)[pat_idx];
 
-    bool row_boundary = (st.tick_in_row == 0);
+    // #22 EEx: a pattern-delay held repeat reaches tick_in_row == 0 again
+    // (the row doesn't advance), but must not be treated as a genuine new
+    // row -- pattern_delay_holding (set at the previous call's rollover,
+    // below) tells the two apart. Every per-channel dispatch below keys off
+    // this adjusted `row_boundary`, not the raw tick_in_row == 0 check, so a
+    // held repeat's own tick 0 falls through to the normal *continuation*
+    // path (ticks 1..speed-1's effects) for free -- exactly what EEx needs
+    // (the row's trigger/tick-0 effects apply once, on the genuine pass
+    // only; held repeats just keep whatever was already running).
+    bool row_boundary = (st.tick_in_row == 0) && !st.pattern_delay_holding;
     for (uint32_t c = 0; c < TRACKER_MAX_CHANNELS; c++) {
         ChannelTick &ct = out.ch[c];
         ct.flags = 0;
@@ -1048,12 +1201,40 @@ inline bool player_produce_tick(PlayerState &st, const SongHeader *song, TickBlo
         double base_period;
         if (row_boundary) {
             const Event &ev = tracker_event_at(song, pat, st.row, c, num_channels);
-            tracker_process_effects_tick0(song, st, c, ev, ct, linear);
+            // #22 EDx: a nonzero note-delay param defers this channel's
+            // *entire* tick-0 processing (trigger, volume column, every
+            // other tick-0-only effect -- EDx occupies the whole effect
+            // column, so none of those can coexist with it on this cell
+            // anyway) to the tick within the row that matches. Until then,
+            // the channel does nothing new: active_effect/active_vol_effect
+            // are cleared so no leftover continuation from the *previous*
+            // row keeps running into this one.
+            uint8_t delay = ((Effect)ev.effect == Effect::NOTE_DELAY) ? ev.effect_param : 0;
+            if (delay != 0) {
+                pcs.note_delay_tick = delay;
+                pcs.active_effect = Effect::NONE;
+                pcs.active_vol_effect = VolEffect::NONE;
+            } else {
+                pcs.note_delay_tick = 0xFF;
+                tracker_process_effects_tick0(song, st, c, ev, ct, linear);
+            }
             base_period = pcs.period;  // matches the precomputed table entry pcs.inc already holds
+        } else if (pcs.note_delay_tick == st.tick_in_row) {
+            // The delayed trigger fires now -- re-fetch the same row's event
+            // and process it exactly as a fresh tick 0 would.
+            const Event &ev = tracker_event_at(song, pat, st.row, c, num_channels);
+            tracker_process_effects_tick0(song, st, c, ev, ct, linear);
+            pcs.note_delay_tick = 0xFF;
+            base_period = pcs.period;
+        } else if (pcs.note_delay_tick != 0xFF) {
+            // Still waiting for this row's delay tick -- nothing new.
+            base_period = pcs.period;
         } else {
             tracker_apply_tick_volume_effects(pcs);
+            tracker_apply_tick_retrigger(pcs, ct, st.tick_in_row);
             base_period = tracker_tick_period(pcs, st.tick_in_row, linear);
         }
+        tracker_apply_tick_note_cut(pcs, ct, st.tick_in_row);
 
         // Instrument envelopes/fadeout/autovibrato (#20): run every tick,
         // independent of row_boundary or any pattern effect. When nothing
@@ -1097,27 +1278,40 @@ inline bool player_produce_tick(PlayerState &st, const SongHeader *song, TickBlo
     st.tick_in_row++;
     if (st.tick_in_row >= st.speed) {
         st.tick_in_row = 0;
-        if (st.jump_pending || st.break_pending) {
-            uint32_t next_order = st.jump_pending ? st.jump_target_order : st.order_idx + 1;
-            uint32_t next_row = st.break_pending ? st.break_row : 0;
-            st.jump_pending = false;
-            st.break_pending = false;
-            if (next_order >= song->num_orders) {
-                next_order = song->restart_order;
-                looped = true;
-            }
-            st.order_idx = next_order;
-            const uint32_t new_pat_idx = orders[st.order_idx];
-            const PatternHeader &new_pat = tracker_pattern_table(song)[new_pat_idx];
-            st.row = (next_row < new_pat.num_rows) ? next_row : 0;
+        if (st.pattern_delay_remaining > 0) {
+            // #22 EEx: hold the current row for one more full-speed pass --
+            // row/order untouched, and the *next* call's tick_in_row == 0 is
+            // flagged as a held repeat (this function's row_boundary
+            // computation, top) rather than a genuine new row, so it won't
+            // re-trigger. Bxx/Dxx pending on this same row are deliberately
+            // left pending rather than consumed here -- they still resolve
+            // once the delay finally runs out, same as XM/FT2.
+            st.pattern_delay_remaining--;
+            st.pattern_delay_holding = true;
         } else {
-            st.row++;
-            if (st.row >= pat.num_rows) {
-                st.row = 0;
-                st.order_idx++;
-                if (st.order_idx >= song->num_orders) {
-                    st.order_idx = song->restart_order;
+            st.pattern_delay_holding = false;
+            if (st.jump_pending || st.break_pending) {
+                uint32_t next_order = st.jump_pending ? st.jump_target_order : st.order_idx + 1;
+                uint32_t next_row = st.break_pending ? st.break_row : 0;
+                st.jump_pending = false;
+                st.break_pending = false;
+                if (next_order >= song->num_orders) {
+                    next_order = song->restart_order;
                     looped = true;
+                }
+                st.order_idx = next_order;
+                const uint32_t new_pat_idx = orders[st.order_idx];
+                const PatternHeader &new_pat = tracker_pattern_table(song)[new_pat_idx];
+                st.row = (next_row < new_pat.num_rows) ? next_row : 0;
+            } else {
+                st.row++;
+                if (st.row >= pat.num_rows) {
+                    st.row = 0;
+                    st.order_idx++;
+                    if (st.order_idx >= song->num_orders) {
+                        st.order_idx = song->restart_order;
+                        looped = true;
+                    }
                 }
             }
         }

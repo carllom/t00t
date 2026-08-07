@@ -49,9 +49,19 @@ FX_VOLUME_SLIDE = 10   # A
 FX_POSITION_JUMP = 11  # B
 FX_SET_VOLUME = 12     # C
 FX_PATTERN_BREAK = 13  # D
+FX_EXTENDED = 14       # E -- decomposed by the param's high nibble, see _ext_param()
 FX_SET_SPEED_TEMPO = 15  # F -- < 0x20 is speed, >= 0x20 is BPM
+FX_RETRIG = 27         # R -- full-byte form (volume-change nibble + interval nibble)
 
 XM_MAGIC = b"Extended Module: "
+
+
+def _ext_param(sub: int, value: int) -> int:
+    """Packs an Exy sub-command's selector nibble and value nibble into the
+    single param byte FX_EXTENDED expects, matching effects.py's
+    decode_effect() decomposition (param >> 4 selects the sub-command,
+    param & 0x0F is what reaches the device as Effect's own param)."""
+    return ((sub & 0xF) << 4) | (value & 0xF)
 
 
 def encode_delta_8(data: bytes) -> bytes:
@@ -275,7 +285,7 @@ def notes_basic() -> bytes:
     Both samples use dead-center panning (128): pan.h deliberately uses an
     equal-power law (see its own header comment), which real FT2/libopenmpt
     does not necessarily match -- a permanent, by-design divergence source
-    that belongs to the FT2 quirk tail (#22), not to this fixture's asserted
+    that belongs to the FT2 quirk tail (#25), not to this fixture's asserted
     tolerance. Center pan sidesteps it so this corpus tests what player.h
     actually claims to get right: notes, pitch, volume, triggers, loops."""
     pluck = SynthSample(data=_pluck_sample(), loop_end=0, volume=64, panning=128, name="pluck")
@@ -727,6 +737,99 @@ def voice_count_profile() -> bytes:
                                speed=6, bpm=125, name="voice_count_profile"))
 
 
+# --- #22 fixtures: the remaining Exy sub-commands (E60 pattern loop and the
+# other named FT2 quirks are deliberately deferred, not covered here -- see
+# tracker.md's Open Questions / Build Order for the split). Same principle
+# as every earlier per-effect fixture in this module: narrow enough that
+# openmpt123 and player.h's implementation should land in the same place.
+
+def fine_slides_basic() -> bytes:
+    """Fine portamento (E1x/E2x) and fine volume slide (EAx/EBx) -- each
+    applies once, at tick 0 only, unlike the continuous 1xx/2xx/Axy effects
+    already covered by porta_up_down/volume_slide_basic. A held note steps
+    pitch up then back down, and volume up then down, one discrete step per
+    row -- audibly and structurally distinct from a continuous slide."""
+    pad = SynthSample(data=_pad_sample(), loop_start=0, loop_end=len(_pad_sample()), volume=32, panning=128, name="pad")
+    instruments = [SynthInstrument(pad, "pad")]
+
+    rows = [
+        [_fx_ev(49, 1)],
+        [_fx_ev(fx=FX_EXTENDED, param=_ext_param(0x1, 8))],  # E18: fine porta up 8
+        [_fx_ev(fx=FX_EXTENDED, param=_ext_param(0x2, 8))],  # E28: fine porta down 8 -- back to start
+        [_fx_ev(fx=FX_EXTENDED, param=_ext_param(0xA, 8))],  # EA8: fine volslide up 8
+        [_fx_ev(fx=FX_EXTENDED, param=_ext_param(0xB, 4))],  # EB4: fine volslide down 4
+    ]
+    return build_xm(SynthSong(num_channels=1, rows=rows, instruments=instruments, speed=4, bpm=125))
+
+
+# No glissando_basic fixture: E3x (glissando control) was tried and
+# reverted from player.h -- two reasonable snap-to-semitone implementations
+# both diverged from openmpt123 within a couple of ticks of the glide
+# starting, which makes the exact behaviour genuinely diff-driven quirk work
+# rather than the bounded/mechanical case the rest of this module's #22
+# fixtures cover. Tracked in #25 alongside the four named FT2 quirks
+# (tracker.md's Open Questions).
+
+
+def retrig_basic() -> bytes:
+    """E9x retriggers the sample every y ticks within the row -- a rapid
+    stutter, structurally distinct from a single sustained trigger. Uses the
+    one-shot pluck sample so each retrigger's restart-from-0 is unambiguous
+    (a looped sample's own wrap could otherwise coincidentally line up)."""
+    pluck = SynthSample(data=_pluck_sample(), loop_end=0, volume=64, panning=128, name="pluck")
+    instruments = [SynthInstrument(pluck, "pluck")]
+
+    rows = [
+        [_fx_ev(49, 1)],
+        [_fx_ev(fx=FX_EXTENDED, param=_ext_param(0x9, 2))],  # E92: retrigger every 2 ticks
+        [_fx_ev()],
+    ]
+    return build_xm(SynthSong(num_channels=1, rows=rows, instruments=instruments, speed=6, bpm=125))
+
+
+def note_cut_basic() -> bytes:
+    """ECx cuts the channel's volume to 0 partway through the row -- the
+    tail of the row is silent instead of sustaining. Row 2 uses param 0
+    (cut on the trigger tick itself, immediately) as the boundary case."""
+    pad = SynthSample(data=_pad_sample(), loop_start=0, loop_end=len(_pad_sample()), volume=64, panning=128, name="pad")
+    instruments = [SynthInstrument(pad, "pad")]
+
+    rows = [
+        [_fx_ev(49, 1, fx=FX_EXTENDED, param=_ext_param(0xC, 3))],  # EC3: cut at tick 3 of this row
+        [_fx_ev(49, 1)],
+        [_fx_ev(fx=FX_EXTENDED, param=_ext_param(0xC, 0))],         # EC0: cut immediately
+    ]
+    return build_xm(SynthSong(num_channels=1, rows=rows, instruments=instruments, speed=6, bpm=125))
+
+
+def note_delay_basic() -> bytes:
+    """EDx defers this row's trigger to a later tick within the row -- the
+    row starts silent and the note only begins partway through it."""
+    pad = SynthSample(data=_pad_sample(), loop_start=0, loop_end=len(_pad_sample()), volume=64, panning=128, name="pad")
+    instruments = [SynthInstrument(pad, "pad")]
+
+    rows = [
+        [_fx_ev()],
+        [_fx_ev(49, 1, fx=FX_EXTENDED, param=_ext_param(0xD, 3))],  # ED3: trigger delayed to tick 3
+        [_fx_ev()],
+    ]
+    return build_xm(SynthSong(num_channels=1, rows=rows, instruments=instruments, speed=6, bpm=125))
+
+
+def pattern_delay_basic() -> bytes:
+    """EEx holds the current row for y additional full-speed passes before
+    advancing -- row 0's note sustains roughly twice as long as row 1's
+    otherwise-identical duration."""
+    pad = SynthSample(data=_pad_sample(), loop_start=0, loop_end=len(_pad_sample()), volume=64, panning=128, name="pad")
+    instruments = [SynthInstrument(pad, "pad")]
+
+    rows = [
+        [_fx_ev(49, 1, fx=FX_EXTENDED, param=_ext_param(0xE, 1))],  # EE1: hold this row for 1 extra pass
+        [_fx_ev(61, 1)],
+    ]
+    return build_xm(SynthSong(num_channels=1, rows=rows, instruments=instruments, speed=4, bpm=125))
+
+
 FIXTURES = {
     "notes_basic": notes_basic,
     "retrig_and_keyoff": retrig_and_keyoff,
@@ -744,4 +847,9 @@ FIXTURES = {
     "volume_column_extended": volume_column_extended,
     "ping_pong_basic": ping_pong_basic,
     "sample_offset_basic": sample_offset_basic,
+    "fine_slides_basic": fine_slides_basic,
+    "retrig_basic": retrig_basic,
+    "note_cut_basic": note_cut_basic,
+    "note_delay_basic": note_delay_basic,
+    "pattern_delay_basic": pattern_delay_basic,
 }
