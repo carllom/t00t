@@ -9,6 +9,7 @@
 #include "clap.h"
 #include "fx/delay.h"
 #include "fx/reverb.h"
+#include "pan.h"
 #include "hardware/gpio.h"
 #include "pico/multicore.h"
 #include "pico/time.h"
@@ -39,7 +40,12 @@ static SVFilter filter[MAX_VOICES];         // drums (BP/HP); metal BP stage
 static SVFilter filter2[MAX_VOICES];        // metal HP stage (second pass)
 static LadderFilter ladder[MAX_VOICES];     // 303 (4-pole resonant LP)
 
-static int32_t scratch[SAMPLES_PER_BUFFER];
+// Stereo dry mix (int32_t to avoid overflow during summation); each voice's
+// contribution is split L/R by its pan coefficient. `fx_buf` is the mono
+// send/return scratch for the post-mix effect (mono send / stereo return).
+static int32_t dry_l[SAMPLES_PER_BUFFER];
+static int32_t dry_r[SAMPLES_PER_BUFFER];
+static int32_t fx_buf[SAMPLES_PER_BUFFER];
 
 // Post-mix effects (Core 1 only)
 static FxDelay  fx_delay;
@@ -65,7 +71,7 @@ static inline void env_oneshot(Envelope &e) {
     e.state = ENV_RELEASE;
 }
 
-// --- Per-type render paths. Each accumulates into scratch[]. -------------
+// --- Per-type render paths. Each accumulates into dry_l[]/dry_r[]. --------
 
 // 303: saw/square through the 4-pole resonant ladder LP, amp ADSR, one-shot
 // filter env that sweeps the cutoff down from base+env_mod to base.
@@ -74,6 +80,8 @@ static void render_303(uint32_t v, const VoiceParams &p) {
     float ginc = glide_inc[v];
     float target = (float)p.phase_inc;
     float res = (float)p.filter_resonance * (1.0f / 32767.0f);   // 0..1
+    int32_t gain_l, gain_r;
+    pan_gains_q15(p.pan, gain_l, gain_r);
 
     // Overdrive: push the ladder input above unity so its internal cubic
     // soft-clip (ladder.h) generates harmonics — the "acid bite". A makeup
@@ -103,7 +111,9 @@ static void render_303(uint32_t v, const VoiceParams &p) {
         // Ladder works on normalized floats; scale Q15 <-> [-1, 1], drive in.
         float in = (float)scaled * (1.0f / 32768.0f) * drive;
         float out = ladder[v].tick(in, cutoff, res) * makeup;
-        scratch[i] += (int32_t)(out * 32768.0f);
+        int32_t scaled_out = (int32_t)(out * 32768.0f);
+        dry_l[i] += (int32_t)(((int64_t)scaled_out * gain_l) >> 15);
+        dry_r[i] += (int32_t)(((int64_t)scaled_out * gain_r) >> 15);
         phase += eff_inc;
     }
     voice_phase[v] = phase;
@@ -113,6 +123,8 @@ static void render_303(uint32_t v, const VoiceParams &p) {
 // BD / tom: sine with a fast downward pitch sweep and an amp decay.
 static void render_tonal_drum(uint32_t v, const VoiceParams &p) {
     uint32_t phase = voice_phase[v];
+    int32_t gain_l, gain_r;
+    pan_gains_q15(p.pan, gain_l, gain_r);
     for (uint32_t i = 0; i < SAMPLES_PER_BUFFER; i++) {
         float amp_f = amp_env[v].advance(p.amp_env);
         if (amp_f <= 0.0f) break;
@@ -128,7 +140,8 @@ static void render_tonal_drum(uint32_t v, const VoiceParams &p) {
         int32_t scaled = (s * p.amplitude) >> 15;
         scaled = (scaled * level) >> 15;
 
-        scratch[i] += scaled;
+        dry_l[i] += (int32_t)(((int64_t)scaled * gain_l) >> 15);
+        dry_r[i] += (int32_t)(((int64_t)scaled * gain_r) >> 15);
         phase += eff_inc;
     }
     voice_phase[v] = phase;
@@ -141,6 +154,8 @@ static void render_snare(uint32_t v, const VoiceParams &p) {
     uint32_t ph2 = voice_phase2[v];
     int32_t q = svf_compute_q(p.filter_resonance);
     int16_t f = svf_compute_f_half(p.filter_cutoff);
+    int32_t gain_l, gain_r;
+    pan_gains_q15(p.pan, gain_l, gain_r);
     for (uint32_t i = 0; i < SAMPLES_PER_BUFFER; i++) {
         float amp_f = amp_env[v].advance(p.amp_env);
         if (amp_f <= 0.0f) break;
@@ -160,7 +175,8 @@ static void render_snare(uint32_t v, const VoiceParams &p) {
         int32_t scaled = (mix * p.amplitude) >> 15;
         scaled = (scaled * level) >> 15;
 
-        scratch[i] += scaled;
+        dry_l[i] += (int32_t)(((int64_t)scaled * gain_l) >> 15);
+        dry_r[i] += (int32_t)(((int64_t)scaled * gain_r) >> 15);
         ph1 += inc1;
         ph2 += inc2;
     }
@@ -172,6 +188,8 @@ static void render_snare(uint32_t v, const VoiceParams &p) {
 static void render_noise_drum(uint32_t v, const VoiceParams &p) {
     int32_t q = svf_compute_q(p.filter_resonance);
     int16_t f = svf_compute_f_half(p.filter_cutoff);
+    int32_t gain_l, gain_r;
+    pan_gains_q15(p.pan, gain_l, gain_r);
     for (uint32_t i = 0; i < SAMPLES_PER_BUFFER; i++) {
         float amp_f = amp_env[v].advance(p.amp_env);
         if (amp_f <= 0.0f) break;
@@ -182,7 +200,8 @@ static void render_noise_drum(uint32_t v, const VoiceParams &p) {
         scaled = (scaled * level) >> 15;
         scaled = filter[v].tick(scaled, f, q, p.filter_mode);   // FILTER_HP
 
-        scratch[i] += scaled;
+        dry_l[i] += (int32_t)(((int64_t)scaled * gain_l) >> 15);
+        dry_r[i] += (int32_t)(((int64_t)scaled * gain_r) >> 15);
     }
 }
 
@@ -198,6 +217,8 @@ static void render_metal(uint32_t v, const VoiceParams &p) {
     int16_t f_hp = do_hp ? svf_compute_f_half(p.filter_cutoff2) : (int16_t)0;
     int32_t q_hp = svf_compute_q(0);   // gentle (non-resonant) high-pass
     int32_t makeup = do_hp ? 4 : 2;    // compensate band-pass (+ high-pass) loss
+    int32_t gain_l, gain_r;
+    pan_gains_q15(p.pan, gain_l, gain_r);
     uint32_t *ph = &metal_phase[v][p.metal_first];
     const uint32_t *inc = &metal_inc[p.metal_first];
     int n = p.metal_count;
@@ -213,7 +234,9 @@ static void render_metal(uint32_t v, const VoiceParams &p) {
         scaled = (scaled * level) >> 15;
         scaled = filter[v].tick(scaled, f_bp, q_bp, FILTER_BP);
         if (do_hp) scaled = filter2[v].tick(scaled, f_hp, q_hp, FILTER_HP);
-        scratch[i] += scaled * makeup;
+        scaled *= makeup;
+        dry_l[i] += (int32_t)(((int64_t)scaled * gain_l) >> 15);
+        dry_r[i] += (int32_t)(((int64_t)scaled * gain_r) >> 15);
     }
 }
 
@@ -222,6 +245,8 @@ static void render_metal(uint32_t v, const VoiceParams &p) {
 static void render_clap(uint32_t v, const VoiceParams &p) {
     int32_t q = svf_compute_q(p.filter_resonance);
     int16_t f = svf_compute_f_half(p.filter_cutoff);
+    int32_t gain_l, gain_r;
+    pan_gains_q15(p.pan, gain_l, gain_r);
     for (uint32_t i = 0; i < SAMPLES_PER_BUFFER; i++) {
         float amp_f = clap_env[v].advance(CLAP_INTERVAL, CLAP_BURSTS,
                                           clap_burst_coeff, clap_tail_coeff);
@@ -232,7 +257,8 @@ static void render_clap(uint32_t v, const VoiceParams &p) {
         int32_t scaled = (s * p.amplitude) >> 15;
         scaled = (scaled * level) >> 15;
         scaled = filter[v].tick(scaled, f, q, p.filter_mode);   // FILTER_BP
-        scratch[i] += scaled;
+        dry_l[i] += (int32_t)(((int64_t)scaled * gain_l) >> 15);
+        dry_r[i] += (int32_t)(((int64_t)scaled * gain_r) >> 15);
     }
 }
 
@@ -276,7 +302,10 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
 
         const VoiceParamBlock &vp = params->active();
 
-        for (uint32_t i = 0; i < SAMPLES_PER_BUFFER; i++) scratch[i] = 0;
+        for (uint32_t i = 0; i < SAMPLES_PER_BUFFER; i++) {
+            dry_l[i] = 0;
+            dry_r[i] = 0;
+        }
 
         for (uint32_t v = 0; v < MAX_VOICES; v++) {
             const VoiceParams &p = vp.voices[v];
@@ -322,21 +351,36 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
             }
         }
 
-        // Post-mix effect (delay / reverb), selected by CC74. Clear the newly
-        // selected effect's buffer on a type switch so a stale tail can't leak.
+        // Post-mix effect (delay / reverb), selected by CC74. Mono send /
+        // stereo return: downmix the stereo dry mix to mono, run the
+        // (still-mono) effect on it, then add its wet output identically to
+        // both channels — only the dry path carries per-voice pan. Clear the
+        // newly selected effect's buffer on a type switch so a stale tail
+        // can't leak.
+        bool has_fx = (vp.fx.type == FX_DELAY || vp.fx.type == FX_REVERB);
         if (vp.fx.type != s_last_fx_type) {
             if (vp.fx.type == FX_DELAY)       fx_delay.init();
             else if (vp.fx.type == FX_REVERB) fx_reverb.init();
             s_last_fx_type = vp.fx.type;
         }
-        if (vp.fx.type == FX_DELAY)       fx_delay.process(scratch, SAMPLES_PER_BUFFER, vp.fx);
-        else if (vp.fx.type == FX_REVERB) fx_reverb.process(scratch, SAMPLES_PER_BUFFER, vp.fx);
+        if (has_fx) {
+            for (uint32_t i = 0; i < SAMPLES_PER_BUFFER; i++) {
+                fx_buf[i] = (dry_l[i] + dry_r[i]) >> 1;
+            }
+            if (vp.fx.type == FX_DELAY) fx_delay.process(fx_buf, SAMPLES_PER_BUFFER, vp.fx);
+            else                        fx_reverb.process(fx_buf, SAMPLES_PER_BUFFER, vp.fx);
+        }
 
         int16_t *out = i2s_buffer_ptr(buffers, buf_index);
         for (uint32_t i = 0; i < SAMPLES_PER_BUFFER; i++) {
-            int16_t val = (int16_t)__ssat(scratch[i], 16);
-            *out++ = val;  // left
-            *out++ = val;  // right
+            int32_t l = dry_l[i];
+            int32_t r = dry_r[i];
+            if (has_fx) {
+                l += fx_buf[i];
+                r += fx_buf[i];
+            }
+            *out++ = (int16_t)__ssat(l, 16);
+            *out++ = (int16_t)__ssat(r, 16);
         }
 
         uint32_t busy_us = time_us_32() - t_start;

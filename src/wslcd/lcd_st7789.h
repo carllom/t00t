@@ -46,5 +46,10 @@ void lcd_blit_start(const uint16_t *buf, uint32_t npix);
 bool lcd_blit_busy();
 void lcd_blit_wait();
 
+// Fill the current window with `npix` pixels of one RGB565 colour, sourcing
+// the DMA transfer from a 2-byte ring-wrapped buffer (no RAM tile needed).
+// Blocks until the transfer completes.
+void lcd_fill_window(uint16_t color, uint32_t npix);
+
 // Fill the whole visible panel with one RGB565 colour.
 void lcd_fill(uint16_t color);
