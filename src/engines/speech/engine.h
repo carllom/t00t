@@ -28,16 +28,17 @@ static constexpr uint32_t SPEECH_RATE = SAMPLE_RATE / 2;
 // this engine keeps the plain latest-wins ParamExchange/voice_alloc that the
 // subtractive and groovebox engines also use.
 struct VoiceParams {
-    uint32_t phase_inc;  // fixed-point phase increment, at SPEECH_RATE
+    uint32_t phase_inc;  // fixed-point (Q32) glottal phase increment, at SPEECH_RATE
     int16_t  amplitude;  // 0-32767
     uint8_t  trigger;    // generation counter, incremented on each note-on
     bool     gate;       // true while voice should sound
     int16_t  pan;        // Q15 pan: -32768 = full left, 0 = center, 32767 = full right
+    uint8_t  phoneme;    // Vowel index (phonemes.h) -- SPEECH_HOLD phoneme keyboard, #28
 };
 
 template <>
 inline VoiceParams voice_params_default<VoiceParams>() {
-    return { 0, 0, 0, false, 0 };
+    return { 0, 0, 0, false, 0, 0 };
 }
 
 using VoiceParamBlock = VoiceParamBlockT<VoiceParams>;
