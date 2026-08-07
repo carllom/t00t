@@ -17,6 +17,33 @@
 
 static constexpr float FS = 44100.0f;
 
+// #28: res2p_radius() moved from expf() to a LUT + linear interpolation.
+// Proves the LUT matches expf() to an inaudible margin across every (bw, fs)
+// this codebase uses before relying on it in the speech formant cascade.
+static bool test_radius_lut_accuracy() {
+    bool all_ok = true;
+    float max_err = 0.0f;
+    struct { float fs; float bw_lo, bw_hi; } ranges[] = {
+        { 44100.0f,  20.0f, 400.0f },  // groovebox resonators (render_res2p sweep)
+        { 22050.0f,  50.0f, 400.0f },  // speech formants @ SPEECH_RATE (speech.md)
+    };
+    for (auto &r : ranges) {
+        for (float bw = r.bw_lo; bw <= r.bw_hi; bw += 2.0f) {
+            float exact = expf(-(float)M_PI * bw / r.fs);
+            float approx = res2p_radius(bw, r.fs);
+            float err = std::fabs(approx - exact);
+            max_err = std::max(max_err, err);
+            if (err > 1e-4f) {
+                printf("  FAIL fs=%.0f bw=%.1f -> exact=%.6f approx=%.6f err=%.6f\n",
+                       r.fs, bw, exact, approx, err);
+                all_ok = false;
+            }
+        }
+    }
+    printf("  max |approx - exact| = %.7f over both ranges\n", max_err);
+    return all_ok;
+}
+
 // Sweeps the (f, bw) ranges the groovebox backport and the speech formant
 // cascade actually use, and checks every pole lands strictly inside the
 // unit circle (a2 < 1.0f) — the same assertion speech.md prescribes as a
@@ -98,8 +125,12 @@ static bool test_impulse_response(float target_f, float target_bw, const char *w
 
 int main() {
     bool ok = true;
+    res2p_init();
 
-    printf("== res2p stability sweep (50-4000 Hz x 20-400 Hz bandwidth) ==\n");
+    printf("== res2p_radius() LUT vs expf() ==\n");
+    ok = test_radius_lut_accuracy() && ok;
+
+    printf("\n== res2p stability sweep (50-4000 Hz x 20-400 Hz bandwidth) ==\n");
     ok = test_stability_sweep() && ok;
 
     printf("\n== res2p impulse response (writes WAV alongside the binary) ==\n");
