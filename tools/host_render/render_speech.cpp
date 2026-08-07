@@ -183,10 +183,14 @@ static void lower_symbol(char *out, size_t out_size, const char *symbol) {
 
 // Renders one phoneme, held under gate, for `seconds` at `note_hz` and
 // `formant_shift`/`bandwidth_scale` (Q8.8, 256 = 1.0x -- default neutral).
+// `jitter`/`shimmer`/`lfo_rate`/`lfo_depth` (#36) default to off, matching
+// pre-#36 behaviour for every existing caller.
 // Returns the rendered native-rate mono samples (post-tract, pre-pan/ZOH) as
 // float so the Goertzel analysis isn't limited to int16 quantization.
 static std::vector<float> render_phoneme_native(Phoneme p, float note_hz, float seconds,
-                                                  int16_t formant_shift = 256, int16_t bandwidth_scale = 256) {
+                                                  int16_t formant_shift = 256, int16_t bandwidth_scale = 256,
+                                                  uint8_t jitter = 0, uint8_t shimmer = 0,
+                                                  float lfo_rate = 0.0f, float lfo_depth = 0.0f) {
     SpeechVoice sv{};
     const uint32_t total_native = (uint32_t)(SPEECH_RATE * seconds);
     std::vector<float> mono(total_native);
@@ -204,7 +208,7 @@ static std::vector<float> render_phoneme_native(Phoneme p, float note_hz, float 
         // so later calls glide/hold rather than re-triggering each buffer.
         speech_render_voice(sv, phase_inc, (float)SPEECH_RATE, /*trigger=*/1,
                              /*amplitude=*/32767, /*gate=*/true, (uint8_t)p, /*pan=*/0,
-                             formant_shift, bandwidth_scale,
+                             formant_shift, bandwidth_scale, jitter, shimmer, lfo_rate, lfo_depth,
                              dry_l.data(), dry_r.data(), n);
         for (uint32_t i = 0; i < n; i++) mono[done + i] = (float)dry_l[i * 2];  // pan=0 -> L==R==mono
         done += n;
@@ -609,9 +613,13 @@ struct UtteranceRender {
     uint32_t completed_at;
 };
 
+// `jitter`/`shimmer`/`lfo_rate`/`lfo_depth` (#36) default to off, matching
+// pre-#36 behaviour for every existing caller.
 static UtteranceRender render_utterance_native(const SpeechUtterance &utt, SpeechMode mode, uint8_t rate,
                                                  float note_hz, uint32_t hold_native_frames,
-                                                 uint32_t total_native_frames) {
+                                                 uint32_t total_native_frames,
+                                                 uint8_t jitter = 0, uint8_t shimmer = 0,
+                                                 float lfo_rate = 0.0f, float lfo_depth = 0.0f) {
     SpeechVoice sv{};
     UtteranceRender result;
     result.mono.assign(total_native_frames, 0.0f);
@@ -629,6 +637,7 @@ static UtteranceRender render_utterance_native(const SpeechUtterance &utt, Speec
         bool gate = done < hold_native_frames;
         speech_render_voice_seq(sv, phase_inc, (float)SPEECH_RATE, /*trigger=*/1, /*amplitude=*/32767,
                                  gate, utt, mode, rate, /*pan=*/0, /*formant_shift=*/256, /*bandwidth_scale=*/256,
+                                 jitter, shimmer, lfo_rate, lfo_depth,
                                  dry_l.data(), dry_r.data(), n);
         for (uint32_t i = 0; i < n; i++) result.mono[done + i] = (float)dry_l[i * 2];
         if (!sv.active && !recorded) { result.completed_at = done; recorded = true; }
@@ -857,6 +866,7 @@ static bool run_malformed_utterance_check() {
     uint32_t phase_inc = glottal_phase_inc(150.0f, (float)SPEECH_RATE);
     speech_render_voice_seq(sv, phase_inc, (float)SPEECH_RATE, /*trigger=*/1, /*amplitude=*/32767,
                              /*gate=*/true, bad, SPEECH_MODE_GATED, /*rate=*/16, /*pan=*/0, 256, 256,
+                             /*jitter=*/0, /*shimmer=*/0, /*lfo_rate=*/0.0f, /*lfo_depth=*/0.0f,
                              dry_l.data(), dry_r.data(), total);
 
     bool silent = true;
@@ -929,6 +939,163 @@ static bool run_phrase_renders() {
     return all_ok;
 }
 
+// #36 acceptance: "A MIDI sequence plays a sung phrase at the correct
+// pitch, with pitch tracking note number across the useful range." Unlike
+// run_vowel_checks()'s octave sweep above (a single sustained phoneme, not
+// an utterance) or run_rate_checks() (a single-segment utterance, checking
+// only "has pitch" not "has the *requested* pitch"), this renders a real
+// generated phrase (SPEECH_PHRASES, #35/#36) at three notes spanning the
+// keyboard and checks each render shows real energy at its requested
+// frequency -- if pitch weren't tracking note number, changing `note_hz`
+// wouldn't move where the energy concentrates.
+static bool run_phrase_pitch_tracking_checks() {
+    bool all_ok = true;
+    printf("\n== Phrase bank: pitch tracks note number (#36) ==\n");
+
+    const SpeechUtterance &utt = SPEECH_PHRASES[PHRASE_VOICE_TEST];
+    float notes[] = { 110.0f, 220.0f, 440.0f };  // A2, A3, A4
+    for (float hz : notes) {
+        uint32_t total = SPEECH_RATE * 3;
+        UtteranceRender r = render_utterance_native(utt, SPEECH_MODE_ONESHOT, /*rate=*/16, hz, total, total);
+        bool finished = r.completed_at < total;
+
+        size_t n = finished ? r.completed_at : r.mono.size();
+        float e_at = goertzel_mag(r.mono, 0, n, hz, (float)SPEECH_RATE);
+        bool has_pitch = e_at > 50.0f;
+        bool ok = has_pitch && finished;
+        printf("  %5.0f Hz: completed=%s  F0(%.0fHz) mag=%7.1f -> %s\n",
+               hz, finished ? "yes" : "no ", hz, e_at, ok ? "PASS" : "FAIL");
+        if (!finished) printf("  FAIL: phrase never completed\n");
+        all_ok = all_ok && ok;
+    }
+    return all_ok;
+}
+
+// #36 acceptance: "Jitter/shimmer at zero produce a measurably periodic
+// waveform (verified from a host render, not just by ear); non-zero
+// visibly perturbs period and amplitude." Renders a sustained vowel with
+// jitter/shimmer off and again at their max, then measures cycle-to-cycle
+// period (rising zero-crossing distance) and per-cycle peak amplitude
+// straight from the post-tract waveform -- the same audio the device
+// actually plays, not an internal-state probe.
+// `min_gap` debounces spurious crossings from formant ripple: the tract's
+// resonators (hundreds of Hz to a few kHz) ring within each glottal period,
+// so a naive zero-crossing count sees several extra crossings per cycle
+// near the waveform's low points -- real, not a bug, but not what "one
+// crossing per glottal period" needs. Suppressing anything closer than
+// `min_gap` (a fraction of the expected period) to the last accepted
+// crossing keeps only the once-per-cycle fundamental crossing.
+static std::vector<uint32_t> zero_crossing_periods(const std::vector<float> &x, size_t start, size_t n, uint32_t min_gap) {
+    std::vector<uint32_t> periods;
+    size_t last = 0;
+    bool have_last = false;
+    for (size_t i = start + 1; i < start + n; i++) {
+        if (x[i - 1] <= 0.0f && x[i] > 0.0f) {  // rising zero-crossing
+            if (have_last && (i - last) < min_gap) continue;
+            if (have_last) periods.push_back((uint32_t)(i - last));
+            last = i;
+            have_last = true;
+        }
+    }
+    return periods;
+}
+
+static bool run_jitter_shimmer_checks() {
+    bool all_ok = true;
+    printf("\n== Excitation: jitter/shimmer perturb period/amplitude (#36) ==\n");
+
+    static constexpr float NOTE_HZ = 150.0f;
+    static constexpr float SECONDS = 1.0f;
+
+    for (bool active : { false, true }) {
+        uint8_t jitter = active ? 255 : 0;
+        uint8_t shimmer = active ? 255 : 0;
+        std::vector<float> mono = render_phoneme_native(PH_A, NOTE_HZ, SECONDS, 256, 256, jitter, shimmer, 0.0f, 0.0f);
+
+        size_t start = mono.size() / 4;  // skip the tract's initial glide to target
+        uint32_t min_gap = (uint32_t)(0.6f * (float)SPEECH_RATE / NOTE_HZ);
+        std::vector<uint32_t> periods = zero_crossing_periods(mono, start, mono.size() - start, min_gap);
+
+        double period_mean = 0.0;
+        for (uint32_t p : periods) period_mean += p;
+        period_mean /= (double)periods.size();
+        double period_var = 0.0;
+        for (uint32_t p : periods) period_var += ((double)p - period_mean) * ((double)p - period_mean);
+        double period_cv = std::sqrt(period_var / (double)periods.size()) / period_mean;
+
+        std::vector<float> peaks;
+        size_t seg_start = start;
+        for (uint32_t p : periods) {
+            float pk = 0.0f;
+            for (size_t i = seg_start; i < seg_start + p && i < mono.size(); i++) pk = std::max(pk, std::fabs(mono[i]));
+            peaks.push_back(pk);
+            seg_start += p;
+        }
+        double amp_mean = 0.0;
+        for (float p : peaks) amp_mean += p;
+        amp_mean /= (double)peaks.size();
+        double amp_var = 0.0;
+        for (float p : peaks) amp_var += ((double)p - amp_mean) * ((double)p - amp_mean);
+        double amp_cv = std::sqrt(amp_var / (double)peaks.size()) / amp_mean;
+
+        bool ok = active ? (period_cv > 0.015 && amp_cv > 0.05) : (period_cv < 0.01 && amp_cv < 0.02);
+        printf("  jitter=%3u shimmer=%3u: period CV=%.4f  amplitude CV=%.4f (%u cycles) -> %s\n",
+               jitter, shimmer, period_cv, amp_cv, (unsigned)periods.size(), ok ? "PASS" : "FAIL");
+        all_ok = all_ok && ok;
+    }
+    return all_ok;
+}
+
+// #36 acceptance: "Vibrato LFO is audible on glottal pitch and runs at
+// sub-block rate." Renders a sustained vowel with a fast, full-depth
+// vibrato and confirms the measured F0 (local_peak_freq's hill-climb,
+// reused from run_vowel_checks() above) actually swings across the render
+// instead of sitting still -- the direct, measurable meaning of "audible on
+// glottal pitch" for a host harness with no ear.
+static bool run_vibrato_checks() {
+    bool all_ok = true;
+    printf("\n== Excitation: vibrato LFO modulates glottal pitch (#36) ==\n");
+
+    static constexpr float NOTE_HZ = 200.0f;
+    static constexpr float SECONDS = 1.0f;
+    static constexpr float LFO_RATE_HZ = 6.0f;  // typical vibrato rate
+    static constexpr float LFO_DEPTH = 1.0f;    // full depth, +/-VIBRATO_MAX_SEMITONES
+
+    std::vector<float> vib = render_phoneme_native(PH_A, NOTE_HZ, SECONDS, 256, 256, 0, 0, LFO_RATE_HZ, LFO_DEPTH);
+
+    size_t win = (size_t)(SPEECH_RATE * 0.05f);  // 50 ms analysis windows
+    float f0_min = 1.0e9f, f0_max = -1.0e9f;
+    for (size_t start = win; start + win < vib.size(); start += win) {
+        float f0 = local_peak_freq(vib, start, win, NOTE_HZ, (float)SPEECH_RATE);
+        f0_min = std::min(f0_min, f0);
+        f0_max = std::max(f0_max, f0);
+    }
+    float swing = f0_max - f0_min;
+    // +/-2 semitones at 200 Hz is roughly +/-24 Hz; demand well under that
+    // full swing to allow for local_peak_freq's 5 Hz search grid and
+    // window-averaging smoothing out the extremes.
+    bool ok = swing > 15.0f;
+    printf("  lfo_rate=%.1fHz lfo_depth=%.1f: F0 swing over %.0fs = %.1f Hz (min=%.1f max=%.1f) -> %s\n",
+           LFO_RATE_HZ, LFO_DEPTH, SECONDS, swing, f0_min, f0_max, ok ? "PASS" : "FAIL");
+    all_ok = all_ok && ok;
+
+    // Regression lock: lfo_depth=0 must reproduce the flat pitch every
+    // pre-#36 render already assumed (run_vowel_checks()'s pitch-tracking
+    // pass, etc.) -- vibrato being off shouldn't perturb anything.
+    std::vector<float> flat = render_phoneme_native(PH_A, NOTE_HZ, SECONDS, 256, 256, 0, 0, LFO_RATE_HZ, 0.0f);
+    float flat_min = 1.0e9f, flat_max = -1.0e9f;
+    for (size_t start = win; start + win < flat.size(); start += win) {
+        float f0 = local_peak_freq(flat, start, win, NOTE_HZ, (float)SPEECH_RATE);
+        flat_min = std::min(flat_min, f0);
+        flat_max = std::max(flat_max, f0);
+    }
+    bool flat_ok = (flat_max - flat_min) < 10.0f;
+    printf("  lfo_depth=0 (rate still set): F0 swing = %.1f Hz -> %s\n", flat_max - flat_min, flat_ok ? "PASS" : "FAIL");
+    all_ok = all_ok && flat_ok;
+
+    return all_ok;
+}
+
 int main() {
     res2p_init();       // must run before any res2p_radius()/res2p_set() call
     osc_init_sine();     // speech_render_test_tone()/pan_gains_q15()'s wavetable source
@@ -949,6 +1116,9 @@ int main() {
     ok = run_gated_release_checks() && ok;
     ok = run_malformed_utterance_check() && ok;
     ok = run_phrase_renders() && ok;
+    ok = run_phrase_pitch_tracking_checks() && ok;
+    ok = run_jitter_shimmer_checks() && ok;
+    ok = run_vibrato_checks() && ok;
 
     printf(ok ? "\nALL CHECKS PASSED\n" : "\nCHECKS FAILED\n");
     return ok ? 0 : 1;

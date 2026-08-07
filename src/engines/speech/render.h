@@ -74,9 +74,15 @@ static constexpr float SPEECH_EXCITATION_HEADROOM = 1.0f / 12.0f;
 // left behind. `formant_shift`/`bandwidth_scale` are raw Q8.8 (256 = 1.0x,
 // see tract.h's tract_cc_to_q8_8()) live parameters -- updated every call
 // regardless of trigger/phoneme, so a CC sweep reaches a held note.
+// `jitter`/`shimmer` are raw 0-255 (VoiceParams, excitation.h); `lfo_rate`
+// (Hz)/`lfo_depth` (0-1) are the vibrato pair, sampled once per sub-block
+// (excitation.h's glottal_vibrato_advance/_inc) -- see speech_render_voice_
+// seq() below for the shared reasoning, identical here since both paths
+// drive the same glottal excitation.
 inline void speech_render_voice(SpeechVoice &sv, uint32_t phase_inc, float fs, uint8_t trigger,
                                  int16_t amplitude, bool gate, uint8_t phoneme, int16_t pan,
                                  int16_t formant_shift, int16_t bandwidth_scale,
+                                 uint8_t jitter, uint8_t shimmer, float lfo_rate, float lfo_depth,
                                  int32_t *dry_l, int32_t *dry_r, uint32_t native_frames) {
     sv.formant_shift_tgt = (float)formant_shift * (1.0f / 256.0f);
     sv.bandwidth_scale_tgt = (float)bandwidth_scale * (1.0f / 256.0f);
@@ -88,6 +94,7 @@ inline void speech_render_voice(SpeechVoice &sv, uint32_t phase_inc, float fs, u
         sv.last_trigger = trigger;
         sv.last_phoneme = phoneme;
         tract_retrigger(sv, phoneme_unpack(PHONEME_TARGETS[phoneme % PHONEME_COUNT]));
+        sv.glot_cycle_inc = phase_inc;  // #36: seed the first cycle before any wrap has fired
     } else if (phoneme != sv.last_phoneme) {
         sv.last_phoneme = phoneme;
         tract_set_target(sv, phoneme_unpack(PHONEME_TARGETS[phoneme % PHONEME_COUNT]));
@@ -111,13 +118,29 @@ inline void speech_render_voice(SpeechVoice &sv, uint32_t phase_inc, float fs, u
         tract_advance_subblock(sv, fs);
         float amp_tgt = (gate ? (float)amplitude : 0.0f) * SPEECH_EXCITATION_HEADROOM;
 
+        // #36: vibrato is resampled once per sub-block (not per sample, not
+        // per glottal cycle) -- `base_inc` is this sub-block's nominal
+        // (vibrato-applied) phase increment; jitter perturbs it further,
+        // once per glottal cycle, inside the sample loop below.
+        uint32_t base_inc = phase_inc;
+        if (lfo_rate > 0.0f && lfo_depth > 0.0f) {
+            float lfo_val = glottal_vibrato_advance(sv.lfo_phase, lfo_rate, k, fs);
+            base_inc = glottal_vibrato_inc(phase_inc, lfo_val, lfo_depth);
+        }
+
         for (uint32_t i = 0; i < k; i++) {
             sv.cur_amp += (amp_tgt - sv.cur_amp) * AMP_SMOOTH_COEFF;
 
-            float voiced_src = glottal_pulse(sv.glottal_phase) * sv.av * sv.cur_amp;
+            float voiced_src = glottal_pulse(sv.glottal_phase) * sv.av * sv.cur_amp * sv.glot_cycle_amp;
             float noise_f = (float)osc_noise(sv.noise_lfsr) * (1.0f / 32768.0f);
             float noise_src = noise_f * sv.af * sv.cur_amp;
-            sv.glottal_phase += phase_inc;
+
+            uint32_t prev_phase = sv.glottal_phase;
+            sv.glottal_phase += sv.glot_cycle_inc;
+            if (sv.glottal_phase < prev_phase) {  // wrapped: new glottal cycle starts next sample
+                sv.glot_cycle_inc = glottal_jitter_inc(base_inc, jitter, sv.jitter_lfsr);
+                sv.glot_cycle_amp = glottal_shimmer_mult(shimmer, sv.jitter_lfsr);
+            }
 
             int32_t sample = (int32_t)tract_process_mixed(sv, voiced_src, noise_src);
             int32_t l = (sample * gain_l) >> 15;
@@ -145,9 +168,16 @@ inline void speech_render_voice(SpeechVoice &sv, uint32_t phase_inc, float fs, u
 // fixture table itself, same reasoning render.h already gives for taking
 // `phase_inc`/`fs` as parameters instead of baking in a specific source.
 // `mode`/`rate` are VoiceParams::mode/rate straight through (engine.h).
+// `jitter`/`shimmer`/`lfo_rate`/`lfo_depth` (#36, speech.md P4 "Vibrato
+// LFO"/"Jitter and shimmer"): applied to the glottal excitation exactly like
+// speech_render_voice() above, independent of the sequencer -- a phoneme
+// boundary changes tract targets, not excitation character, so jitter/
+// shimmer/vibrato run continuously across segment boundaries within one
+// utterance rather than resetting per segment.
 inline void speech_render_voice_seq(SpeechVoice &sv, uint32_t phase_inc, float fs, uint8_t trigger,
                                      int16_t amplitude, bool gate, const SpeechUtterance &utt, SpeechMode mode,
                                      uint8_t rate, int16_t pan, int16_t formant_shift, int16_t bandwidth_scale,
+                                     uint8_t jitter, uint8_t shimmer, float lfo_rate, float lfo_depth,
                                      int32_t *dry_l, int32_t *dry_r, uint32_t native_frames) {
     sv.formant_shift_tgt = (float)formant_shift * (1.0f / 256.0f);
     sv.bandwidth_scale_tgt = (float)bandwidth_scale * (1.0f / 256.0f);
@@ -169,6 +199,7 @@ inline void speech_render_voice_seq(SpeechVoice &sv, uint32_t phase_inc, float f
             tract_retrigger(sv, phoneme_unpack(PHONEME_TARGETS[PH_SIL]));
             sv.seg_remaining = 0xFFFFFFFFu;  // see speech_sequencer_advance()'s comment on why
         }
+        sv.glot_cycle_inc = phase_inc;  // #36: seed the first cycle before any wrap has fired
     } else if (!malformed && !sv.seq_done) {
         // Note-off edge, checked once per call rather than per-sample --
         // #30's SPEECH_MODE_GATED jump to the release segment. ONESHOT/LOOP
@@ -202,13 +233,27 @@ inline void speech_render_voice_seq(SpeechVoice &sv, uint32_t phase_inc, float f
         // filled for every frame of this call.
         float amp_tgt = (gate && !sv.seq_done ? (float)amplitude : 0.0f) * SPEECH_EXCITATION_HEADROOM;
 
+        // #36: vibrato resampled once per sub-block, same as
+        // speech_render_voice() above.
+        uint32_t base_inc = phase_inc;
+        if (lfo_rate > 0.0f && lfo_depth > 0.0f) {
+            float lfo_val = glottal_vibrato_advance(sv.lfo_phase, lfo_rate, k, fs);
+            base_inc = glottal_vibrato_inc(phase_inc, lfo_val, lfo_depth);
+        }
+
         for (uint32_t i = 0; i < k; i++) {
             sv.cur_amp += (amp_tgt - sv.cur_amp) * AMP_SMOOTH_COEFF;
 
-            float voiced_src = glottal_pulse(sv.glottal_phase) * sv.av * sv.cur_amp;
+            float voiced_src = glottal_pulse(sv.glottal_phase) * sv.av * sv.cur_amp * sv.glot_cycle_amp;
             float noise_f = (float)osc_noise(sv.noise_lfsr) * (1.0f / 32768.0f);
             float noise_src = noise_f * sv.af * sv.cur_amp;
-            sv.glottal_phase += phase_inc;
+
+            uint32_t prev_phase = sv.glottal_phase;
+            sv.glottal_phase += sv.glot_cycle_inc;
+            if (sv.glottal_phase < prev_phase) {  // wrapped: new glottal cycle starts next sample
+                sv.glot_cycle_inc = glottal_jitter_inc(base_inc, jitter, sv.jitter_lfsr);
+                sv.glot_cycle_amp = glottal_shimmer_mult(shimmer, sv.jitter_lfsr);
+            }
 
             int32_t sample = (int32_t)tract_process_mixed(sv, voiced_src, noise_src);
             int32_t l = (sample * gain_l) >> 15;
