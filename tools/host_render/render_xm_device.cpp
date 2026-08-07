@@ -309,6 +309,13 @@ static bool cmd_render(const std::string &blob_path, const std::string &wav_path
     std::vector<TrackerSample> chan_sample(num_channels);
     for (auto &v : voices) v = TrackerVoice{};
 
+    // Whole blob is already host-resident, so the "resident sample" base is
+    // just the blob itself (offset 0 -- SampleHeader.data_offset is already
+    // blob-base-relative). See player.h's tracker_build_resident_samples().
+    std::vector<TrackerSample> resident_samples(song->num_samples);
+    tracker_build_resident_samples(song, reinterpret_cast<const int8_t *>(tracker_blob_base(song)), 0,
+                                    resident_samples.data());
+
     PlayerState st;
     player_init(st, song);
 
@@ -316,8 +323,6 @@ static bool cmd_render(const std::string &blob_path, const std::string &wav_path
     std::vector<int16_t> out;
     out.reserve(max_frames * 2);
 
-    const uint8_t *base = tracker_blob_base(song);
-    const SampleHeader *samples = tracker_sample_table(song);
     const uint8_t *orders = tracker_order_table(song);
 
     bool looped = false;
@@ -333,18 +338,7 @@ static bool cmd_render(const std::string &blob_path, const std::string &wav_path
         std::string triggers;
         for (uint32_t c = 0; c < num_channels; c++) {
             const ChannelTick &ct = tb.ch[c];
-            TrackerVoice &v = voices[c];
             if (ct.flags & TICK_NOTE_ON) {
-                const SampleHeader &sh = samples[ct.sample_id];
-                chan_sample[c] = TrackerSample{
-                    reinterpret_cast<const int8_t *>(base + sh.data_offset),
-                    sh.length, sh.loop_start, sh.loop_end, sh.loop_type != 0,
-                };
-                v.sample = &chan_sample[c];
-                v.pos = 0;
-                v.inc = tracker_latch_inc(ct.inc);
-                v.active = true;
-
                 const Event &ev = tracker_event_at(song, pat, row, c, num_channels);
                 char entry[64];
                 snprintf(entry, sizeof(entry), "%sc%u:n%u:i%u:s%u", triggers.empty() ? "" : ";",
@@ -355,9 +349,8 @@ static bool cmd_render(const std::string &blob_path, const std::string &wav_path
                 snprintf(entry, sizeof(entry), "%sc%u:off", triggers.empty() ? "" : ";", c);
                 triggers += entry;
             }
-            v.tgt_volL = ct.tgt_volL;
-            v.tgt_volR = ct.tgt_volR;
         }
+        tracker_apply_tick(tb, resident_samples.data(), voices.data(), chan_sample.data(), num_channels);
 
         fprintf(trace, "%u,%u,%u,%u,%u,%s\n", total_frames, order, pat_idx, row, tick_in_row, triggers.c_str());
 

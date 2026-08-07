@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 
 #include "audio_common.h"
@@ -71,22 +72,32 @@ struct TickBlock {
     ChannelTick ch[TRACKER_MAX_CHANNELS];
 };
 
-// Minimal ring: push a produced block, pop it for consumption. On real
-// hardware #18 adds the atomic index stores/barriers/reverse-FIFO ack this
-// needs to be genuinely cross-core safe; used single-threaded here (by the
-// host harness, or by a same-core caller), it's just a small circular
-// buffer.
+// Single-producer/single-consumer ring, genuinely cross-core safe (#18):
+// Core 0 is the sole writer of `head`, Core 1 the sole writer of `tail`.
+// `push()`/`pop()` release-store their own index; `full()`/`empty()`
+// acquire-load the *other* index before touching a slot, so the producer's
+// slot write happens-before the consumer sees `head` advance, and the
+// consumer's slot read happens-before the producer reuses that slot for a
+// new write. std::atomic (rather than hand-rolled ARM barriers, cf.
+// engine_base.h's ParamExchangeT) because this file has to stay
+// host-buildable -- tools/host_render links it with the host compiler, no
+// pico-sdk headers allowed. Used single-threaded by the host harness today;
+// real cross-core use starts with #18's Core 0 player task / Core 1 mixer.
 struct TickRing {
     TickBlock slots[TICK_RING_DEPTH];
-    uint32_t head = 0;  // next slot to write
-    uint32_t tail = 0;  // next slot to read
+    std::atomic<uint32_t> head{0};  // next slot to write -- Core 0 only
+    std::atomic<uint32_t> tail{0};  // next slot to read -- Core 1 only
 
-    bool full() const { return head - tail >= TICK_RING_DEPTH; }
-    bool empty() const { return head == tail; }
-    TickBlock &write_slot() { return slots[head % TICK_RING_DEPTH]; }
-    void push() { head++; }
-    TickBlock &read_slot() { return slots[tail % TICK_RING_DEPTH]; }
-    void pop() { tail++; }
+    bool full() const {
+        return head.load(std::memory_order_relaxed) - tail.load(std::memory_order_acquire) >= TICK_RING_DEPTH;
+    }
+    bool empty() const {
+        return head.load(std::memory_order_acquire) == tail.load(std::memory_order_relaxed);
+    }
+    TickBlock &write_slot() { return slots[head.load(std::memory_order_relaxed) % TICK_RING_DEPTH]; }
+    void push() { head.fetch_add(1, std::memory_order_release); }
+    TickBlock &read_slot() { return slots[tail.load(std::memory_order_relaxed) % TICK_RING_DEPTH]; }
+    void pop() { tail.fetch_add(1, std::memory_order_release); }
 };
 
 // Per-channel memory carried between ticks: the currently-sounding inc/
@@ -258,4 +269,57 @@ inline bool player_produce_tick(PlayerState &st, const SongHeader *song, TickBlo
         }
     }
     return looped;
+}
+
+// Builds a small SRAM-resident TrackerSample descriptor per song sample,
+// read once at song-load time -- the only place that ever dereferences
+// SampleHeader (flash-resident on device). tracker.md's rationale for
+// putting the player on Core 0 is explicitly to keep pattern-data flash
+// reads off Core 1 ("never thrashes the XIP cache"); tracker_apply_tick()
+// below only ever indexes the array this produces, never `song` itself, so
+// Core 1's hot path stays flash-free.
+//
+// `sample_data_base`/`sample_data_base_offset` let one function serve both
+// callers: the host harness has the whole blob resident already (base =
+// blob base, offset = 0, since SampleHeader.data_offset is already
+// blob-base-relative), while the device copies just the sample-data region
+// into its own SRAM buffer (base = that buffer, offset =
+// song->sample_data_offset, to rebase the blob-relative offset into the
+// copy). `out` must have room for song->num_samples entries.
+inline void tracker_build_resident_samples(const SongHeader *song, const int8_t *sample_data_base,
+                                            uint32_t sample_data_base_offset, TrackerSample *out) {
+    const SampleHeader *samples = tracker_sample_table(song);
+    for (uint32_t i = 0; i < song->num_samples; i++) {
+        const SampleHeader &sh = samples[i];
+        out[i] = TrackerSample{
+            sample_data_base + (sh.data_offset - sample_data_base_offset),
+            sh.length, sh.loop_start, sh.loop_end, sh.loop_type != 0,
+        };
+    }
+}
+
+// Consumes one produced TickBlock into the mixer's per-channel voice state
+// -- tracker.md's render-loop pseudocode calls this apply_tick(). Pure
+// function of `tb` and `resident_samples` (built once by
+// tracker_build_resident_samples() above): no SongHeader/flash access, so
+// it's safe to call from Core 1's real-time render path. `voice_sample_desc`
+// is per-channel scratch the caller owns for the lifetime of `voices` --
+// TrackerVoice::sample is a pointer, so it needs somewhere stable to point
+// that isn't the TickBlock (which the ring will overwrite next tick).
+inline void tracker_apply_tick(const TickBlock &tb, const TrackerSample *resident_samples,
+                                TrackerVoice *voices, TrackerSample *voice_sample_desc,
+                                uint32_t num_channels) {
+    for (uint32_t c = 0; c < num_channels; c++) {
+        const ChannelTick &ct = tb.ch[c];
+        TrackerVoice &v = voices[c];
+        if (ct.flags & TICK_NOTE_ON) {
+            voice_sample_desc[c] = resident_samples[ct.sample_id];
+            v.sample = &voice_sample_desc[c];
+            v.pos = ct.start_pos;
+            v.inc = tracker_latch_inc(ct.inc);
+            v.active = true;
+        }
+        v.tgt_volL = ct.tgt_volL;
+        v.tgt_volR = ct.tgt_volR;
+    }
 }
