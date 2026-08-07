@@ -49,6 +49,7 @@
 //
 // Run from the build directory (tools/host_render/build):
 //   cmake -S .. -B . && cmake --build . && ./render_speech
+#include "../../src/engines/speech/phrases.h"
 #include "../../src/engines/speech/render.h"
 #include "../../src/engines/speech/sequencer.h"
 #include "../../src/engines/speech/utterance.h"
@@ -868,6 +869,66 @@ static bool run_malformed_utterance_check() {
     return ok;
 }
 
+// #35 acceptance: "Every phrase renders to WAV via the host harness in one
+// command." phrases.h (tools/speechgen.py gen-phrases, from
+// tools/speech_phrases.txt) is generated data, not a hand-picked fixture
+// like utterance.h's HELLO/CAT above -- this can't assert *correct*
+// pronunciation (that's #35's other acceptance criterion, the blind
+// intelligibility spot-check, and it needs a human ear, not this harness).
+// What it checks is that every phrase the generator produced is well-formed
+// audio: finite, not clipping, and the sequencer actually reaches
+// SPEECH_MODE_ONESHOT completion within a generous time budget rather than
+// running out the clock (which would mean a malformed/never-terminating
+// utterance slipped past speechgen.py's own validation).
+static const char *sanitize_wav_label(const char *text, char *out, size_t out_len) {
+    size_t j = 0;
+    for (size_t i = 0; text[i] != '\0' && j + 1 < out_len; i++) {
+        char c = text[i];
+        if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+        out[j++] = (c >= 'a' && c <= 'z') ? c : '_';
+    }
+    out[j] = '\0';
+    return out;
+}
+
+static bool run_phrase_renders() {
+    bool all_ok = true;
+    printf("\n== Phrase bank (#35): rendering every generated phrase to WAV ==\n");
+
+    for (uint32_t i = 0; i < SPEECH_PHRASE_COUNT; i++) {
+        const SpeechUtterance &utt = SPEECH_PHRASES[i];
+        const char *text = SPEECH_PHRASE_TEXT[i];
+        uint32_t total = SPEECH_RATE * 6;  // generous cap -- longest phrase here is well under 2s
+        UtteranceRender r = render_utterance_native(utt, SPEECH_MODE_ONESHOT, /*rate=*/16, 150.0f, total, total);
+
+        float peak = 0.0f;
+        bool finite = true;
+        for (float s : r.mono) { peak = std::max(peak, std::fabs(s)); finite = finite && std::isfinite(s); }
+        bool clipped = peak >= 32767.0f;
+        bool finished = r.completed_at < total;
+        bool ok = finite && !clipped && finished;
+
+        size_t wav_len = std::min(r.mono.size(), (size_t)r.completed_at + SPEECH_RATE / 4);
+        std::vector<int16_t> out(wav_len * 2 * 2);
+        for (size_t s = 0; s < wav_len; s++) {
+            int16_t v = (int16_t)std::max(-32768.0f, std::min(32767.0f, r.mono[s]));
+            out[s * 4 + 0] = v; out[s * 4 + 1] = v;
+            out[s * 4 + 2] = v; out[s * 4 + 3] = v;
+        }
+        char label[64], path[96];
+        sanitize_wav_label(text, label, sizeof(label));
+        snprintf(path, sizeof(path), "speech_phrase_%s.wav", label);
+        write_wav_pcm16(path, out, SAMPLE_RATE, 2);
+
+        printf("  \"%s\": %u segments, completed=%u/%u samples, peak=%.0f -> %s (%s)\n",
+               text, utt.length, r.completed_at, total, peak, ok ? "PASS" : "FAIL", path);
+        if (!finished) printf("  FAIL: phrase never completed within the render time budget\n");
+        if (clipped) printf("  FAIL: phrase clipped\n");
+        all_ok = all_ok && ok;
+    }
+    return all_ok;
+}
+
 int main() {
     res2p_init();       // must run before any res2p_radius()/res2p_set() call
     osc_init_sine();     // speech_render_test_tone()/pan_gains_q15()'s wavetable source
@@ -887,6 +948,7 @@ int main() {
     ok = run_plosive_checks() && ok;
     ok = run_gated_release_checks() && ok;
     ok = run_malformed_utterance_check() && ok;
+    ok = run_phrase_renders() && ok;
 
     printf(ok ? "\nALL CHECKS PASSED\n" : "\nCHECKS FAILED\n");
     return ok ? 0 : 1;

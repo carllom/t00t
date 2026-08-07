@@ -20,6 +20,37 @@
         against -- see vowel_reference.csv's header comment for why this is
         a separate file from phonemes.csv rather than reusing its targets.
 
+    speechgen.py gen-phrases <phrases.txt> <phonemes.csv> <phrases.h>
+        #35, the letter-to-sound half of "Host Tooling": parse a plain-text
+        phrase list, run each word through nrl_rules.py's host-side NRL-style
+        engine (or take an explicit override -- see below), and write
+        <phrases.h>: the device+host header (enum SpeechPhraseId,
+        SPEECH_PHRASE_COUNT, const SpeechUtterance SPEECH_PHRASES[], const
+        char* SPEECH_PHRASE_TEXT[]). Every emitted phoneme symbol is checked
+        against <phonemes.csv>'s own symbol column -- an unknown name (typo
+        in an override, or a bug in nrl_rules.py) fails the build with a
+        clear message rather than emitting an out-of-range phoneme index.
+
+        Phrase list format (see tools/speech_phrases.txt):
+            # comment lines start with #; blank lines are ignored
+            NAME: word word word
+        `NAME` becomes enum value PHRASE_<NAME> (same identifier rules as a
+        phoneme symbol: letters/digits/underscore, not digit-first, unique).
+        Words are whitespace-separated and run through the rule engine,
+        *except* a word with an attached `{SYM SYM ...}` override --
+        `machine{M AX SH I N}` -- which keeps "machine" as the word's spelled
+        form in phrases.h's human-readable SPEECH_PHRASE_TEXT[] but replaces
+        its pronunciation with the explicit space-separated phoneme-symbol
+        list (phonemes.csv's symbol column) instead of running the rules on
+        it at all. A bare `{SYM SYM ...}` with no attached word works too.
+        This is the escape hatch for whatever the rules get wrong, per #35's
+        own framing: expand a phrase's override, don't expand the rule table
+        chasing one word.
+        A silent SIL segment is inserted between words and once more at the
+        end of every phrase (the release segment SPEECH_MODE_GATED's
+        note-off jumps to, same convention as utterance.h's hand-picked
+        utterances).
+
 Same host-side-authoring-and-validation split as tools/xm2t00t (keeping the
 letter-to-sound rules engine host-side, per speech.md "Host Tooling", is the
 same decision for the same reason): the device ships a table, all the
@@ -49,9 +80,12 @@ from __future__ import annotations
 import argparse
 import csv
 import os
+import re
 import sys
 from dataclasses import dataclass, field
 from typing import Dict, List
+
+from nrl_rules import LetterToSoundError, word_to_phonemes
 
 SPEECH_FORMANTS = 5
 
@@ -393,6 +427,150 @@ def cmd_gen_vowel_ref(args: argparse.Namespace) -> None:
     print(f"Wrote {args.header} ({len(entries)} reference vowels)")
 
 
+@dataclass
+class PhraseEntry:
+    name: str
+    text: str
+    phonemes: List[str]  # symbol strings -- includes inter-word and trailing SIL
+    release_index: int
+
+
+# A token is either a bare word ("hello"), a bare override ("{M AX SH I N}"),
+# or a word with an attached override ("machine{M AX SH I N}") -- the
+# trailing \S* before the brace is what lets a word keep its normal spelling
+# for phrases.h's human-readable SPEECH_PHRASE_TEXT[] while its pronunciation
+# is overridden.
+_TOKEN_RE = re.compile(r"\S*\{[^}]*\}|\S+")
+
+
+def _validate_ident(name: str, kind: str, line_num: int) -> None:
+    if not name or not (name[0].isalpha() or name[0] == "_"):
+        raise PhonemeCsvError(f"line {line_num}: {kind} '{name}' must start with a letter or underscore")
+    if any(not (c.isalnum() or c == "_") for c in name):
+        raise PhonemeCsvError(f"line {line_num}: {kind} '{name}' must be letters/digits/underscore only")
+
+
+def load_phrase_list(path: str, valid_symbols: set) -> List[PhraseEntry]:
+    entries: List[PhraseEntry] = []
+    seen_names: Dict[str, int] = {}
+
+    def check_symbols(symbols: List[str], context: str, line_num: int) -> None:
+        for sym in symbols:
+            if sym not in valid_symbols:
+                raise PhonemeCsvError(
+                    f"line {line_num}: {context}: unknown phoneme symbol '{sym}' -- "
+                    f"not one of the {len(valid_symbols)} symbols in the phoneme CSV "
+                    f"(typo, or the CSV and this override have drifted apart)"
+                )
+
+    with open(path) as f:
+        for line_num, raw_line in enumerate(f, start=1):
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if ":" not in line:
+                raise PhonemeCsvError(f"line {line_num}: missing ':' -- expected 'NAME: word word ...'")
+            name, raw_text = line.split(":", 1)
+            name = name.strip()
+            raw_text = raw_text.strip()
+            _validate_ident(name, "phrase name", line_num)
+            if name in seen_names:
+                raise PhonemeCsvError(f"line {line_num}: duplicate phrase name '{name}' (first seen at line {seen_names[name]})")
+            seen_names[name] = line_num
+
+            tokens = _TOKEN_RE.findall(raw_text)
+            if not tokens:
+                raise PhonemeCsvError(f"line {line_num}: phrase '{name}' has no words")
+
+            phonemes: List[str] = []
+            display_words: List[str] = []
+            for word_idx, token in enumerate(tokens):
+                if word_idx > 0:
+                    phonemes.append("SIL")
+                brace = token.find("{")
+                if brace >= 0:
+                    word_part, override_part = token[:brace], token[brace:]
+                    if not override_part.endswith("}"):
+                        raise PhonemeCsvError(f"line {line_num}: phrase '{name}': unterminated {{}} override in '{token}'")
+                    override = override_part[1:-1].split()
+                    if not override:
+                        raise PhonemeCsvError(f"line {line_num}: phrase '{name}': empty {{}} override in '{token}'")
+                    check_symbols(override, f"phrase '{name}' override '{token}'", line_num)
+                    phonemes.extend(override)
+                    display_words.append(word_part if word_part else "/" + " ".join(override) + "/")
+                else:
+                    try:
+                        word_phonemes = word_to_phonemes(token)
+                    except LetterToSoundError as exc:
+                        raise PhonemeCsvError(
+                            f"line {line_num}: phrase '{name}', word '{token}': {exc} -- "
+                            f"use a word{{SYM SYM ...}} override instead"
+                        )
+                    check_symbols(word_phonemes, f"phrase '{name}' word '{token}'", line_num)
+                    phonemes.extend(word_phonemes)
+                    display_words.append(token)
+            text = " ".join(display_words)
+            phonemes.append("SIL")  # trailing pause / SPEECH_MODE_GATED release segment
+
+            entries.append(PhraseEntry(name=name, text=text, phonemes=phonemes, release_index=len(phonemes) - 1))
+
+    if not entries:
+        raise PhonemeCsvError(f"{path}: no phrases found")
+    return entries
+
+
+def render_phrases_header(entries: List[PhraseEntry], txt_path: str) -> str:
+    lines = [
+        f"// GENERATED by tools/speechgen.py gen-phrases from {os.path.basename(txt_path)} -- do not hand-edit.",
+        "#pragma once",
+        "",
+        '#include "phonemes.h"',
+        '#include "sequencer.h"',
+        "",
+    ]
+    for e in entries:
+        sym_list = ", ".join(f"PH_{s}" for s in e.phonemes)
+        lines.append(f"static constexpr uint8_t PHRASE_{e.name}_PHONEMES[] = {{ {sym_list} }};  // \"{e.text}\"")
+    lines.append("")
+    lines.append("enum SpeechPhraseId : uint8_t {")
+    for e in entries:
+        lines.append(f"    PHRASE_{e.name},")
+    lines.append("    SPEECH_PHRASE_COUNT")
+    lines.append("};")
+    lines.append("")
+    lines.append("inline constexpr SpeechUtterance SPEECH_PHRASES[SPEECH_PHRASE_COUNT] = {")
+    for e in entries:
+        lines.append(f"    {{ PHRASE_{e.name}_PHONEMES, {len(e.phonemes)}, {e.release_index} }},  // \"{e.text}\"")
+    lines.append("};")
+    lines.append("")
+    lines.append("inline constexpr const char *SPEECH_PHRASE_TEXT[SPEECH_PHRASE_COUNT] = {")
+    for e in entries:
+        lines.append(f'    "{e.text}",')
+    lines.append("};")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def cmd_gen_phrases(args: argparse.Namespace) -> None:
+    try:
+        phoneme_rows = load_csv(args.phonemes_csv)
+        valid_symbols = {r.symbol for r in phoneme_rows}
+        entries = load_phrase_list(args.phrases, valid_symbols)
+    except PhonemeCsvError as exc:
+        print(f"speechgen: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    with open(args.header, "w") as f:
+        f.write(render_phrases_header(entries, args.phrases))
+
+    phoneme_bytes = sum(len(e.phonemes) for e in entries)
+    table_bytes = len(entries) * 8  # sizeof(SpeechUtterance): 4-byte ptr + 2x uint16_t on a 32-bit target
+    print(f"Wrote {args.header} ({len(entries)} phrases, {phoneme_bytes} phoneme bytes + "
+          f"{table_bytes} bytes SPEECH_PHRASES[] = {phoneme_bytes + table_bytes} bytes in flash)")
+    for e in entries:
+        print(f"  {e.name}: \"{e.text}\" -- {len(e.phonemes)} segments")
+
+
 def main(argv=None) -> None:
     parser = argparse.ArgumentParser(prog="speechgen")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -409,6 +587,12 @@ def main(argv=None) -> None:
     p_ref.add_argument("csv")
     p_ref.add_argument("header")
     p_ref.set_defaults(func=cmd_gen_vowel_ref)
+
+    p_phrases = sub.add_parser("gen-phrases", help="parse a plain-text phrase list (NRL letter-to-sound) and emit phrases.h")
+    p_phrases.add_argument("phrases", help="input phrase list, e.g. tools/speech_phrases.txt")
+    p_phrases.add_argument("phonemes_csv", help="phoneme CSV to validate emitted symbols against, e.g. tools/speech_phonemes.csv")
+    p_phrases.add_argument("header", help="output path for phrases.h")
+    p_phrases.set_defaults(func=cmd_gen_phrases)
 
     args = parser.parse_args(argv)
     args.func(args)

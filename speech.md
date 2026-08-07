@@ -438,8 +438,36 @@ approximants) into `phonemes.h`, failing loudly on any row that would wrap a
 and for the vowels, cross-checks the measured F1/F2 against
 `tools/host_render/vowel_reference.h` (generated from `speech_vowel_reference.csv`,
 an *independently*-committed published-values table — comparing a measurement
-against the same number that authored it proves nothing). The phrase list / letter-
-to-sound half (`phrases.h`) is still open, tracked separately.
+against the same number that authored it proves nothing).
+
+**#35 landed the second half**: `speechgen.py gen-phrases` parses a plain-text
+phrase list (`tools/speech_phrases.txt`, `NAME: word word word` per line) into
+`phrases.h` (`enum SpeechPhraseId`, `SPEECH_PHRASES[]` — reusing `sequencer.h`'s
+`SpeechUtterance` struct, same shape as `utterance.h`'s hand-picked fixtures — and
+`SPEECH_PHRASE_TEXT[]` for debugging/WAV-naming). Each word runs through
+`tools/nrl_rules.py`, a host-side NRL-style (Elovitz et al. 1976) letter-to-sound
+engine: ordered, context-sensitive rules per starting letter, tried longest-pattern-
+first, plus a short whole-word exception list for irregular high-frequency function
+words (THE, OF, ONE, ...). It is a curated few dozen rules, not the original
+report's ~400 — deliberately: a word the rules get wrong is fixed with an attached
+override (`machine{M AX SH I N}`, replacing just that word's pronunciation while
+keeping "machine" as its spelled form in `SPEECH_PHRASE_TEXT[]`) rather than by
+growing the rule table to chase one exception, per this section's own long-standing
+guidance. Every emitted phoneme symbol (rule-derived or overridden) is checked
+against `speech_phonemes.csv`'s own symbol column before `phrases.h` is written, so
+a typo fails the build instead of emitting an out-of-range phoneme index. No rules
+engine, rule table, or text parsing links into the device build — only the
+generated phoneme-byte arrays do, same host/device split as `phonemes.h`.
+
+Verification extends `render_speech.cpp` the same way #32 did: `run_phrase_renders()`
+renders every entry in `SPEECH_PHRASES[]` to a WAV in one command (checking the audio
+is finite, non-clipping, and that the sequencer actually reaches completion — not
+that the *pronunciation* is correct, which no host check can verify). The demo bank
+(`tools/speech_phrases.txt`) is 6 phrases / 121 bytes in flash (73 phoneme bytes +
+48 bytes of `SPEECH_PHRASES[]` table). **Blind intelligibility spot-check: pending —
+needs a human listener** (this repeats #32's own acknowledgment that a host check
+can confirm a phrase renders, not that it sounds like the intended word); the WAVs
+land in `tools/host_render/build/speech_phrase_*.wav` for whoever does that listen.
 
 ---
 
@@ -522,7 +550,14 @@ landed with vs. the full sketch in "Data Structures".
 Phrase table, `SpeechMode` policies, program change selection, CC map, vibrato LFO,
 jitter/shimmer. Host tool generating `phrases.h` from text.
 
-*Exit:* a MIDI sequence plays a sung phrase at correct pitch.
+*Exit:* a MIDI sequence plays a sung phrase at correct pitch. **Partial (#35):** the
+host tool half is done — `speechgen.py gen-phrases` generates `phrases.h` from
+`tools/speech_phrases.txt` via `tools/nrl_rules.py`'s letter-to-sound engine, verified
+by rendering every phrase to WAV. `SpeechMode` policies and program-change/CC
+selection already exist from #34 (`SPEECH_UTTERANCES`, CC23) but haven't been pointed
+at the generated `SPEECH_PHRASES[]` table yet; vibrato LFO and jitter/shimmer are
+untouched. See "Host Tooling" above for what #35 covers and its pending human
+intelligibility spot-check.
 
 ### P5 — Effects and polish
 
@@ -686,6 +721,13 @@ Listed for completeness; no new work.
         it (this doc's "Underrun policy" extended to sequencer data, not just
         DMA/tick inconsistency) — `tools/host_render/render_speech.cpp` verifies
         by deliberately constructing one.
+- [x] Letter-to-sound (#35) is a curated few dozen rules plus a whole-word exception
+      list, not the ~400-rule original NRL report — the override syntax
+      (`word{SYM SYM ...}`) is the intended fix for anything it gets wrong, so the
+      rule table only grows when a real phrase needs it. `phrases.h` reuses
+      `sequencer.h`'s `SpeechUtterance` struct (same shape as `utterance.h`'s
+      hand-picked fixtures, not a new type) — device-side selection (program change,
+      CC map) is unchanged, still P4. See "Host Tooling" above.
 
 ---
 
