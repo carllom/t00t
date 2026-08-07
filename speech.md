@@ -364,6 +364,7 @@ alongside. "Live" pushes straight into every currently-held voice on the channel
 |---|---|---|---|
 | 1 | Mod wheel (GM standard) | `lfo_depth` (vibrato depth) | live |
 | 10 | Pan (GM standard) | `pan` | next note |
+| 16 | Preset select (#38) | `presets[]` (`SpeechPreset`, `presets.h`) | next note |
 | 20 | Phoneme select | `phoneme` (#28 keyboard) | next note |
 | 21 | Formant shift | `formant_shift` | live |
 | 22 | Bandwidth scale | `bandwidth_scale` | live |
@@ -379,11 +380,20 @@ Program Change selects an utterance too (`ev.data1 % SPEECH_PHRASE_COUNT`), the 
 value CC23 writes -- #36 repoints Program Change from phoneme selection (its #28/#29
 job) to utterance selection, since a single PC message can't mean both and "pick a
 phrase to speak" is the more natural reading of "patch change" for an utterance-based
-instrument. Phoneme selection for the #28 keyboard is CC20-only from here on. CC20-28
-continues the same contiguous Arturia BeatStep Pro absolute-CC-encoder block (CC16-31)
-CC20-23 already used, for the reason given in `midi_controller.cpp`'s header comment;
-CC1 and CC76 are real GM-standard assignments ("mod wheel" and "Vibrato Rate"), not
+instrument. Phoneme selection for the #28 keyboard is CC20-only from here on. CC16/
+CC20-28 continue the same contiguous Arturia BeatStep Pro absolute-CC-encoder block
+(CC16-31), for the reason given in `midi_controller.cpp`'s header comment; CC1 and
+CC76 are real GM-standard assignments ("mod wheel" and "Vibrato Rate"), not
 project-specific choices, following CC1/CC10's own precedent in the subtractive engine.
+
+CC16 (#38, "Preset table" below) is deliberately next-note-only, same as CC20/CC23:
+a preset can set `utterance`/`mode`/`phoneme`, and pushing those into an
+already-sequencing voice would be exactly the kind of note-off-adjacent glitch #30's
+release-segment mechanism exists to avoid. Loading a preset bulk-writes the same
+per-channel state CC21/22/24-27 individually own (`midi_controller.cpp`'s
+`speech_load_preset()`), so those CCs still work exactly as before -- they tweak away
+from whatever the preset loaded rather than from a fixed power-on default, and
+selecting a different preset overwrites those tweaks again.
 
 ### Voice lifetime and note-off (#30 decision)
 
@@ -610,7 +620,33 @@ rather than silently dropped.
 Route through the existing delay/reverb/overdrive chain. Stereo placement per voice.
 Preset table.
 
-*Exit:* module is playable and ships.
+*Exit:* module is playable and ships. **Landed (#38):** delay/reverb linking and
+per-voice pan (`pan` field) turned out to already be in place -- both shipped with
+the #27 skeleton and #11's stereo-output work respectively, before any P3/P4
+sequencer or MIDI-mapping code existed, and both are already hardware-verified (#28's
+closing note: "notes, pan, vowel select, both delay and reverb" confirmed on
+`breadboard_rp2350`). Overdrive was never actually part of "the existing effects
+chain" anywhere in the codebase -- checked: `EffectType` (`engine_base.h`) only ever
+had `FX_DELAY`/`FX_REVERB`; "delay/reverb/overdrive" traces back to an *Open
+Question* in `tracker.md`, not a built feature -- so it's explicitly deferred rather
+than implemented here; see "Settled Decisions" below for the reasoning against
+building it as part of this issue. What #38 actually added: `presets.h`
+(`SpeechPreset`, `voice_apply_preset()`, 9 presets -- one per `SpeechMode`
+(`SPEECH_HOLD` via the phoneme keyboard, `ONESHOT`, `GATED`, `LOOP`), robotic,
+breathy, tract-shift up/down, and a robot-chorus preset spreading up to
+`MAX_SPEECH_VOICES` simultaneously-held notes across the stereo field with a small
+per-voice detune -- see "MIDI Mapping" above for the exit criterion this closes:
+`speech.md`'s own "the range the parameters actually cover"), CC16 preset select
+(`midi_controller.cpp`), and a CMake fix (`CMakeLists.txt`'s VGA-board button
+controller was gated on "does this engine ship a presets.h" -- true only by accident
+for the subtractive engine until this issue gave speech one too; re-gated on
+`T00T_ENGINE STREQUAL "subtractive"`, what the controller's actual `VoicePreset`/
+`WAVE_SAMPLE` dependency always required). Builds clean on all four engines
+(`make`/`make ENGINE=groovebox`/`make ENGINE=tracker`/`make ENGINE=speech`, plus
+`SPEECH_PROFILE=1`). Not yet done: hardware listening confirmation of the preset
+table (particularly the robot-chorus preset's stereo spread) and the profiling-pin
+measurement of effects-on cost for `engine.md` -- both need Carl at the bench, same
+as #36's MIDI-wiring gap.
 
 ### P6 — LPC sibling engine (optional, later)
 
@@ -801,6 +837,53 @@ Listed for completeness; no new work.
       (not just multiplies by zero), so a jitter/shimmer-off render stays bit-exact
       with pre-#36 behaviour — verified by `render_speech.cpp`'s zero-crossing-period
       check measuring exactly 0.0 coefficient of variation at the default settings.
+- [x] Overdrive deferred, not built as part of #38 (speech.md P5 "Effects and
+      polish"): #38's own wording ("route through the existing delay/reverb/
+      overdrive chain ... nothing about it needs rework, just wiring") assumed
+      overdrive was already a member of the shared post-mix effects chain
+      (`EffectType`, `engine_base.h`) the way delay/reverb are. It never was —
+      grepping the whole repo, "overdrive" only ever appears (a) as an *Open
+      Question* in `tracker.md` ("the existing delay/reverb/overdrive could run as
+      a stereo send" — itself hypothetical) and (b) as the groovebox's unrelated
+      per-voice 303 ladder-filter `drive` parameter, a different mechanism with the
+      same name. Adding a real `FX_OVERDRIVE` would mean extending `EffectType`
+      and CC74's band-select in the *shared* `engine_base.h`, which changes CC74's
+      behaviour for the subtractive and groovebox engines too, not just speech —
+      a cross-engine feature, not speech-specific wiring. Decided with Carl:
+      defer it and document the gap here rather than build a shared three-engine
+      feature inside a speech-branch issue. Delay and reverb — the two effects
+      that actually exist — were already linked (#27) and are unchanged by #38.
+- [x] Preset table (#38, "Preset table" above): `SpeechPreset`/`voice_apply_preset()`
+      (`presets.h`) follow the subtractive engine's `presets.h` shape, but with one
+      structural difference forced by speech having *live* per-field CCs
+      (formant_shift/bandwidth_scale/jitter/shimmer/rate/mode, CC21/22/24-27) for
+      several fields a preset also sets — something the subtractive engine's
+      presets don't contend with, since none of its preset-owned fields have their
+      own live CC. Applying a preset directly to a fresh voice at every note-on
+      (the subtractive engine's exact pattern) would mean those per-field CCs stop
+      affecting future notes the moment a preset was selected once, silently
+      regressing #29/#36's already-hardware-verified "CC tweak also becomes the new
+      per-channel default" behaviour. Resolved by having preset *selection*
+      (CC16, next-note-only) bulk-write the same per-channel state those CCs
+      individually own, routed through `voice_apply_preset()` via a scratch
+      `VoiceParams` so the preset-to-field mapping is still written in exactly one
+      place — not by having every note-on re-derive from the preset table
+      directly. See "MIDI Mapping"'s CC16 paragraph above for the full reasoning.
+      Robot chorus (per-voice pan spread + small detune, keyed by the allocated
+      voice slot, deterministic, no new state) is the "if #31 allowed more than
+      four voices" payoff the Scope section named — #31 raised `MAX_SPEECH_VOICES`
+      to 8, so it's in the table (`PRESET_ROBOT_CHORUS`).
+- [x] `src/controller.cpp` (the VGA-board 3-button demo) was gated in
+      `CMakeLists.txt` on "does this engine's directory contain a `presets.h`" —
+      true only for the subtractive engine until #38 gave speech one too, which
+      pulled the demo into the speech build and broke it (the demo is hardcoded to
+      subtractive's `VoicePreset`/`WAVE_SAMPLE`/`osc_sample_phase_inc`, not a
+      generic preset-button interface). Re-gated on `T00T_ENGINE STREQUAL
+      "subtractive"` — what the demo's actual code dependency always was. No
+      behaviour change for any existing engine (subtractive still gets it,
+      groovebox and tracker still don't — they never shipped a `presets.h`
+      either); speech now correctly doesn't, matching its buttonless
+      `breadboard_rp2350` target (`HAS_BUTTONS 0`) same as the groovebox.
 
 ---
 
@@ -813,3 +896,14 @@ Listed for completeness; no new work.
 2. **Display.** What does the LCD show for a speech module? Current phoneme and a
    formant-space plot is the obvious answer and is cheap at ~10 Hz redraw, but it is
    low priority.
+3. **#38 hardware verification: pending.** `make ENGINE=speech` (and `SPEECH_PROFILE=1`)
+   build clean and `make`/`make ENGINE=groovebox`/`make ENGINE=tracker` are confirmed
+   unaffected by the `CMakeLists.txt` re-gate, but nothing in #38 has been heard on
+   real `breadboard_rp2350` hardware yet: the preset table (all 9 `presets[]` entries,
+   particularly `PRESET_ROBOT_CHORUS`'s per-voice pan/detune spread through the
+   PCM5122's two channels) and CC16 preset-select's "switchable live without
+   glitching an in-flight utterance" claim (true by construction — `speech_load_
+   preset()` never writes `shadow.voices[]`, so it cannot touch an already-sounding
+   voice — but not yet confirmed by ear). Also pending: the effects-on cost
+   measurement for `engine.md`'s performance table (needs the profiling pin, i.e.
+   Carl at the bench, same as #31/#37's numbers).
