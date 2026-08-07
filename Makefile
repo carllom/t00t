@@ -13,9 +13,13 @@ ENGINE ?= subtractive
 MIDI_USB  ?= default
 MIDI_UART ?= default
 
+# DMA/mixer buffer size in stereo frames: 256 (default) or 512.
+#   make ENGINE=tracker DMA_BUFFER_SIZE=512
+DMA_BUFFER_SIZE ?= default
+
 CMAKE_FLAGS = -DPICO_BOARD=$(BOARD) -DPICO_PLATFORM=rp2350 \
               -DMIDI_USB=$(MIDI_USB) -DMIDI_UART=$(MIDI_UART) \
-              -DT00T_ENGINE=$(ENGINE)
+              -DT00T_ENGINE=$(ENGINE) -DDMA_BUFFER_SIZE=$(DMA_BUFFER_SIZE)
 
 HOST_BUILD_DIR = tools/host_render/build
 

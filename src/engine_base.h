@@ -21,6 +21,11 @@ struct SampleDef;  // forward declaration (defined in osc/sample_def.h)
 // Profiling pin — GPIO 22 (moved from GPIO 2 to avoid coupling to Button A on GPIO 0)
 static constexpr uint32_t PROFILE_PIN = 22;
 
+// Core 0 duty-cycle profiling pin — GPIO 21. High for the busy portion of
+// main.cpp's loop (from wake to the __wfi() that sleeps until the next IRQ),
+// mirroring how PROFILE_PIN (GPIO 22) brackets Core 1's per-buffer render.
+static constexpr uint32_t PROFILE_PIN_CORE0 = 21;
+
 enum Waveform : uint8_t { WAVE_SINE, WAVE_SQUARE, WAVE_TRIANGLE, WAVE_SAW, WAVE_NOISE, WAVE_SQUARE_BLEP, WAVE_SAW_BLEP, WAVE_SAMPLE };
 
 enum FilterMode : uint8_t { FILTER_OFF, FILTER_LP, FILTER_BP, FILTER_HP, FILTER_NOTCH };

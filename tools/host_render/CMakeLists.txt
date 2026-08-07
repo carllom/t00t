@@ -18,3 +18,26 @@ target_include_directories(render_res2p PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}
     ${CMAKE_CURRENT_LIST_DIR}/../../src
 )
+
+# Host build of src/engines/tracker/mixer.h (issue #15). Pulls in osc/sine.cpp
+# for pan_gains_q15's wavetable; everything else it touches is header-only.
+add_executable(render_tracker_mixer
+    render_tracker_mixer.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/../../src/osc/sine.cpp
+)
+target_include_directories(render_tracker_mixer PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}
+    ${CMAKE_CURRENT_LIST_DIR}/../../src
+)
+
+# Host build of src/engines/tracker/player.h (#17): the reference-diff
+# harness's device-path renderer, plus player.h's own unit tests (no-arg
+# invocation). See tools/host_render/diff_xm.py for the openmpt123 side.
+add_executable(render_xm_device
+    render_xm_device.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/../../src/osc/sine.cpp
+)
+target_include_directories(render_xm_device PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}
+    ${CMAKE_CURRENT_LIST_DIR}/../../src
+)
