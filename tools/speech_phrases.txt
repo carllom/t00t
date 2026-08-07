@@ -1,0 +1,28 @@
+# speech_phrases.txt -- plain-text phrase list for tools/speechgen.py's
+# `gen-phrases` command (#35, speech.md "Host Tooling"). Generates
+# src/engines/speech/phrases.h.
+#
+# Format: one phrase per line, `NAME: word word word`. NAME becomes enum
+# value PHRASE_<NAME> in phrases.h (same identifier rules as a phoneme
+# symbol: letters/digits/underscore, not digit-first, unique in this file).
+# Words are run through nrl_rules.py's host-side NRL-style letter-to-sound
+# engine, except a word with an attached `{SYM SYM ...}` override --
+# `machine{M AX SH I N}` -- which keeps "machine" as the word's spelled form
+# in phrases.h's SPEECH_PHRASE_TEXT[] but replaces its pronunciation with an
+# explicit space-separated phoneme-symbol list (symbols from
+# tools/speech_phonemes.csv's `symbol` column) instead of running the rules
+# on it at all -- the escape hatch for whatever the rules get wrong. See
+# DRUM_MACHINE below: "machine" is a French-derived spelling ("-chine" ->
+# /Sin/, not the usual English "ch" -> /tS/) no general English letter rule
+# should be bent to fit, so it's overridden rather than chased with a new
+# rule that would misfire on every ordinary "-chine"-free "ch" word.
+#
+# A silent SIL segment is inserted between words and once more at the end
+# of every phrase automatically -- don't add it by hand.
+
+HELLO_WORLD: hello world
+GOOD_MORNING: good morning
+NOW_PLAYING: now playing
+TRACK_SAVED: track saved
+VOICE_TEST: voice test
+DRUM_MACHINE: the drum machine{M AX SH I N}
