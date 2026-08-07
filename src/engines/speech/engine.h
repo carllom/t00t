@@ -2,10 +2,21 @@
 
 #include <cstdint>
 
-// Speech engine (#27): MAX_VOICES=4, defined ahead of engine_base.h per #10.
-// A placeholder pending the P2 profiling measurement (speech.md "Performance
-// Budget") that may raise it -- the other three engines are untouched.
-static constexpr uint32_t MAX_VOICES = 4;
+// Speech engine (#27): MAX_VOICES, defined ahead of engine_base.h per #10.
+// Raised from the #27 placeholder of 4 to 8 per #31's P2 profiling decision
+// (engine.md "Speech Engine P2 Profiling (#31)"): measured ~93.5 cycles/
+// frame/voice, flat from 1 to 8 voices, so 8 voices is 22% of Core 1 --
+// comfortably inside budget even with reverb's +8% on top -- and unlocks
+// the "robot chorus" preset speech.md's Open Questions flagged as the
+// payoff if the number landed better than expected. The other three
+// engines are untouched.
+static constexpr uint32_t MAX_VOICES = 8;
+
+// #31 profiling build (T00T_SPEECH_PROFILE, `make ENGINE=speech
+// SPEECH_PROFILE=1`) reused the same MAX_VOICES to give its 8-voice phase a
+// real 8th slot -- now redundant since the decision above already set it to
+// 8, kept only as the define audio_engine.cpp's alternate render loop is
+// still gated on.
 
 #include "engine_base.h"
 
@@ -15,12 +26,13 @@ static constexpr uint32_t MAX_VOICES = 4;
 static constexpr uint32_t SPEECH_RATE = SAMPLE_RATE / 2;
 
 // Speech engine skeleton (#27): proves the fourth build-time engine seam --
-// MAX_VOICES=4, the 22.05 kHz native / ZOH x2 resample seam, and delay/
-// reverb staying linked (speech has no sample-RAM pressure, unlike the
-// tracker) -- before any formant DSP exists. No segment sequencer, no tract
-// filter, no phoneme data yet (speech.md's Phased Plan, P1+). VoiceParams
-// here only carries enough to drive a fixed test tone through the standard
-// ParamExchange/voice_alloc path.
+// MAX_VOICES (4 at #27, raised to 8 by #31 above), the 22.05 kHz native /
+// ZOH x2 resample seam, and delay/reverb staying linked (speech has no
+// sample-RAM pressure, unlike the tracker) -- before any formant DSP
+// exists. No segment sequencer, no tract filter, no phoneme data yet
+// (speech.md's Phased Plan, P1+). VoiceParams here only carries enough to
+// drive a fixed test tone through the standard ParamExchange/voice_alloc
+// path.
 //
 // Settled in speech.md and deliberately NOT mirrored from the tracker: the
 // tracker's ordered TickBlock ring is not adopted here. Polyphonic speech
