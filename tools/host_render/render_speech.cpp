@@ -50,6 +50,8 @@
 // Run from the build directory (tools/host_render/build):
 //   cmake -S .. -B . && cmake --build . && ./render_speech
 #include "../../src/engines/speech/render.h"
+#include "../../src/engines/speech/sequencer.h"
+#include "../../src/engines/speech/utterance.h"
 #include "../../src/osc/common.h"
 #include "phoneme_meta.h"
 #include "vowel_reference.h"
@@ -590,6 +592,282 @@ static bool test_cc_sweep_stability() {
     return all_ok;
 }
 
+// #34: renders `total_native_frames` of one voice sequencing `utt` under
+// `mode`/`rate`, gate held true for the first `hold_native_frames` and false
+// thereafter (hold_native_frames >= total_native_frames means "never let
+// go" -- used by the plain word-render checks below). Returns the native-rate
+// mono samples plus the first buffer-call boundary at which sv.active went
+// false (SpeechVoice::active, render.h) -- i.e. how long the utterance
+// actually took to finish -- or total_native_frames if it never did.
+// trigger is held at a constant 1 throughout (matches render_phoneme_native's
+// same pattern above): SpeechVoice's initial last_trigger is 0xFF, so the
+// very first call retriggers and every later call in this render continues
+// the same note, exactly like a single held MIDI note would.
+struct UtteranceRender {
+    std::vector<float> mono;
+    uint32_t completed_at;
+};
+
+static UtteranceRender render_utterance_native(const SpeechUtterance &utt, SpeechMode mode, uint8_t rate,
+                                                 float note_hz, uint32_t hold_native_frames,
+                                                 uint32_t total_native_frames) {
+    SpeechVoice sv{};
+    UtteranceRender result;
+    result.mono.assign(total_native_frames, 0.0f);
+    result.completed_at = total_native_frames;
+
+    std::vector<int32_t> dry_l(NATIVE_BUFFER * 2), dry_r(NATIVE_BUFFER * 2);
+    uint32_t phase_inc = glottal_phase_inc(note_hz, (float)SPEECH_RATE);
+
+    uint32_t done = 0;
+    bool recorded = false;
+    while (done < total_native_frames) {
+        uint32_t n = std::min((uint32_t)NATIVE_BUFFER, total_native_frames - done);
+        std::fill(dry_l.begin(), dry_l.begin() + n * 2, 0);
+        std::fill(dry_r.begin(), dry_r.begin() + n * 2, 0);
+        bool gate = done < hold_native_frames;
+        speech_render_voice_seq(sv, phase_inc, (float)SPEECH_RATE, /*trigger=*/1, /*amplitude=*/32767,
+                                 gate, utt, mode, rate, /*pan=*/0, /*formant_shift=*/256, /*bandwidth_scale=*/256,
+                                 dry_l.data(), dry_r.data(), n);
+        for (uint32_t i = 0; i < n; i++) result.mono[done + i] = (float)dry_l[i * 2];
+        if (!sv.active && !recorded) { result.completed_at = done; recorded = true; }
+        done += n;
+    }
+    return result;
+}
+
+// RMS over [start, start+n).
+static float rms(const std::vector<float> &x, size_t start, size_t n) {
+    double sum_sq = 0.0;
+    for (size_t i = start; i < start + n; i++) sum_sq += (double)x[i] * (double)x[i];
+    return (float)std::sqrt(sum_sq / (double)n);
+}
+
+// #34 acceptance: "A hardcoded phoneme string is intelligible as the
+// intended word ... Segment duration comes from the phoneme's nominal
+// duration scaled by rate ... Plosives are distinguishable from the
+// corresponding fricatives by ear ... F/B ramps are continuous across
+// segment boundaries -- no click ... Any inconsistency renders silence ...
+// Note-off behaves as #30 specified." One function per claim below, all
+// sharing render_utterance_native() so every claim is checked against
+// exactly what audio_engine.cpp's Core 1 render loop calls.
+static bool run_utterance_word_checks() {
+    static constexpr float NOTE_HZ = 150.0f;
+    static constexpr float MAX_SECONDS = 3.0f;
+    bool all_ok = true;
+    printf("\n== Segment sequencer: hardcoded utterances (#34) ==\n");
+
+    struct { SpeechUtteranceId id; const char *label; } words[] = {
+        { UTT_HELLO, "hello" }, { UTT_CAT, "cat" },
+    };
+    for (auto &w : words) {
+        const SpeechUtterance &utt = SPEECH_UTTERANCES[w.id];
+        uint32_t total = (uint32_t)(SPEECH_RATE * MAX_SECONDS);
+        // ONESHOT, gate held the whole render: "say the whole word and stop
+        // on its own" is the exit criterion, independent of note-off/#30.
+        UtteranceRender r = render_utterance_native(utt, SPEECH_MODE_ONESHOT, /*rate=*/16, NOTE_HZ, total, total);
+
+        float peak = 0.0f;
+        bool finite = true;
+        for (float s : r.mono) { peak = std::max(peak, std::fabs(s)); finite = finite && std::isfinite(s); }
+        bool clipped = peak >= 32767.0f;
+
+        // Expected total duration: sum of each segment's own
+        // speech_seg_duration_samples() at rate=16 -- the exact function the
+        // sequencer itself uses, so this checks the *sequencer's* arithmetic
+        // (does it stop where the phoneme data says it should), not a
+        // second, independently-computed guess at the same number.
+        uint32_t expected = 0;
+        for (uint32_t i = 0; i < utt.length; i++) expected += speech_seg_duration_samples(utt.phonemes[i], 16, (float)SPEECH_RATE);
+        bool finished = r.completed_at < total;  // actually stopped, didn't run out the clock
+        float dur_err = finished ? std::fabs((float)r.completed_at - (float)expected) / (float)expected : 1.0f;
+        bool duration_ok = finished && dur_err < 0.05f;  // buffer-granularity rounding only
+
+        // Trim the WAV to what the utterance actually rendered (plus a
+        // small tail) rather than the full multi-second padded buffer --
+        // r.mono past completed_at is silence by construction (sv.seq_done),
+        // and a file that's mostly silence is nothing but dead air for
+        // whoever listens to judge intelligibility.
+        size_t wav_len = std::min(r.mono.size(), (size_t)r.completed_at + SPEECH_RATE / 4);
+        std::vector<int16_t> out(wav_len * 2 * 2);
+        for (size_t i = 0; i < wav_len; i++) {
+            int16_t s = (int16_t)std::max(-32768.0f, std::min(32767.0f, r.mono[i]));
+            out[i * 4 + 0] = s; out[i * 4 + 1] = s;
+            out[i * 4 + 2] = s; out[i * 4 + 3] = s;
+        }
+        char path[64];
+        snprintf(path, sizeof(path), "speech_utterance_%s.wav", w.label);
+        write_wav_pcm16(path, out, SAMPLE_RATE, 2);
+
+        bool ok = finite && !clipped && duration_ok;
+        printf("  \"%s\": completed=%u expected=%u (err=%.1f%%) peak=%.0f -> %s\n",
+               w.label, r.completed_at, expected, dur_err * 100.0f, peak, ok ? "PASS" : "FAIL");
+        if (!duration_ok) printf("  FAIL: utterance didn't complete at the phoneme-data-predicted sample count\n");
+        all_ok = all_ok && ok;
+    }
+    return all_ok;
+}
+
+// #34 acceptance: "Segment duration comes from the phoneme's nominal
+// duration scaled by rate, and a rate change is audible as a speaking-speed
+// change without pitch shift." A single sustained /e/ "utterance" (one
+// segment, no diphone boundary to confound the measurement) rendered at
+// three rates: total duration must scale with rate (Q4.4, speech_seg_
+// duration_samples()'s "larger rate = longer segment"), while the glottal
+// F0 -- measured independently of duration by Goertzel magnitude at
+// note_hz on each render's stable middle third -- must not move.
+static bool run_rate_checks() {
+    static constexpr uint8_t RATE_PHONEMES[] = { PH_E };
+    static constexpr SpeechUtterance RATE_UTT = { RATE_PHONEMES, 1, 0 };
+    static constexpr float NOTE_HZ = 180.0f;
+    bool all_ok = true;
+    printf("\n== Segment sequencer: rate scales duration, not pitch (#34) ==\n");
+
+    uint8_t rates[] = { 8, 16, 32 };  // 0.5x, 1.0x, 2.0x
+    uint32_t completed[3];
+    for (size_t idx = 0; idx < 3; idx++) {
+        uint32_t total = (uint32_t)(SPEECH_RATE * 2.0f);
+        UtteranceRender r = render_utterance_native(RATE_UTT, SPEECH_MODE_ONESHOT, rates[idx], NOTE_HZ, total, total);
+        completed[idx] = r.completed_at;
+
+        // Audio only exists in [0, completed_at) -- the rest of `total` is
+        // post-completion silence (this is a single-segment utterance, so
+        // completed_at is however long that one /e/ actually sounded for at
+        // this rate). Measure the middle third of *that* span, not of the
+        // whole padded buffer.
+        size_t third = r.completed_at / 3;
+        float f0_mag = goertzel_mag(r.mono, third, third, NOTE_HZ, (float)SPEECH_RATE);
+        bool has_pitch = f0_mag > 50.0f;
+        printf("  rate=%2u (%.2fx): completed=%6u samples  F0(%.0fHz) mag=%7.1f -> %s\n",
+               rates[idx], (float)rates[idx] / 16.0f, completed[idx], NOTE_HZ, f0_mag, has_pitch ? "PASS" : "FAIL");
+        all_ok = all_ok && has_pitch;
+    }
+
+    // 32 is 2x rate 16 which is 2x rate 8 -- both ratios should land near 2.0.
+    float ratio_hi = (float)completed[2] / (float)completed[1];
+    float ratio_lo = (float)completed[1] / (float)completed[0];
+    bool ratios_ok = std::fabs(ratio_hi - 2.0f) < 0.1f && std::fabs(ratio_lo - 2.0f) < 0.1f;
+    printf("  duration ratios: 32:16=%.2f  16:8=%.2f (expect ~2.0 each) -> %s\n",
+           ratio_hi, ratio_lo, ratios_ok ? "PASS" : "FAIL");
+    all_ok = all_ok && ratios_ok;
+
+    return all_ok;
+}
+
+// #34 acceptance: "Plosives are distinguishable from the corresponding
+// fricatives by ear." speech.md's own claim about *why* is specific: a
+// plosive's closure (silence) immediately followed by a burst (transient)
+// is the acoustic shape a continuous fricative doesn't have -- "without
+// this, plosives sound like fricatives and intelligibility collapses."
+// Renders CAT (K_CL K_BR AE T_CL T_BR SIL) once and measures RMS energy
+// inside each closure segment (should be near-silent) against its paired
+// burst segment (should be a real transient) using speech_seg_duration_
+// samples() to locate the segment boundaries exactly as the sequencer does.
+static bool run_plosive_checks() {
+    bool all_ok = true;
+    printf("\n== Segment sequencer: plosive closure/burst contrast (#34) ==\n");
+
+    const SpeechUtterance &utt = SPEECH_UTTERANCES[UTT_CAT];
+    uint32_t total = (uint32_t)(SPEECH_RATE * 2.0f);
+    UtteranceRender r = render_utterance_native(utt, SPEECH_MODE_ONESHOT, /*rate=*/16, 150.0f, total, total);
+
+    uint32_t pos = 0;
+    struct { uint32_t idx; const char *label; } closure_burst_pairs[] = { { 0, "K" }, { 3, "T" } };
+    uint32_t seg_start[8];
+    for (uint32_t i = 0; i < utt.length; i++) {
+        seg_start[i] = pos;
+        pos += speech_seg_duration_samples(utt.phonemes[i], 16, (float)SPEECH_RATE);
+    }
+
+    for (auto &pair : closure_burst_pairs) {
+        uint32_t cl_start = seg_start[pair.idx], cl_len = seg_start[pair.idx + 1] - seg_start[pair.idx];
+        uint32_t br_start = seg_start[pair.idx + 1], br_len = seg_start[pair.idx + 2] - seg_start[pair.idx + 1];
+        uint32_t guard = 32;
+        // Closure: measure the *second half* of the segment, not right after
+        // its start. A closure that follows a vowel (T_CL after AE here)
+        // starts with the cascade resonators still ringing down from the
+        // vowel's much stronger excitation -- a real decay tail, not a bug
+        // -- so the acoustically meaningful "is this closure actually
+        // silent" question is whether it has settled by the time the burst
+        // arrives, not whether it's silent the instant av/af hit zero.
+        uint32_t cl_measure_start = cl_start + cl_len / 2;
+        uint32_t cl_measure_len = cl_len / 2 > guard ? cl_len / 2 - guard : 0;
+        // Burst: skip the declick ramp's own edge the same way the other
+        // checks in this file do.
+        float cl_rms = cl_measure_len > 0 ? rms(r.mono, cl_measure_start, cl_measure_len) : 0.0f;
+        float br_rms = br_len > 2 * guard ? rms(r.mono, br_start + guard, br_len - 2 * guard) : 0.0f;
+        bool ok = cl_rms < 50.0f && br_rms > cl_rms * 4.0f;
+        printf("  /%s/: closure RMS=%7.1f  burst RMS=%7.1f -> %s\n", pair.label, cl_rms, br_rms, ok ? "PASS" : "FAIL");
+        if (cl_rms >= 50.0f) printf("  FAIL: closure isn't silent\n");
+        if (br_rms <= cl_rms * 4.0f) printf("  FAIL: burst doesn't stand out from its closure\n");
+        all_ok = all_ok && ok;
+    }
+    return all_ok;
+}
+
+// #34 acceptance: "Note-off behaves as #30 specified" -- specifically
+// SPEECH_MODE_GATED's bound: "Maximum time a voice may outlive its note-off
+// is ... the release segment's own duration." Cuts HELLO's gate early
+// (partway through the second segment, well before the utterance would
+// finish on its own) and checks the voice finishes within release_index's
+// own segment duration of that note-off, not the remaining length of the
+// whole utterance.
+static bool run_gated_release_checks() {
+    bool all_ok = true;
+    printf("\n== Segment sequencer: SPEECH_MODE_GATED note-off bound (#30/#34) ==\n");
+
+    const SpeechUtterance &utt = SPEECH_UTTERANCES[UTT_HELLO];
+    uint32_t seg0 = speech_seg_duration_samples(utt.phonemes[0], 16, (float)SPEECH_RATE);
+    uint32_t seg1 = speech_seg_duration_samples(utt.phonemes[1], 16, (float)SPEECH_RATE);
+    uint32_t hold = seg0 + seg1 / 2;  // cut mid-way through the 2nd of 5 segments
+    uint32_t release_dur = speech_seg_duration_samples(utt.phonemes[utt.release_index], 16, (float)SPEECH_RATE);
+    uint32_t total = (uint32_t)(SPEECH_RATE * 2.0f);
+
+    UtteranceRender r = render_utterance_native(utt, SPEECH_MODE_GATED, /*rate=*/16, 150.0f, hold, total);
+
+    bool finished = r.completed_at < total;
+    uint32_t overhang = finished ? r.completed_at - hold : 0xFFFFFFFFu;
+    // release_dur plus one host-render buffer's slack: render_utterance_native()
+    // only samples sv.active at NATIVE_BUFFER call boundaries, same
+    // granularity audio_engine.cpp's real per-buffer active_mask has.
+    uint32_t bound = release_dur + NATIVE_BUFFER;
+    bool ok = finished && overhang <= bound;
+
+    printf("  note-off at %u, natural end would be much later; completed at %u (overhang=%u, bound=%u) -> %s\n",
+           hold, r.completed_at, overhang, bound, ok ? "PASS" : "FAIL");
+    if (!ok) printf("  FAIL: voice outlived its note-off by more than the release segment's own duration\n");
+    all_ok = all_ok && ok;
+    return all_ok;
+}
+
+// #34 acceptance: "Any inconsistency renders silence; verified by
+// deliberately injecting one." Constructs a malformed utterance directly
+// (null phonemes / zero length -- data corruption or a caller passing the
+// wrong table entry) and confirms the voice renders exact silence and
+// reports itself immediately reclaimable (SpeechVoice::active == false)
+// rather than dereferencing null or holding the voice forever.
+static bool run_malformed_utterance_check() {
+    printf("\n== Segment sequencer: malformed utterance renders silence (#34) ==\n");
+
+    SpeechUtterance bad{ nullptr, 0, 0 };
+    SpeechVoice sv{};
+    uint32_t total = SPEECH_RATE / 2;
+    std::vector<int32_t> dry_l(total * 2, 0), dry_r(total * 2, 0);
+    uint32_t phase_inc = glottal_phase_inc(150.0f, (float)SPEECH_RATE);
+    speech_render_voice_seq(sv, phase_inc, (float)SPEECH_RATE, /*trigger=*/1, /*amplitude=*/32767,
+                             /*gate=*/true, bad, SPEECH_MODE_GATED, /*rate=*/16, /*pan=*/0, 256, 256,
+                             dry_l.data(), dry_r.data(), total);
+
+    bool silent = true;
+    for (uint32_t i = 0; i < total * 2; i++) silent = silent && dry_l[i] == 0 && dry_r[i] == 0;
+    bool ok = silent && !sv.active;
+    printf("  malformed utterance (null phonemes, length=0): silent=%s active=%s -> %s\n",
+           silent ? "yes" : "no", sv.active ? "yes" : "no", ok ? "PASS" : "FAIL");
+    if (!silent) printf("  FAIL: malformed utterance produced non-zero output\n");
+    if (sv.active) printf("  FAIL: voice reports itself still sounding after a malformed utterance\n");
+    return ok;
+}
+
 int main() {
     res2p_init();       // must run before any res2p_radius()/res2p_set() call
     osc_init_sine();     // speech_render_test_tone()/pan_gains_q15()'s wavetable source
@@ -603,6 +881,12 @@ int main() {
 
     printf("\n== CC sweep: formant_shift x bandwidth_scale stability ==\n");
     ok = test_cc_sweep_stability() && ok;
+
+    ok = run_utterance_word_checks() && ok;
+    ok = run_rate_checks() && ok;
+    ok = run_plosive_checks() && ok;
+    ok = run_gated_release_checks() && ok;
+    ok = run_malformed_utterance_check() && ok;
 
     printf(ok ? "\nALL CHECKS PASSED\n" : "\nCHECKS FAILED\n");
     return ok ? 0 : 1;
