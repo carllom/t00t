@@ -32,11 +32,16 @@ else()
     set(ENGINE_MIDI_CONTROLLER src/midi/midi_controller.cpp)
 endif()
 
-# The VGA-board button controller maps buttons to presets, so it only builds
-# for engines that ship a presets.h (subtractive). The groovebox targets the
-# buttonless breadboard and omits it.
+# The VGA-board button controller (src/controller.cpp) is hardcoded to the
+# subtractive engine's specific preset shape (VoicePreset, WAVE_SAMPLE,
+# osc_sample_phase_inc) -- not a generic "any engine with a presets.h" demo,
+# so it only builds for that engine. Was gated on "does presets.h exist"
+# instead until #38 gave the speech engine its own presets.h (SpeechPreset,
+# a different shape) and broke that heuristic -- speech targets the
+# buttonless breadboard (HAS_BUTTONS 0) same as the groovebox, so it was
+# never meant to pull this in either.
 set(ENGINE_OPTIONAL_SOURCES "")
-if(EXISTS ${CMAKE_CURRENT_LIST_DIR}/src/engines/${T00T_ENGINE}/presets.h)
+if(T00T_ENGINE STREQUAL "subtractive")
     list(APPEND ENGINE_OPTIONAL_SOURCES src/controller.cpp)
 endif()
 

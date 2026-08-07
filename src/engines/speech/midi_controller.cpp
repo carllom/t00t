@@ -4,6 +4,7 @@
 #include "excitation.h"
 #include "phonemes.h"
 #include "phrases.h"
+#include "presets.h"
 #include <cmath>
 
 // Phoneme keyboard (#28, speech.md MIDI Mapping Phase 1 "SPEECH_HOLD"): one
@@ -62,6 +63,21 @@
 //     (speech.md: "following the existing CC1/CC10 pattern in the
 //     subtractive engine"); CC76 is GM's own standard vibrato-rate
 //     controller, not a project-specific choice.
+//
+// #38 (speech.md P5 "Preset table") adds CC16: preset select
+// (presets.h SpeechPreset / voice_apply_preset()), banded into
+// SPEECH_PRESET_COUNT zones same shape as CC20/CC23. CC16 sits in the same
+// BSP absolute-encoder bank (CC16-31) as CC20-28 and was the first free slot
+// in it. Next-note only, like CC20/CC23 -- a preset changes utterance/mode/
+// phoneme, and pushing those into an already-sequencing voice is exactly the
+// kind of note-off-adjacent glitch #30's release-segment mechanism exists to
+// avoid (#38 acceptance: "presets ... switchable live without glitching an
+// in-flight utterance"). Loading a preset bulk-writes the same per-channel
+// state CC21/22/24-27 individually own, so those CCs still work exactly as
+// before -- they now tweak away from whatever the preset loaded rather than
+// from a fixed power-on default, and a later preset select overwrites those
+// tweaks again, the same "preset is a starting point" behaviour every other
+// hardware synth with knobs *and* presets has.
 
 static MidiParser midi_parser;
 static int8_t midi_note_voice[128];
@@ -81,10 +97,43 @@ static SpeechMode channel_mode[NUM_CHANNELS];          // CC27 (live)
 static bool    channel_phrase_bank[NUM_CHANNELS];      // CC28: note number selects the phrase
 static float   channel_lfo_rate[NUM_CHANNELS];         // CC76, Hz (live)
 static float   channel_lfo_depth[NUM_CHANNELS];        // CC1, 0-1 (live)
+static uint8_t channel_preset[NUM_CHANNELS];           // CC16 (#38): last preset loaded, for UI only --
+                                                         // individual field CCs above can drift it out of
+                                                         // sync with presets[channel_preset[ch]], same as
+                                                         // any hardware synth's knobs-vs-preset relationship
+static bool    channel_chorus[NUM_CHANNELS];            // CC16 (#38): pr.chorus of the last preset loaded
 
 static MidiUiState ui_state;
 
 void midi_controller_ui_state(MidiUiState *out) { *out = ui_state; }
+
+// Bulk-loads presets[preset_id] into channel `channel`'s per-field state --
+// the same channel_* arrays CC21/22/24-27/etc. individually own, as if all
+// of them had just been received at once. Routes the field mapping through
+// voice_apply_preset() (presets.h) so that mapping is written once, not
+// duplicated here field-by-field; `tmp`'s phase_inc/pan start at 0 since
+// voice_index is irrelevant at load time (see voice_apply_preset()'s own
+// comment) -- chorus pan/detune is (re-)applied for real once note-on knows
+// the actual allocated voice slot, in midi_voice_on() below.
+static void speech_load_preset(uint8_t channel, uint8_t preset_id) {
+    preset_id = (uint8_t)(preset_id % SPEECH_PRESET_COUNT);
+    const SpeechPreset &pr = presets[preset_id];
+    VoiceParams tmp{};
+    voice_apply_preset(tmp, pr);
+
+    channel_preset[channel] = preset_id;
+    channel_phoneme[channel] = tmp.phoneme;
+    channel_utterance[channel] = tmp.utterance;
+    channel_mode[channel] = tmp.mode;
+    channel_rate[channel] = tmp.rate;
+    channel_formant_shift[channel] = tmp.formant_shift;
+    channel_bandwidth_scale[channel] = tmp.bandwidth_scale;
+    channel_jitter[channel] = tmp.jitter;
+    channel_shimmer[channel] = tmp.shimmer;
+    channel_lfo_rate[channel] = tmp.lfo_rate;
+    channel_lfo_depth[channel] = tmp.lfo_depth;
+    channel_chorus[channel] = pr.chorus;
+}
 
 static void midi_voice_on(VoiceParamBlock &shadow, int v, uint8_t note, uint8_t velocity, uint8_t channel) {
     float freq = 440.0f * powf(2.0f, (float)(note - 69) / 12.0f);
@@ -108,6 +157,12 @@ static void midi_voice_on(VoiceParamBlock &shadow, int v, uint8_t note, uint8_t 
     vp.shimmer = channel_shimmer[channel];
     vp.lfo_rate = channel_lfo_rate[channel];
     vp.lfo_depth = channel_lfo_depth[channel];
+    // Robot chorus (#38, presets.h): overrides the CC10 pan set just above
+    // and further perturbs phase_inc, keyed by this note-on's real allocated
+    // voice slot `v` -- speech_load_preset() above only saw voice_index 0
+    // when the preset was loaded, since the real slot isn't known until
+    // voice_alloc_allocate() returns it (midi_controller_process(), below).
+    if (channel_chorus[channel]) speech_chorus_apply(vp, (uint32_t)v);
     vp.trigger++;
     vp.gate = true;
     voice_held[v] = true;
@@ -124,18 +179,13 @@ void midi_controller_init() {
     for (int i = 0; i < 128; i++) midi_note_voice[i] = -1;
     for (uint32_t v = 0; v < MAX_VOICES; v++) voice_held[v] = false;
     for (uint8_t ch = 0; ch < NUM_CHANNELS; ch++) {
-        channel_phoneme[ch] = PH_I;
+        // PRESET_PHONEME_KEYBOARD's fields (presets.h) are exactly the
+        // pre-#38 literal defaults this loop used to set field-by-field --
+        // loading it here is not a behaviour change, just routed through the
+        // same preset machinery CC16 (#38) uses at runtime.
+        speech_load_preset(ch, PRESET_PHONEME_KEYBOARD);
         channel_pan[ch] = 0;
-        channel_formant_shift[ch] = 256;    // 1.0x, neutral
-        channel_bandwidth_scale[ch] = 256;  // 1.0x, neutral
-        channel_utterance[ch] = SPEECH_NO_UTTERANCE;
-        channel_rate[ch] = 16;              // 1.0x, nominal (Q4.4)
-        channel_jitter[ch] = 0;             // perfectly periodic
-        channel_shimmer[ch] = 0;            // perfectly periodic
-        channel_mode[ch] = SPEECH_MODE_GATED;  // #30 default
         channel_phrase_bank[ch] = false;
-        channel_lfo_rate[ch] = 0.0f;
-        channel_lfo_depth[ch] = 0.0f;
     }
     ui_state.last_note = 0xFF;
     ui_state.last_velocity = 0;
@@ -206,6 +256,13 @@ void midi_controller_process(const uint8_t *data, uint32_t len, ParamExchange *p
                         ui_state.last_channel = ev.channel;
                         changed = true;
                         break;
+                    case 16: {  // preset select (#38, presets.h) — split range into
+                                // SPEECH_PRESET_COUNT bands, next-note only (see header comment)
+                        uint8_t band = (uint8_t)((uint32_t)ev.data2 * SPEECH_PRESET_COUNT / 128u);
+                        speech_load_preset(ev.channel, band);
+                        ui_state.last_channel = ev.channel;
+                        break;
+                    }
                     case 20:  // phoneme select — split range into PHONEME_COUNT bands (see
                               // header comment: alternative to Program Change for
                               // controllers that can't send it from a live encoder)
