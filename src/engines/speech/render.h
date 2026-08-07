@@ -5,6 +5,7 @@
 #include "osc/sine.h"
 #include "pan.h"
 #include "phonemes.h"
+#include "sequencer.h"
 #include "tract.h"
 #include <cstdint>
 
@@ -126,5 +127,97 @@ inline void speech_render_voice(SpeechVoice &sv, uint32_t phase_inc, float fs, u
             dry_r[o] += r; dry_r[o + 1] += r;
         }
         n += k;
+    }
+}
+
+// Sequenced render (#34, speech.md P3 "Segment sequencer"). Unlike
+// speech_render_voice() above (#28's SPEECH_HOLD phoneme keyboard -- one
+// note, one sustained phoneme, no sequencer at all), this steps the voice
+// through SPEECH_UTTERANCES[utterance_id]'s phoneme string one segment at a
+// time, with the sub-block cut point moved *inside* the per-voice loop
+// (speech.md "Sub-block cut point moves inside the voice loop"): k =
+// min(frames left in this call, samples left in the current segment,
+// SPEECH_SUBBLOCK) -- not just min(frames left, SPEECH_SUBBLOCK), the way
+// the HOLD path above cuts, since a sequenced voice's segment boundary can
+// fall anywhere inside a sub-block or a buffer. `utt` is the utterance being
+// spoken -- callers resolve it (utterance.h's SPEECH_UTTERANCES, indexed by
+// VoiceParams::utterance) rather than this function reaching into that
+// fixture table itself, same reasoning render.h already gives for taking
+// `phase_inc`/`fs` as parameters instead of baking in a specific source.
+// `mode`/`rate` are VoiceParams::mode/rate straight through (engine.h).
+inline void speech_render_voice_seq(SpeechVoice &sv, uint32_t phase_inc, float fs, uint8_t trigger,
+                                     int16_t amplitude, bool gate, const SpeechUtterance &utt, SpeechMode mode,
+                                     uint8_t rate, int16_t pan, int16_t formant_shift, int16_t bandwidth_scale,
+                                     int32_t *dry_l, int32_t *dry_r, uint32_t native_frames) {
+    sv.formant_shift_tgt = (float)formant_shift * (1.0f / 256.0f);
+    sv.bandwidth_scale_tgt = (float)bandwidth_scale * (1.0f / 256.0f);
+
+    // speech.md "Underrun policy", extended to malformed sequencer data: an
+    // empty/null utterance renders silence rather than dereferencing
+    // utt.phonemes[0] below -- the acceptance criterion "any inconsistency
+    // renders silence", verified by tools/host_render/render_speech.cpp
+    // deliberately constructing one.
+    bool malformed = (utt.length == 0 || utt.phonemes == nullptr);
+
+    if (trigger != sv.last_trigger) {
+        sv.last_trigger = trigger;
+        sv.gate_prev = gate;
+        sv.seq_done = malformed;
+        if (!malformed) {
+            speech_seg_load(sv, utt, 0, rate, fs, /*retrigger=*/true);
+        } else {
+            tract_retrigger(sv, phoneme_unpack(PHONEME_TARGETS[PH_SIL]));
+            sv.seg_remaining = 0xFFFFFFFFu;  // see speech_sequencer_advance()'s comment on why
+        }
+    } else if (!malformed && !sv.seq_done) {
+        // Note-off edge, checked once per call rather than per-sample --
+        // #30's SPEECH_MODE_GATED jump to the release segment. ONESHOT/LOOP
+        // have no extra work to do here; their note-off handling lives in
+        // speech_sequencer_advance()'s end-of-utterance branch instead.
+        if (sv.gate_prev && !gate && mode == SPEECH_MODE_GATED && sv.seg_index < utt.release_index) {
+            speech_seg_load(sv, utt, utt.release_index, rate, fs, /*retrigger=*/false);
+        }
+        sv.gate_prev = gate;
+    }
+    sv.active = !sv.seq_done;
+
+    int32_t gain_l, gain_r;
+    pan_gains_q15(pan, gain_l, gain_r);
+    constexpr float AMP_SMOOTH_COEFF = 0.01f;
+
+    uint32_t n = 0;
+    while (n < native_frames) {
+        if (!malformed && !sv.seq_done && sv.seg_remaining == 0) {
+            speech_sequencer_advance(sv, utt, mode, gate, rate, fs);
+            sv.active = !sv.seq_done;
+        }
+        uint32_t k = native_frames - n;
+        if (k > sv.seg_remaining) k = sv.seg_remaining;
+        if (k > SPEECH_SUBBLOCK) k = SPEECH_SUBBLOCK;
+
+        tract_advance_subblock(sv, fs);
+        // Done/malformed voices render true silence (amp_tgt 0, declicked
+        // through cur_amp same as a normal gate release) rather than being
+        // special-cased out of the loop -- they still need dry_l/dry_r
+        // filled for every frame of this call.
+        float amp_tgt = (gate && !sv.seq_done ? (float)amplitude : 0.0f) * SPEECH_EXCITATION_HEADROOM;
+
+        for (uint32_t i = 0; i < k; i++) {
+            sv.cur_amp += (amp_tgt - sv.cur_amp) * AMP_SMOOTH_COEFF;
+
+            float voiced_src = glottal_pulse(sv.glottal_phase) * sv.av * sv.cur_amp;
+            float noise_f = (float)osc_noise(sv.noise_lfsr) * (1.0f / 32768.0f);
+            float noise_src = noise_f * sv.af * sv.cur_amp;
+            sv.glottal_phase += phase_inc;
+
+            int32_t sample = (int32_t)tract_process_mixed(sv, voiced_src, noise_src);
+            int32_t l = (sample * gain_l) >> 15;
+            int32_t r = (sample * gain_r) >> 15;
+            uint32_t o = (n + i) * 2;
+            dry_l[o] += l; dry_l[o + 1] += l;
+            dry_r[o] += r; dry_r[o + 1] += r;
+        }
+        n += k;
+        if (!sv.seq_done) sv.seg_remaining -= k;
     }
 }

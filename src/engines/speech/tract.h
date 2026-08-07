@@ -64,6 +64,14 @@ struct SpeechVoice {
     float    cur_amp = 0.0f;          // smoothed toward gate target, declicks on/off
     uint8_t  last_trigger = 0xFF;     // forces tract_retrigger() on first render
     uint8_t  last_phoneme = 0xFF;     // forces a target load on first render
+    // #34 segment sequencer state (speech.md P3). Unused by speech_render_voice()
+    // (#28's SPEECH_HOLD phoneme keyboard has no segments to sequence); only
+    // speech_render_voice_seq() (render.h) touches these.
+    uint16_t seg_index = 0;      // position within the current utterance (sequencer.h)
+    uint32_t seg_remaining = 0;  // native samples left in the current segment
+    bool     seq_done = false;   // utterance complete (#30 note-off) -- voice still allocated but silent
+    bool     gate_prev = false;  // previous call's gate, to find the note-off edge once per buffer
+    bool     active = false;     // still sounding -- audio_engine.cpp's active_mask reads this for sequenced voices
 };
 
 // New note: snap F/B/fric/nasal/av/af/an and the live formant_shift/
@@ -107,6 +115,29 @@ inline void tract_set_target(SpeechVoice &sv, const FormantTarget &t) {
     sv.av_tgt = t.av;
     sv.af_tgt = t.af;
     sv.an_tgt = t.an;
+}
+
+// Segment-advance snap for PHONEME_FLAG_TRANSITION_FAST segments (plosive
+// bursts, #34/speech.md "Plosives"): sets F/B/fric/nasal/av/af/an straight to
+// target, no glide -- but unlike tract_retrigger(), does not touch filter
+// memory (res2p_reset) or glottal/noise phase, so the snap itself doesn't
+// click by discontinuing state the preceding closure segment was still
+// holding. A burst's nominal duration (10-15ms, phonemes.h) is on the same
+// order as TRACT_RAMP_COEFF's own settle time, so a normal glide would
+// barely start before the segment ends -- the transition needs to already be
+// complete on the burst's first sample, not partway there.
+inline void tract_snap_target(SpeechVoice &sv, const FormantTarget &t) {
+    for (uint32_t i = 0; i < SPEECH_FORMANTS; i++) {
+        sv.F[i] = sv.F_tgt[i] = t.F[i];
+        sv.B[i] = sv.B_tgt[i] = t.B[i];
+    }
+    sv.fric_F = sv.fric_F_tgt = t.fric_F;
+    sv.fric_B = sv.fric_B_tgt = t.fric_B;
+    sv.nasal_F = sv.nasal_F_tgt = t.nasal_F;
+    sv.nasal_B = sv.nasal_B_tgt = t.nasal_B;
+    sv.av = sv.av_tgt = t.av;
+    sv.af = sv.af_tgt = t.af;
+    sv.an = sv.an_tgt = t.an;
 }
 
 // ~4-5 sub-blocks (~12-15 ms at SPEECH_SUBBLOCK/SPEECH_RATE) to settle on a
