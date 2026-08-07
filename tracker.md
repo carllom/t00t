@@ -258,7 +258,14 @@ Notes:
 
 - **`samples_to_loop_end()` hoists the wrap test out of the per-sample path**,
   removing a compare+branch from ~30 cycles of work. Short loops just produce
-  more `run` iterations. Ping-pong needs a direction flag and a mirrored read.
+  more `run` iterations. **Ping-pong (#21)** uses a direction flag
+  (`TrackerVoice::backward`) and a mirrored read exactly as anticipated here:
+  a per-*batch* branch picks the forward or backward inner loop and the
+  matching (ceil-based, direction-mirrored) run-length helper, so a plain
+  forward loop or one-shot voice pays zero added cost in the per-sample path.
+  The boundary reflection itself (`wrap_ping_pong()`, mixer.h) is signed
+  64-bit and only runs when a voice actually crosses a loop edge — not a
+  per-sample cost either.
 - **`s[idx + 1]` reads one past the end** at the boundary. The host converter
   appends a guard sample (loop-start value for looped, last value for one-shot)
   so no bounds check is needed.
@@ -449,7 +456,16 @@ Responsibilities:
 1. **8-bit conversion** — 2× immediately, and period-correct for the material.
 2. **Trim past `loop_end`** — unreachable. XM samples are frequently padded there.
 3. **Truncate to actual reach** — the simulator knows the furthest position any
-   one-shot playback ever reaches. Mind `9xx` sample-offset commands.
+   one-shot playback ever reaches. Mind `9xx` sample-offset commands: **#21
+   landed `9xx` before this optimisation exists**, and a naive "furthest
+   position a plain trigger reaches" simulator would truncate a sample
+   shorter than some `9xx` offset the song actually uses still legitimately
+   reaches (`tracker_trigger_note()`, player.h, sets `start_pos` directly
+   from the offset — mid-sample, past wherever an un-offset trigger's own
+   playback would have gotten to by the time it's cut). When this
+   optimisation is built, the reach calculation must include every `9xx`
+   param actually used against each sample, not just note-to-note pitch/
+   duration.
 4. **Deduplicate** — modules built from sample packs often carry byte-identical
    instruments.
 5. **Per-sample decimation from known increments** — the simulator knows the exact
@@ -625,6 +641,44 @@ engine first — where the voice loop is simple enough to get right in an aftern
       wake cadence for draining it comes for free from `output.cpp`'s
       existing DMA IRQ (~every 5.8ms at the default buffer size), so no new
       timer was needed.
+- [x] **Ping-pong loop implementation: direction flag with a mirrored read**
+      (#21, resolving open question 2 below), not host-side loop unrolling.
+      Decided from the two constraints already on record rather than a fresh
+      measurement of the losing option: #16 measured ~20 points of spare
+      Core 1 headroom at 32 voices (8.20%/15.3%/22.8%/30.1% at 8/16/24/32v,
+      ~31.5 cycles/frame/voice flat), while the module's *other* hard limit —
+      350-400 KB of SRAM for sample data — has no such slack; unrolling every
+      ping-pong loop region at conversion time spends from the constrained
+      resource to save from the one with headroom, backwards from where the
+      trade should go. `TrackerVoice::backward` (mixer.h) costs one `bool`
+      per voice (32 bytes total) and one per-*batch* branch, not a per-sample
+      one — see the "Render loop" notes above and `wrap_ping_pong()`'s own
+      header comment for the mechanism (a signed-64-bit boundary reflection,
+      resolved only when a voice actually crosses a loop edge).
+      **Re-measured on real `breadboard_rp2350` hardware, profiling pin**
+      (Carl, 2026-08-07), matching #16's own methodology — one voice on a
+      deliberately tight loop plus a chorus of the rest, idle/8/16/24/32
+      voices — except the tight voice is now ping-pong instead of forward:
+      **0.7% idle, 8.19% (8v), 15.6% (16v), 23.0% (24v), 30.4% (32v)**.
+      Indistinguishable from #16's forward-loop baseline (8.20%/15.3%/
+      22.8%/30.1%) to within measurement noise — confirms the analytical
+      prediction below: ping-pong's per-sample cost is identical to a plain
+      forward loop's (same interpolate/scale/accumulate body, `pos -= inc`
+      instead of `pos += inc`), and the direction-flag choice over host-side
+      unrolling cost nothing measurable. Measured via
+      `tools/xm2t00t/xm_synth.py`'s `voice_count_profile()` — a real song
+      (not a rebuilt synthetic rig; audio_engine.cpp's #16-era phase-cycling
+      code no longer exists post-#18) temporarily swapped in for
+      `tracker_song_blob.h`, see that function's own docstring. Caught a
+      real, separate finding along the way: the song's first draft used
+      key-off to silence all channels between laps, and the duty cycle
+      never dropped after the first lap even though the channels visibly
+      went quiet — **key-off does not deactivate a `TrackerVoice`** in
+      mixer.h, only its target volume; the mixer keeps fully interpolating
+      and accumulating every ever-triggered channel at zero output forever
+      unless it's a one-shot that plays through to its natural end. Not a
+      #21 regression (pre-existing, unrelated to ping-pong/9xx) and out of
+      scope here, but real — see Open Questions below.
 
 ---
 
@@ -634,9 +688,19 @@ engine first — where the voice loop is simple enough to get right in an aftern
    send. Not XM-spec behaviour, but the engine is retro-lo-fi by intent. Costs
    budget, but #16 confirmed the 32-voice mixer leaves ~20 points of Core 1
    headroom, so this is now affordable to revisit.
-2. **Ping-pong loop implementation** — direction flag with mirrored read inside
-   `samples_to_loop_end()`, or unroll the loop region at conversion time and pay
-   the memory?
+2. **Key-off doesn't free a `TrackerVoice`** — found while re-measuring #21's
+   ping-pong cost on hardware (see that Settled Decisions entry). A channel
+   that's key-off'd (or a whole song that just ends) leaves its voice
+   `active` and fully mixed at zero output forever; only a one-shot sample
+   playing through to its natural end ever clears `active`. Harmless for a
+   short demo loop, but a real multi-minute song that racks up key-offs
+   without retriggering those channels would burn Core 1 cycles on voices
+   nobody can hear. Fix is presumably either (a) `ECx` note-cut (currently a
+   no-op, `TICK_NOTE_CUT` is declared but never set — tracker.md's "long
+   tail" #22 territory), or (b) having the envelope/fadeout machinery itself
+   clear `active` once a key-off's volume has fully decayed to 0 with no
+   possibility of a sustain/loop bringing it back up. Not scoped to any
+   issue yet.
 
 ---
 
@@ -720,7 +784,7 @@ Prerequisites are more interesting than the tracker itself. Do them first:
      of FT2 quirks" (step 7 below), not this step's bar.
 6. ~~Instruments, envelopes, key-off (note 97), the volume column, ping-pong
    loops.~~ — done (#20), except ping-pong loops (split out to #21 alongside
-   9xx sample offset, tracked separately). Multi-sample note→sample mapping
+   9xx sample offset, tracked separately; see step 7). Multi-sample note→sample mapping
    and per-note relative-note/finetune were already in place from #17-#19
    (needed for pitch even before envelopes existed); #20's actual new
    surface is `player.h`'s `tracker_resolve_envelope_volpan()` (volume/
@@ -772,6 +836,74 @@ Prerequisites are more interesting than the tracker itself. Do them first:
      it. Autovibrato is the same story and is covered the same way (a
      dedicated sweep/freeze/no-op unit test; not asserted in the audio
      diff harness).
-7. Long tail of FT2 quirks, chased against `openmpt123` reference renders.
-8. Retrofit sub-block rendering to the subtractive engine.
-9. (Phase 2) Deterministic simulator → load schedule → dynamic sample loading.
+7. ~~Ping-pong loops, `9xx` sample offset.~~ — done (#21). `mixer.h` gains a
+   `TrackerVoice::backward` direction flag, a ceil-based `samples_to_loop_start()`
+   mirroring the existing `samples_to_loop_end()`, and `wrap_ping_pong()`
+   (signed 64-bit, resolved only at an actual boundary crossing — see the
+   "Render loop" notes above and the Settled Decisions entry above for the
+   direction-flag-vs-host-unroll tradeoff). `player.h`'s `tracker_trigger_note()`
+   gets a new `Effect::SAMPLE_OFFSET` branch: memory (`sample_offset_memory`)
+   is only written on a row that both carries `9xx` *and* actually triggers a
+   note, and an offset at or past the target sample's length suppresses the
+   whole trigger — both verified against `openmpt123`, not assumed from FT2's
+   own documentation, which turned out to already be the harness's working
+   convention (see #20's key-off entry above for the same kind of
+   FT2-vs-`openmpt123` gap).
+   - **Guard-sample correctness at every loop type turned out to need no
+     code change.** The existing guard byte (`blob_writer.py`'s
+     `_guard_byte()`: loop-start value for any looped sample, last value for
+     one-shot) is only ever read at `s[idx+1]` when `idx+1 == num_samples`
+     (the loop reaches the sample's physical end) — true regardless of loop
+     *type*, since ping-pong's reflection happens in position space
+     (`wrap_ping_pong()`), not by reading the buffer differently near an
+     edge. Verified by tracing through, not just assumed; see `mixer.h`'s
+     `TrackerSample` comment.
+   - **The direction-flag reflection is not the textbook `2*boundary - pos`.**
+     A *zero-overshoot* landing exactly on `loop_end_pos` (the increment
+     divides the loop length exactly from a whole-sample start — rare, but
+     the mixer must not hang on rare input) reflects to itself under the
+     textbook formula, since `loop_end_pos` is an exclusive bound no read
+     may land on. `wrap_ping_pong()` reflects around `loop_end_pos - 1` /
+     `loop_start_pos + 1` instead, trading a 2-part-in-16384-of-a-sample
+     inaudible bias on every bounce for guaranteed termination. Caught by
+     `tools/host_render/render_tracker_mixer.cpp`'s
+     `test_pingpong_exact_boundary()` — the harness hung indefinitely before
+     this fix, not just produced a wrong answer, which is why that test
+     exists as a permanent regression check rather than a one-off.
+   - **The final, boundary-crossing step of a backward run is recomputed
+     with signed 64-bit arithmetic from the batch's entry position, not
+     trusted from the `uint32_t` the per-sample loop just advanced.** A
+     ping-pong reflection routinely needs to represent a position before the
+     loop start (or, symmetrically, past the loop end by more than one
+     boundary width for a loop shorter than one increment), which a Q18.14
+     `uint32_t` position cannot hold — unlike a plain forward loop's
+     overshoot, which is always unsigned-safe because addition never wraps
+     low. Resolved once per boundary crossing (`wrap_ping_pong()`), not a
+     per-sample cost either way.
+   - **`9xx` past the sample's end suppresses the *entire* trigger**, not
+     just the offset (clamped to 0, or to the end) — matching `openmpt123`'s
+     documented FT2-compatible behaviour ("notes with offset commands beyond
+     the sample length are never triggered"). The instrument column still
+     latches (matching every other "nothing to play" branch in
+     `tracker_trigger_note()`, e.g. an unmapped sample-map entry); nothing
+     else about the channel's state changes.
+   - **Verified against `openmpt123`**: two new fixtures in
+     `tools/xm2t00t/xm_synth.py` (`ping_pong_basic`, a tight ping-pong loop
+     held long enough to bounce many times within one row;
+     `sample_offset_basic`, a `9xx` trigger deep into a long two-toned
+     sample plus a memory-reuse row plus a past-the-end suppressed trigger
+     on a second, short instrument) both diff clean, asserted the same as
+     every #17-#20 fixture. `render_xm_device.cpp` adds a C++ unit test for
+     `9xx`'s exact mechanics (start_pos scaling, the next-to-a-note memory
+     rule, the suppression bounds check) that the audio diff can't cheaply
+     pin down, matching the #19/#20 precedent of pairing an audio fixture
+     with a targeted unit test rather than one or the other.
+   - **Re-measured on real hardware** (Carl, 2026-08-07): 0.7/8.19/15.6/
+     23.0/30.4% idle/8v/16v/24v/32v with a ping-pong voice in the mix,
+     indistinguishable from #16's forward-loop baseline. See the Settled
+     Decisions entry above for the numbers and for the key-off/voice-
+     lifecycle finding the measurement run turned up along the way (Open
+     Questions item 2).
+8. Long tail of FT2 quirks, chased against `openmpt123` reference renders.
+9. Retrofit sub-block rendering to the subtractive engine.
+10. (Phase 2) Deterministic simulator → load schedule → dynamic sample loading.

@@ -44,6 +44,7 @@ FX_PORTA_UP = 1
 FX_PORTA_DOWN = 2
 FX_TONE_PORTA = 3
 FX_VIBRATO = 4
+FX_SAMPLE_OFFSET = 9   # 9
 FX_VOLUME_SLIDE = 10   # A
 FX_POSITION_JUMP = 11  # B
 FX_SET_VOLUME = 12     # C
@@ -83,10 +84,13 @@ class SynthSample:
     finetune: int = 0
     relative_note: int = 0
     name: str = ""
+    ping_pong: bool = False  # #21: loop_type 2 instead of 1 when a loop is present
 
     @property
     def loop_type(self) -> int:
-        return 1 if self.loop_end > self.loop_start else 0
+        if self.loop_end <= self.loop_start:
+            return 0
+        return 2 if self.ping_pong else 1
 
 
 @dataclass
@@ -578,6 +582,151 @@ def volume_column_extended() -> bytes:
     return build_xm(SynthSong(num_channels=1, rows=[[r] for r in rows], instruments=instruments, speed=4, bpm=125))
 
 
+# --- #21 fixtures: ping-pong loops, 9xx sample offset. --------------------
+
+def ping_pong_basic() -> bytes:
+    """A held note on a ping-pong-looped sample: the loop region [4,20) of
+    the 24-frame _pad_sample() bounces back and forth for the rest of the
+    row, so a turnaround-boundary bug (off-by-one, missed reflection, wrong
+    guard sample) shows up as an audible discontinuity within a single row
+    rather than needing many rows to accumulate. mixer.h's own multi-bounce/
+    exact-integer-boundary edge cases are unit-tested directly in
+    tools/host_render/render_tracker_mixer.cpp (mixer.h has no dependency on
+    the XM format); this fixture is the end-to-end openmpt123 check that the
+    player+mixer pairing (loop_type=2 all the way from the blob) sounds
+    right, not just that the reflection math is internally consistent."""
+    pad = SynthSample(data=_pad_sample(), loop_start=4, loop_end=20, volume=64, panning=128,
+                       ping_pong=True, name="pingpong")
+    instruments = [SynthInstrument(pad, "pingpong")]
+
+    rows = [[_fx_ev(49, 1)]] + [[_fx_ev()]] * 7
+    return build_xm(SynthSong(num_channels=1, rows=rows, instruments=instruments, speed=6, bpm=125))
+
+
+def _offset_sample() -> bytes:
+    """600 frames, two audibly distinct halves (loud, then quiet, both the
+    same tone) -- long enough that 9xx's 256-frame-granularity units land
+    solidly within each half, so starting mid-sample via 9xx is easy to tell
+    apart from starting at 0 in a diff, and an implementation that ignores
+    9xx or gets the *256 scaling wrong reads as a wrong (too loud) render
+    rather than a subtle level shift."""
+    import math
+    n = 600
+    return bytes(int((100 if i < 300 else 30) * math.sin(2 * math.pi * i / 16.0)) & 0xFF for i in range(n))
+
+
+def sample_offset_basic() -> bytes:
+    """9xx sample offset: row0 triggers a long one-shot at offset 2
+    (512 frames in, deep into the sample's quiet second half) -- an
+    implementation that ignores 9xx, or gets the *256 scaling wrong, starts
+    at 0 and renders the loud first half instead. Row1 retriggers with
+    param 0, reusing that same offset (memory). Row2 retriggers a
+    *different*, short instrument with an offset (0xFF*256 = 65280 frames)
+    far past its length -- FT2/openmpt123 suppress the trigger entirely in
+    this case, so nothing new should sound on that row at all."""
+    long_sample = SynthSample(data=_offset_sample(), loop_end=0, volume=64, panning=128, name="offset_long")
+    short_sample = SynthSample(data=_pluck_sample(), loop_end=0, volume=64, panning=128, name="offset_short")
+    instruments = [SynthInstrument(long_sample, "offset_long"), SynthInstrument(short_sample, "offset_short")]
+
+    rows = [
+        [_fx_ev(49, 1, fx=FX_SAMPLE_OFFSET, param=2)],     # offset 512 frames into the 600-frame sample
+        [_fx_ev(49, 1, fx=FX_SAMPLE_OFFSET, param=0)],     # memory reuse -- same offset again
+        [_fx_ev(61, 2, fx=FX_SAMPLE_OFFSET, param=0xFF)],  # far past instrument 2's length -- suppressed
+        [_fx_ev()],
+    ]
+    return build_xm(SynthSong(num_channels=1, rows=rows, instruments=instruments, speed=8, bpm=125))
+
+
+def voice_count_profile() -> bytes:
+    """Not a correctness fixture -- deliberately **not** in FIXTURES below, so
+    `diff_xm.py` never touches it. A device-side hardware profiling aid for
+    #21's acceptance criterion ("per-voice cost after ping-pong support is
+    re-measured against #16's baseline"): reproduces #16's self-cycling
+    idle/8/16/24/32-voice profiling-pin measurement, but as a real song
+    played through the actual #18 player+mixer, since audio_engine.cpp's own
+    synthetic phase-cycling rig (the `PHASE_IDLE`/`PHASE_8`/.../`PHASE_32_*`
+    enum in the #16 commit) no longer exists post-#18 -- the real
+    `tracker_render_buffer()` call in today's `audio_engine.cpp` always
+    renders every channel the song actually uses. No firmware changes
+    needed, just a one-command `tracker_song_blob.h` regenerate (see
+    `tracker_song_blob.h`'s own header comment for the exact command) to
+    swap this in for the normal demo song, then swap back afterward.
+
+    32 channels, one pattern, ~3.8s per phase at speed=6/bpm=125 (32 rows/
+    phase; samples_per_tick=882, so one row = 6*882 = 5292 frames = 120ms,
+    close to #16's 4s PHASE_HOLD_FRAMES): silence, then channels 0-7, 8-15,
+    16-23, 24-31 join cumulatively and hold (8/16/24/32 active), then every
+    channel *retriggers* onto a tiny one-shot silent sample before the
+    pattern loops back to row 0, repeating the whole cycle forever exactly
+    like #16's rig did.
+
+    The release row deliberately does **not** use key-off (note 97): this
+    engine's key-off never deactivates a `TrackerVoice` in mixer.h, only its
+    *target volume* (via the envelope/fadeout path, #20) -- with no volume
+    envelope, that reaches 0 almost instantly, so the channel goes silent,
+    but `v->active` stays true and mix_voice() keeps fully interpolating and
+    accumulating it forever at zero output. Measured on real hardware
+    (Carl, 2026-08-07): the profiling pin stays pinned at the 32-voice duty
+    cycle straight through the "silent" idle phase after the first lap --
+    display/UI correctly shows the channels as off (its active_mask reads
+    target volume, not v->active), but the mixer was still doing full
+    32-voice work the whole time. A genuine, pre-existing engine
+    characteristic this song's own idle-phase readings would otherwise
+    mislead about, not a #21 regression -- worth its own future issue
+    (proper `ECx` note-cut, or making key-off deactivate a voice once its
+    volume has fully decayed) but out of scope here. The fix used instead:
+    retrigger each channel onto a **one-shot** sample every real trigger
+    naturally deactivates once played through (mixer.h's `wrap_loop()`:
+    "One-shot voices go inactive at their end instead of wrapping") --
+    silent (all-zero data) and short (256 frames -- a few ms at any
+    realistic pitch, negligible against a 3.8s idle window) so it's both
+    inaudible and fast to finish.
+
+    Channel 0 is always a *ping-pong* tight (4-sample, loop covering the
+    entire sample) loop -- #16's own "one voice on a deliberately tight
+    loop" worst case, carried over to ping-pong specifically since a tighter
+    loop means more `wrap_ping_pong()` boundary crossings per second, the
+    new cost #21 adds -- so it's active, and its overhead measured, through
+    every non-idle phase. Channels 1-31 hold `_pad_sample()`'s ordinary
+    forward loop, same sustain sample every other fixture in this module
+    uses, spread across a couple of octaves so the result isn't a flat
+    unison drone."""
+    tight = SynthSample(data=bytes(v & 0xFF for v in (100, 60, -60, -100)),
+                         loop_start=0, loop_end=4, volume=48, panning=128,
+                         ping_pong=True, name="tight_pingpong")
+    chorus = SynthSample(data=_pad_sample(), loop_start=0, loop_end=len(_pad_sample()),
+                          volume=32, panning=128, name="chorus")
+    silence = SynthSample(data=bytes(256), loop_end=0, volume=0, panning=128, name="silence")
+    instruments = [SynthInstrument(tight, "tight_pingpong"), SynthInstrument(chorus, "chorus"),
+                   SynthInstrument(silence, "silence")]
+
+    NUM_CHANNELS = 32
+    ROWS_PER_PHASE = 32
+
+    def empty_row() -> List[SynthEvent]:
+        return [SynthEvent() for _ in range(NUM_CHANNELS)]
+
+    def join_row(lo: int, hi: int) -> List[SynthEvent]:
+        row = empty_row()
+        for ch in range(lo, hi):
+            row[ch] = SynthEvent(note=49, instrument=1) if ch == 0 \
+                else SynthEvent(note=40 + (ch % 20), instrument=2)
+        return row
+
+    rows: List[List[SynthEvent]] = [empty_row() for _ in range(ROWS_PER_PHASE)]  # idle
+    for lo, hi in ((0, 8), (8, 16), (16, 24), (24, 32)):
+        rows.append(join_row(lo, hi))
+        rows.extend(empty_row() for _ in range(ROWS_PER_PHASE - 1))
+    # Release: retrigger every channel onto the one-shot silent sample so
+    # each voice actually goes inactive (v->active = false) once it plays
+    # through, instead of key-off's "silent but still fully mixed forever".
+    rows.append([SynthEvent(note=49, instrument=3) for _ in range(NUM_CHANNELS)])
+    rows.extend(empty_row() for _ in range(ROWS_PER_PHASE - 1))
+
+    return build_xm(SynthSong(num_channels=NUM_CHANNELS, rows=rows, instruments=instruments,
+                               speed=6, bpm=125, name="voice_count_profile"))
+
+
 FIXTURES = {
     "notes_basic": notes_basic,
     "retrig_and_keyoff": retrig_and_keyoff,
@@ -593,4 +742,6 @@ FIXTURES = {
     "panning_envelope_basic": panning_envelope_basic,
     "fadeout_basic": fadeout_basic,
     "volume_column_extended": volume_column_extended,
+    "ping_pong_basic": ping_pong_basic,
+    "sample_offset_basic": sample_offset_basic,
 }

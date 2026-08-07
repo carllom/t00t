@@ -768,6 +768,184 @@ static bool test_autovibrato_sweep_and_freeze() {
 }
 
 // ============================================================================
+// #21 unit test -- 9xx sample offset: memory (only updated when the command
+// is placed next to a note -- verified against openmpt123, see
+// tracker_trigger_note()'s own comment), the *256 scaling, and the past-
+// end-of-sample suppression. Ping-pong's mixer-level reflection math is
+// covered by tools/host_render/render_tracker_mixer.cpp's
+// test_pingpong_wrap()/test_pingpong_exact_boundary() instead (mixer.h has
+// no dependency on player.h, and the interesting behaviour is entirely
+// inside mix_voice()); tools/xm2t00t/xm_synth.py's ping_pong_basic and
+// sample_offset_basic fixtures cover both end-to-end against openmpt123.
+// ============================================================================
+
+namespace offset_test_blob {
+
+// Two instruments/samples: a long (1000-frame) one-shot for a real
+// mid-sample 9xx offset, and a short (8-frame) one-shot whose length a
+// large offset can legitimately exceed, for the past-end suppression case.
+static std::vector<uint8_t> build(const std::vector<Event> &rows) {
+    test_blob::Builder b;
+    uint32_t song_off = b.tell();
+    b.buf.resize(b.buf.size() + sizeof(SongHeader));
+
+    uint32_t order_off = b.append_bytes("\x00", 1);
+
+    uint32_t pattern_table_off = b.tell();
+    b.buf.resize(b.buf.size() + sizeof(PatternHeader));
+    uint32_t event_off = b.append_bytes(rows.data(), rows.size() * sizeof(Event));
+    PatternHeader pat{(uint32_t)rows.size(), event_off};
+    std::memcpy(b.buf.data() + pattern_table_off, &pat, sizeof(pat));
+
+    uint32_t instrument_table_off = b.tell();
+    b.buf.resize(b.buf.size() + sizeof(InstrumentHeader) * 2);
+
+    uint8_t sample_map[96];
+    std::memset(sample_map, 0, sizeof(sample_map));  // every note -> local sample 0 (one sample per instrument)
+    uint32_t sample_map_off1 = b.append_bytes(sample_map, sizeof(sample_map));
+    uint32_t idx0 = 0;
+    uint32_t sample_index_off1 = b.append(idx0);
+    uint32_t sample_map_off2 = b.append_bytes(sample_map, sizeof(sample_map));
+    uint32_t idx1 = 1;
+    uint32_t sample_index_off2 = b.append(idx1);
+
+    InstrumentHeader inst1{}, inst2{};
+    inst1.sample_map_offset = sample_map_off1;
+    inst1.num_samples = 1;
+    inst1.sample_index_offset = sample_index_off1;
+    test_blob::set_name(inst1.name, sizeof(inst1.name), "long");
+    inst2.sample_map_offset = sample_map_off2;
+    inst2.num_samples = 1;
+    inst2.sample_index_offset = sample_index_off2;
+    test_blob::set_name(inst2.name, sizeof(inst2.name), "short");
+    InstrumentHeader insts[2] = {inst1, inst2};
+    std::memcpy(b.buf.data() + instrument_table_off, insts, sizeof(insts));
+
+    uint32_t sample_table_off = b.tell();
+    b.buf.resize(b.buf.size() + sizeof(SampleHeader) * 2);
+
+    uint32_t incs[T00T_NOTES_PER_TABLE];
+    for (uint32_t i = 0; i < T00T_NOTES_PER_TABLE; i++) incs[i] = (i + 1) * 1000u;
+    uint32_t incs_off1 = b.append_bytes(incs, sizeof(incs));
+    uint32_t incs_off2 = b.append_bytes(incs, sizeof(incs));
+
+    constexpr uint32_t LONG_LEN = 1000, SHORT_LEN = 8;
+    std::vector<int8_t> long_pcm(LONG_LEN + 1, 5);   // +1 guard (one-shot: last value)
+    std::vector<int8_t> short_pcm(SHORT_LEN + 1, 7);
+    uint32_t data_off1 = b.append_bytes(long_pcm.data(), long_pcm.size());
+    uint32_t data_off2 = b.append_bytes(short_pcm.data(), short_pcm.size());
+
+    SampleHeader sh1{}, sh2{};
+    sh1.length = LONG_LEN; sh1.loop_start = 0; sh1.loop_end = 0; sh1.loop_type = 0;
+    sh1.default_volume = 64; sh1.default_panning = 128;
+    sh1.data_offset = data_off1; sh1.note_increments_offset = incs_off1;
+    test_blob::set_name(sh1.name, sizeof(sh1.name), "long");
+    sh2.length = SHORT_LEN; sh2.loop_start = 0; sh2.loop_end = 0; sh2.loop_type = 0;
+    sh2.default_volume = 64; sh2.default_panning = 128;
+    sh2.data_offset = data_off2; sh2.note_increments_offset = incs_off2;
+    test_blob::set_name(sh2.name, sizeof(sh2.name), "short");
+    SampleHeader shs[2] = {sh1, sh2};
+    std::memcpy(b.buf.data() + sample_table_off, shs, sizeof(shs));
+
+    SongHeader hdr{};
+    std::memcpy(hdr.magic, T00T_BLOB_MAGIC, 4);
+    hdr.version = T00T_BLOB_VERSION;
+    hdr.num_channels = 1;
+    hdr.freq_table = 1;
+    hdr.num_orders = 1;
+    hdr.num_patterns = 1;
+    hdr.num_instruments = 2;
+    hdr.num_samples = 2;
+    hdr.default_tempo = 4;  // ticks per row
+    hdr.default_bpm = 125;
+    hdr.restart_order = 0;
+    hdr.order_table_offset = order_off;
+    hdr.pattern_table_offset = pattern_table_off;
+    hdr.instrument_table_offset = instrument_table_off;
+    hdr.sample_table_offset = sample_table_off;
+    hdr.sample_data_offset = data_off1;
+    hdr.sample_data_bytes = (uint32_t)(long_pcm.size() + short_pcm.size());
+    hdr.total_size = b.tell();
+    test_blob::set_name(hdr.name, sizeof(hdr.name), "offset_test");
+    std::memcpy(b.buf.data() + song_off, &hdr, sizeof(hdr));
+
+    return b.buf;
+}
+
+}  // namespace offset_test_blob
+
+// 9xx sets ct.start_pos from the effect param (*256), only updates its
+// memory when the row also carries a note (a bare 9xx with no note is a
+// total no-op -- there's nothing to offset), reuses that memory on a
+// zero-param restatement, and suppresses the whole trigger -- flags,
+// start_pos, sample_id and the trigger-generation counter all left exactly
+// as they were -- when the resulting offset reaches or exceeds the target
+// sample's length (verified against openmpt123: "notes with offset commands
+// beyond the sample length are never triggered").
+static bool test_sample_offset_memory_and_bounds() {
+    const uint8_t OFF = (uint8_t)Effect::SAMPLE_OFFSET;
+    std::vector<Event> rows(5);
+    rows[0] = Event{49, 1, 0, 0, OFF, 2};     // instrument 1 (long, 1000f): offset 2*256=512
+    rows[1] = Event{49, 1, 0, 0, OFF, 0};     // memory reuse -- still 512
+    rows[2] = Event{0,  0, 0, 0, OFF, 10};    // no note this row -- must NOT update memory
+    rows[3] = Event{49, 1, 0, 0, OFF, 0};     // memory reuse again -- must still be 512, not 10*256
+    rows[4] = Event{61, 2, 0, 0, OFF, 0xFF};  // instrument 2 (short, 8f): offset 0xFF*256 -- past length, suppressed
+    std::vector<uint8_t> blob = offset_test_blob::build(rows);
+    const SongHeader *song = reinterpret_cast<const SongHeader *>(blob.data());
+
+    PlayerState st;
+    player_init(st, song);
+    bool ok = true;
+    TickBlock tb;
+    const uint32_t want_start_pos = 512u << TRACKER_POS_FRAC_BITS;
+
+    player_produce_tick(st, song, tb);  // row0 tick0
+    if (!(tb.ch[0].flags & TICK_NOTE_ON)) { printf("  FAIL: row0 did not trigger\n"); ok = false; }
+    if (tb.ch[0].start_pos != want_start_pos) {
+        printf("  FAIL: row0 start_pos=%u, want %u (512 frames, Q18.14)\n", tb.ch[0].start_pos, want_start_pos);
+        ok = false;
+    }
+    for (int t = 0; t < 3; t++) player_produce_tick(st, song, tb);  // row0 ticks1-3 (speed=4)
+
+    player_produce_tick(st, song, tb);  // row1 tick0: memory reuse (param 0)
+    if (!(tb.ch[0].flags & TICK_NOTE_ON)) { printf("  FAIL: row1 did not trigger\n"); ok = false; }
+    if (tb.ch[0].start_pos != want_start_pos) {
+        printf("  FAIL: row1 (memory reuse) start_pos=%u, want %u\n", tb.ch[0].start_pos, want_start_pos);
+        ok = false;
+    }
+    for (int t = 0; t < 3; t++) player_produce_tick(st, song, tb);
+
+    player_produce_tick(st, song, tb);  // row2 tick0: no note, 9xx param 10 -- must be a total no-op
+    if (tb.ch[0].flags & TICK_NOTE_ON) { printf("  FAIL: row2 (no note) unexpectedly triggered\n"); ok = false; }
+    for (int t = 0; t < 3; t++) player_produce_tick(st, song, tb);
+
+    player_produce_tick(st, song, tb);  // row3 tick0: memory reuse -- must still be 512, proving row2 never touched it
+    if (!(tb.ch[0].flags & TICK_NOTE_ON)) { printf("  FAIL: row3 did not trigger\n"); ok = false; }
+    if (tb.ch[0].start_pos != want_start_pos) {
+        printf("  FAIL: row3 start_pos=%u, want %u -- row2's note-less 9xx must not have updated memory\n",
+               tb.ch[0].start_pos, want_start_pos);
+        ok = false;
+    }
+    uint32_t sample_id_before = tb.ch[0].sample_id;
+    uint8_t trigger_before = tb.ch[0].trigger;
+    for (int t = 0; t < 3; t++) player_produce_tick(st, song, tb);
+
+    player_produce_tick(st, song, tb);  // row4 tick0: offset past instrument 2's length -- suppressed entirely
+    if (tb.ch[0].flags & TICK_NOTE_ON) {
+        printf("  FAIL: row4 triggered despite an offset (0xFF*256=%u) past the 8-frame sample's length\n", 0xFFu * 256u);
+        ok = false;
+    }
+    if (tb.ch[0].sample_id != sample_id_before || tb.ch[0].trigger != trigger_before) {
+        printf("  FAIL: a suppressed trigger still changed sample_id/trigger generation\n");
+        ok = false;
+    }
+
+    printf("  %s: 9xx sets start_pos (*256), memory only updates next to a note, "
+           "an offset past the sample's length suppresses the trigger entirely\n", ok ? "PASS" : "FAIL");
+    return ok;
+}
+
+// ============================================================================
 // Render mode: load a real converted blob, drive player.h + mixer.h
 // tick-by-tick, write WAV + CSV trace.
 // ============================================================================
@@ -905,6 +1083,9 @@ int main(int argc, char **argv) {
     ok = test_volcol_toneporta_and_vibrato_no_retrigger() && ok;
     printf("\n== autovibrato: sweep ramp, freeze on key-off, depth=0 no-op ==\n");
     ok = test_autovibrato_sweep_and_freeze() && ok;
+
+    printf("\n== 9xx sample offset: memory, *256 scaling, past-end suppression ==\n");
+    ok = test_sample_offset_memory_and_bounds() && ok;
 
     printf(ok ? "\nALL CHECKS PASSED\n" : "\nCHECKS FAILED\n");
     return ok ? 0 : 1;
