@@ -41,3 +41,15 @@ target_include_directories(render_xm_device PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}
     ${CMAKE_CURRENT_LIST_DIR}/../../src
 )
+
+# Host build of src/engines/speech/render.h (#27): the speech engine
+# skeleton's shared device/host test-tone renderer, proving the ZOH x2
+# native-rate resample seam before any formant DSP exists.
+add_executable(render_speech
+    render_speech.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/../../src/osc/sine.cpp
+)
+target_include_directories(render_speech PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}
+    ${CMAKE_CURRENT_LIST_DIR}/../../src
+)

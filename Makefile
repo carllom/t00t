@@ -17,9 +17,16 @@ MIDI_UART ?= default
 #   make ENGINE=tracker DMA_BUFFER_SIZE=512
 DMA_BUFFER_SIZE ?= default
 
+# #31 P2 profiling rig: replaces the speech engine's normal MIDI-driven render
+# loop with a self-cycling, pin-only measurement build (see engine.md "Speech
+# Engine P2 profiling"). No effect on other engines.
+#   make ENGINE=speech SPEECH_PROFILE=1
+SPEECH_PROFILE ?= 0
+
 CMAKE_FLAGS = -DPICO_BOARD=$(BOARD) -DPICO_PLATFORM=rp2350 \
               -DMIDI_USB=$(MIDI_USB) -DMIDI_UART=$(MIDI_UART) \
-              -DT00T_ENGINE=$(ENGINE) -DDMA_BUFFER_SIZE=$(DMA_BUFFER_SIZE)
+              -DT00T_ENGINE=$(ENGINE) -DDMA_BUFFER_SIZE=$(DMA_BUFFER_SIZE) \
+              -DSPEECH_PROFILE=$(SPEECH_PROFILE)
 
 HOST_BUILD_DIR = tools/host_render/build
 
