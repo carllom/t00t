@@ -159,7 +159,7 @@ to spot on the profiling pin than a dropout.
 
 constexpr uint32_t SPEECH_RATE      = 22050;   // native core rate, SAMPLE_RATE / 2
 constexpr uint32_t SPEECH_FORMANTS  = 5;       // F1..F5
-constexpr uint32_t MAX_SPEECH_VOICES = 4;
+constexpr uint32_t MAX_SPEECH_VOICES = 8;  // #31 P2 profiling decision, was 4
 
 enum SpeechMode : uint8_t {
     SPEECH_ONESHOT,   // utterance runs to completion, ignores note-off
@@ -443,6 +443,12 @@ Do not trust these numbers. The tracker taught that estimated per-voice costs ca
 wrong by a factor of five in either direction depending on surrounding machinery.
 **Measure with the profiling pin at the end of P2 before scaling voice count.**
 
+**Measured (#31, engine.md "Speech Engine P2 Profiling"): ~93.5 cycles/frame/voice
+(2.75%), flat from 1 to 8 voices** — about 25–55% over this table's top end, all of
+it in the excitation/resonator/ZOH bucket rather than coefficient recompute (which
+landed close to predicted). See engine.md for the full breakdown and the
+`MAX_SPEECH_VOICES = 8` decision under Settled Decisions below.
+
 Memory: phoneme table ~1 KB, phrases <4 KB, per-voice state ~200 bytes. Negligible
 against the tracker's sample RAM pressure.
 
@@ -473,7 +479,8 @@ Add fricative branch, nasal pole, mixed excitation, formant shift and bandwidth
 scale as live parameters. Measure with the profiling pin.
 
 *Exit:* measured per-voice cost, and a decision on `MAX_SPEECH_VOICES` based on it
-rather than on the table above.
+rather than on the table above. **Done (#31):** ~93.5 cycles/frame/voice measured,
+`MAX_SPEECH_VOICES = 8`.
 
 ### P3 — Segment sequencer
 
@@ -610,18 +617,24 @@ Listed for completeness; no new work.
 - [x] `SUSTAINABLE` flag reserved as bit 3 of `PhonemeDef.flags` (#30): cheap now
       while the table is docs-only, expensive to retrofit once a CSV exists. Not read
       until P4. See "Singing mode / `SUSTAINABLE` (#30 decision)"
+- [x] `MAX_SPEECH_VOICES = 8` (#31): measured ~93.5 cycles/frame/voice (2.75%),
+      flat from 1 to 8 voices on real `breadboard_rp2350` hardware, with both the
+      fricative branch and a live formant_shift/bandwidth_scale sweep costing
+      nothing extra over that flat per-voice number (both are already
+      unconditional in the code). 8 voices is 22% of Core 1 alone, 30% with
+      reverb on top — comfortably inside budget, and makes a "robot chorus" preset
+      a real option for P5. See engine.md "Speech Engine P2 Profiling (#31)" for
+      the full breakdown and the discrepancy explanation against this doc's
+      predicted 60-75 cycles/frame/voice budget.
 
 ---
 
 ## Open Questions
 
-1. **Voice count.** Four is the working assumption. Confirm after P2 profiling; the
-   answer may be higher than expected, in which case a "robot chorus" preset with
-   per-voice detune and stereo spread becomes attractive.
-2. **Coarticulation depth.** v1 does simple linear F/B ramping between adjacent
+1. **Coarticulation depth.** v1 does simple linear F/B ramping between adjacent
    segment targets. Proper transition rules (target undershoot, locus equations)
    need lookahead to the *following* phoneme. Deferred — but note the monophonic
    ordered-ring variant gets this almost free.
-3. **Display.** What does the LCD show for a speech module? Current phoneme and a
+2. **Display.** What does the LCD show for a speech module? Current phoneme and a
    formant-space plot is the obvious answer and is cheap at ~10 Hz redraw, but it is
    low priority.
