@@ -1,5 +1,6 @@
 #include "audio_engine.h"
 #include "render.h"
+#include "utterance.h"
 #include "fx/delay.h"
 #include "fx/reverb.h"
 #include "hardware/gpio.h"
@@ -220,15 +221,28 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
         uint32_t active_mask = 0;
         for (uint32_t v = 0; v < MAX_VOICES; v++) {
             const VoiceParams &p = vp.voices[v];
-            speech_render_voice(voices[v], p.phase_inc, (float)SPEECH_RATE, p.trigger,
-                                 p.amplitude, p.gate, p.phoneme, p.pan,
-                                 p.formant_shift, p.bandwidth_scale,
-                                 dry_l, dry_r, NATIVE_SAMPLES_PER_BUFFER);
-            // speech.md: "hold the bit set until the phoneme sequence
-            // completes, regardless of gate" -- P1 has no utterance to
-            // outlast the gate, so active == gate is exactly that rule
-            // applied to a single sustained phoneme.
-            if (p.gate) active_mask |= (1u << v);
+            if (p.utterance == SPEECH_NO_UTTERANCE) {
+                // #28 phoneme keyboard: one sustained phoneme, no sequencer.
+                // speech.md: "hold the bit set until the phoneme sequence
+                // completes, regardless of gate" -- this mode has no
+                // utterance to outlast the gate, so active == gate is
+                // exactly that rule applied to a single sustained phoneme.
+                speech_render_voice(voices[v], p.phase_inc, (float)SPEECH_RATE, p.trigger,
+                                     p.amplitude, p.gate, p.phoneme, p.pan,
+                                     p.formant_shift, p.bandwidth_scale,
+                                     dry_l, dry_r, NATIVE_SAMPLES_PER_BUFFER);
+                if (p.gate) active_mask |= (1u << v);
+            } else {
+                // #34 segment sequencer: active stays set until the
+                // utterance itself completes (sv.active, sequencer.h/
+                // render.h), which under SPEECH_MODE_GATED can outlive
+                // note-off by up to the release segment's own duration.
+                speech_render_voice_seq(voices[v], p.phase_inc, (float)SPEECH_RATE, p.trigger,
+                                         p.amplitude, p.gate, SPEECH_UTTERANCES[p.utterance % SPEECH_UTTERANCE_COUNT],
+                                         p.mode, p.rate, p.pan, p.formant_shift, p.bandwidth_scale,
+                                         dry_l, dry_r, NATIVE_SAMPLES_PER_BUFFER);
+                if (voices[v].active) active_mask |= (1u << v);
+            }
         }
 
         // Post-mix effect (delay / reverb, selected by CC74) — identical

@@ -3,6 +3,7 @@
 #include "voice_alloc.h"
 #include "excitation.h"
 #include "phonemes.h"
+#include "utterance.h"
 #include <cmath>
 
 // Phoneme keyboard (#28, speech.md MIDI Mapping Phase 1 "SPEECH_HOLD"): one
@@ -28,6 +29,17 @@
 // instrument"): the CC handler pushes the new value into every voice
 // currently held on that channel, not just the per-channel default used by
 // future notes, so sweeping the knob is audible mid-note.
+//
+// CC23 (#34) selects one of utterance.h's hardcoded SPEECH_UTTERANCES
+// instead of the CC20 phoneme keyboard: 0 = off (SPEECH_NO_UTTERANCE, the
+// existing #28 phoneme-keyboard path, CC20 keeps working exactly as
+// before); 1..SPEECH_UTTERANCE_COUNT band the rest of the CC range, same
+// shape as CC20's phoneme bands. Exists so #34's sequencer is reachable
+// from a real controller for on-device verification -- the full CC map
+// (rate, jitter, shimmer, program-change utterance/phrase selection) is
+// speech.md P4 "MIDI integration" work, not this slice's. Mode is fixed at
+// SPEECH_MODE_GATED (#30's default) and rate at 1.0x (VoiceParams default)
+// for the same reason: no CC owns them yet.
 
 static MidiParser midi_parser;
 static int8_t midi_note_voice[128];
@@ -39,6 +51,7 @@ static uint8_t channel_phoneme[NUM_CHANNELS];         // Phoneme (phonemes.h), s
 static int16_t channel_pan[NUM_CHANNELS];             // CC10, Q15
 static int16_t channel_formant_shift[NUM_CHANNELS];   // CC21, Q8.8 (live)
 static int16_t channel_bandwidth_scale[NUM_CHANNELS]; // CC22, Q8.8 (live)
+static uint8_t channel_utterance[NUM_CHANNELS];       // CC23 (#34): SPEECH_NO_UTTERANCE or an index into SPEECH_UTTERANCES
 
 static MidiUiState ui_state;
 
@@ -54,6 +67,9 @@ static void midi_voice_on(VoiceParamBlock &shadow, int v, uint8_t note, uint8_t 
     vp.pan = channel_pan[channel];
     vp.formant_shift = channel_formant_shift[channel];
     vp.bandwidth_scale = channel_bandwidth_scale[channel];
+    vp.utterance = channel_utterance[channel];
+    vp.mode = SPEECH_MODE_GATED;  // #30 default -- no mode CC yet, see header comment
+    vp.rate = 16;                 // 1.0x -- no rate CC yet, see header comment
     vp.trigger++;
     vp.gate = true;
     voice_held[v] = true;
@@ -74,6 +90,7 @@ void midi_controller_init() {
         channel_pan[ch] = 0;
         channel_formant_shift[ch] = 256;    // 1.0x, neutral
         channel_bandwidth_scale[ch] = 256;  // 1.0x, neutral
+        channel_utterance[ch] = SPEECH_NO_UTTERANCE;
     }
     ui_state.last_note = 0xFF;
     ui_state.last_velocity = 0;
@@ -179,7 +196,18 @@ void midi_controller_process(const uint8_t *data, uint32_t len, ParamExchange *p
                         ui_state.fx_p2 = ev.data2;
                         changed = true;
                         break;
-                    default:  break;  // other CCs — rate/jitter/shimmer land in P4
+                    case 23: {  // utterance select (#34) — see header comment
+                        // Split range into SPEECH_UTTERANCE_COUNT + 1 bands,
+                        // same shape as CC20/CC74's banding -- band 0 is
+                        // "off" (SPEECH_NO_UTTERANCE, back to CC20's phoneme
+                        // keyboard), bands 1..SPEECH_UTTERANCE_COUNT each
+                        // pick one SPEECH_UTTERANCES entry.
+                        uint8_t band = (uint8_t)((uint32_t)ev.data2 * (SPEECH_UTTERANCE_COUNT + 1) / 128u);
+                        channel_utterance[ev.channel] = band == 0 ? SPEECH_NO_UTTERANCE : (uint8_t)(band - 1);
+                        ui_state.last_channel = ev.channel;
+                        break;
+                    }
+                    default:  break;  // other CCs — full MIDI integration (rate/jitter/shimmer/mode/phrase select) lands in P4
                 }
                 break;
             }
