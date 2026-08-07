@@ -93,6 +93,29 @@ class SynthSample:
 class SynthInstrument:
     sample: SynthSample
     name: str = ""
+    # #20 envelope/autovibrato/fadeout fixtures: all optional, default to
+    # "off" so every pre-#20 fixture above is unaffected. Envelope points
+    # are (tick, value 0..64) pairs, XM convention (absolute tick, not
+    # delta) -- at most 12, matching the file format's fixed-size table.
+    vol_env_points: List[Tuple[int, int]] = field(default_factory=list)
+    vol_sustain: int = 0
+    vol_loop_start: int = 0
+    vol_loop_end: int = 0
+    vol_env_on: bool = False
+    vol_sustain_on: bool = False
+    vol_loop_on: bool = False
+    pan_env_points: List[Tuple[int, int]] = field(default_factory=list)
+    pan_sustain: int = 0
+    pan_loop_start: int = 0
+    pan_loop_end: int = 0
+    pan_env_on: bool = False
+    pan_sustain_on: bool = False
+    pan_loop_on: bool = False
+    vibrato_type: int = 0
+    vibrato_sweep: int = 0
+    vibrato_depth: int = 0
+    vibrato_rate: int = 0
+    fadeout: int = 0
 
 
 @dataclass
@@ -127,18 +150,31 @@ def _sample_header(s: SynthSample) -> bytes:
     ) + b"\x00" + _pad(s.name, 22)  # +1 reserved byte per the standard 40-byte layout
 
 
+def _env_points_bytes(points: List[Tuple[int, int]]) -> bytes:
+    out = bytearray()
+    for tick, value in points:
+        out += struct.pack("<HH", tick, value)
+    out += bytes(4 * (12 - len(points)))  # pad the unused slots of the fixed 12-point table
+    return bytes(out)
+
+
+def _env_type_byte(enabled: bool, sustain_on: bool, loop_on: bool) -> int:
+    return (0x01 if enabled else 0) | (0x02 if sustain_on else 0) | (0x04 if loop_on else 0)
+
+
 def _instrument_bytes(inst: SynthInstrument) -> bytes:
     ext = bytearray()
     ext += struct.pack("<I", 40)          # sample_header_size
     ext += bytes([0]) * 96                # sample_map: every note -> local sample 0
-    ext += bytes(12 * 4)                  # vol envelope points (unused, count=0)
-    ext += bytes(12 * 4)                  # pan envelope points (unused, count=0)
-    ext += bytes([0, 0])                  # num_vol_points, num_pan_points
-    ext += bytes([0, 0, 0])               # vol sustain/loop_start/loop_end
-    ext += bytes([0, 0, 0])               # pan sustain/loop_start/loop_end
-    ext += bytes([0, 0])                  # vol_type, pan_type (envelopes off)
-    ext += bytes([0, 0, 0, 0])            # vibrato type/sweep/depth/rate
-    ext += struct.pack("<H", 0)           # volume_fadeout
+    ext += _env_points_bytes(inst.vol_env_points)
+    ext += _env_points_bytes(inst.pan_env_points)
+    ext += bytes([len(inst.vol_env_points), len(inst.pan_env_points)])
+    ext += bytes([inst.vol_sustain, inst.vol_loop_start, inst.vol_loop_end])
+    ext += bytes([inst.pan_sustain, inst.pan_loop_start, inst.pan_loop_end])
+    ext += bytes([_env_type_byte(inst.vol_env_on, inst.vol_sustain_on, inst.vol_loop_on),
+                  _env_type_byte(inst.pan_env_on, inst.pan_sustain_on, inst.pan_loop_on)])
+    ext += bytes([inst.vibrato_type, inst.vibrato_sweep, inst.vibrato_depth, inst.vibrato_rate])
+    ext += struct.pack("<H", inst.fadeout)  # volume_fadeout
     ext += bytes(22)                      # reserved -- real FT2 files pad the extended
     # instrument header to 234 bytes here (giving the classic header_size=263 total);
     # xm_parser.py itself doesn't care (it trusts the declared header_size to skip
@@ -443,6 +479,105 @@ def speed_tempo_basic() -> bytes:
     return build_xm(SynthSong(num_channels=1, rows=rows, instruments=instruments, speed=6, bpm=125))
 
 
+# --- #20 fixtures: instrument envelopes, key-off/fadeout, volume column,
+# autovibrato. Same principle as #19's per-effect fixtures: narrow enough
+# that openmpt123 and player.h's #20 implementation should land in the same
+# place, so a real divergence reads as a bug. All use the looped
+# `_pad_sample()` so the *sample* never runs out from under the envelope --
+# any silence is the envelope's/fadeout's doing, not the sample ending.
+
+def volume_envelope_basic() -> bytes:
+    """A held note through a full attack/decay/sustain/release volume
+    envelope: ramp 0->64 by tick 4, decay to the sustain level (40) by tick
+    10, hold there (sustain point, index 2) for as long as the note is held,
+    then -- on key-off -- release down to 0 by tick 30. Exercises sustain
+    hold (acceptance: 'matches sustain point') and release-after-key-off
+    ('does not cut the voice instantly')."""
+    pad = SynthSample(data=_pad_sample(), loop_start=0, loop_end=len(_pad_sample()), volume=64, panning=128, name="pad")
+    inst = SynthInstrument(
+        pad, "vol_env",
+        vol_env_points=[(0, 0), (4, 64), (10, 40), (30, 0)],
+        vol_sustain=2, vol_env_on=True, vol_sustain_on=True,
+    )
+    rows = [[_fx_ev(49, 1)]] + [[_fx_ev()]] * 7 + [[_fx_ev(note=97)]] + [[_fx_ev()]] * 9
+    return build_xm(SynthSong(num_channels=1, rows=rows, instruments=[inst], speed=4, bpm=125))
+
+
+def panning_envelope_basic() -> bytes:
+    """A held note, center-panned by default, with a looping panning
+    envelope sweeping left/right/center/right -- exercises the envelope's
+    asymmetric attenuation-toward-center formula (a centered base pan gets
+    the envelope's full swing) and its independent loop (no sustain point,
+    so it cycles for as long as the note plays, unlike the volume envelope
+    fixture above)."""
+    pad = SynthSample(data=_pad_sample(), loop_start=0, loop_end=len(_pad_sample()), volume=64, panning=128, name="pad")
+    inst = SynthInstrument(
+        pad, "pan_env",
+        pan_env_points=[(0, 32), (8, 64), (16, 0), (24, 32)],
+        pan_loop_start=0, pan_loop_end=3, pan_env_on=True, pan_loop_on=True,
+    )
+    rows = [[_fx_ev(49, 1)]] + [[_fx_ev()]] * 11
+    return build_xm(SynthSong(num_channels=1, rows=rows, instruments=[inst], speed=4, bpm=125))
+
+
+def fadeout_basic() -> bytes:
+    """A volume envelope that releases (on key-off) to a nonzero value and
+    then holds there forever (no loop past its last point) -- fadeout is
+    what finishes the job, decaying `fadeout_vol` the rest of the way to
+    true silence once the envelope itself has nothing left to do. Verified
+    against openmpt123 (#20): fadeout is a *release* mechanism for an
+    envelope-driven instrument, not a substitute for one -- an instrument
+    with no envelope at all cuts (almost) instantly at key-off regardless of
+    its fadeout field, which is exactly what retrig_and_keyoff's/
+    test_note_trigger_and_retrigger's plain (no-envelope) instrument
+    exercises instead."""
+    pad = SynthSample(data=_pad_sample(), loop_start=0, loop_end=len(_pad_sample()), volume=64, panning=128, name="pad")
+    inst = SynthInstrument(
+        pad, "fadeout",
+        vol_env_points=[(0, 0), (4, 64), (10, 40), (16, 20)],
+        vol_sustain=2, vol_env_on=True, vol_sustain_on=True,
+        fadeout=4096,
+    )
+    rows = [[_fx_ev(49, 1)]] + [[_fx_ev()]] * 7 + [[_fx_ev(note=97)]] + [[_fx_ev()]] * 9
+    return build_xm(SynthSong(num_channels=1, rows=rows, instruments=[inst], speed=4, bpm=125))
+
+
+def volume_column_extended() -> bytes:
+    """One channel walking through the volume column's less-common *level/
+    pan* bands: fine volslide down/up (instant, tick 0 only), coarse
+    volslide down (continuous), and panslide left then right. Deliberately
+    excludes the vol column's vibrato (Ax/Bx) and tone-porta (Fx) bands --
+    those drive the shared continuous-pitch-oscillator/glide machinery,
+    which (like the effect-column vibrato, tracker_tick_period()'s own
+    header comment) is not chased to openmpt123 bit-exactness here; their
+    *mechanism* is covered by
+    test_volcol_vibrato_and_toneporta_no_retrigger() in render_xm_device.cpp
+    instead. set_volume_basic/retrig_and_keyoff already cover the vol
+    column's SET_VOLUME/SET_PANNING bands, so this deliberately covers the
+    rest of the non-oscillator ones."""
+    pad = SynthSample(data=_pad_sample(), loop_start=0, loop_end=len(_pad_sample()), volume=64, panning=128, name="pad")
+    instruments = [SynthInstrument(pad, "pad")]
+
+    FINE_DOWN = 0x80 + 8    # fine volslide down 8
+    FINE_UP = 0x90 + 4      # fine volslide up 4
+    VOLSLIDE_DOWN = 0x60 + 3  # continuous volslide down 3/tick
+    PANSLIDE_L = 0xD0 + 5     # panning slide left 5/tick
+    PANSLIDE_R = 0xE0 + 5     # panning slide right 5/tick
+
+    def ev(note=0, inst=0, vol=0):
+        return SynthEvent(note=note, instrument=inst, volume=vol)
+
+    rows = [
+        ev(49, 1),          # trigger, full volume/center pan
+        ev(vol=FINE_DOWN),  # instant -8 (once)
+        ev(vol=FINE_UP),    # instant +4 (once)
+        ev(vol=VOLSLIDE_DOWN),  # continuous -3/tick for the rest of this row
+        ev(vol=PANSLIDE_L), # continuous pan slide toward 0
+        ev(vol=PANSLIDE_R), # continuous pan slide back toward 255
+    ]
+    return build_xm(SynthSong(num_channels=1, rows=[[r] for r in rows], instruments=instruments, speed=4, bpm=125))
+
+
 FIXTURES = {
     "notes_basic": notes_basic,
     "retrig_and_keyoff": retrig_and_keyoff,
@@ -454,4 +589,8 @@ FIXTURES = {
     "set_volume_basic": set_volume_basic,
     "jump_and_break": jump_and_break,
     "speed_tempo_basic": speed_tempo_basic,
+    "volume_envelope_basic": volume_envelope_basic,
+    "panning_envelope_basic": panning_envelope_basic,
+    "fadeout_basic": fadeout_basic,
+    "volume_column_extended": volume_column_extended,
 }

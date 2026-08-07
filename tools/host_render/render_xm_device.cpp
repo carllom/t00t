@@ -235,12 +235,27 @@ static bool test_note_trigger_and_retrigger() {
     if (!(tb.ch[0].flags & TICK_NOTE_ON)) { printf("  FAIL: ch0 row2 tick0 did not retrigger\n"); ok = false; }
     if (tb.ch[0].trigger != 2) { printf("  FAIL: ch0 retrigger generation=%u, want 2\n", tb.ch[0].trigger); ok = false; }
 
-    // Row 3, tick 0: ch0 key-off -- volume target cut to 0, no note-on flag.
+    // Row 3, tick 0: ch0 key-off. This test instrument has no volume
+    // envelope at all (InstrumentHeader{} is zero-initialized). Verified
+    // against openmpt123 (#20, fadeout_basic/volume_envelope_basic
+    // fixtures): fadeout is a *release* mechanism for an envelope-driven
+    // instrument, and is not applied at all without one -- an instrument
+    // with no envelope cuts (almost) instantly at key-off regardless of its
+    // fadeout field's value, rather than fading over 32768/fadeout ticks.
+    // (An earlier version of this comment claimed the opposite -- that
+    // fadeout alone, sans envelope, produces a gradual release -- based on
+    // a literal reading of FT2's own replayer source; that IS how real FT2
+    // behaves, but it is not what openmpt123 (this harness's oracle) does
+    // for a module lacking FT2's own compatibility markers, so the device
+    // player follows the oracle.)
     looped |= player_produce_tick(st, song, tb);
     for (int i = 0; i < 2; i++) looped |= player_produce_tick(st, song, tb2);  // ticks 1-2, discarded
     if (!(tb.ch[0].flags & TICK_KEY_OFF)) { printf("  FAIL: ch0 row3 tick0 missing TICK_KEY_OFF\n"); ok = false; }
     if (tb.ch[0].flags & TICK_NOTE_ON) { printf("  FAIL: key-off incorrectly also set TICK_NOTE_ON\n"); ok = false; }
-    if (tb.ch[0].tgt_volL != 0 || tb.ch[0].tgt_volR != 0) { printf("  FAIL: key-off did not cut volume target to 0\n"); ok = false; }
+    if (tb.ch[0].tgt_volL != 0 || tb.ch[0].tgt_volR != 0) {
+        printf("  FAIL: key-off with no envelope did not cut volume (%d)\n", tb.ch[0].tgt_volL);
+        ok = false;
+    }
 
     // This 1-order, 4-row, speed-3 song is 12 ticks long; the 12th call
     // (row3's last tick) completes the only order and must report looped.
@@ -287,7 +302,9 @@ static std::vector<uint8_t> build(uint32_t num_channels,
                                    const std::vector<uint32_t> &rows_per_pattern,
                                    uint32_t speed, uint32_t bpm,
                                    std::vector<uint8_t> order = {},
-                                   uint32_t restart_order = 0) {
+                                   uint32_t restart_order = 0,
+                                   uint32_t vib_type = 0, uint32_t vib_sweep = 0,
+                                   uint32_t vib_depth = 0, uint32_t vib_rate = 0) {
     if (order.empty()) {
         for (uint32_t i = 0; i < patterns.size(); i++) order.push_back((uint8_t)i);
     }
@@ -320,6 +337,10 @@ static std::vector<uint8_t> build(uint32_t num_channels,
     inst.sample_map_offset = sample_map_off;
     inst.num_samples = 1;
     inst.sample_index_offset = sample_index_off;
+    inst.vibrato_type = vib_type;
+    inst.vibrato_sweep = vib_sweep;
+    inst.vibrato_depth = vib_depth;
+    inst.vibrato_rate = vib_rate;
     test_blob::set_name(inst.name, sizeof(inst.name), "test");
     std::memcpy(b.buf.data() + instrument_table_off, &inst, sizeof(inst));
 
@@ -603,6 +624,150 @@ static bool test_tone_portamento_no_retrigger() {
 }
 
 // ============================================================================
+// #20 instrument unit tests -- envelopes/fadeout are covered by
+// tools/host_render/diff_xm.py's volume_envelope_basic/panning_envelope_basic/
+// fadeout_basic fixtures (audio-diffed against openmpt123, and they pass
+// cleanly). The volume column's own tone-porta/vibrato bands and
+// autovibrato are continuous pitch oscillators/glides -- like the
+// effect-column vibrato (tracker_tick_period()'s own header comment), a
+// small rate mismatch against openmpt123 is *permanent* phase drift, not
+// noise that damps out over a longer clip, so they are not chased to
+// bit-exactness there. These tests instead pin down the *mechanism* directly
+// against player.h's own state, the same complementary relationship #19
+// established between this file's unit tests and the audio diff harness.
+// ============================================================================
+
+// Volume-column tone portamento (Fx) with a note must not retrigger (same
+// contract as the effect column's 3xx, test_tone_portamento_no_retrigger()
+// above) and must glide the pitch toward the target. Volume-column vibrato
+// (Bx, after Ax sets a speed) must not retrigger either, and must actually
+// modulate pitch tick-to-tick (the shared oscillator engaging) with no
+// pattern-effect-column command present at all this row.
+static bool test_volcol_toneporta_and_vibrato_no_retrigger() {
+    std::vector<Event> rows(5);
+    rows[0] = Event{49, 1, 0, 0, 0, 0};                                                  // trigger C-4
+    rows[1] = Event{61, 1, (uint8_t)VolEffect::TONE_PORTA, 8, 0, 0};                      // retarget via vol column, no retrigger
+    rows[2] = Event{0, 0, (uint8_t)VolEffect::TONE_PORTA, 8, 0, 0};                       // continuation
+    rows[3] = Event{0, 0, (uint8_t)VolEffect::SET_VIBRATO_SPEED, 4, 0, 0};                // primes speed, no oscillation yet
+    rows[4] = Event{0, 0, (uint8_t)VolEffect::VIBRATO, 6, 0, 0};                          // starts the oscillator
+    std::vector<uint8_t> blob = fx_test_blob::build(1, {rows}, {5}, /*speed=*/6, /*bpm=*/125);
+    const SongHeader *song = reinterpret_cast<const SongHeader *>(blob.data());
+
+    PlayerState st;
+    player_init(st, song);
+    bool ok = true;
+    TickBlock tb;
+
+    player_produce_tick(st, song, tb);  // row0 tick0: trigger
+    uint8_t trigger_gen = tb.ch[0].trigger;
+    for (int t = 0; t < 5; t++) player_produce_tick(st, song, tb);
+
+    player_produce_tick(st, song, tb);  // row1 tick0: vol-column tone porta retarget, no retrigger
+    if (tb.ch[0].flags & TICK_NOTE_ON) { printf("  FAIL: vol-column tone portamento's note retriggered the sample\n"); ok = false; }
+    if (tb.ch[0].trigger != trigger_gen) {
+        printf("  FAIL: vol-column tone portamento bumped the trigger generation (%u != %u)\n", tb.ch[0].trigger, trigger_gen);
+        ok = false;
+    }
+    uint32_t prev_inc = tb.ch[0].inc;
+    bool moved = false;
+    for (int t = 0; t < 5; t++) {
+        player_produce_tick(st, song, tb);
+        if (tb.ch[0].inc > prev_inc) moved = true;
+        prev_inc = tb.ch[0].inc;
+    }
+    if (!moved) { printf("  FAIL: pitch never moved during vol-column tone portamento\n"); ok = false; }
+
+    for (int t = 0; t < 12; t++) player_produce_tick(st, song, tb);  // row2 (continuation) + row3 (SET_VIBRATO_SPEED, no move)
+    if (tb.ch[0].flags & TICK_NOTE_ON) { printf("  FAIL: SET_VIBRATO_SPEED row unexpectedly retriggered\n"); ok = false; }
+
+    player_produce_tick(st, song, tb);  // row4 tick0: vibrato starts, no retrigger
+    if (tb.ch[0].flags & TICK_NOTE_ON) { printf("  FAIL: vol-column vibrato row retriggered the sample\n"); ok = false; }
+    uint32_t vib_inc0 = tb.ch[0].inc;
+    bool oscillated = false;
+    for (int t = 0; t < 5; t++) {
+        player_produce_tick(st, song, tb);
+        if (tb.ch[0].inc != vib_inc0) oscillated = true;
+    }
+    if (!oscillated) { printf("  FAIL: vol-column vibrato never modulated pitch\n"); ok = false; }
+
+    printf("  %s: vol-column tone portamento and vibrato retarget/oscillate without retriggering\n", ok ? "PASS" : "FAIL");
+    return ok;
+}
+
+// Autovibrato: sweep ramps amplitude from 0 to the instrument's depth over
+// exactly `sweep` ticks, then freezes there -- and freezes (does not reset)
+// across key-off rather than restarting. depth=0 (the "no autovibrato"
+// instrument every other fixture in this file uses) must be a complete
+// no-op: no state changes, no pitch modulation ever.
+static bool test_autovibrato_sweep_and_freeze() {
+    // depth=8, sweep=4 -> amplitude ramps by 2.0/tick (matching FT2:
+    // tracker_autovibrato_delta() advances amp *before* using it, so tick 0
+    // -- the trigger tick itself -- already reflects one step, not zero),
+    // reaching 8.0 (full) after tick 3 (the 4th call) and staying there.
+    // rate=32 so the sine table position (and therefore the instantaneous
+    // sign/magnitude of the delta) also moves tick to tick, giving
+    // arithmetic room for a real assertion beyond "some delta appeared".
+    std::vector<Event> rows(6);
+    rows[0] = Event{49, 1, 0, 0, 0, 0};
+    for (int i = 1; i < 6; i++) rows[i] = Event{0, 0, 0, 0, 0, 0};
+    std::vector<uint8_t> blob = fx_test_blob::build(1, {rows}, {6}, /*speed=*/1, /*bpm=*/125,
+                                                     /*order=*/{}, /*restart_order=*/0,
+                                                     /*vib_type=*/0, /*vib_sweep=*/4,
+                                                     /*vib_depth=*/8, /*vib_rate=*/32);
+    const SongHeader *song = reinterpret_cast<const SongHeader *>(blob.data());
+    const InstrumentHeader &inst = tracker_instrument_table(song)[0];
+
+    PlayerState st;
+    player_init(st, song);
+    bool ok = true;
+    TickBlock tb;
+
+    player_produce_tick(st, song, tb);  // tick 0 (row0/trigger): amp already advanced one step
+    PlayerChannelState &pcs = st.ch[0];
+    if (pcs.autovib_amp != 2.0) {
+        printf("  FAIL: autovib_amp=%f after trigger tick, want exactly 2.0 (one sweep step)\n", pcs.autovib_amp);
+        ok = false;
+    }
+
+    for (int t = 1; t < 3; t++) player_produce_tick(st, song, tb);  // ticks 1..2: still sweeping (amp -> 6.0)
+    if (!(pcs.autovib_amp > 2.0 && pcs.autovib_amp < 8.0)) {
+        printf("  FAIL: autovib_amp=%f mid-sweep, want strictly between 2.0 and depth(8)\n", pcs.autovib_amp);
+        ok = false;
+    }
+    if (!pcs.autovib_sweeping) { printf("  FAIL: sweep reported done before reaching depth\n"); ok = false; }
+
+    player_produce_tick(st, song, tb);  // tick 3 (4th call): sweep completes
+    if (pcs.autovib_amp != 8.0) { printf("  FAIL: autovib_amp=%f at tick3, want exactly depth(8)\n", pcs.autovib_amp); ok = false; }
+    if (pcs.autovib_sweeping) { printf("  FAIL: sweep still marked active after reaching depth\n"); ok = false; }
+
+    // Key off: amplitude must freeze at depth, not reset or keep changing
+    // from the sweep (tracker_autovibrato_delta() only ramps while
+    // autovib_sweeping is true, already false by this point).
+    player_produce_tick(st, song, tb);  // tick4: this test's blob has no key-off event, so simulate directly
+    pcs.key_off = true;
+    double amp_before = pcs.autovib_amp;
+    tracker_autovibrato_delta(inst, pcs);
+    if (pcs.autovib_amp != amp_before) {
+        printf("  FAIL: autovib_amp changed across key-off (%f -> %f), want frozen at depth\n", amp_before, pcs.autovib_amp);
+        ok = false;
+    }
+
+    // depth == 0 must be a complete no-op (every other #20 fixture's
+    // instrument relies on this).
+    InstrumentHeader no_vib{};
+    PlayerChannelState fresh;
+    double delta = tracker_autovibrato_delta(no_vib, fresh);
+    if (delta != 0.0 || fresh.autovib_pos != 0 || fresh.autovib_amp != 0.0) {
+        printf("  FAIL: depth=0 instrument produced nonzero autovibrato state/delta\n");
+        ok = false;
+    }
+
+    printf("  %s: autovibrato sweep ramps to depth then freezes, including across key-off; depth=0 is a no-op\n",
+           ok ? "PASS" : "FAIL");
+    return ok;
+}
+
+// ============================================================================
 // Render mode: load a real converted blob, drive player.h + mixer.h
 // tick-by-tick, write WAV + CSV trace.
 // ============================================================================
@@ -736,6 +901,10 @@ int main(int argc, char **argv) {
     ok = test_volume_slide_clamp_and_memory() && ok;
     printf("\n== tone portamento (3xx): no retrigger, glides to target ==\n");
     ok = test_tone_portamento_no_retrigger() && ok;
+    printf("\n== volume column: tone portamento (Fx) + vibrato (Ax/Bx), no retrigger ==\n");
+    ok = test_volcol_toneporta_and_vibrato_no_retrigger() && ok;
+    printf("\n== autovibrato: sweep ramp, freeze on key-off, depth=0 no-op ==\n");
+    ok = test_autovibrato_sweep_and_freeze() && ok;
 
     printf(ok ? "\nALL CHECKS PASSED\n" : "\nCHECKS FAILED\n");
     return ok ? 0 : 1;

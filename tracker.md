@@ -718,7 +718,60 @@ Prerequisites are more interesting than the tracker itself. Do them first:
      short row for exactly this reason (see the fixture's own docstring);
      getting this bit-exact against libopenmpt is explicitly the "long tail
      of FT2 quirks" (step 7 below), not this step's bar.
-6. Instruments, envelopes, key-off (note 97), the volume column, ping-pong loops.
+6. ~~Instruments, envelopes, key-off (note 97), the volume column, ping-pong
+   loops.~~ — done (#20), except ping-pong loops (split out to #21 alongside
+   9xx sample offset, tracked separately). Multi-sample note→sample mapping
+   and per-note relative-note/finetune were already in place from #17-#19
+   (needed for pitch even before envelopes existed); #20's actual new
+   surface is `player.h`'s `tracker_resolve_envelope_volpan()` (volume/
+   panning envelopes with sustain and loop, run every tick independent of
+   any pattern effect), `tracker_fadeout_tick()`, `tracker_autovibrato_delta()`,
+   and the volume column's remaining bands (fine/coarse volslide, panslide,
+   vol-column vibrato sharing the effect column's oscillator, vol-column
+   tone porta with its own coarse rate table). The host-side blob format
+   (`InstrumentHeader`, `EnvelopePoint`, envelope/autovibrato/fadeout
+   fields) and the XM parser/writer were already complete from #14 — this
+   step was entirely device-side (`player.h`) plus test fixtures.
+   - **Key-off does not cut a voice directly.** It only sets a per-channel
+     `key_off` flag that the envelope/fadeout machinery consumes every
+     tick from then on. Verified against `openmpt123` (not just FT2's own
+     replayer source, which turned out to disagree with it on one point —
+     see below): an instrument with an *enabled* volume envelope releases
+     through it (continuing past its sustain point, plus fadeout once the
+     envelope's own last point is reached); an instrument with **no**
+     volume envelope at all cuts almost instantly on key-off, regardless
+     of its fadeout field. FT2's own replayer source (ft2-clone, a
+     byte-accurate port) applies fadeout unconditionally, envelope or not
+     — an earlier version of this implementation followed that literally,
+     and diverged badly against `openmpt123` (`fadeout_basic`'s fixture);
+     `openmpt123` is this harness's oracle, so the device player follows
+     it, not the DOS original, on this one point.
+   - **Envelope evaluation is a fresh interpolation each tick**, not FT2's
+     own incremental Q8.8 delta-accumulation (which exists on 1990s
+     hardware to avoid a per-tick division Core 0 has three million spare
+     cycles for) — behaviourally equivalent for well-formed envelopes,
+     which is the overwhelming majority of real content.
+   - **Volume-column commands are a second, independent active-effect
+     slot** (`active_vol_effect`/`active_vol_param`, own memory), since XM
+     allows an effect-column and volume-column continuous effect on the
+     same row simultaneously. Vol-column vibrato/tone-porta share state
+     (oscillator position, glide target) with their effect-column
+     equivalents; when both columns target the same mechanism on one row
+     (a pathological, essentially never-authored case) the effect column
+     wins rather than double-stepping it.
+   - **Verified against `openmpt123`**: new fixtures in
+     `tools/xm2t00t/xm_synth.py` for volume/panning envelopes (sustain,
+     loop, the panning envelope's pan-dependent asymmetric-swing formula),
+     fadeout, and the volume column's level/pan bands all diff clean. Vol-
+     column vibrato and tone portamento are continuous pitch
+     oscillators/glides, same category as the effect-column vibrato (#19:
+     "not chased to bit-exactness... any small rate mismatch is permanent
+     phase drift") — their *mechanism* (no retrigger, oscillates/glides,
+     shared state) is instead pinned down with C++ unit tests in
+     `render_xm_device.cpp`, matching that precedent rather than fighting
+     it. Autovibrato is the same story and is covered the same way (a
+     dedicated sweep/freeze/no-op unit test; not asserted in the audio
+     diff harness).
 7. Long tail of FT2 quirks, chased against `openmpt123` reference renders.
 8. Retrofit sub-block rendering to the subtractive engine.
 9. (Phase 2) Deterministic simulator → load schedule → dynamic sample loading.

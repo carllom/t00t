@@ -9,26 +9,32 @@
 #include "mixer.h"
 #include "pan.h"
 
-// Core 0 tracker player (#17/#18 landed the notes-only walk; #19 adds the
-// 90%-usage effect set) — order-list/pattern walk, note triggering, the
-// TickBlock/TickRing shapes from the design doc, plus per-tick effect state
-// machines: arpeggio, porta up/down, tone porta, vibrato, volume slide, set
-// volume, position jump, pattern break, set speed/tempo. Pure integer/double
-// math over a `SongHeader*` blob, no pico-sdk: this header is included by
-// both tools/host_render/render_xm_device.cpp (the #17 reference-diff
-// harness) and the real Core 0 engine (player_task.cpp). `player_produce_tick()`
-// is a pure function of `PlayerState` plus the blob -- identical behaviour on
+// Core 0 tracker player (#17/#18 landed the notes-only walk; #19 added the
+// 90%-usage effect set; #20 adds instruments -- volume/panning envelopes,
+// key-off/fadeout, the full volume column, autovibrato) — order-list/pattern
+// walk, note triggering, the TickBlock/TickRing shapes from the design doc,
+// per-tick effect state machines (arpeggio, porta up/down, tone porta,
+// vibrato, volume slide, set volume/panning, position jump, pattern break,
+// set speed/tempo), and #20's per-instrument state (envelopes, fadeout,
+// autovibrato) resolved once per tick regardless of whether a pattern effect
+// is active. Pure integer/double math over a `SongHeader*` blob, no
+// pico-sdk: this header is included by both
+// tools/host_render/render_xm_device.cpp (the #17 reference-diff harness)
+// and the real Core 0 engine (player_task.cpp). `player_produce_tick()` is a
+// pure function of `PlayerState` plus the blob -- identical behaviour on
 // host or device is the whole point (tracker.md: "Any divergence between the
 // host and device render paths defeats the purpose").
 //
-// Effect column commands NOT in #19's 90% set (E-subcommands, tremolo,
-// retrig, tremor, global volume, panning slide, ...) are still no-ops here --
-// tracker.md's "long tail of FT2 quirks" (#20+). The volume column's
-// SET_VOLUME/SET_PANNING are honoured at trigger time (and on a
-// tone-portamento row that omits a retrigger) because they aren't per-tick
-// effects. Key-off (note 97) cuts the voice's volume target to 0 immediately
-// rather than releasing an envelope -- there is no envelope yet (#20); this
-// is the pre-envelope approximation.
+// Effect column commands NOT in #19/#20's scope (E-subcommands, tremolo,
+// retrig, tremor, global volume, effect-column panning slide, 9xx sample
+// offset, ping-pong loops, ...) are still no-ops here -- tracker.md's "long
+// tail of FT2 quirks" (#21/#22). Key-off (note 97) does not cut a voice
+// directly: it only marks the channel key_off, which the envelope/fadeout
+// machinery (tracker_resolve_envelope_volpan()) consumes every tick from
+// then on -- an instrument with an enabled volume envelope releases through
+// it (plus fadeout, once the envelope itself isn't holding sustain); one
+// with no envelope at all cuts (almost) instantly, matching openmpt123 (see
+// tracker_resolve_envelope_volpan()'s header comment).
 //
 // Requires osc_init_sine() to have been called first (pan_gains_q15's
 // quadrature source), same precondition as mixer.h's consumers.
@@ -118,10 +124,13 @@ struct PlayerChannelState {
     uint8_t trigger = 0;
 
     // Volume/pan source of truth -- volL/volR above are derived from these
-    // via tracker_recompute_volume() every time either changes (trigger,
-    // Cxx, Axy, vol-column set-volume/panning).
+    // (plus envelopes/fadeout, #20) every tick by
+    // tracker_resolve_envelope_volpan(). pan_xm stays in XM's 0..255
+    // domain, not Q15, because the panning envelope's asymmetric formula
+    // (tracker_resolve_envelope_volpan()) needs |pan - 128| in that domain;
+    // conversion to Q15 happens once, at the end, via tracker_xm_pan_to_q15().
     uint32_t vol64 = 0;    // 0..64, XM convention
-    int16_t pan_q15 = 0;
+    uint32_t pan_xm = 128;  // 0..255, XM convention; 128 = center
 
     // Pitch source of truth. `period` is in the song's native period units
     // (linear or Amiga, tracker.md/periods.py convention) -- portamento and
@@ -150,6 +159,28 @@ struct PlayerChannelState {
     // whatever was running.
     Effect active_effect = Effect::NONE;
     uint8_t active_param = 0;
+
+    // #20: the volume column is a logically independent second effect slot
+    // -- XM allows a volume-column command and an effect-column command on
+    // the same row -- so its continuous commands (volslide, panslide,
+    // vol-column vibrato/tone-porta) get their own active-effect slot and
+    // per-command memory, mirroring active_effect/active_param above.
+    VolEffect active_vol_effect = VolEffect::NONE;
+    uint8_t active_vol_param = 0;
+    uint8_t vol_volslide_memory = 0;
+    uint8_t vol_panslide_memory = 0;
+
+    // #20: instrument envelopes, key-off/fadeout, autovibrato. Reset on
+    // every real trigger (tracker_trigger_note()); key_off persists across
+    // ticks/rows until the next trigger, driving both the envelopes'
+    // sustain-hold and fadeout's decay.
+    bool key_off = false;
+    uint32_t vol_env_pos = 0;
+    uint32_t pan_env_pos = 0;
+    double fadeout_vol = 32768.0;
+    uint32_t autovib_pos = 0;
+    double autovib_amp = 0.0;
+    bool autovib_sweeping = false;
 };
 
 struct PlayerState {
@@ -326,6 +357,163 @@ static constexpr uint8_t TRACKER_VIBRATO_SINE[32] = {
     180, 161, 141, 120, 97, 74, 49, 24,
 };
 
+// #20: instrument envelopes / key-off / volume column / autovibrato.
+//
+// Envelope flags (matches blob_format.py's _envelope_flags(): "bit0 enabled,
+// bit1 sustain, bit2 loop").
+enum : uint32_t {
+    TRACKER_ENV_ENABLED = 0x01,
+    TRACKER_ENV_SUSTAIN = 0x02,
+    TRACKER_ENV_LOOP    = 0x04,
+};
+
+// One tick of one envelope (volume and panning share this shape): returns
+// the envelope's value (0..64) at `pos` (the channel's running envelope
+// tick, owned by the caller), then advances `pos` for the next call.
+// Points are absolute-tick/value pairs (XM convention). Behaviourally
+// follows FT2's envelope state machine -- sustain holds position exactly at
+// the sustain point while the note is still held; looping wraps position
+// back to loop_start once it reaches loop_end -- but recomputes the value
+// fresh from the point table each tick via direct interpolation rather than
+// FT2's own incremental Q8.8 delta-accumulation (which this engine has no
+// need to replicate bit-for-bit: it exists in the original to avoid a
+// division on 1990s hardware, not for behavioural reasons). Equivalent for
+// well-formed envelopes, which is the overwhelming majority; loop-end/
+// sustain-point coincidence edge cases are exactly the kind of "classic FT2
+// divergence point" tracker.md defers to the quirk tail (#22).
+inline double tracker_envelope_tick(const EnvelopePoint *points, uint32_t count,
+                                     uint32_t flags, uint32_t sustain_idx,
+                                     uint32_t loop_start_idx, uint32_t loop_end_idx,
+                                     uint32_t &pos, bool key_off) {
+    if (count == 0) return 64.0;
+
+    uint32_t last_tick = points[count - 1].tick;
+    double value;
+    if (count == 1 || pos <= points[0].tick) {
+        value = (double)points[0].value;
+    } else if (pos >= last_tick) {
+        value = (double)points[count - 1].value;
+    } else {
+        value = (double)points[count - 1].value;  // unreachable fallback
+        for (uint32_t i = 0; i + 1 < count; i++) {
+            if (pos >= points[i].tick && pos <= points[i + 1].tick) {
+                uint32_t t0 = points[i].tick, t1 = points[i + 1].tick;
+                double v0 = (double)points[i].value, v1 = (double)points[i + 1].value;
+                value = (t1 == t0) ? v0 : v0 + (v1 - v0) * (double)(pos - t0) / (double)(t1 - t0);
+                break;
+            }
+        }
+    }
+
+    bool sustain_hold = (flags & TRACKER_ENV_SUSTAIN) && !key_off &&
+                         sustain_idx < count && pos == points[sustain_idx].tick;
+    if (!sustain_hold) {
+        if (pos < last_tick) pos++;
+        if ((flags & TRACKER_ENV_LOOP) && loop_end_idx < count && pos >= points[loop_end_idx].tick) {
+            pos = points[loop_start_idx < count ? loop_start_idx : 0].tick;
+        }
+    }
+    return value;
+}
+
+// Fadeout only ever moves after key-off, and never resets except on a fresh
+// trigger (tracker_trigger_note()). Only called (tracker_resolve_envelope_
+// volpan()) when the instrument's volume envelope is enabled -- fadeout is
+// a *release* mechanism for an envelope-driven instrument, not a substitute
+// for one. Verified against openmpt123 (#20, fadeout_basic vs
+// volume_envelope_basic): an instrument with no envelope at all cuts
+// (almost) instantly at key-off regardless of its fadeout field, rather
+// than fading over 32768/fadeout ticks -- see tracker_resolve_envelope_
+// volpan()'s no-envelope branch for that case.
+inline void tracker_fadeout_tick(const InstrumentHeader &inst, PlayerChannelState &pcs) {
+    if (pcs.key_off) {
+        pcs.fadeout_vol -= (double)inst.volume_fadeout;
+        if (pcs.fadeout_vol < 0.0) pcs.fadeout_vol = 0.0;
+    }
+}
+
+// 256-entry sine table for autovibrato's default waveform, amplitude ~64 to
+// match FT2's own autoVibSineTab convention (ch->autoVibPos is a full byte,
+// 0..255, unlike the effect-column vibrato's 32-entry quarter-wave table).
+static constexpr int8_t TRACKER_AUTOVIB_SINE[256] = {
+    0, 2, 3, 5, 6, 8, 9, 11, 12, 14, 16, 17, 19, 20, 22, 23,
+    24, 26, 27, 29, 30, 32, 33, 34, 36, 37, 38, 39, 41, 42, 43, 44,
+    45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 56, 57, 58, 59,
+    59, 60, 60, 61, 61, 62, 62, 62, 63, 63, 63, 64, 64, 64, 64, 64,
+    64, 64, 64, 64, 64, 64, 63, 63, 63, 62, 62, 62, 61, 61, 60, 60,
+    59, 59, 58, 57, 56, 56, 55, 54, 53, 52, 51, 50, 49, 48, 47, 46,
+    45, 44, 43, 42, 41, 39, 38, 37, 36, 34, 33, 32, 30, 29, 27, 26,
+    24, 23, 22, 20, 19, 17, 16, 14, 12, 11, 9, 8, 6, 5, 3, 2,
+    0, -2, -3, -5, -6, -8, -9, -11, -12, -14, -16, -17, -19, -20, -22, -23,
+    -24, -26, -27, -29, -30, -32, -33, -34, -36, -37, -38, -39, -41, -42, -43, -44,
+    -45, -46, -47, -48, -49, -50, -51, -52, -53, -54, -55, -56, -56, -57, -58, -59,
+    -59, -60, -60, -61, -61, -62, -62, -62, -63, -63, -63, -64, -64, -64, -64, -64,
+    -64, -64, -64, -64, -64, -64, -63, -63, -63, -62, -62, -62, -61, -61, -60, -60,
+    -59, -59, -58, -57, -56, -56, -55, -54, -53, -52, -51, -50, -49, -48, -47, -46,
+    -45, -44, -43, -42, -41, -39, -38, -37, -36, -34, -33, -32, -30, -29, -27, -26,
+    -24, -23, -22, -20, -19, -17, -16, -14, -12, -11, -9, -8, -6, -5, -3, -2,
+};
+
+// Standard XM volume-column tone-portamento coarse rate table (vol-column
+// param 0..15 -> glide speed in this engine's period units/tick, same units
+// as the effect-column 3xx param). Spot-checked against openmpt123 (#20,
+// param 8 -> rate 128): a clean match. Not exhaustively verified against
+// every one of the 16 entries -- a rare command (far less common in real
+// modules than the effect-column 3xx it's an alternate spelling of), and
+// once the rate is "fast enough" to reach the target note within a couple
+// of ticks the render is identical for any such rate for the rest of the
+// row, which makes distinguishing nearby candidate values empirically
+// unreliable for anything but the smallest params. Indices 10..15 are
+// effectively unused by real modules (the format only defines 0..9) but
+// filled in for safety rather than left to read garbage. Long-tail
+// precision here belongs to #22, same as the manual vibrato effect's own
+// "not chased to bit-exactness" caveat.
+static constexpr uint8_t TRACKER_VOLCOL_TONEPORTA_RATE[16] = {
+    0, 1, 4, 8, 16, 32, 64, 96, 128, 255, 255, 255, 255, 255, 255, 255,
+};
+
+inline double tracker_volcol_toneporta_rate(uint8_t vol_param) {
+    return (double)TRACKER_VOLCOL_TONEPORTA_RATE[vol_param & 0x0F];
+}
+
+// #20 autovibrato: per-instrument sweep/depth/rate/waveform pitch LFO,
+// applied every tick on top of whatever the pattern effects computed --
+// FT2's updateVolPanAutoVib() auto-vibrato section, ported to this engine's
+// double-precision period math (tracker_note_to_period()'s own convention,
+// same reasoning as that function's header comment: nowhere near Core 0's
+// budget). Sweep ramps amplitude from 0 to depth over `sweep` ticks (or
+// straight to depth if sweep == 0), and freezes -- does not reset -- once
+// the note is released. The resulting swing is intentionally small (~4
+// period units at max depth): FT2's own internal period units are 4x finer
+// than this engine's linear period scale (the same *4 factor as
+// tracker_apply_pitch_vol_effect()'s porta comment), and autovibrato is
+// meant to be a subtle chorus-like wobble, not a bend.
+inline double tracker_autovibrato_delta(const InstrumentHeader &inst, PlayerChannelState &pcs) {
+    if (inst.vibrato_depth == 0) return 0.0;
+
+    double depth = (double)inst.vibrato_depth;
+    if (inst.vibrato_sweep > 0 && pcs.autovib_sweeping) {
+        pcs.autovib_amp += depth / (double)inst.vibrato_sweep;
+        if (pcs.autovib_amp >= depth) {
+            pcs.autovib_amp = depth;
+            pcs.autovib_sweeping = false;
+        }
+    }
+
+    uint8_t pos = (uint8_t)pcs.autovib_pos;
+    int32_t table_val;
+    switch (inst.vibrato_type) {
+        case 1: table_val = (pos > 127) ? 64 : -64; break;                    // square
+        case 2: table_val = (int32_t)(((pos >> 1) + 64) & 127) - 64; break;   // ramp
+        case 3: table_val = (int32_t)((-(pos >> 1) + 64) & 127) - 64; break;  // ramp, inverted
+        default: table_val = (int32_t)TRACKER_AUTOVIB_SINE[pos]; break;       // sine
+    }
+
+    double delta = (double)table_val * pcs.autovib_amp / 256.0;
+    pcs.autovib_pos = (pcs.autovib_pos + inst.vibrato_rate) & 0xFFu;
+    return delta;
+}
+
 // Result of mapping (instrument, note) through the sample-map/sample-index
 // tables -- shared by a normal trigger and a tone-portamento retarget (which
 // needs the destination note's tuning without actually triggering it).
@@ -359,34 +547,6 @@ inline TrackerSampleResolution tracker_resolve_note_sample(const SongHeader *son
     return r;
 }
 
-// Rebuilds volL/volR (Q15, post-pan) from a channel's vol64/pan_q15 --
-// called after a trigger and after any effect that changes volume or pan
-// (Cxx, Axy, vol-column set-volume/panning).
-inline void tracker_recompute_volume(PlayerChannelState &pcs) {
-    int32_t vol_q15 = (int32_t)((pcs.vol64 * 32767u + 32u) / 64u);
-    int32_t gain_l, gain_r;
-    pan_gains_q15(pcs.pan_q15, gain_l, gain_r);
-    pcs.volL = (vol_q15 * gain_l) >> 15;
-    pcs.volR = (vol_q15 * gain_r) >> 15;
-}
-
-// Applies the vol column's direct sets against the channel's *current*
-// vol64/pan_q15 (as opposed to tracker_trigger_note()'s use of the sample's
-// defaults as the base) -- the path a tone-portamento row without a
-// retrigger takes, since XM still honours vol-column commands there even
-// though the note itself doesn't restart.
-inline void tracker_apply_vol_column(const Event &ev, PlayerChannelState &pcs) {
-    if ((VolEffect)ev.vol_effect == VolEffect::SET_VOLUME) {
-        uint32_t v = ev.vol_param;
-        if (v > 64) v = 64;
-        pcs.vol64 = v;
-    } else if ((VolEffect)ev.vol_effect == VolEffect::SET_PANNING) {
-        uint32_t p4 = ev.vol_param & 0xF;
-        pcs.pan_q15 = (int16_t)(int32_t)((p4 * 65535u / 15u) - 32768u);
-    }
-    tracker_recompute_volume(pcs);
-}
-
 // Resolves one channel's note trigger (tick 0 of a row only) against the
 // instrument/sample tables and updates `pcs` in place. No-op if there's no
 // note, no instrument on record for this channel, or the instrument's
@@ -394,15 +554,16 @@ inline void tracker_apply_vol_column(const Event &ev, PlayerChannelState &pcs) {
 // leave the channel exactly as it was, matching FT2's "nothing to play"
 // behaviour rather than cutting a note that just has no data behind it.
 // Never called for a tone-portamento row with a note -- that's a retarget,
-// not a retrigger (see tracker_process_effects_tick0()).
+// not a retrigger (see tracker_process_effects_tick0()). Key-off (note 97)
+// does not touch volume directly (#20) -- it only marks `key_off`, which
+// tracker_resolve_envelope_volpan()/tracker_fadeout_tick() consume every
+// tick from here on to release the envelope/fadeout naturally.
 inline void tracker_trigger_note(const SongHeader *song, const Event &ev,
                                   PlayerChannelState &pcs, ChannelTick &ct, bool linear) {
     if (ev.instrument != 0) pcs.instrument = ev.instrument;
 
     if (ev.note == 97) {  // key off
-        pcs.vol64 = 0;
-        pcs.volL = 0;
-        pcs.volR = 0;
+        pcs.key_off = true;
         ct.flags |= TICK_KEY_OFF;
         return;
     }
@@ -421,66 +582,155 @@ inline void tracker_trigger_note(const SongHeader *song, const Event &ev,
     pcs.period = tracker_note_to_period(pcs.base_note, pcs.finetune, linear);
     pcs.vibrato_pos = 0;  // new note resets vibrato phase (no E4 "keep position" support yet)
 
-    uint32_t vol64 = sh.default_volume;
-    if ((VolEffect)ev.vol_effect == VolEffect::SET_VOLUME) vol64 = ev.vol_param;
-    if (vol64 > 64) vol64 = 64;
-    pcs.vol64 = vol64;
+    pcs.vol64 = sh.default_volume > 64 ? 64 : sh.default_volume;
+    pcs.pan_xm = (uint32_t)sh.default_panning;
+    // Vol-column overrides of the above (SET_VOLUME/SET_PANNING) are applied
+    // right after this call returns, by tracker_process_vol_column_tick0()
+    // -- uniformly, whether or not this row triggered a note.
 
-    int16_t pan_q15 = tracker_xm_pan_to_q15((uint32_t)sh.default_panning);
-    if ((VolEffect)ev.vol_effect == VolEffect::SET_PANNING) {
-        // Vol-column panning is a 4-bit field (0..15): scale to the full pan range.
-        uint32_t p4 = ev.vol_param & 0xF;
-        pan_q15 = (int16_t)(int32_t)((p4 * 65535u / 15u) - 32768u);
+    pcs.key_off = false;
+    pcs.vol_env_pos = 0;
+    pcs.pan_env_pos = 0;
+    pcs.fadeout_vol = 32768.0;
+    pcs.autovib_pos = 0;
+    if (pcs.instrument != 0 && pcs.instrument <= song->num_instruments) {
+        const InstrumentHeader &inst = tracker_instrument_table(song)[pcs.instrument - 1];
+        if (inst.vibrato_depth > 0 && inst.vibrato_sweep > 0) {
+            pcs.autovib_amp = 0.0;
+            pcs.autovib_sweeping = true;
+        } else {
+            pcs.autovib_amp = (double)inst.vibrato_depth;
+            pcs.autovib_sweeping = false;
+        }
     }
-    pcs.pan_q15 = pan_q15;
-    tracker_recompute_volume(pcs);
 
     pcs.trigger++;
     ct.flags |= TICK_NOTE_ON;
     ct.start_pos = 0;
 }
 
+// Resolves the volume column's tick-0 behaviour against `pcs` -- called for
+// every row_boundary tick, note or not, since the volume column can carry a
+// standalone command (e.g. a volslide continuing under a row with no note).
+// Instant commands (set volume/panning, fine slides) apply immediately;
+// continuous commands (volslide, vol-column vibrato/panslide/tone-porta)
+// latch into active_vol_effect/active_vol_param for ticks 1..speed-1
+// (tracker_tick_period()/tracker_apply_tick_volume_effects()). The volume
+// column is a second, independent effect slot from the pattern effect
+// column -- XM allows both on the same row -- so it gets its own memory
+// slots (vol_volslide_memory, vol_panslide_memory) rather than sharing the
+// effect column's.
+inline void tracker_process_vol_column_tick0(const Event &ev, PlayerChannelState &pcs) {
+    VolEffect veff = (VolEffect)ev.vol_effect;
+    uint8_t vp = ev.vol_param;
+
+    switch (veff) {
+        case VolEffect::SET_VOLUME: {
+            uint32_t v = vp;
+            if (v > 64) v = 64;
+            pcs.vol64 = v;
+            break;
+        }
+        case VolEffect::SET_PANNING:
+            // Vol-column panning is a 4-bit field (0..15): byte-replicate to
+            // the engine's 0..255 XM-convention domain, same endpoint-exact
+            // expansion as tracker_xm_pan_to_q15() uses for the full 8-bit case.
+            pcs.pan_xm = (uint32_t)(((vp & 0x0F) << 4) | (vp & 0x0F));
+            break;
+        case VolEffect::FINE_VOLSLIDE_DOWN: {
+            int32_t v = (int32_t)pcs.vol64 - (int32_t)vp;
+            pcs.vol64 = (uint32_t)(v < 0 ? 0 : v);
+            break;
+        }
+        case VolEffect::FINE_VOLSLIDE_UP: {
+            int32_t v = (int32_t)pcs.vol64 + (int32_t)vp;
+            pcs.vol64 = (uint32_t)(v > 64 ? 64 : v);
+            break;
+        }
+        case VolEffect::VOLSLIDE_DOWN:
+        case VolEffect::VOLSLIDE_UP:
+            if (vp != 0) pcs.vol_volslide_memory = vp;
+            pcs.active_vol_effect = veff;
+            pcs.active_vol_param = pcs.vol_volslide_memory;
+            break;
+        case VolEffect::SET_VIBRATO_SPEED:
+            // A passive memory-setter, not itself continuous -- it does not
+            // start the oscillator (matches FT2: this only ever primes the
+            // speed a later VIBRATO command, from either column, will use).
+            if (vp != 0) pcs.vibrato_speed = vp;
+            break;
+        case VolEffect::VIBRATO:
+            if (vp != 0) pcs.vibrato_depth = vp;
+            pcs.active_vol_effect = VolEffect::VIBRATO;
+            break;
+        case VolEffect::PANSLIDE_LEFT:
+        case VolEffect::PANSLIDE_RIGHT:
+            if (vp != 0) pcs.vol_panslide_memory = vp;
+            pcs.active_vol_effect = veff;
+            pcs.active_vol_param = pcs.vol_panslide_memory;
+            break;
+        case VolEffect::TONE_PORTA:
+            // No memory reuse: the vol column's rate comes straight from
+            // tracker_volcol_toneporta_rate(vp) every time it's restated, a
+            // 0 param legitimately meaning "don't move this row" rather
+            // than "reuse the last rate" (unlike the effect column's 3xx).
+            pcs.active_vol_effect = VolEffect::TONE_PORTA;
+            pcs.active_vol_param = vp;
+            break;
+        default:
+            break;
+    }
+}
+
 // Tick-0-only processing for one channel: note trigger (or tone-portamento
-// retarget, which suppresses the trigger), effect-memory resolution, and
-// every effect that acts instantaneously rather than per-tick (Cxx, Bxx,
-// Dxx, Fxx). Sets `pcs.active_effect`/`active_param` for
-// tracker_apply_pitch_vol_effect() to consume on ticks 1..speed-1 of this
-// row -- resolved here (memory substituted) so later ticks never re-touch
-// the memory slots. An event with no effect column entry correctly resets
-// active_effect to NONE, which is what makes a continuous effect require
-// restating every row it runs on (tracker.md/#19: "tick-0-vs-later-tick
-// semantics ... is where the real work is").
+// retarget, which suppresses the trigger), the volume column, effect-memory
+// resolution, and every effect that acts instantaneously rather than
+// per-tick (Cxx, 8xx, Bxx, Dxx, Fxx). Sets `pcs.active_effect`/
+// `active_param` for tracker_tick_period() to consume on ticks 1..speed-1 of
+// this row -- resolved here (memory substituted) so later ticks never
+// re-touch the memory slots. An event with no effect column entry correctly
+// resets active_effect to NONE, which is what makes a continuous effect
+// require restating every row it runs on (tracker.md/#19: "tick-0-vs-later-
+// tick semantics ... is where the real work is").
 inline void tracker_process_effects_tick0(const SongHeader *song, PlayerState &st, uint32_t c,
                                            const Event &ev, ChannelTick &ct, bool linear) {
     PlayerChannelState &pcs = st.ch[c];
     Effect eff = (Effect)ev.effect;
     uint8_t param = ev.effect_param;
+    VolEffect veff = (VolEffect)ev.vol_effect;
 
     pcs.active_effect = Effect::NONE;
     pcs.active_param = 0;
+    pcs.active_vol_effect = VolEffect::NONE;
+    pcs.active_vol_param = 0;
 
-    if (eff == Effect::TONE_PORTA) {
-        // A note here retargets the glide instead of retriggering the
-        // sample -- the whole point of tone portamento. The instrument
-        // column, key-off, and vol column still behave normally.
+    // Tone portamento retargets rather than retriggers -- true whether it's
+    // requested from the effect column (3xx) or the volume column (Fx), so
+    // a note on this row must not click/reset the sample either way.
+    bool tone_porta_row = (eff == Effect::TONE_PORTA) || (veff == VolEffect::TONE_PORTA);
+
+    if (tone_porta_row) {
+        // The instrument column, key-off, and vol column still behave normally.
         if (ev.instrument != 0) pcs.instrument = ev.instrument;
         if (ev.note == 97) {
-            pcs.vol64 = 0;
-            pcs.volL = 0;
-            pcs.volR = 0;
+            pcs.key_off = true;
             ct.flags |= TICK_KEY_OFF;
         } else if (ev.note >= 1 && ev.note <= 96) {
             TrackerSampleResolution res = tracker_resolve_note_sample(song, pcs.instrument, ev.note);
             if (res.ok) pcs.tone_porta_target = tracker_note_to_period(res.base_note, (double)res.sh->finetune, linear);
         }
-        tracker_apply_vol_column(ev, pcs);
+    } else {
+        tracker_trigger_note(song, ev, pcs, ct, linear);
+    }
+
+    tracker_process_vol_column_tick0(ev, pcs);
+
+    if (eff == Effect::TONE_PORTA) {
         if (param != 0) pcs.tone_porta_memory = param;
         pcs.active_effect = Effect::TONE_PORTA;
         pcs.active_param = pcs.tone_porta_memory;
         return;
     }
-
-    tracker_trigger_note(song, ev, pcs, ct, linear);
 
     switch (eff) {
         case Effect::ARPEGGIO:
@@ -513,9 +763,13 @@ inline void tracker_process_effects_tick0(const SongHeader *song, PlayerState &s
             uint32_t v = param;
             if (v > 64) v = 64;
             pcs.vol64 = v;
-            tracker_recompute_volume(pcs);
             break;
         }
+        case Effect::SET_PANNING:
+            // Effect-column 8xx uses the full byte 0..255 directly, unlike
+            // the volume column's 4-bit Cxx field.
+            pcs.pan_xm = (uint32_t)param;
+            break;
         case Effect::POSITION_JUMP:
             st.jump_pending = true;
             st.jump_target_order = param;
@@ -538,25 +792,66 @@ inline void tracker_process_effects_tick0(const SongHeader *song, PlayerState &s
     }
 }
 
-// Ticks 1..speed-1 of a row: advances/applies whichever continuous effect
-// tracker_process_effects_tick0() resolved for this channel, and returns
-// this tick's increment. Porta up/down and tone portamento write the new
-// pitch back into `pcs.period`/`pcs.inc` -- a lasting change that must
-// survive into rows that don't restate the effect. Arpeggio and vibrato are
-// transient: they compute an offset from `pcs.period` for this tick only
-// and never touch `pcs.inc`, so the channel returns to its unmodulated pitch
-// the instant the effect isn't restated.
-inline uint32_t tracker_apply_pitch_vol_effect(PlayerChannelState &pcs, uint32_t tick_in_row, bool linear) {
+// Straight-line glide from `period` toward `target` at `step` units/tick,
+// clamping (not overshooting) once it arrives -- the shared shape of both
+// the effect-column (3xx) and volume-column (Fx) tone portamento.
+inline double tracker_glide_period(double period, double target, double step) {
+    if (period < target) {
+        period += step;
+        if (period > target) period = target;
+    } else if (period > target) {
+        period -= step;
+        if (period < target) period = target;
+    }
+    return period;
+}
+
+// One tick of the shared vibrato oscillator (effect-column 4xy and
+// volume-column Bx both drive this same position/speed/depth state --
+// tracker_process_vol_column_tick0()'s header comment). Empirically
+// calibrated against openmpt123 (pitch-tracked a long held vibrato run):
+// this table's "quarter cycle" (index 0 to its peak at 16) took roughly 22
+// ticks at speed 1, closer to a >>1 position-to-index shift than the >>2
+// some published FT2 pseudocode uses. Not chased to bit-exactness -- a
+// continuous oscillation has no settling point to converge on the way
+// porta/tone porta do, so any small rate mismatch is permanent phase drift.
+inline double tracker_vibrato_delta(PlayerChannelState &pcs) {
+    uint8_t idx = (pcs.vibrato_pos >> 1) & 0x1F;
+    int32_t amplitude = (int32_t)TRACKER_VIBRATO_SINE[idx];
+    int32_t delta = (amplitude * (int32_t)pcs.vibrato_depth) >> 5;
+    if (pcs.vibrato_pos >= 128) delta = -delta;
+    pcs.vibrato_pos = (uint8_t)(pcs.vibrato_pos + pcs.vibrato_speed);
+    return (double)delta;
+}
+
+// Ticks 1..speed-1 of a row: advances/applies whichever continuous *pitch*
+// effect is active this tick, from either column, and returns this tick's
+// period (not yet converted to an increment -- the caller still needs to
+// add autovibrato's delta on top, tracker_autovibrato_delta()). Porta
+// up/down and tone portamento write the new pitch back into `pcs.period` --
+// a lasting change that must survive into rows that don't restate the
+// effect. Arpeggio and vibrato are transient: they compute an offset from
+// `pcs.period` for this tick only and never touch it, so the channel
+// returns to its unmodulated pitch the instant the effect isn't restated.
+// The volume column's own TONE_PORTA/VIBRATO only apply here when the
+// effect column isn't *already* driving the same mechanism this tick --
+// XM's two columns are logically independent, but both driving one glide/
+// oscillator at once is a pathological, essentially never-authored case,
+// and letting the effect column win avoids double-stepping it.
+inline double tracker_tick_period(PlayerChannelState &pcs, uint32_t tick_in_row, bool linear) {
+    double period = pcs.period;
+
     switch (pcs.active_effect) {
         case Effect::ARPEGGIO: {
             uint32_t which = tick_in_row % 3;
-            if (which == 0) return pcs.inc;
-            // Verified against openmpt123: tick 1 of the cycle is the *low*
-            // nibble's offset, tick 2 the high nibble's -- base, +y, +x, not
-            // the other way round.
-            int offset = (which == 1) ? (pcs.active_param & 0x0F) : (pcs.active_param >> 4);
-            double p = tracker_note_to_period(pcs.base_note + offset, pcs.finetune, linear);
-            return tracker_period_to_inc(p, linear);
+            if (which != 0) {
+                // Verified against openmpt123: tick 1 of the cycle is the
+                // *low* nibble's offset, tick 2 the high nibble's -- base,
+                // +y, +x, not the other way round.
+                int offset = (which == 1) ? (pcs.active_param & 0x0F) : (pcs.active_param >> 4);
+                period = tracker_note_to_period(pcs.base_note + offset, pcs.finetune, linear);
+            }
+            break;
         }
         // No *4 here: some published FT2 pseudocode multiplies the raw
         // param by 4 for linear-frequency slides, but that's compensating
@@ -570,54 +865,134 @@ inline uint32_t tracker_apply_pitch_vol_effect(PlayerChannelState &pcs, uint32_t
         case Effect::PORTA_UP:
             pcs.period -= (double)pcs.active_param;
             tracker_clamp_period(pcs.period);
+            period = pcs.period;
             pcs.inc = tracker_period_to_inc(pcs.period, linear);
-            return pcs.inc;
+            break;
         case Effect::PORTA_DOWN:
             pcs.period += (double)pcs.active_param;
             tracker_clamp_period(pcs.period);
+            period = pcs.period;
             pcs.inc = tracker_period_to_inc(pcs.period, linear);
-            return pcs.inc;
-        case Effect::TONE_PORTA: {
-            double step = (double)pcs.active_param;
-            if (pcs.period < pcs.tone_porta_target) {
-                pcs.period += step;
-                if (pcs.period > pcs.tone_porta_target) pcs.period = pcs.tone_porta_target;
-            } else if (pcs.period > pcs.tone_porta_target) {
-                pcs.period -= step;
-                if (pcs.period < pcs.tone_porta_target) pcs.period = pcs.tone_porta_target;
-            }
+            break;
+        case Effect::TONE_PORTA:
+            pcs.period = tracker_glide_period(pcs.period, pcs.tone_porta_target, (double)pcs.active_param);
+            period = pcs.period;
             pcs.inc = tracker_period_to_inc(pcs.period, linear);
-            return pcs.inc;
-        }
-        case Effect::VIBRATO: {
-            // Empirically calibrated against openmpt123 (pitch-tracked a
-            // long held vibrato run): this table's "quarter cycle" (index 0
-            // to its peak at 16) took roughly 22 ticks at speed 1, closer to
-            // a >>1 position-to-index shift than the >>2 some published FT2
-            // pseudocode uses. Not chased to bit-exactness -- see this
-            // function's header comment on why continuous pitch effects
-            // aren't held to that bar.
-            uint8_t idx = (pcs.vibrato_pos >> 1) & 0x1F;
-            int32_t amplitude = (int32_t)TRACKER_VIBRATO_SINE[idx];
-            int32_t delta = (amplitude * (int32_t)pcs.vibrato_depth) >> 5;
-            if (pcs.vibrato_pos >= 128) delta = -delta;
-            pcs.vibrato_pos = (uint8_t)(pcs.vibrato_pos + pcs.vibrato_speed);
-            return tracker_period_to_inc(pcs.period + (double)delta, linear);
-        }
-        case Effect::VOLUME_SLIDE: {
-            uint8_t hi = pcs.active_param >> 4, lo = pcs.active_param & 0x0F;
-            int32_t v = (int32_t)pcs.vol64;
-            if (hi != 0) v += hi;
-            else v -= lo;
-            if (v < 0) v = 0;
-            if (v > 64) v = 64;
-            pcs.vol64 = (uint32_t)v;
-            tracker_recompute_volume(pcs);
-            return pcs.inc;
-        }
+            break;
+        case Effect::VIBRATO:
+            period = pcs.period + tracker_vibrato_delta(pcs);
+            break;
         default:
-            return pcs.inc;
+            break;
     }
+
+    // pcs.inc is kept in sync with pcs.period whenever a *persisting* glide
+    // (porta/tone-porta, from either column) moves it, above and here --
+    // that's what lets the caller's fast path (player_produce_tick(): reuse
+    // pcs.inc when `base_period == pcs.period`) stay correct on a later,
+    // effect-less tick: the pitch change from an unrestated portamento must
+    // survive, only the *effect application* needs restating every row.
+    // Arpeggio and vibrato are the opposite -- transient, so they must NOT
+    // write pcs.inc, or the modulation would leak into ticks that never
+    // asked for it.
+    if (pcs.active_vol_effect == VolEffect::TONE_PORTA && pcs.active_effect != Effect::TONE_PORTA) {
+        double rate = tracker_volcol_toneporta_rate(pcs.active_vol_param);
+        pcs.period = tracker_glide_period(pcs.period, pcs.tone_porta_target, rate);
+        period = pcs.period;
+        pcs.inc = tracker_period_to_inc(pcs.period, linear);
+    } else if (pcs.active_vol_effect == VolEffect::VIBRATO && pcs.active_effect != Effect::VIBRATO) {
+        period = pcs.period + tracker_vibrato_delta(pcs);
+    }
+
+    return period;
+}
+
+// Ticks 1..speed-1 of a row: the *non*-pitch continuous effects (volume
+// slides, panning slides) from either column. Split out from
+// tracker_tick_period() because these touch vol64/pan_xm, not period/inc.
+inline void tracker_apply_tick_volume_effects(PlayerChannelState &pcs) {
+    if (pcs.active_effect == Effect::VOLUME_SLIDE) {
+        uint8_t hi = pcs.active_param >> 4, lo = pcs.active_param & 0x0F;
+        int32_t v = (int32_t)pcs.vol64;
+        if (hi != 0) v += hi;
+        else v -= lo;
+        if (v < 0) v = 0;
+        if (v > 64) v = 64;
+        pcs.vol64 = (uint32_t)v;
+    }
+
+    if (pcs.active_vol_effect == VolEffect::VOLSLIDE_DOWN) {
+        int32_t v = (int32_t)pcs.vol64 - (int32_t)pcs.active_vol_param;
+        pcs.vol64 = (uint32_t)(v < 0 ? 0 : v);
+    } else if (pcs.active_vol_effect == VolEffect::VOLSLIDE_UP) {
+        int32_t v = (int32_t)pcs.vol64 + (int32_t)pcs.active_vol_param;
+        pcs.vol64 = (uint32_t)(v > 64 ? 64 : v);
+    }
+
+    if (pcs.active_vol_effect == VolEffect::PANSLIDE_LEFT) {
+        int32_t p = (int32_t)pcs.pan_xm - (int32_t)pcs.active_vol_param;
+        pcs.pan_xm = (uint32_t)(p < 0 ? 0 : p);
+    } else if (pcs.active_vol_effect == VolEffect::PANSLIDE_RIGHT) {
+        int32_t p = (int32_t)pcs.pan_xm + (int32_t)pcs.active_vol_param;
+        pcs.pan_xm = (uint32_t)(p > 255 ? 255 : p);
+    }
+}
+
+// Runs every tick (tick 0 included, independent of any pattern effect):
+// advances the volume/panning envelopes and fadeout, and resolves the
+// result into `pcs.volL`/`pcs.volR` (Q15, post-pan) -- the FT2 formula this
+// ports is tracker.md/#20's `updateVolPanAutoVib()`. The panning envelope's
+// effect is deliberately asymmetric: `pan_mul` shrinks toward 0 as the
+// channel's base pan approaches either extreme, so the envelope can't push
+// panning further out than the channel's own pan already allows -- centered
+// channels get the envelope's full swing, hard-panned ones get almost none.
+inline void tracker_resolve_envelope_volpan(const SongHeader *song, const InstrumentHeader &inst,
+                                             PlayerChannelState &pcs) {
+    const uint8_t *base = tracker_blob_base(song);
+
+    bool vol_env_enabled = (inst.vol_env_flags & TRACKER_ENV_ENABLED) && inst.vol_env_count > 0;
+    double vol_env_scale = 1.0;
+    if (vol_env_enabled) {
+        const EnvelopePoint *pts = reinterpret_cast<const EnvelopePoint *>(base + inst.vol_env_offset);
+        double v = tracker_envelope_tick(pts, inst.vol_env_count, inst.vol_env_flags,
+                                          inst.vol_env_sustain, inst.vol_env_loop_start, inst.vol_env_loop_end,
+                                          pcs.vol_env_pos, pcs.key_off);
+        vol_env_scale = v / 64.0;
+        tracker_fadeout_tick(inst, pcs);
+    } else if (pcs.key_off) {
+        // Fadeout is a *release* mechanism for an envelope-driven
+        // instrument -- verified against openmpt123 (#20): an instrument
+        // with no volume envelope at all cuts at key-off almost instantly,
+        // regardless of its fadeout field's value, rather than fading over
+        // 32768/fadeout ticks. Reusing fadeout_vol for the cut (instead of
+        // vol64 directly) keeps this reversible if the channel retriggers
+        // mid-cut and keeps the single downstream vol_scale formula below
+        // as the only place that reads it.
+        pcs.fadeout_vol = 0.0;
+    }
+
+    double final_pan_xm = (double)pcs.pan_xm;
+    if ((inst.pan_env_flags & TRACKER_ENV_ENABLED) && inst.pan_env_count > 0) {
+        const EnvelopePoint *pts = reinterpret_cast<const EnvelopePoint *>(base + inst.pan_env_offset);
+        double v = tracker_envelope_tick(pts, inst.pan_env_count, inst.pan_env_flags,
+                                          inst.pan_env_sustain, inst.pan_env_loop_start, inst.pan_env_loop_end,
+                                          pcs.pan_env_pos, pcs.key_off);
+        double pan_mul = (128.0 - std::fabs((double)pcs.pan_xm - 128.0)) * 8.0;
+        final_pan_xm = (double)pcs.pan_xm + (v - 32.0) * pan_mul / 256.0;
+        if (final_pan_xm < 0.0) final_pan_xm = 0.0;
+        if (final_pan_xm > 255.0) final_pan_xm = 255.0;
+    }
+
+    double vol_scale = (pcs.vol64 / 64.0) * vol_env_scale * (pcs.fadeout_vol / 32768.0);
+    if (vol_scale < 0.0) vol_scale = 0.0;
+    if (vol_scale > 1.0) vol_scale = 1.0;
+    int32_t vol_q15 = (int32_t)(vol_scale * 32767.0 + 0.5);
+
+    int16_t pan_q15 = tracker_xm_pan_to_q15((uint32_t)(final_pan_xm + 0.5));
+    int32_t gain_l, gain_r;
+    pan_gains_q15(pan_q15, gain_l, gain_r);
+    pcs.volL = (vol_q15 * gain_l) >> 15;
+    pcs.volR = (vol_q15 * gain_r) >> 15;
 }
 
 // Advances the player by exactly one tick and fills `out` with that tick's
@@ -642,13 +1017,42 @@ inline bool player_produce_tick(PlayerState &st, const SongHeader *song, TickBlo
         if (c >= num_channels) continue;
 
         PlayerChannelState &pcs = st.ch[c];
+        double base_period;
         if (row_boundary) {
             const Event &ev = tracker_event_at(song, pat, st.row, c, num_channels);
             tracker_process_effects_tick0(song, st, c, ev, ct, linear);
+            base_period = pcs.period;  // matches the precomputed table entry pcs.inc already holds
+        } else {
+            tracker_apply_tick_volume_effects(pcs);
+            base_period = tracker_tick_period(pcs, st.tick_in_row, linear);
+        }
+
+        // Instrument envelopes/fadeout/autovibrato (#20): run every tick,
+        // independent of row_boundary or any pattern effect. When nothing
+        // modulated the pitch this tick -- no pattern/vol-column pitch
+        // effect (base_period came back exactly equal to pcs.period, a
+        // plain reassignment with no arithmetic in that case) and no
+        // autovibrato (by far the common case for both) -- reuse pcs.inc
+        // as-is rather than paying a tracker_period_to_inc() round-trip:
+        // byte-identical to pre-#20 output, and exactly what
+        // tracker_trigger_note()'s precomputed note_increments table
+        // latched on tick 0.
+        double autovib_delta = 0.0;
+        bool has_inst = pcs.instrument != 0 && pcs.instrument <= song->num_instruments;
+        const InstrumentHeader *inst_hdr = nullptr;
+        if (has_inst) {
+            inst_hdr = &tracker_instrument_table(song)[pcs.instrument - 1];
+            autovib_delta = tracker_autovibrato_delta(*inst_hdr, pcs);
+        }
+
+        if (base_period == pcs.period && autovib_delta == 0.0) {
             ct.inc = pcs.inc;
         } else {
-            ct.inc = tracker_apply_pitch_vol_effect(pcs, st.tick_in_row, linear);
+            ct.inc = tracker_period_to_inc(base_period + autovib_delta, linear);
         }
+
+        if (has_inst) tracker_resolve_envelope_volpan(song, *inst_hdr, pcs);
+
         ct.tgt_volL = pcs.volL;
         ct.tgt_volR = pcs.volR;
         ct.sample_id = pcs.sample_id;
