@@ -83,3 +83,21 @@ inline VoiceParams voice_params_default<VoiceParams>() {
 
 using VoiceParamBlock = VoiceParamBlockT<VoiceParams>;
 using ParamExchange = ParamExchangeT<VoiceParams>;
+
+// Per-voice formant-space + phoneme telemetry for the display (#37, speech.md
+// "Display": "current phoneme plus a formant-space plot"). F1/F2 are
+// tract.h's SpeechVoice::F[0]/F[1] -- the live, ramped values, not the
+// phoneme's static target, so a plotted dot moves continuously as the
+// segment sequencer (or a mid-note phoneme change, #28) glides between
+// targets. `phoneme` is PHONEME_COUNT when the voice has never sounded (no
+// valid index yet). Same "diagnostic, no locking" contract audio_engine.h
+// documents for audio_engine_load(): Core 1 writes these once per buffer,
+// Core 0's ~10 Hz display_task reads them without synchronization -- a
+// torn read for one frame is invisible at that redraw rate.
+struct SpeechVoiceUiState {
+    uint16_t f1_hz, f2_hz;
+    uint8_t  phoneme;
+    bool     active;
+};
+
+void speech_voice_ui_state(uint32_t voice, SpeechVoiceUiState *out);
