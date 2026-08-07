@@ -70,11 +70,11 @@ void display_task() {
     next = make_timeout_time_ms(50);   // ~20 Hz
 
     static bool     first = true;
-    static uint16_t last_snd = 0;
+    static uint32_t last_snd = 0;
     static uint8_t  last_load = 0xFF;
     static MidiUiState last_midi = { 0xFE, 0, 0xFF, 0, 0, 0, 0xFF, 0xFF, 0xFF, 0xFF };
 
-    uint16_t snd  = voice_alloc_active_mask();   // sounding (Core 1 envelope bitmap)
+    uint32_t snd  = voice_alloc_active_mask();   // sounding (Core 1 envelope bitmap)
     uint8_t  load = audio_engine_load();
     MidiUiState m;
     midi_controller_ui_state(&m);

@@ -20,12 +20,15 @@ struct FxDelay {
         cur_delay = 1;
     }
 
-    // Process one buffer in place. `scratch` is the mono int32 mix; on return it
-    // holds the wet/dry blend (still mono; the caller duplicates to L/R).
-    // Fixed cost per sample, independent of voice count.
+    // Mono send / stereo return: `scratch` enters as the mono downmix of the
+    // stereo dry mix and is fed into the (still-mono) delay line for its
+    // feedback dynamics; on return it holds the wet contribution only
+    // (scaled by mix, no dry component), which the caller adds identically
+    // to both output channels. Fixed cost per sample, independent of voice
+    // count.
     //
     // Maps the raw controller values: p2 → 20..1000 ms delay time,
-    // p1 → feedback (max ≈ 0.91), mix → wet/dry.
+    // p1 → feedback (max ≈ 0.91), mix → wet level.
     inline void process(int32_t *scratch, uint32_t n, const EffectParams &fx) {
         uint32_t ms = 20 + (uint32_t)fx.p2 * 980u / 127u;
         uint32_t target = ms * SAMPLE_RATE / 1000u;
@@ -40,14 +43,14 @@ struct FxDelay {
                         (((int32_t)target - (int32_t)cur_delay) >> 6));
             if (cur_delay < 1) cur_delay = 1;
 
-            // Clip the (unclipped) mix sum to int16 before the effect so the
+            // Clip the (unclipped) mono send to int16 before the effect so the
             // wet-mix multiply below can't overflow.
-            int32_t dry = __ssat(scratch[i], 16);
-            uint32_t r  = (w - cur_delay) & DELAY_MASK;
-            int32_t d   = buf[r];                                            // delayed sample
-            buf[w] = (int16_t)__ssat(dry + (int32_t)(((int64_t)fb * d) >> 15), 16);  // + feedback
+            int32_t send = __ssat(scratch[i], 16);
+            uint32_t r   = (w - cur_delay) & DELAY_MASK;
+            int32_t d    = buf[r];                                              // delayed sample
+            buf[w] = (int16_t)__ssat(send + (int32_t)(((int64_t)fb * d) >> 15), 16);  // + feedback
             w = (w + 1) & DELAY_MASK;
-            scratch[i] = dry + (int32_t)(((int64_t)mix * (d - dry)) >> 15);  // dry*(1-mix)+wet*mix
+            scratch[i] = (int32_t)(((int64_t)mix * d) >> 15);  // wet only, dry stays in the L/R path
         }
     }
 };

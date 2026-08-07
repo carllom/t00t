@@ -13,11 +13,17 @@ ENGINE ?= subtractive
 MIDI_USB  ?= default
 MIDI_UART ?= default
 
+# DMA/mixer buffer size in stereo frames: 256 (default) or 512.
+#   make ENGINE=tracker DMA_BUFFER_SIZE=512
+DMA_BUFFER_SIZE ?= default
+
 CMAKE_FLAGS = -DPICO_BOARD=$(BOARD) -DPICO_PLATFORM=rp2350 \
               -DMIDI_USB=$(MIDI_USB) -DMIDI_UART=$(MIDI_UART) \
-              -DT00T_ENGINE=$(ENGINE)
+              -DT00T_ENGINE=$(ENGINE) -DDMA_BUFFER_SIZE=$(DMA_BUFFER_SIZE)
 
-.PHONY: all clean flash
+HOST_BUILD_DIR = tools/host_render/build
+
+.PHONY: all clean flash host host-clean
 
 # Always (re)configure — cmake is a no-op when nothing changed, and this
 # ensures BOARD / MIDI_* changes take effect. The inner make is incremental.
@@ -32,3 +38,14 @@ clean:
 flash: all
 	@echo "Copy $(UF2) to the Pico (mount it in BOOTSEL mode):"
 	@echo "  cp $(UF2) /media/$$USER/RPI-RP2/"
+
+# Host-side DSP tooling (tools/host_render): builds common-layer headers with
+# the host compiler and renders them to WAV for verification off-device. Does
+# not touch pico-sdk or the device build above.
+host:
+	@mkdir -p $(HOST_BUILD_DIR)
+	cd $(HOST_BUILD_DIR) && cmake ..
+	$(MAKE) -C $(HOST_BUILD_DIR) -j$(shell nproc)
+
+host-clean:
+	rm -rf $(HOST_BUILD_DIR)
