@@ -41,3 +41,24 @@ void tracker_player_task();
 void tracker_transport_play();                    // resume producing from the current position
 void tracker_transport_stop();                    // stop producing; ring drains to silence
 void tracker_transport_seek(uint32_t order_idx);  // rewind to an order, clamped to [0, num_orders)
+
+// Read-only playback snapshot for the display (#24). Taken from the row/tick
+// that produced the most recently *pushed* TickBlock, not live PlayerState --
+// tracker.md "Display": Core 0 already holds this, no reverse channel from
+// Core 1 needed, and it runs one tick ahead of what's audible (invisible at
+// 20ms). `active_mask` bit c is set when channel c was actually audible on
+// that tick -- nonzero pitch increment *and* nonzero post-pan target volume
+// (see fill_ring()'s comment in player_task.cpp for why inc alone isn't a
+// silence signal: it holds the last-triggered note's pitch and doesn't go
+// back to 0 on key-off/fadeout/envelope release the way volume does).
+struct TrackerUiState {
+    uint32_t order_idx;
+    uint32_t pattern_idx;
+    uint32_t row;
+    uint32_t active_mask;
+};
+void tracker_player_ui_state(TrackerUiState *out);
+
+// The loaded song's header (title, tracker name, channel count, ...) --
+// read-only, valid once tracker_player_task_init() has run.
+const SongHeader *tracker_player_song();

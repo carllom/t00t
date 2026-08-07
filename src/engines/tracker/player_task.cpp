@@ -21,12 +21,43 @@ static const SongHeader *s_song;
 static PlayerState s_player_state;
 static bool s_playing = false;
 
+// Display snapshot (#24), latched alongside each produced tick -- see
+// TrackerUiState's comment (player_task.h) for why this is captured *before*
+// player_produce_tick() rather than read back from PlayerState afterwards
+// (its row/order_idx advance logic runs at the tail of that call, so reading
+// them post-call would show the next row one tick early at every row
+// boundary rather than one tick late throughout, matching tracker.md's "one
+// tick ahead" framing instead of jumping the gun on the row itself).
+static TrackerUiState s_ui_state;
+
 // Tops the ring back up to full from the current PlayerState. Called both
 // at init (priming) and from tracker_player_task() (steady state).
 static void fill_ring() {
     while (!g_tracker_tick_ring.full()) {
+        s_ui_state.order_idx = s_player_state.order_idx;
+        s_ui_state.row = s_player_state.row;
+        s_ui_state.pattern_idx = tracker_order_table(s_song)[s_ui_state.order_idx];
+
         TickBlock &tb = g_tracker_tick_ring.write_slot();
         player_produce_tick(s_player_state, s_song, tb);
+
+        // "Active" means audible, not "has a pitch": ct.inc only reflects
+        // the last-triggered note's pitch and, once a channel has ever been
+        // triggered, essentially never returns to 0 on its own (tracker.md/
+        // player.h: pcs.inc is pitch state, not a sounding flag) -- so an
+        // inc-only test lit every channel that had ever played a note and
+        // never went dark again. tgt_volL/tgt_volR (Q15, post-pan) is the
+        // per-tick output of tracker_resolve_envelope_volpan(), which *does*
+        // reach exactly 0 on key-off cut, fadeout completion, volume-envelope
+        // decay with no sustain, and SET_VOLUME/volslide-to-0 -- the actual
+        // "gone quiet" cases a real module hits mid-song.
+        uint32_t mask = 0;
+        for (uint32_t c = 0; c < g_tracker_num_channels; c++) {
+            const ChannelTick &ct = tb.ch[c];
+            if (ct.inc != 0 && (ct.tgt_volL != 0 || ct.tgt_volR != 0)) mask |= (1u << c);
+        }
+        s_ui_state.active_mask = mask;
+
         g_tracker_tick_ring.push();
     }
 }
@@ -72,3 +103,7 @@ void tracker_transport_seek(uint32_t order_idx) {
     if (order_idx >= s_song->num_orders) order_idx = s_song->num_orders - 1;
     s_player_state.order_idx = order_idx;
 }
+
+void tracker_player_ui_state(TrackerUiState *out) { *out = s_ui_state; }
+
+const SongHeader *tracker_player_song() { return s_song; }

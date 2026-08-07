@@ -217,6 +217,7 @@ def build_blob(song: XmSong, sram_budget_bytes: int = bf.DEFAULT_SRAM_BUDGET_BYT
         instrument_table_offset=instrument_table_off, sample_table_offset=sample_table_off,
         sample_data_offset=sample_data_off, sample_data_bytes=sample_data_bytes,
         total_size=total_size, name=song.name.encode("latin-1", "replace"),
+        tracker_name=song.tracker_name.encode("latin-1", "replace"),
     )
     b.write_at(song_header_off, header)
 

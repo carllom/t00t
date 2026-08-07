@@ -77,11 +77,12 @@ def test_struct_roundtrip() -> None:
         num_patterns=2, num_instruments=1, num_samples=1, default_tempo=6,
         default_bpm=125, restart_order=0, order_table_offset=0, pattern_table_offset=0,
         instrument_table_offset=0, sample_table_offset=0, sample_data_offset=0,
-        sample_data_bytes=0, total_size=0, name=b"hello",
+        sample_data_bytes=0, total_size=0, name=b"hello", tracker_name=b"world",
     )
     u2 = bf.SONG_HEADER.unpack(packed2)
     assert u2["magic"] == bf.MAGIC
     assert u2["name"] == b"hello"
+    assert u2["tracker_name"] == b"world"
 
 
 def _make_minimal_song(samples) -> xp.XmSong:
@@ -230,6 +231,7 @@ def test_blob_self_consistency(path: str, song: xp.XmSong) -> None:
     assert hdr["num_instruments"] == len(song.instruments)
     assert hdr["num_samples"] == len(flat_samples)
     assert hdr["total_size"] == len(blob)
+    assert hdr["tracker_name"] == song.tracker_name.encode("latin-1", "replace")
     assert hdr["sample_data_bytes"] == sum(blob_writer._sample_region_size(s) for s in flat_samples)
 
     order_off = hdr["order_table_offset"]
