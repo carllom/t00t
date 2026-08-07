@@ -41,6 +41,15 @@
 #include "wslcd/display.h"
 #endif
 
+// The tracker engine's Core 0 player task (#18) -- song load, TickBlock
+// ring, transport. Other engines leave this at the default 0.
+#ifndef HAS_TRACKER_PLAYER
+#define HAS_TRACKER_PLAYER 0
+#endif
+#if HAS_TRACKER_PLAYER
+#include "player_task.h"
+#endif
+
 static AudioBuffers audio_buffers;
 static ParamExchange param_exchange;
 
@@ -66,6 +75,15 @@ int main() {
 #endif
     midi_controller_init();
 
+#if HAS_TRACKER_PLAYER
+    // Sample SRAM load + resident-table build + ring priming, all before
+    // Core 1's thread exists -- stricter than tracker.md's "Core 0 primes
+    // two blocks before Core 1 starts" requires, since Core 1 doesn't touch
+    // the ring until the first DMA-triggered fill request anyway (that
+    // starts even later, at i2s_output_init() below).
+    tracker_player_task_init();
+#endif
+
     // Start Core 1 (audio synthesis)
     multicore_launch_core1(core1_entry);
 
@@ -86,6 +104,14 @@ int main() {
         // allocator's silent/released/oldest priority uses fresh state. On button
         // boards controller_tick() already does this at the start of its tick.
         voice_alloc_update();
+#endif
+
+#if HAS_TRACKER_PLAYER
+        // Drains Core 1's tick-consumed doorbell and keeps the ring topped
+        // up. Woken reliably by output.cpp's DMA IRQ (~every
+        // SAMPLES_PER_BUFFER/SAMPLE_RATE seconds) below, regardless of
+        // whether any MIDI host is even attached.
+        tracker_player_task();
 #endif
 
 #if MIDI_USB

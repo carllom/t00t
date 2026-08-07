@@ -49,6 +49,14 @@ if(T00T_ENGINE STREQUAL "tracker")
     set(ENGINE_VOICE_ALLOC "")
 endif()
 
+# The tracker engine's Core 0 player task (#18): song load, TickBlock ring,
+# transport. Only tracker links it; main.cpp's calls into it are compiled
+# out for other engines via HAS_TRACKER_PLAYER below.
+set(ENGINE_TRACKER_PLAYER "")
+if(T00T_ENGINE STREQUAL "tracker")
+    set(ENGINE_TRACKER_PLAYER src/engines/tracker/player_task.cpp)
+endif()
+
 add_executable(t00t
     src/main.cpp
     src/osc/sine.cpp
@@ -56,6 +64,7 @@ add_executable(t00t
     src/engines/${T00T_ENGINE}/audio_engine.cpp
     src/output.cpp
     ${ENGINE_VOICE_ALLOC}
+    ${ENGINE_TRACKER_PLAYER}
     src/samples.cpp
     ${ENGINE_MIDI_CONTROLLER}
     ${ENGINE_OPTIONAL_SOURCES}
@@ -90,6 +99,9 @@ endif()
 # it would otherwise fail to link against on the tracker build.
 if(T00T_ENGINE STREQUAL "tracker")
     target_compile_definitions(t00t PRIVATE HAS_VOICE_ALLOC=0)
+    # See ENGINE_TRACKER_PLAYER above — tells main.cpp to call into
+    # player_task.cpp's Core 0 song load / ring / transport hooks.
+    target_compile_definitions(t00t PRIVATE HAS_TRACKER_PLAYER=1)
 endif()
 
 target_link_libraries(t00t

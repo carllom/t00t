@@ -613,6 +613,18 @@ engine first — where the voice loop is simple enough to get right in an aftern
       consume — no lookahead benefit from more slots). #18 inherits the
       constant as-is for the real cross-core case; nothing observed so far
       argues for 4.
+- [x] **Ring atomics: `std::atomic<uint32_t>` head/tail, not hand-rolled ARM
+      barriers** (#18). `push()`/`pop()` release-store their own index;
+      `full()`/`empty()` acquire-load the other core's, the standard SPSC
+      pattern — chosen over matching `ParamExchangeT`'s
+      `__compiler_memory_barrier()` style specifically because `player.h`
+      must stay host-buildable (`tools/host_render` links it with the host
+      compiler, no pico-sdk headers allowed). The reverse multicore FIFO
+      (unused by tracker's voice allocator — there isn't one) carries Core
+      1's non-blocking "tick consumed" doorbell back to Core 0; Core 0's
+      wake cadence for draining it comes for free from `output.cpp`'s
+      existing DMA IRQ (~every 5.8ms at the default buffer size), so no new
+      timer was needed.
 
 ---
 
@@ -639,15 +651,21 @@ Prerequisites are more interesting than the tracker itself. Do them first:
    channels confirmed at ~30% of Core 1; everything after this is format
    work, not architecture work.
 3. Host converter: parse XM, emit blob, dump song structure.
-4. TickBlock ring + `player_tick()` on Core 0. Order list, speed/BPM, note
-   triggering, **no effects**. It already sounds like music here. Player
-   *logic* (order/pattern walk, note triggering, `TickBlock`/`TickRing`
-   shapes) landed early as `src/engines/tracker/player.h`, pulled forward by
-   #17 so its reference-diff harness had a real player to drive instead of a
-   copy — verified via the harness against `openmpt123` and via
-   `render_xm_device`'s own unit tests. Still open for #18: the actual
-   cross-core wiring (multicore FIFO ack, atomics/barriers on the ring),
-   flash→SRAM sample loading at song load, and transport (play/stop/seek).
+4. ~~TickBlock ring + `player_tick()` on Core 0. Order list, speed/BPM, note
+   triggering, **no effects**.~~ — done (#18). Player *logic* (order/pattern
+   walk, note triggering, `TickBlock`/`TickRing` shapes) landed early as
+   `src/engines/tracker/player.h`, pulled forward by #17 so its reference-
+   diff harness had a real player to drive instead of a copy. #18 added the
+   real cross-core wiring: `TickRing` head/tail became genuinely atomic
+   (see "Settled Decisions" above), Core 0 gained `player_task.cpp` (song
+   load, resident SRAM sample table, ring priming/refill, play/stop/seek
+   transport driven by MIDI Start/Continue/Stop/Program Change), and Core 1's
+   `audio_engine.cpp` replaced the #15/#16 synthetic profiling rig with a
+   real ring-consuming render loop that renders silence on ring-empty. A
+   small synthetic demo song (`tracker_song_blob.h`, from
+   `xm_synth.notes_basic()`) auto-plays on boot; swapping in a real module
+   from `xm/` for a listening test is a one-command manual regenerate. It
+   already sounds like music here.
 5. The effects covering ~90% of real usage: `0` arpeggio, `1`/`2` porta, `3` tone
    porta, `4` vibrato, `A` volume slide, `C` set volume, `B` jump, `D` pattern
    break, `F` speed/tempo.
