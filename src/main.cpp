@@ -1,6 +1,7 @@
 #include "pico/stdlib.h"
 #include "pico/multicore.h"
 #include "pico/time.h"
+#include "hardware/gpio.h"
 #include "output.h"
 #include "audio_engine.h"
 #include "midi/midi_controller.h"
@@ -66,6 +67,10 @@ int main() {
     uart_midi_init();  // DIN MIDI on UART1 RX (GPIO5 / pin 7)
 #endif
 
+    gpio_init(PROFILE_PIN_CORE0);
+    gpio_set_dir(PROFILE_PIN_CORE0, GPIO_OUT);
+    gpio_put(PROFILE_PIN_CORE0, 0);
+
     param_exchange.init();
 #if HAS_VOICE_ALLOC
     voice_alloc_init();
@@ -99,11 +104,21 @@ int main() {
     absolute_time_t next_tick = get_absolute_time();
 
     while (true) {
+        // Core 0 duty-cycle profiling (GPIO 21, engine_base.h): one high/low
+        // pulse per activity below, rather than one pulse spanning the whole
+        // loop body -- so tracker/MIDI/button/display work each show up as
+        // their own peak on a scope instead of display_task() (by far the
+        // most variable cost, self-limited to ~20 Hz) masking how much of
+        // the loop the others actually take. Mirrors PROFILE_PIN's (GPIO 22)
+        // per-buffer bracket on Core 1, just split per section here.
+
 #if !HAS_BUTTONS && HAS_VOICE_ALLOC
         // Drain Core 1's active-voice feedback before this pass allocates, so the
         // allocator's silent/released/oldest priority uses fresh state. On button
         // boards controller_tick() already does this at the start of its tick.
+        gpio_put(PROFILE_PIN_CORE0, 1);
         voice_alloc_update();
+        gpio_put(PROFILE_PIN_CORE0, 0);
 #endif
 
 #if HAS_TRACKER_PLAYER
@@ -111,27 +126,38 @@ int main() {
         // up. Woken reliably by output.cpp's DMA IRQ (~every
         // SAMPLES_PER_BUFFER/SAMPLE_RATE seconds) below, regardless of
         // whether any MIDI host is even attached.
+        gpio_put(PROFILE_PIN_CORE0, 1);
         tracker_player_task();
+        gpio_put(PROFILE_PIN_CORE0, 0);
 #endif
 
 #if MIDI_USB
+        gpio_put(PROFILE_PIN_CORE0, 1);
         usb_midi_task();
         usb_midi_poll(&param_exchange);
+        gpio_put(PROFILE_PIN_CORE0, 0);
 #endif
 #if MIDI_UART
+        gpio_put(PROFILE_PIN_CORE0, 1);
         uart_midi_poll(&param_exchange);
+        gpio_put(PROFILE_PIN_CORE0, 0);
 #endif
 
 #if HAS_BUTTONS
         // 1ms button poll
         if (time_reached(next_tick)) {
             next_tick = delayed_by_ms(next_tick, 1);
+            gpio_put(PROFILE_PIN_CORE0, 1);
             controller_tick(&param_exchange);
+            gpio_put(PROFILE_PIN_CORE0, 0);
         }
 #endif
 
 #if HAS_LCD
-        display_task();  // low-priority; self-limits to ~20 Hz, redraws on change
+        // low-priority; self-limits to ~20 Hz, redraws on change
+        gpio_put(PROFILE_PIN_CORE0, 1);
+        display_task();
+        gpio_put(PROFILE_PIN_CORE0, 0);
 #endif
 
         __wfi();  // sleep until next IRQ (USB, timer, etc.)

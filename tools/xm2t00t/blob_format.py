@@ -146,6 +146,7 @@ SONG_HEADER = StructDef("SongHeader", (
     Field("sample_data_bytes", "uint32_t", comment="total PCM+guard bytes; the SRAM residency size"),
     Field("total_size", "uint32_t", comment="whole blob size, for a bounds-checked copy"),
     Field("name", "char", 32),
+    Field("tracker_name", "char", 24, comment="XM header's tracker-name field (#24 display)"),
 ), doc="Fixed at blob offset 0.")
 
 PATTERN_HEADER = StructDef("PatternHeader", (
