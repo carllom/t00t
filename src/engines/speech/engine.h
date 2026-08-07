@@ -2,6 +2,8 @@
 
 #include <cstdint>
 
+#include "sequencer.h"  // SpeechMode, SPEECH_NO_UTTERANCE -- no pico-sdk dependency, safe ahead of engine_base.h
+
 // Speech engine (#27): MAX_VOICES, defined ahead of engine_base.h per #10.
 // Raised from the #27 placeholder of 4 to 8 per #31's P2 profiling decision
 // (engine.md "Speech Engine P2 Profiling (#31)"): measured ~93.5 cycles/
@@ -51,11 +53,21 @@ struct VoiceParams {
     // tract.h ramps them per sub-block so a CC sweep can't zipper.
     int16_t  formant_shift;
     int16_t  bandwidth_scale;
+    // #34 segment sequencer (speech.md P3). `utterance` == SPEECH_NO_UTTERANCE
+    // (the default) keeps a voice on the #28 phoneme-keyboard path above
+    // (render.h's speech_render_voice(), driven by `phoneme`) entirely
+    // unchanged; any other value selects one of utterance.h's
+    // SPEECH_UTTERANCES and routes the voice through speech_render_voice_seq()
+    // instead (audio_engine.cpp). `mode`/`rate` are read only in that second
+    // case -- see sequencer.h for both.
+    uint8_t    utterance;
+    SpeechMode mode;
+    uint8_t    rate;  // Q4.4 segment-duration scale, 16 = 1.0x nominal
 };
 
 template <>
 inline VoiceParams voice_params_default<VoiceParams>() {
-    return { 0, 0, 0, false, 0, 0, 256, 256 };
+    return { 0, 0, 0, false, 0, 0, 256, 256, SPEECH_NO_UTTERANCE, SPEECH_MODE_GATED, 16 };
 }
 
 using VoiceParamBlock = VoiceParamBlockT<VoiceParams>;

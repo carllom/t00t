@@ -508,7 +508,14 @@ Per-voice segment clock inside the sub-block loop. Variable per-segment duration
 Linear F/B ramping. Plosive closure/burst handling. Host tool generating `phonemes.h`
 from a CSV.
 
-*Exit:* a hardcoded phoneme string is intelligible as a word.
+*Exit:* a hardcoded phoneme string is intelligible as a word. **Done (#34):**
+`sequencer.h` implements the per-voice segment clock exactly as sketched above
+(`k = min3(frames left, seg_remaining, SPEECH_SUBBLOCK)`, moved inside
+`speech_render_voice_seq()`'s per-voice loop, render.h). Two hand-picked utterances
+("HELLO", "CAT" — `utterance.h`, not generated; text-to-phoneme stays P4) exercise
+variable per-segment duration, F/B ramping across a phoneme boundary, and the
+plosive closure/burst pair. See "Settled Decisions" below for the scope this
+landed with vs. the full sketch in "Data Structures".
 
 ### P4 — Utterances and MIDI integration
 
@@ -650,6 +657,35 @@ Listed for completeness; no new work.
       a real option for P5. See engine.md "Speech Engine P2 Profiling (#31)" for
       the full breakdown and the discrepancy explanation against this doc's
       predicted 60-75 cycles/frame/voice budget.
+- [x] Segment sequencer landed scoped to what P3's exit criterion actually needs
+      (#34), deferring the rest of "Data Structures"' `VoiceParams`/`SpeechMode`
+      sketch to P4:
+      - `SpeechMode` has three values (`SPEECH_MODE_ONESHOT/GATED/LOOP`), not the
+        sketch's four. `SPEECH_HOLD` is represented structurally instead —
+        `VoiceParams::utterance == SPEECH_NO_UTTERANCE` routes a voice through the
+        unchanged #28 phoneme-keyboard path (`speech_render_voice()`) rather than
+        through the sequencer at all, since HOLD has no segments to advance
+        through. `sequencer.h` has the full reasoning.
+      - Utterances are `utterance.h`'s hand-picked `SPEECH_UTTERANCES` table
+        (phoneme strings only, no phrase text), not a generated `phrases.h` —
+        letter-to-sound and program-change phrase selection are P4 "Utterances and
+        MIDI integration" work, unchanged from this doc's phasing.
+      - `VoiceParams` gained exactly `utterance`/`mode`/`rate`; `EnvConfig`,
+        `jitter`, `shimmer`, `lfo_rate`/`lfo_depth` are still P4 — no sequencer
+        claim depends on them.
+      - `rate` (Q4.4, `VoiceParams::rate`) exists and is exercised by the segment
+        clock, but isn't CC-mapped yet — MIDI CC23 (`midi_controller.cpp`) picks
+        an utterance for on-device testing; the full CC map (rate/jitter/shimmer)
+        stays P4.
+      - Note-off (#30) is implemented for all three modes, not just the
+        `SPEECH_GATED` default: `SPEECH_MODE_LOOP` degrades to `ONESHOT`
+        completion once gate drops rather than starting a new pass, and
+        `SPEECH_MODE_ONESHOT` ignores note-off outright, matching #30's spec for
+        both.
+      - Malformed/empty utterance data renders silence rather than dereferencing
+        it (this doc's "Underrun policy" extended to sequencer data, not just
+        DMA/tick inconsistency) — `tools/host_render/render_speech.cpp` verifies
+        by deliberately constructing one.
 
 ---
 
