@@ -9,10 +9,22 @@
 //
 //   - run_test_tone_check() (#27): the ZOH x2 native-rate resample seam,
 //     proven before any formant DSP existed.
-//   - run_vowel_checks() (#28): renders the five cardinal vowels
-//     (phonemes.h) through the formant cascade, checks the cascade puts a
-//     real spectral peak where each phoneme's F1/F2 target says it should,
-//     and writes one WAV per vowel for listening.
+//   - run_full_table_render() (#32): renders and writes a WAV for every row
+//     in the CSV-generated phonemes.h (PHONEME_COUNT, not a fixed handful),
+//     checking only that each is finite and unclipped -- the class-specific
+//     checks below own the acoustic assertions.
+//   - run_vowel_checks() (#28, generalized by #32): renders every
+//     PCLASS_VOWEL row (phoneme_meta.h) through the formant cascade, checks
+//     the cascade puts a real spectral peak where each phoneme's F1/F2
+//     target says it should, and -- #32's actual point -- cross-checks
+//     against vowel_reference.h's independently-committed published values
+//     for whichever symbols have one, to catch a data-entry error the first
+//     comparison can't see.
+//   - run_fricative_checks() (#29): renders the three voiceless fricatives
+//     through the parallel fricative resonator and checks the noise
+//     spectrum peaks near each one's fric_F target -- and that /sh/'s peak
+//     lands measurably lower than /s/'s and /f/'s, its defining spectral
+//     feature.
 //   - run_fricative_checks() (#29): renders the three voiceless fricatives
 //     through the parallel fricative resonator and checks the noise
 //     spectrum peaks near each one's fric_F target -- and that /sh/'s peak
@@ -39,6 +51,8 @@
 //   cmake -S .. -B . && cmake --build . && ./render_speech
 #include "../../src/engines/speech/render.h"
 #include "../../src/osc/common.h"
+#include "phoneme_meta.h"
+#include "vowel_reference.h"
 #include "wav_writer.h"
 
 #include <algorithm>
@@ -131,12 +145,38 @@ static float local_peak_freq(const std::vector<float> &x, size_t start, size_t n
 }
 
 struct PhonemeName { Phoneme p; const char *label; };
-static const PhonemeName VOWEL_NAMES[5] = {
-    { PH_I, "i" }, { PH_E, "e" }, { PH_A, "a" }, { PH_O, "o" }, { PH_U, "u" },
-};
+// The #29-era fixed short lists this used to have (VOWEL_NAMES etc.) are
+// gone -- #32 grew the table from 12 phonemes to PHONEME_COUNT (see
+// phoneme_meta.h's generated PHONEME_CLASS[]), so anything that needs "all
+// the vowels" or "all the voiceless fricatives" now filters PHONEME_CLASS
+// instead of hardcoding a name list that would silently stop covering new
+// rows. The three symbol-specific claims from #29's acceptance criteria
+// (/sh/ measurably lower than /s/ and /f/; at least one voiced fricative
+// shows mixed excitation; a nasal is distinguishable from its an=0
+// counterpart) still name PH_S/PH_SH/PH_F/PH_Z/PH_V/PH_M/PH_N directly
+// below -- those are regression locks on specific phonemes, not
+// class-wide properties, so generalizing them would test something weaker
+// than what #29 actually promised.
 static const PhonemeName FRICATIVE_NAMES[3] = { { PH_S, "s" }, { PH_SH, "sh" }, { PH_F, "f" } };
 static const PhonemeName VOICED_FRICATIVE_NAMES[2] = { { PH_Z, "z" }, { PH_V, "v" } };
 static const PhonemeName NASAL_NAMES[2] = { { PH_M, "m" }, { PH_N, "n" } };
+
+static bool str_eq(const char *a, const char *b) {
+    while (*a && *b) { if (*a != *b) return false; a++; b++; }
+    return *a == *b;
+}
+
+// PHONEME_SYMBOLS[p] lowercased, e.g. "P_CL" -> "p_cl" -- used for both WAV
+// filenames (matches the pre-#32 speech_phoneme_i.wav-style naming) and log
+// output. Symbols are already filesystem-safe (letters/digits/underscore).
+static void lower_symbol(char *out, size_t out_size, const char *symbol) {
+    size_t i = 0;
+    for (; symbol[i] && i + 1 < out_size; i++) {
+        char c = symbol[i];
+        out[i] = (c >= 'A' && c <= 'Z') ? (char)(c - 'A' + 'a') : c;
+    }
+    out[i] = '\0';
+}
 
 // Renders one phoneme, held under gate, for `seconds` at `note_hz` and
 // `formant_shift`/`bandwidth_scale` (Q8.8, 256 = 1.0x -- default neutral).
@@ -216,7 +256,7 @@ static std::vector<float> render_target_native(const FormantTarget &tgt, float n
 // spacing.
 static std::vector<float> render_phoneme_impulse_response(Phoneme p, uint32_t n_samples) {
     SpeechVoice sv{};
-    tract_retrigger(sv, PHONEME_TARGETS[p]);
+    tract_retrigger(sv, phoneme_unpack(PHONEME_TARGETS[p]));
     std::vector<float> y(n_samples);
     uint32_t done = 0;
     while (done < n_samples) {
@@ -244,39 +284,98 @@ static void write_phoneme_wav(const char *label, const std::vector<float> &mono)
     write_wav_pcm16(path, out, SAMPLE_RATE, 2);
 }
 
-// #28 acceptance: "F1/F2 of each sustained vowel, measured from a
-// host-rendered WAV, land inside the published vowel-space region for that
-// vowel." Also writes the glottal-driven, gate-held audible WAV per vowel
-// (the actual acceptance-criterion listening test: "recognisable as those
-// vowels ... played from a MIDI keyboard, held under gate") and checks it
-// for clipping/non-finite output.
+// #32 acceptance: "Every phoneme renders to a WAV via the host harness in
+// one command." Held-gate audible render of every row in the table (not
+// just the handful the class-specific checks below name individually), so
+// growing speech_phonemes.csv automatically gets WAV coverage without
+// anyone updating this harness. Deliberately the only place that writes
+// speech_phoneme_*.wav -- the class-specific checks below used to each
+// write their own subset (duplicating renders for S/SH/F/Z/V/M/N), now they
+// just assert on peak/spectrum and let this pass own the file I/O.
+// STOP_CLOSURE/SIL rows render silence under gate, correctly -- only
+// clipping and non-finite output are bugs here, silence is not.
+static bool run_full_table_render() {
+    static constexpr float NOTE_HZ = 220.0f;
+    static constexpr float SECONDS = 0.6f;
+    bool all_ok = true;
+    printf("\n== Full table: %u phonemes rendered to WAV ==\n", (unsigned)PHONEME_COUNT);
+
+    for (uint32_t p = 0; p < PHONEME_COUNT; p++) {
+        std::vector<float> mono = render_phoneme_native((Phoneme)p, NOTE_HZ, SECONDS);
+        float peak = 0.0f;
+        bool finite = true;
+        for (float s : mono) { peak = std::max(peak, std::fabs(s)); finite = finite && std::isfinite(s); }
+        bool clipped = peak >= 32767.0f;
+        bool ok = finite && !clipped;
+
+        char slug[24];
+        lower_symbol(slug, sizeof(slug), PHONEME_SYMBOLS[p]);
+        write_phoneme_wav(slug, mono);
+
+        if (!ok) {
+            printf("  FAIL %-8s peak=%.0f finite=%s\n", PHONEME_SYMBOLS[p], peak, finite ? "yes" : "no");
+        }
+        all_ok = all_ok && ok;
+    }
+    printf("  %u phonemes rendered, all finite and unclipped: %s\n", (unsigned)PHONEME_COUNT, all_ok ? "PASS" : "FAIL");
+    return all_ok;
+}
+
+// #28 acceptance, generalized by #32 from the original 5 cardinal vowels to
+// every PCLASS_VOWEL row in the (now CSV-generated) table: "F1/F2 of each
+// sustained vowel, measured from a host-rendered WAV, land inside the
+// published vowel-space region for that vowel." Two independent
+// comparisons per vowel:
+//   - measured vs. this table's own F/B target (DSP correctness -- the
+//     cascade puts a real resonance where the row says it should; this is
+//     the #28-original check, just no longer limited to 5 rows).
+//   - measured vs. vowel_reference.h's independently-committed published
+//     values, for whichever symbols have a reference entry (#32's actual
+//     point -- catches a coefficient/data-entry error in speech_phonemes.csv
+//     that the ear forgives and the first check above can't see, since that
+//     one only proves the DSP hits whatever the CSV happens to say).
 static bool run_vowel_checks() {
     static constexpr float AUDIBLE_NOTE_HZ = 220.0f;  // A3, mid-keyboard
     static constexpr float AUDIBLE_SECONDS = 1.0f;
     static constexpr float TOLERANCE = 0.10f;  // 10% -- impulse response, no harmonic quantization
 
     bool all_ok = true;
-    printf("\n== Formant cascade: five cardinal vowels ==\n");
-    printf("%-4s %10s %10s %10s %10s %8s\n", "vwl", "F1 tgt", "F1 meas", "F2 tgt", "F2 meas", "peak");
+    printf("\n== Formant cascade: %u vowel/approximant phonemes ==\n",
+           (unsigned)std::count(PHONEME_CLASS, PHONEME_CLASS + PHONEME_COUNT, (uint8_t)PCLASS_VOWEL));
+    printf("%-8s %10s %10s %10s %10s %8s  %-16s\n",
+           "sym", "F1 tgt", "F1 meas", "F2 tgt", "F2 meas", "peak", "vs. published");
 
-    for (auto &vn : VOWEL_NAMES) {
-        std::vector<float> audible = render_phoneme_native(vn.p, AUDIBLE_NOTE_HZ, AUDIBLE_SECONDS);
-        write_phoneme_wav(vn.label, audible);
+    for (uint32_t p = 0; p < PHONEME_COUNT; p++) {
+        if (PHONEME_CLASS[p] != PCLASS_VOWEL) continue;
+        const char *sym = PHONEME_SYMBOLS[p];
+
+        std::vector<float> audible = render_phoneme_native((Phoneme)p, AUDIBLE_NOTE_HZ, AUDIBLE_SECONDS);
         float peak = 0.0f;
         bool finite = true;
         for (float s : audible) { peak = std::max(peak, std::fabs(s)); finite = finite && std::isfinite(s); }
         bool clipped = peak >= 32767.0f;
 
-        std::vector<float> imp = render_phoneme_impulse_response(vn.p, 4096);
-        const FormantTarget &tgt = PHONEME_TARGETS[vn.p];
+        std::vector<float> imp = render_phoneme_impulse_response((Phoneme)p, 4096);
+        FormantTarget tgt = phoneme_unpack(PHONEME_TARGETS[p]);
         float f1 = local_peak_freq(imp, 0, imp.size(), tgt.F[0], (float)SPEECH_RATE);
         float f2 = local_peak_freq(imp, 0, imp.size(), tgt.F[1], (float)SPEECH_RATE);
         float f1_err = std::fabs(f1 - tgt.F[0]) / tgt.F[0];
         float f2_err = std::fabs(f2 - tgt.F[1]) / tgt.F[1];
         bool ok = (f1_err < TOLERANCE) && (f2_err < TOLERANCE) && !clipped && finite;
 
-        printf("%-4s %10.0f %10.0f %10.0f %10.0f %8.0f  %s\n",
-               vn.label, tgt.F[0], f1, tgt.F[1], f2, peak, ok ? "PASS" : "FAIL");
+        char ref_col[24] = "(no reference)";
+        for (auto &ref : VOWEL_REFERENCE) {
+            if (!str_eq(ref.symbol, sym)) continue;
+            float f1_ref_err = std::fabs(f1 - ref.F1) / ref.F1;
+            float f2_ref_err = std::fabs(f2 - ref.F2) / ref.F2;
+            bool ref_ok = f1_ref_err < TOLERANCE && f2_ref_err < TOLERANCE;
+            snprintf(ref_col, sizeof(ref_col), "F1=%.0f F2=%.0f %s", ref.F1, ref.F2, ref_ok ? "PASS" : "FAIL");
+            ok = ok && ref_ok;
+            break;
+        }
+
+        printf("%-8s %10.0f %10.0f %10.0f %10.0f %8.0f  %-16s %s\n",
+               sym, tgt.F[0], f1, tgt.F[1], f2, peak, ref_col, ok ? "PASS" : "FAIL");
         if (clipped) printf("  FAIL: clipped (peak=%.0f) -- lower SPEECH_EXCITATION_HEADROOM\n", peak);
         if (!finite) printf("  FAIL: non-finite sample in audible render\n");
         all_ok = all_ok && ok;
@@ -339,7 +438,6 @@ static bool run_fricative_checks() {
     for (size_t idx = 0; idx < 3; idx++) {
         const PhonemeName &pn = FRICATIVE_NAMES[idx];
         std::vector<float> audible = render_phoneme_native(pn.p, AUDIBLE_NOTE_HZ, 1.0f);
-        write_phoneme_wav(pn.label, audible);
         float peak = 0.0f;
         bool finite = true;
         for (float s : audible) { peak = std::max(peak, std::fabs(s)); finite = finite && std::isfinite(s); }
@@ -352,8 +450,8 @@ static bool run_fricative_checks() {
                                             800.0f, 9000.0f, 50.0f, (float)SPEECH_RATE);
 
         bool ok = !clipped && finite;
-        printf("  /%-2s/: peak=%7.0f  spectral peak=%6.0f Hz (target fric_F=%.0f) -> %s\n",
-               pn.label, peak, measured[idx], PHONEME_TARGETS[pn.p].fric_F, ok ? "PASS" : "FAIL");
+        printf("  /%-2s/: peak=%7.0f  spectral peak=%6.0f Hz (target fric_F=%u) -> %s\n",
+               pn.label, peak, measured[idx], (unsigned)PHONEME_TARGETS[pn.p].fric_F, ok ? "PASS" : "FAIL");
         if (clipped) printf("  FAIL: clipped (peak=%.0f)\n", peak);
         all_ok = all_ok && ok;
     }
@@ -382,13 +480,12 @@ static bool run_voiced_fricative_checks() {
 
     for (auto &pn : VOICED_FRICATIVE_NAMES) {
         std::vector<float> audible = render_phoneme_native(pn.p, F0, 1.0f);
-        write_phoneme_wav(pn.label, audible);
         float peak = 0.0f;
         bool finite = true;
         for (float s : audible) { peak = std::max(peak, std::fabs(s)); finite = finite && std::isfinite(s); }
         bool clipped = peak >= 32767.0f;
 
-        const FormantTarget &tgt = PHONEME_TARGETS[pn.p];
+        FormantTarget tgt = phoneme_unpack(PHONEME_TARGETS[pn.p]);
         std::vector<float> mixed = render_target_native(tgt, F0, 0.5f);
         std::vector<float> voiced_only = render_target_native(tgt, F0, 0.5f, /*af_override=*/0.0f);
 
@@ -426,13 +523,12 @@ static bool run_nasal_checks() {
 
     for (auto &pn : NASAL_NAMES) {
         std::vector<float> audible = render_phoneme_native(pn.p, F0, 1.0f);
-        write_phoneme_wav(pn.label, audible);
         float peak = 0.0f;
         bool finite = true;
         for (float s : audible) { peak = std::max(peak, std::fabs(s)); finite = finite && std::isfinite(s); }
         bool clipped = peak >= 32767.0f;
 
-        const FormantTarget &tgt = PHONEME_TARGETS[pn.p];
+        FormantTarget tgt = phoneme_unpack(PHONEME_TARGETS[pn.p]);
         std::vector<float> with_nasal = render_target_native(tgt, F0, 0.5f);
         std::vector<float> no_nasal = render_target_native(tgt, F0, 0.5f, /*af_override=*/-1.0f, /*an_override=*/0.0f);
 
@@ -465,7 +561,7 @@ static bool test_cc_sweep_stability() {
     auto bad_pole = [](const Res2p &r) { return !(r.a2 >= 0.0f && r.a2 < 1.0f); };
 
     for (uint32_t p = 0; p < PHONEME_COUNT; p++) {
-        const FormantTarget &tgt = PHONEME_TARGETS[p];
+        FormantTarget tgt = phoneme_unpack(PHONEME_TARGETS[p]);
         for (uint32_t cc_shift = 0; cc_shift <= 127; cc_shift++) {
             for (uint32_t cc_bw = 0; cc_bw <= 127; cc_bw += 4) {
                 SpeechVoice sv{};
@@ -499,6 +595,7 @@ int main() {
     osc_init_sine();     // speech_render_test_tone()/pan_gains_q15()'s wavetable source
 
     bool ok = run_test_tone_check();
+    ok = run_full_table_render() && ok;
     ok = run_vowel_checks() && ok;
     ok = run_fricative_checks() && ok;
     ok = run_voiced_fricative_checks() && ok;

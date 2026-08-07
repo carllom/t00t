@@ -77,16 +77,19 @@ inline void speech_render_voice(SpeechVoice &sv, uint32_t phase_inc, float fs, u
                                  int16_t amplitude, bool gate, uint8_t phoneme, int16_t pan,
                                  int16_t formant_shift, int16_t bandwidth_scale,
                                  int32_t *dry_l, int32_t *dry_r, uint32_t native_frames) {
-    const FormantTarget &tgt = PHONEME_TARGETS[phoneme % PHONEME_COUNT];
     sv.formant_shift_tgt = (float)formant_shift * (1.0f / 256.0f);
     sv.bandwidth_scale_tgt = (float)bandwidth_scale * (1.0f / 256.0f);
+    // Unpacked only on an actual trigger/phoneme change (#32: PHONEME_TARGETS
+    // is now the packed, flash-resident PhonemeDef -- phoneme_unpack() is the
+    // one place that expands it back to a FormantTarget), same as before
+    // this only happened on those two transitions, not every buffer.
     if (trigger != sv.last_trigger) {
         sv.last_trigger = trigger;
         sv.last_phoneme = phoneme;
-        tract_retrigger(sv, tgt);
+        tract_retrigger(sv, phoneme_unpack(PHONEME_TARGETS[phoneme % PHONEME_COUNT]));
     } else if (phoneme != sv.last_phoneme) {
         sv.last_phoneme = phoneme;
-        tract_set_target(sv, tgt);
+        tract_set_target(sv, phoneme_unpack(PHONEME_TARGETS[phoneme % PHONEME_COUNT]));
     }
 
     int32_t gain_l, gain_r;
