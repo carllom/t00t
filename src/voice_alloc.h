@@ -1,6 +1,6 @@
 #pragma once
 
-#include "engine_base.h"
+#include "engine.h"
 #include <cstdint>
 
 // Dynamic voice allocator — runs on Core 0.
@@ -12,8 +12,8 @@
 // 3. Oldest active note — audible but least bad
 
 struct VoiceAllocator {
-    uint16_t active_mask;              // latest bitmap from Core 1
-    uint16_t local_mask;               // working copy (active | newly allocated)
+    uint32_t active_mask;              // latest bitmap from Core 1
+    uint32_t local_mask;               // working copy (active | newly allocated)
     uint8_t  alloc_age[MAX_VOICES];    // monotonic allocation age
     bool     voice_gated[MAX_VOICES];  // Core 0's gate tracking
     uint8_t  age_counter;              // global allocation counter
@@ -37,5 +37,5 @@ int  voice_alloc_allocate();
 void voice_alloc_release(int v);
 
 // Voice-state queries for a display/UI (Core 0). Valid after voice_alloc_update().
-uint16_t voice_alloc_active_mask();  // bit v = voice v is still sounding (Core 1 feedback)
-uint16_t voice_alloc_gated_mask();   // bit v = voice v has a held/pressed note
+uint32_t voice_alloc_active_mask();  // bit v = voice v is still sounding (Core 1 feedback)
+uint32_t voice_alloc_gated_mask();   // bit v = voice v has a held/pressed note

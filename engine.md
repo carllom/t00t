@@ -428,6 +428,427 @@ This is the baseline measurements of the state before switching to RP2350 and up
 | SMULL filt. | 0.50% |  5.9% |  6.6% |  6.0% | 17.5% | ~90%  | |
 | SSAT env.   | 0.44% |  5.9% |  6.5% |  5.9% | 17.4% | ~90%  | |
 
+The following measurements were measured after a couple of additions: envelopes, effects, modularization (`subtractive` and `groovebox`).
+The baseline reflects the state on 2026-08-06 prior to implementing `tracker`, `speech` and `fm` modules and the subblock optimizations.
+Max is measured when using all 16 voice channels.
+
+| Phase       | Idle  | Voc A | Voc B | Voc C | ABC   | Max   | Comment |
+| - | - | - | - | - | - | - | - |
+| no FX       | 0.48% |  6.4% |  6.9% |  6.3% |   -   | ~90%  | |
+| Delay FX    | 1.66% |  7.5% |  8.1% |  7.4% |   -   | ~90%  | |
+| Reverb FX   |  8.2% | 14.1% | 14.6% | 14.0% |   -   | ~90%  | |
+| LFO(vibrato)| 0.48% |  7.2% |  7.7% |  7.1% |   -   | ~90%  | Pitch LFO through modwheel. No FX |
+| | | | | | | | |
+| no FX       | 0.53% |  6.9% |  7.4% |  6.8% |   -   | ~90%  | After pan fix (issue #11). Slight (~0.5% for active voice, 0.05% idle) raise in CPU |
+| Delay FX    |  2.1% |  8.4% |  8.9% |  8.3% |   -   | ~90%  | After pan fix (issue #11). As above |
+| Reverb FX   |  8.4% | 14.8% | 15.3% | 14.7% |   -   | ~90%  | After pan fix (issue #11). As above |
+| | | | | | | | |
+| no FX       |  0.6% |  5.9% |  5.7% |  5.1% |   -   | ~86/80/70%  | After subchunk fix (issue #12). Max is depending on voice used (A/B/C). Major improvement for modulator-heavy voices (Voice C)! |
+| Delay FX    |  2.1% |  7.3% |  7.2% |  6.6% |   -   | ~86/80/70%  | After subchunk fix (issue #12) |
+| Reverb FX   |  8.5% | 13.7% | 13.6% | 13.0% |   -   | ~94/90/81%  | After subchunk fix (issue #12) |
+| LFO(vibrato)|  0.6% |  5.9% |  5.7% |  5.1% |   -   | ~86/80/70%  | After subchunk fix (issue #12). Pitch LFO through modwheel. No FX. No measurable overhead for vibrato! |
+
+## Tracker Engine (build skeleton, #13)
+
+Third build-time engine (`make ENGINE=tracker`, `breadboard_rp2350` default),
+proving the build seam and `tracker.md`'s deviations from the shared layer
+model before any XM/mixer logic exists:
+
+- `MAX_VOICES = 32`, defined in `src/engines/tracker/engine.h` ahead of its
+  `#include "engine_base.h"`, per #10. Only this engine — subtractive and
+  groovebox stay at 16.
+- `voice_alloc` is not used: in XM, channel N is voice N (fixed assignment,
+  no allocation/stealing/age tracking). `src/voice_alloc.cpp` is excluded
+  from the link entirely (`CMakeLists.txt`'s `ENGINE_VOICE_ALLOC`, empty for
+  `T00T_ENGINE STREQUAL "tracker"`); `main.cpp`'s calls into it compile out
+  behind `HAS_VOICE_ALLOC` (defined `0` only for this engine).
+- `fx/delay.h` / `fx/reverb.h` are not `#include`d by
+  `src/engines/tracker/audio_engine.cpp`, so neither is linked — their
+  combined ~128 KB of `.bss` must never compete with the tracker's future
+  350-400 KB sample budget.
+- `src/engines/tracker/display.cpp` and `midi_controller.cpp` are stubs (no
+  UI, no note routing yet) so the shared `gfx.cpp` path and MIDI transports
+  still link.
+- Sound source: voice 0 is a hardcoded, always-on 440 Hz test tone (centre
+  pan, through the shared stereo output tail) — a build/boot smoke test, not
+  a mixer. Voices 1-31 are unused placeholders. `PROFILE_PIN` (GPIO 22) is
+  bracketed around the render call, ready for the 32-voice measurement slice.
+
+Measured with `arm-none-eabi-size` on a clean `rm -rf build && make
+ENGINE=tracker`, and confirmed via `nm` that no `voice_alloc`/`FxDelay`/
+`FxReverb` symbols appear in the binary:
+
+| Engine | text | bss | dec |
+|---|---|---|---|
+| tracker (skeleton) | 25,328 | 10,284 | 35,612 |
+| subtractive (default) | 206,040 | 198,344 | 404,384 |
+| groovebox | 55,516 | 199,764 | 255,280 |
+
+The subtractive/groovebox `.bss` figures are dominated by the sample corpus
+and wavetables baked into those engines, not by `voice_alloc`/delay/reverb —
+this skeleton has none of that yet. `make`, `make ENGINE=groovebox`, and
+`make ENGINE=tracker` all build clean from a fresh `build/`; the first two
+are unchanged in size from before #13.
+
+## Tracker Engine — 32-Voice Mixer (#15/#16)
+
+Replaces the #13 test tone with the real stripped mixer from `tracker.md`
+("Rendering Pipeline" / "Voice mixer"): `src/engines/tracker/mixer.h` is a
+pure-integer, pico-sdk-free header (`TrackerSample`/`TrackerVoice`,
+`mix_voice()`, `samples_to_loop_end()`, `wrap_loop()`,
+`tracker_render_buffer()`) shared verbatim between the device engine and
+`tools/host_render/render_tracker_mixer.cpp`, which proves ramp linearity,
+loop-wrap bounds, one-shot end-of-sample, and nearest-vs-linear divergence
+against exact expected values before anything touches hardware.
+
+### #16 measurement rig
+
+No display and no stdio on this build (USB is MIDI-only), so the profiling
+pin is the only readout. `audio_engine_run()` self-cycles through 6 phases,
+holding each 4 seconds, forever: idle (0 voices, isolates fixed per-buffer
+overhead), 8, 16, 24, 32 voices (linear), 32 voices (`mix_voice_nearest()`).
+Every voice loops forever — nothing goes inactive mid-phase — so each
+phase's reading is stable for its whole hold time, unlike #15's demo (which
+let one-shot voices decay away). Voice 0 is always a deliberately tight
+4-sample loop (`samples_to_loop_end()`'s worst case: many short runs per
+sub-block instead of one); the rest are the #15 chorus. Buffer size is a
+build-time choice (`audio_common.h`'s `T00T_SAMPLES_PER_BUFFER`, overridden
+via `make ENGINE=tracker DMA_BUFFER_SIZE=512`) so the idle number could be
+re-measured at 512 for the IRQ-overhead comparison.
+
+Measured on `breadboard_rp2350`, 2026-08-07:
+
+| Buffer | Idle | 8v | 16v | 24v | 32v linear | 32v nearest |
+|---|---|---|---|---|---|---|
+| 256 | 0.52% | 8.20% | 15.3% | 22.8% | 30.1% | 20.1% |
+| 512 | 0.52% | 8.20% | 15.3% | 22.8% | 30.1% | 20.1% |
+
+Per-voice cost, `(duty - idle) / voice_count`, cycles/frame at 3401
+cycles/frame = 100%:
+
+| Voices | Linear | Nearest |
+|---|---|---|
+| 8 | 32.65 c/f (0.96%) | — |
+| 16 | 31.42 c/f (0.92%) | — |
+| 24 | 31.57 c/f (0.93%) | — |
+| 32 | 31.44 c/f (0.92%) | 20.81 c/f (0.61%) |
+
+Flat at ~31.5 cycles/frame/voice across 8/16/24/32 — including the tight-loop
+stress voice at every point, so this is the honest worst-case number, not a
+best case that degrades under load.
+
+### Decisions (written per #16's acceptance criteria; full reasoning in `tracker.md` Settled Decisions)
+
+- **32 channels**, not 16. 30.1% of Core 1 for the full complement, inside
+  the 25-40 cycles/frame prediction and comfortably under the ≤50% goal —
+  ~20 points of headroom left for a limiter or global effect send.
+- **Linear interpolation, no nearest-neighbour build flag.** Nearest saves a
+  real 33% (20.81 vs 31.44 c/f) and does audibly alias, as predicted, but
+  linear already clears budget with room to spare — nothing forces the
+  trade. `mix_voice_nearest()` stays in `mixer.h`, proven and ready if a
+  later voice-count push needs it.
+- **DMA buffer size stays 256.** Idle duty — the number that isolates fixed
+  per-buffer/IRQ overhead — was identical at 256 and 512 (0.52% both), as
+  was every other phase re-checked at 512. No measurable IRQ overhead at
+  this sample rate means 512 would only add latency for zero offsetting
+  benefit.
+- DSP-extension / SIO-interpolator options (tracker.md's optional fallback)
+  were not evaluated — only called for if the headline number missed
+  target, and 30.1% is well inside it.
+
+## Speech Engine (build skeleton, #27)
+
+Fourth build-time engine (`make ENGINE=speech`, `breadboard_rp2350` default),
+proving the build seam and `speech.md`'s divergences from the shared layer
+model before any formant DSP exists:
+
+- `MAX_VOICES = 4`, defined in `src/engines/speech/engine.h` ahead of its
+  `#include "engine_base.h"`, per #10 — a placeholder pending the P2
+  profiling measurement in `speech.md`. Only this engine — the other three
+  are untouched.
+- Unlike the tracker (#13), the standard `ParamExchange`/`voice_alloc` path
+  is kept: `speech.md` settles that polyphonic speech has N independent
+  per-voice segment clocks, not one global tick clock, so the tracker's
+  ordered TickBlock ring is not adopted here. `src/voice_alloc.cpp` links
+  normally (no `ENGINE_VOICE_ALLOC` override needed in `CMakeLists.txt`).
+- `fx/delay.h`/`fx/reverb.h` **are** linked (unlike the tracker) — `speech.md`:
+  "speech has no sample-RAM pressure" to protect, so there's no reason to
+  exclude them, and the `.bss` table below confirms they're present (a
+  128 KB delay ring buffer plus reverb, not stripped by the linker).
+- Native render rate is `SPEECH_RATE = SAMPLE_RATE / 2` (22.05 kHz), zero-
+  order-held ×2 to the shared 44.1 kHz output stage — `src/engines/speech/
+  render.h`'s `speech_render_test_tone()` does the resample as a bare integer
+  doubling (`dry_{l,r}[2*i] == dry_{l,r}[2*i+1]`), no fractional accumulator.
+  That function has no pico-sdk dependency (only `osc/sine.h` + `pan.h`), so
+  it is the literal shared source between the device path
+  (`audio_engine.cpp`, called from the Core 1 render loop) and the new host
+  target below — proving the ZOH seam identically on both before any real
+  DSP depends on it.
+- `src/engines/speech/display.cpp` and `midi_controller.cpp` are stubs (no
+  UI, no phoneme keyboard yet) so the shared `gfx.cpp` path and MIDI
+  transports still link.
+- Sound source: voice 0 is a hardcoded, always-on 220 Hz test tone (centre
+  pan) rendered at the native rate and ZOH'd to the stereo output tail — a
+  build/boot smoke test, not a synth. Voices 1-3 are unused placeholders.
+  `PROFILE_PIN` (GPIO 22) is bracketed around the render call, ready for the
+  P2 measurement slice.
+- Host target: `render_speech` (`tools/host_render/render_speech.cpp`, built
+  via `make host`) calls the identical `speech_render_test_tone()`, renders
+  2 s to `speech_test_tone.wav`, and asserts the ZOH invariant sample-by-
+  sample rather than by ear. All checks pass as of 2026-08-07.
+
+Measured with `arm-none-eabi-size` on a clean `rm -rf build && make
+ENGINE=speech`, and confirmed via a `.bss` size comparable to the groovebox's
+(both link delay+reverb) that neither effect was stripped:
+
+| Engine | text | bss | dec |
+|---|---|---|---|
+| speech (skeleton) | 27,544 | 194,260 | 221,804 |
+| subtractive (default) | 206,096 | 198,344 | 404,440 |
+| groovebox | 55,580 | 199,764 | 255,344 |
+| tracker | 58,124 | 409,080 | 467,204 |
+
+`make`, `make ENGINE=groovebox`, and `make ENGINE=tracker` all build clean
+from a fresh `build/`, unchanged in behaviour by #27 (the subtractive/
+groovebox/tracker figures above drift slightly from their #13-era table
+entries due to unrelated work landed since — not this change).
+
+## Speech Engine P2 Profiling (#31)
+
+Speech's measurement gate — the direct analogue of the tracker's #16 — deciding
+`MAX_SPEECH_VOICES` from a real profiling-pin reading of the full tract (#28 cascade
++ #29 fricative/nasal branches) instead of `speech.md`'s "do not trust these
+numbers" budget-table estimate.
+
+### Measurement rig
+
+`make ENGINE=speech SPEECH_PROFILE=1` builds an alternate `audio_engine_run()`
+(guarded by `T00T_SPEECH_PROFILE`, `src/engines/speech/audio_engine.cpp`) that
+replaces the normal MIDI-driven loop with a self-cycling, pin-only rig — same
+"hands-off" shape as #16's tracker rig: no display, no stdio, `PROFILE_PIN` (GPIO
+22) is the only readout. `MAX_VOICES` is raised to 8 for this build only
+(`engine.h`, gated on the same define) so the 8-voice phase has a real 8th slot;
+the normal build is untouched and still `MAX_VOICES = 4`.
+
+It self-cycles through 8 phases, holding each ~4s forever, driving `voices[]`
+directly with synthetic content (bypassing `ParamExchange`/MIDI entirely, so
+content is identical and repeatable on every cycle):
+
+| Phase | Voices | Phoneme | What it isolates |
+|---|---|---|---|
+| idle | 0 | — | Fixed per-buffer overhead (buffer clear, output loop) |
+| 1v | 1 | /a/ (vowel) | Baseline single-voice cost |
+| 2v | 2 | /a/ | Linearity check |
+| 4v | 4 | /a/ | Working-assumption voice count |
+| 8v | 8 | /a/ | Double the working assumption |
+| 4v fricative | 4 | /z/ (voiced fricative) | Parallel branch cost vs. the 4v /a/ phase — same voice count, only the phoneme differs |
+| 4v recompute-only | 4 | /a/ | Calls `tract_advance_subblock()` only, skipping the per-sample `tract_process_mixed()` loop entirely — isolates coefficient-recompute cost vs. the 4v /a/ phase |
+| 4v swept | 4 | /a/ | `formant_shift`/`bandwidth_scale` triangle-swept across their full CC range every buffer, vs. the 4v /a/ phase held at 1.0x |
+
+Reading procedure: flash, let it free-run, read the profiling-pin duty cycle during
+each phase (a scope/logic analyzer trigger on the phase transitions, or just enough
+patience to catch each ~4s window), record against the table below.
+
+Held-vowel-vs-fricative and static-vs-swept are both expected, from code
+inspection, to measure the *same* as their comparison phase: `tract_process_mixed()`
+always ticks the cascade, fricative and nasal resonators unconditionally regardless
+of a phoneme's `av`/`af`/`an` mix weights (no branch skips a silent resonator), and
+`tract_advance_subblock()` always recomputes every resonator's coefficients every
+sub-block regardless of whether `formant_shift_tgt`/`bandwidth_scale_tgt` actually
+moved. If the real numbers disagree with that prediction, that is more interesting
+than confirmation — it would mean some other effect (icache, compiler scheduling)
+is in play, and needs explaining, not just recording.
+
+### Measured, `breadboard_rp2350`, 2026-08-07
+
+| Phase | idle | 1v | 2v | 4v | 8v | 4v /z/ | 4v recompute-only | 4v swept |
+|---|---|---|---|---|---|---|---|---|
+| Duty cycle | 0% | 2.82% | 5.5% | 11% | 22% | 11% | 1.3% | 11% |
+
+Converted to cycles/output-frame at 3401 cycles/frame = 100% (idle is 0%, so no
+baseline to subtract, unlike the tracker's #16 rig):
+
+| Voices | Total | Per voice (c/f) | Per voice (%) |
+|---|---|---|---|
+| 1 | 95.9 c/f | 95.9 | 2.82% |
+| 2 | 187.1 c/f | 93.5 | 2.75% |
+| 4 | 374.1 c/f | 93.5 | 2.75% |
+| 8 | 748.2 c/f | 93.5 | 2.75% |
+
+Flat at **~93.5 cycles/frame/voice (2.75%)** from 2 to 8 voices; 1v's 2.82% is
+within scope-reading resolution of the same flat line, not a real per-voice
+discontinuity.
+
+**Held vowel vs. voiced fricative: identical (11% both).** Confirms the
+code-inspection prediction — the fricative/nasal branches are unconditional, not an
+incremental cost paid only by phonemes that use them. There is no separate
+"fricative branch cost" to add on top of the flat per-voice number above.
+
+**Coefficient recompute, isolated: 1.3% at 4 voices** = 44.2 c/f total = **11.0
+c/f/voice (0.32%)**. Subtracting that from the 4v total gives the per-sample-only
+cost: 93.5 − 11.0 = **82.5 c/f/voice (2.43%)** for excitation + the 7-resonator tick
++ ZOH accumulate.
+
+**Static vs. swept `formant_shift`/`bandwidth_scale`: identical (11% both).**
+Confirms the second prediction — recompute happens every sub-block regardless of
+whether the CC target actually moved, so a live sweep is free; the cost is already
+fully included in the flat per-voice number, not an addition to it.
+
+### Discrepancy vs. the predicted budget
+
+Measured ~93.5 c/f/voice total is noticeably above speech.md's ~60–75 c/f
+prediction — about 25–55% over the top of that range, the kind of gap "do not trust
+these numbers" was written to expect. But it isn't evenly spread across the
+budget's four line items:
+
+- **Coefficient recompute measured at 11.0 c/f, the predicted line item was ~10
+  c/f.** This part of the estimate was essentially right.
+- **The remaining 82.5 c/f (excitation + resonators + ZOH) is well above the
+  35–50 + 10 + 5 = 50–65 c/f those three line items predicted** — roughly 17–32
+  c/f higher, i.e. the entire discrepancy lives here, not in coefficient recompute.
+
+Explanation: the budget table priced the DSP math itself (resonator taps, pulse/
+noise generation, doubling samples) but not the per-sample "glue" `render.h`'s loop
+actually runs for every voice, every native sample — the `cur_amp` exponential
+declick filter, the `voiced_src`/`noise_src` mix-and-scale multiplies, and writing
+each ZOH-doubled sample into *two* accumulator buffers (4 stores per native sample,
+not 2). None of that is its own line item in the prediction, but the code pays it
+unconditionally regardless of phoneme — which is exactly why the fricative and
+swept-parameter phases above cost nothing extra: that per-sample tax and the
+resonator branch count are both fixed, not phoneme-dependent. On an M33 doing
+single-precision float work with no vectorization, a handful of extra multiply/
+store instructions per sample is a plausible source for the remaining gap, sized
+about right for what it costs.
+
+### Decision: `MAX_SPEECH_VOICES = 8`
+
+Landed in `src/engines/speech/engine.h` (was 4 since #27).
+
+- **93.5 c/f/voice is flat across the whole measured range (1–8 voices)** — no
+  falloff or superlinear growth to worry about at higher counts.
+- **8 voices costs 22% of Core 1 on their own.** Delay/reverb are mutually
+  exclusive (mono send/return, one active effect at a time — `audio_engine.cpp`),
+  so the worst realistic total is 8 voices + reverb = 22% + 8% = **30%**,
+  comfortably under the ≤50% ceiling the tracker's own #16 decision used as its
+  target.
+- This is double the #27-era working assumption of 4, so **"robot chorus" (a
+  preset with per-voice detune and stereo spread, speech.md's Open Questions) is
+  now explicitly on the table for P5** — the payoff speech.md said to name if the
+  number landed better than expected.
+- Not pushed further than 8: that's what was measured, and the ≥30% total with
+  reverb is a reasonable place to stop banking headroom against P3's still-unbuilt
+  segment sequencer, which speech.md itself budgets as "a table read plus
+  coefficient computation" but hasn't been measured yet.
+
+`speech.md`'s Open Question 2 (voice count) is struck and moved into Settled
+Decisions.
+
+## Host DSP Tooling
+
+`tools/host_render/` (issue #5 phase 2) is a standalone CMake project — no
+pico-sdk, host compiler — for verifying pure-DSP common-layer headers by
+rendering them to WAV instead of on real hardware. `make host` configures and
+builds it into `tools/host_render/build/` (git-ignored, same as the device
+`build/`); binaries there also write their WAV output alongside themselves.
+
+This exists so tracker/speech/FM module work has a host-render harness to
+build on (speech.md calls this "the single most valuable test"), and so new
+common-layer DSP components can be proven correct before they're wired into
+any real-time engine, instead of validating them by ear against a rewrite of
+a working sound.
+
+First consumer: `src/res2p.h`, a two-pole resonator for the speech module's
+formant cascade and (pending backport) the groovebox's 808 toms/congas/
+cowbell. `render_res2p` sweeps 1600 (frequency, bandwidth) pairs across the
+ranges both callers need and asserts every pole lands inside the unit circle,
+then renders impulse responses at three representative tunings and checks
+measured ringing frequency (zero-crossing rate, <5% error) and decay (late-
+window RMS < 10% of early-window RMS). All checks pass as of 2026-08-06.
+`res2p.h` is not yet wired into the groovebox — that backport, and the 808
+before/after diff, is speech.md P0, done independently once speech work
+starts.
+
+## xm2t00t Host Converter (#14)
+
+`tools/xm2t00t/` — a pure-Python, stdlib-only tool (no CMake project, unlike
+`host_render/`) that turns a `.xm` module into a t00t-native binary blob. Per
+tracker.md, the device never parses XM: this runs once, offline, at build
+time. `tracker.md`'s "Multi-format support" section is why this is Python and
+not C++ — it says adding MOD/S3M later is "mostly host-side Python", which
+only makes sense if the XM loader already is.
+
+```
+xm2t00t.py convert <in.xm> <out_prefix>   # writes <out_prefix>_blob.h (a linkable
+                                            # `static const uint8_t ..._blob_data[]`
+                                            # array, same convention as samples/*.h),
+                                            # prints the song-structure dump, applies
+                                            # the Q18.14 + SRAM checks below
+xm2t00t.py dump <in.xm>                    # prints the dump only, writes nothing
+xm2t00t.py gen-header <out.h>              # (re)generate blob_format.h from
+                                            # blob_format.py, the format's source of truth
+```
+
+### Blob format
+
+Single flat blob, fixed-size headers, every offset a byte offset from blob
+start (never a pointer) — `blob_format.py` declares every struct once and is
+used both to pack the blob and to generate `blob_format.h`, its C++ mirror,
+so the two views of the layout can't drift apart.
+`SongHeader -> order_table, PatternHeader[]+Event[] (6 bytes/cell), InstrumentHeader[]
+(keymap, envelopes in tick units, vibrato) -> SampleHeader[]`, each sample
+carrying a precomputed 96-entry Q8.24 note -> increment table (`periods.py`,
+linear and Amiga frequency modes) so the device never runs period math. XM
+effects (including the `Exy`/`Xxy`/`Fxx` commands that overload one letter for
+several meanings) are normalized into named `Effect`/`VolEffect` enums
+(`effects.py`) rather than left as raw nibbles for the device to switch on.
+`sample_data_offset`/`sample_data_bytes` mark one uninterrupted PCM+guard-byte
+region (guard = loop-start value if looped, last value if one-shot) meant for
+a straight `memcpy` into SRAM — nothing else is interleaved into it.
+
+v1 hard limits, both enforced at convert time with an actionable message and
+a non-zero exit (no blob written): any single sample over the Q18.14 cap
+(262,144 frames), or total sample data over an SRAM budget (`--budget-kb`,
+default 380 KB — tracker.md's stated 350-400 KB after code/stacks/DMA/mixer
+scratch). No dynamic-loading simulator yet (tracker.md: phase 2) — just a
+static sum, per tracker.md's "v1 requires the module to fit in SRAM".
+
+Not wired into `CMakeLists.txt` — #14 is host-only by design; a later mixer
+issue links `blob_format.h`/a converted song into the tracker engine build.
+
+**Caveat**: the Amiga-mode period table and both modes' finetune handling are
+implemented from XM/FT2's public, well-documented formulas and sanity-checked
+(note C-4, finetune 0 -> exactly 8363 Hz, the XM reference; one octave up
+doubles the frequency) — not verified bit-exact against a real FT2 period
+dump. That precision matters once something plays these increments back (the
+mixer issue), not for a v1 loader.
+
+### Validation
+
+`python3 tools/xm2t00t/test_xm2t00t.py` — unit checks (period/effect/struct
+sanity, the two rejection paths) always run; corpus-dependent checks run
+against whatever `.xm` files are in `xm/` (gitignored — third-party
+copyrighted modules aren't committed; populate it yourself, e.g. from Mod
+Archive, and re-run) and skip cleanly if that directory is empty:
+
+- Song structure (channels/orders/patterns/instruments/samples counts) vs
+  both `openmpt123 --info`'s stdout and libopenmpt's C API directly
+  (`openmpt_ref.py`, `ctypes` over `libopenmpt.so.0` — no Python binding
+  needed), the latter also diffing the exact order-\>pattern list.
+- Delta-decode round-trip: a second, independently-coded implementation of
+  XM's delta decode (explicit signed arithmetic + wrap loop, vs. the
+  converter's unsigned mod-256/65536 accumulate) compared byte-for-byte
+  against the converter's own decode, over every sample in the corpus.
+- Guard-byte correctness and full blob self-consistency (re-reading the
+  emitted bytes with `blob_format.py` and diffing every header field, the
+  order table, pattern row counts, and sample PCM against the source parse).
+
+Verified against 5 real modules (2026-08-07): `118in64.xm` (18ch),
+`bzl-hscr.xm` (16ch), `dubmood_-_mario_airlines_keygen_edit.xm` (12ch),
+`kenny_beltrey_-_positrons.xm` (32ch — tracker.md's max), `records.xm`
+(16ch). All match `openmpt123 --info` and libopenmpt exactly; all pass every
+check above; all convert well under the default SRAM budget (93-241 KB of a
+380 KB budget).
+
 ## MIDI Input
 
 Control comes from buttons (VGA board only) and MIDI. There is no intermediate
@@ -442,5 +863,6 @@ event queue — each input source writes the param shadow and commits directly.
 Both transports route through `midi_controller_process()`, which parses MIDI
 bytes, maps note on/off to voices via the allocator, and commits the shadow.
 Beyond notes it also handles per-channel **CC1 (mod wheel)** → `mod_depth`
-(vibrato) and **pitch bend** → phase-increment ratio. CC0/CC32 (bank select) are
-stored but not yet used.
+(vibrato), **CC10 (pan)** → `pan` (subtractive engine only; live, applied to
+held voices immediately), and **pitch bend** → phase-increment ratio. CC0/CC32
+(bank select) are stored but not yet used.
