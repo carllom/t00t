@@ -556,6 +556,63 @@ best case that degrades under load.
   were not evaluated — only called for if the headline number missed
   target, and 30.1% is well inside it.
 
+## Speech Engine (build skeleton, #27)
+
+Fourth build-time engine (`make ENGINE=speech`, `breadboard_rp2350` default),
+proving the build seam and `speech.md`'s divergences from the shared layer
+model before any formant DSP exists:
+
+- `MAX_VOICES = 4`, defined in `src/engines/speech/engine.h` ahead of its
+  `#include "engine_base.h"`, per #10 — a placeholder pending the P2
+  profiling measurement in `speech.md`. Only this engine — the other three
+  are untouched.
+- Unlike the tracker (#13), the standard `ParamExchange`/`voice_alloc` path
+  is kept: `speech.md` settles that polyphonic speech has N independent
+  per-voice segment clocks, not one global tick clock, so the tracker's
+  ordered TickBlock ring is not adopted here. `src/voice_alloc.cpp` links
+  normally (no `ENGINE_VOICE_ALLOC` override needed in `CMakeLists.txt`).
+- `fx/delay.h`/`fx/reverb.h` **are** linked (unlike the tracker) — `speech.md`:
+  "speech has no sample-RAM pressure" to protect, so there's no reason to
+  exclude them, and the `.bss` table below confirms they're present (a
+  128 KB delay ring buffer plus reverb, not stripped by the linker).
+- Native render rate is `SPEECH_RATE = SAMPLE_RATE / 2` (22.05 kHz), zero-
+  order-held ×2 to the shared 44.1 kHz output stage — `src/engines/speech/
+  render.h`'s `speech_render_test_tone()` does the resample as a bare integer
+  doubling (`dry_{l,r}[2*i] == dry_{l,r}[2*i+1]`), no fractional accumulator.
+  That function has no pico-sdk dependency (only `osc/sine.h` + `pan.h`), so
+  it is the literal shared source between the device path
+  (`audio_engine.cpp`, called from the Core 1 render loop) and the new host
+  target below — proving the ZOH seam identically on both before any real
+  DSP depends on it.
+- `src/engines/speech/display.cpp` and `midi_controller.cpp` are stubs (no
+  UI, no phoneme keyboard yet) so the shared `gfx.cpp` path and MIDI
+  transports still link.
+- Sound source: voice 0 is a hardcoded, always-on 220 Hz test tone (centre
+  pan) rendered at the native rate and ZOH'd to the stereo output tail — a
+  build/boot smoke test, not a synth. Voices 1-3 are unused placeholders.
+  `PROFILE_PIN` (GPIO 22) is bracketed around the render call, ready for the
+  P2 measurement slice.
+- Host target: `render_speech` (`tools/host_render/render_speech.cpp`, built
+  via `make host`) calls the identical `speech_render_test_tone()`, renders
+  2 s to `speech_test_tone.wav`, and asserts the ZOH invariant sample-by-
+  sample rather than by ear. All checks pass as of 2026-08-07.
+
+Measured with `arm-none-eabi-size` on a clean `rm -rf build && make
+ENGINE=speech`, and confirmed via a `.bss` size comparable to the groovebox's
+(both link delay+reverb) that neither effect was stripped:
+
+| Engine | text | bss | dec |
+|---|---|---|---|
+| speech (skeleton) | 27,544 | 194,260 | 221,804 |
+| subtractive (default) | 206,096 | 198,344 | 404,440 |
+| groovebox | 55,580 | 199,764 | 255,344 |
+| tracker | 58,124 | 409,080 | 467,204 |
+
+`make`, `make ENGINE=groovebox`, and `make ENGINE=tracker` all build clean
+from a fresh `build/`, unchanged in behaviour by #27 (the subtractive/
+groovebox/tracker figures above drift slightly from their #13-era table
+entries due to unrelated work landed since — not this change).
+
 ## Host DSP Tooling
 
 `tools/host_render/` (issue #5 phase 2) is a standalone CMake project — no
