@@ -1146,6 +1146,20 @@ inline void tracker_apply_tick(const TickBlock &tb, const TrackerSample *residen
             v.active = true;
         } else if (v.active) {
             v.inc = tracker_latch_inc(ct.inc);
+            // ct.inc == 0 means this channel hasn't been (re)triggered since
+            // whatever produced this PlayerState -- most notably
+            // tracker_transport_seek()'s player_init(), which resets every
+            // channel's pcs.inc to 0 but has no way to reach into Core 1's
+            // `voices` here and clear a voice a *previous* run left active.
+            // Without this, a channel that isn't retriggered on the very
+            // first row after a seek keeps v.active == true with v.inc == 0
+            // -- exactly the state mixer.h's samples_to_loop_end() documents
+            // as impossible ("a silent voice is active = false, never inc ==
+            // 0"): pos never reaches end_pos through a zero increment, so
+            // wrap_loop() never fires either, and mix_voice()'s `while (n >
+            // 0)` spins forever on Core 1 (100% duty, frozen UI, silence --
+            // exactly what stop-then-restart reproduced).
+            if (v.inc == 0) v.active = false;
         }
         v.tgt_volL = ct.tgt_volL;
         v.tgt_volR = ct.tgt_volR;
