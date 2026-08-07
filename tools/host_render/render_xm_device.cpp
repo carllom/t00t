@@ -268,6 +268,341 @@ static bool test_missing_sample_map_entry_is_silent() {
 }
 
 // ============================================================================
+// #19 effect unit tests -- these check exact internal state (order/row
+// sequencing, trigger generation, memory substitution) that the openmpt123
+// reference-diff harness (tools/host_render/diff_xm.py) can't cheaply pin
+// down from audio alone, complementing rather than duplicating it. Pitch
+// tests reuse player.h's own tracker_note_to_period()/tracker_period_to_inc()
+// to compute expected values instead of hand-deriving them.
+// ============================================================================
+
+namespace fx_test_blob {
+
+// Same shape as test_blob::build() (one instrument/sample, arbitrary
+// per-note increments (i+1)*1000 so a plain trigger's table entry is easy
+// to assert against), generalized to multiple channels/patterns/an explicit
+// order list -- what the position-jump/pattern-break tests need.
+static std::vector<uint8_t> build(uint32_t num_channels,
+                                   const std::vector<std::vector<Event>> &patterns,
+                                   const std::vector<uint32_t> &rows_per_pattern,
+                                   uint32_t speed, uint32_t bpm,
+                                   std::vector<uint8_t> order = {},
+                                   uint32_t restart_order = 0) {
+    if (order.empty()) {
+        for (uint32_t i = 0; i < patterns.size(); i++) order.push_back((uint8_t)i);
+    }
+
+    test_blob::Builder b;
+    uint32_t song_off = b.tell();
+    b.buf.resize(b.buf.size() + sizeof(SongHeader));
+
+    uint32_t order_off = b.append_bytes(order.data(), order.size());
+
+    uint32_t pattern_table_off = b.tell();
+    b.buf.resize(b.buf.size() + sizeof(PatternHeader) * patterns.size());
+    std::vector<PatternHeader> pat_headers(patterns.size());
+    for (size_t p = 0; p < patterns.size(); p++) {
+        uint32_t event_off = b.append_bytes(patterns[p].data(), patterns[p].size() * sizeof(Event));
+        pat_headers[p] = PatternHeader{rows_per_pattern[p], event_off};
+    }
+    std::memcpy(b.buf.data() + pattern_table_off, pat_headers.data(), pat_headers.size() * sizeof(PatternHeader));
+
+    uint32_t instrument_table_off = b.tell();
+    b.buf.resize(b.buf.size() + sizeof(InstrumentHeader));
+
+    uint8_t sample_map[96];
+    std::memset(sample_map, 0, sizeof(sample_map));
+    uint32_t sample_map_off = b.append_bytes(sample_map, sizeof(sample_map));
+    uint32_t sample_idx = 0;
+    uint32_t sample_index_off = b.append(sample_idx);
+
+    InstrumentHeader inst{};
+    inst.sample_map_offset = sample_map_off;
+    inst.num_samples = 1;
+    inst.sample_index_offset = sample_index_off;
+    test_blob::set_name(inst.name, sizeof(inst.name), "test");
+    std::memcpy(b.buf.data() + instrument_table_off, &inst, sizeof(inst));
+
+    uint32_t sample_table_off = b.tell();
+    b.buf.resize(b.buf.size() + sizeof(SampleHeader));
+
+    uint32_t incs[T00T_NOTES_PER_TABLE];
+    for (uint32_t i = 0; i < T00T_NOTES_PER_TABLE; i++) incs[i] = (i + 1) * 1000u;
+    uint32_t incs_off = b.append_bytes(incs, sizeof(incs));
+
+    int8_t pcm[9] = {1, 2, 3, 4, 5, 6, 7, 8, 8};
+    uint32_t data_off = b.append_bytes(pcm, sizeof(pcm));
+
+    SampleHeader sh{};
+    sh.length = 8;
+    sh.loop_start = 0;
+    sh.loop_end = 8;
+    sh.loop_type = 0;
+    sh.finetune = 0;
+    sh.relative_note = 0;
+    sh.default_volume = 64;
+    sh.default_panning = 128;
+    sh.data_offset = data_off;
+    sh.note_increments_offset = incs_off;
+    test_blob::set_name(sh.name, sizeof(sh.name), "test");
+    std::memcpy(b.buf.data() + sample_table_off, &sh, sizeof(sh));
+
+    SongHeader hdr{};
+    std::memcpy(hdr.magic, T00T_BLOB_MAGIC, 4);
+    hdr.version = T00T_BLOB_VERSION;
+    hdr.num_channels = num_channels;
+    hdr.freq_table = 1;  // linear
+    hdr.num_orders = (uint32_t)order.size();
+    hdr.num_patterns = (uint32_t)patterns.size();
+    hdr.num_instruments = 1;
+    hdr.num_samples = 1;
+    hdr.default_tempo = speed;
+    hdr.default_bpm = bpm;
+    hdr.restart_order = restart_order;
+    hdr.order_table_offset = order_off;
+    hdr.pattern_table_offset = pattern_table_off;
+    hdr.instrument_table_offset = instrument_table_off;
+    hdr.sample_table_offset = sample_table_off;
+    hdr.sample_data_offset = data_off;
+    hdr.sample_data_bytes = sizeof(pcm);
+    hdr.total_size = b.tell();
+    test_blob::set_name(hdr.name, sizeof(hdr.name), "fx_test");
+    std::memcpy(b.buf.data() + song_off, &hdr, sizeof(hdr));
+
+    return b.buf;
+}
+
+}  // namespace fx_test_blob
+
+// Tick 0 of a row never applies a continuous pitch effect (the trigger tick
+// must sound at plain pitch) -- and once ticks 1.. are reached, arpeggio (0xy)
+// cycles base/+y/+x every tick (tick_in_row % 3), recomputing period from
+// scratch each time rather than falling back to the precomputed
+// note_increments table (the table only ever backs an unmodulated trigger).
+static bool test_arpeggio_tick0_exclusion_and_cycle() {
+    std::vector<Event> rows(4);
+    rows[0] = Event{49, 1, 0, 0, 0, 0};                                  // trigger C-4
+    rows[1] = Event{0, 0, 0, 0, (uint8_t)Effect::ARPEGGIO, 0x47};        // +7 (lo) / +4 (hi)
+    rows[2] = Event{0, 0, 0, 0, (uint8_t)Effect::ARPEGGIO, 0x00};        // both offsets 0
+    rows[3] = Event{0, 0, 0, 0, 0, 0};                                   // stops
+    std::vector<uint8_t> blob = fx_test_blob::build(1, {rows}, {4}, /*speed=*/6, /*bpm=*/125);
+    const SongHeader *song = reinterpret_cast<const SongHeader *>(blob.data());
+
+    PlayerState st;
+    player_init(st, song);
+    bool ok = true;
+    const double base_note = 48.0;  // relative_note(0) + (note49 - 1)
+
+    auto expect_inc = [&](int offset) {
+        double p = tracker_note_to_period(base_note + offset, 0.0, /*linear=*/true);
+        return tracker_period_to_inc(p, true);
+    };
+
+    TickBlock tb;
+    player_produce_tick(st, song, tb);  // row0 tick0: trigger
+    if (tb.ch[0].inc != 49u * 1000u) { printf("  FAIL: trigger inc=%u, want 49000\n", tb.ch[0].inc); ok = false; }
+    for (int t = 0; t < 5; t++) player_produce_tick(st, song, tb);  // row0 ticks1-5: plain restatement
+
+    // row1 tick0: arpeggio 0x47 latched into active_effect, but must NOT
+    // apply this tick -- inc stays the plain trigger value.
+    player_produce_tick(st, song, tb);
+    if (tb.ch[0].inc != 49u * 1000u) {
+        printf("  FAIL: row1 tick0 inc=%u, want unmodulated 49000 (tick 0 must exclude arpeggio)\n", tb.ch[0].inc);
+        ok = false;
+    }
+    // row1 ticks1-5 have tick_in_row 1,2,3,4,5 -> which=tick_in_row%3 is
+    // 1,2,0,1,2 -> +7 (lo), +4 (hi), base (pcs.inc bypass), +7, +4.
+    int which_sequence[5] = {1, 2, 0, 1, 2};
+    for (int t = 0; t < 5; t++) {
+        player_produce_tick(st, song, tb);
+        int which = which_sequence[t];
+        uint32_t want = (which == 0) ? 49000u : expect_inc(which == 1 ? 7 : 4);
+        if (tb.ch[0].inc != want) {
+            printf("  FAIL: row1 tick%d (which=%d) inc=%u, want %u\n", t + 1, which, tb.ch[0].inc, want);
+            ok = false;
+        }
+    }
+    // Arpeggio never persists into pcs.inc -- a plain restatement tick right
+    // after (row2 has arpeggio 0x00, so ticks where which==0 must still
+    // read exactly the original trigger value, not something arpeggio left
+    // behind).
+    player_produce_tick(st, song, tb);  // row2 tick0
+    if (tb.ch[0].inc != 49000u) { printf("  FAIL: row2 tick0 inc=%u, want 49000 (arpeggio must not persist)\n", tb.ch[0].inc); ok = false; }
+
+    printf("  %s: tick-0 exclusion and base/+y/+x cycling matched tracker_note_to_period()\n", ok ? "PASS" : "FAIL");
+    return ok;
+}
+
+// Position jump (Bxx) and pattern break (Dxx), separately and combined on
+// the same row across two different channels -- the acceptance criterion
+// this issue calls out by name ("B and D interact correctly, including
+// break-with-jump on the same row"). ch0 carries an audible, distinct note
+// per landing point; ch1 carries the transport effects, so neither ever
+// shares a cell with a note.
+static bool test_position_jump_and_pattern_break() {
+    auto row = [](uint8_t note, uint8_t fx0, uint8_t p0, uint8_t fx1, uint8_t p1) -> std::vector<Event> {
+        Event a{note, (uint8_t)(note ? 1 : 0), 0, 0, fx0, p0};
+        Event b{0, 0, 0, 0, fx1, p1};
+        return {a, b};
+    };
+    const uint8_t D = (uint8_t)Effect::PATTERN_BREAK, B = (uint8_t)Effect::POSITION_JUMP;
+
+    std::vector<Event> pat0, pat1, pat2, pat3;
+    auto push = [](std::vector<Event> &pat, std::vector<Event> r) { pat.insert(pat.end(), r.begin(), r.end()); };
+
+    push(pat0, row(49, 0, 0, 0, 0));       // row0: C-4
+    push(pat0, row(0, 0, 0, D, 0x01));     // row1: D alone -> pattern break to row 1 of the NEXT order
+    push(pat1, row(61, 0, 0, 0, 0));       // row0: C-5 -- must be skipped
+    push(pat1, row(63, 0, 0, B, 2));       // row1: D-5, B alone -> jump to order 2, row 0
+    push(pat1, row(65, 0, 0, 0, 0));       // row2: E-5 -- must be skipped
+    push(pat2, row(66, 0, 0, 0, 0));       // row0: F-5
+    push(pat2, row(68, B, 3, D, 0x01));    // row1: G-5, B+D combined -> order 3, row 1 (not row 0)
+    push(pat3, row(70, 0, 0, 0, 0));       // row0: A-5 -- must be skipped
+    push(pat3, row(72, 0, 0, 0, 0));       // row1: B-5 -- the actual landing point
+
+    std::vector<uint8_t> blob = fx_test_blob::build(
+        2, {pat0, pat1, pat2, pat3}, {2, 3, 2, 2}, /*speed=*/3, /*bpm=*/125);
+    const SongHeader *song = reinterpret_cast<const SongHeader *>(blob.data());
+
+    PlayerState st;
+    player_init(st, song);
+    bool ok = true;
+
+    // Every note that actually sounds, in order, with the (order,row) it
+    // must have sounded on -- silently skips the note==0 cell (ch1 never
+    // triggers), and every row this song visits is exactly 3 ticks (speed).
+    struct Expect { uint32_t order, row; uint32_t inc; };
+    Expect expected[] = {
+        {0, 0, 49u * 1000u},  // pat0 row0
+        {1, 1, 63u * 1000u},  // pat1 row1 (row0 skipped by the break)
+        {2, 0, 66u * 1000u},  // pat2 row0 (landed via the plain jump)
+        {2, 1, 68u * 1000u},  // pat2 row1 (B+D combined issued here)
+        {3, 1, 72u * 1000u},  // pat3 row1 (row0 skipped by the combined break)
+    };
+    size_t next_expect = 0;
+    bool looped = false;
+    for (int guard = 0; guard < 200 && !looped; guard++) {
+        uint32_t order = st.order_idx, r = st.row;
+        TickBlock tb;
+        looped = player_produce_tick(st, song, tb);
+        if (tb.ch[0].flags & TICK_NOTE_ON) {
+            if (next_expect >= sizeof(expected) / sizeof(expected[0])) {
+                printf("  FAIL: unexpected extra trigger at order %u row %u\n", order, r);
+                ok = false;
+                continue;
+            }
+            const Expect &e = expected[next_expect++];
+            if (order != e.order || r != e.row || tb.ch[0].inc != e.inc) {
+                printf("  FAIL: trigger %zu at order %u row %u inc=%u, want order %u row %u inc=%u\n",
+                       next_expect - 1, order, r, tb.ch[0].inc, e.order, e.row, e.inc);
+                ok = false;
+            }
+        }
+    }
+    if (next_expect != sizeof(expected) / sizeof(expected[0])) {
+        printf("  FAIL: only saw %zu of %zu expected triggers before the order list looped\n",
+               next_expect, sizeof(expected) / sizeof(expected[0]));
+        ok = false;
+    }
+
+    printf("  %s: Dxx alone, Bxx alone, and Bxx+Dxx combined on one row all landed correctly\n", ok ? "PASS" : "FAIL");
+    return ok;
+}
+
+// Volume slide (Axy) clamps at both ends of 0..64, and reuses the last
+// nonzero param when a later row restates the effect with param 0.
+static bool test_volume_slide_clamp_and_memory() {
+    std::vector<Event> rows(4);
+    rows[0] = Event{49, 1, 0, 0, 0, 0};                                       // trigger, default full volume (64)
+    rows[1] = Event{0, 0, 0, 0, (uint8_t)Effect::VOLUME_SLIDE, 0xF0};         // up 15/tick -- already at 64, must clamp
+    rows[2] = Event{0, 0, 0, 0, (uint8_t)Effect::VOLUME_SLIDE, 0x0F};         // down 15/tick
+    rows[3] = Event{0, 0, 0, 0, (uint8_t)Effect::VOLUME_SLIDE, 0x00};         // memory reuse -- still down 15/tick
+    std::vector<uint8_t> blob = fx_test_blob::build(1, {rows}, {4}, /*speed=*/6, /*bpm=*/125);
+    const SongHeader *song = reinterpret_cast<const SongHeader *>(blob.data());
+
+    PlayerState st;
+    player_init(st, song);
+    bool ok = true;
+    TickBlock tb;
+
+    player_produce_tick(st, song, tb);
+    int32_t full_vol = tb.ch[0].tgt_volL;
+    for (int t = 0; t < 5; t++) player_produce_tick(st, song, tb);  // row0 ticks1-5
+
+    player_produce_tick(st, song, tb);  // row1 tick0: no slide yet
+    for (int t = 0; t < 5; t++) player_produce_tick(st, song, tb);  // row1 ticks1-5: up-slide, clamped at 64
+    if (tb.ch[0].tgt_volL != full_vol) {
+        printf("  FAIL: volume slide up past 64 changed volume (%d != %d) -- clamp missing\n", tb.ch[0].tgt_volL, full_vol);
+        ok = false;
+    }
+
+    player_produce_tick(st, song, tb);  // row2 tick0
+    for (int t = 0; t < 5; t++) player_produce_tick(st, song, tb);  // row2 ticks1-5: down 15/tick, 64->0 well before tick5
+    if (tb.ch[0].tgt_volL != 0) {
+        printf("  FAIL: volume after a long down-slide=%d, want 0 (clamp)\n", tb.ch[0].tgt_volL);
+        ok = false;
+    }
+
+    player_produce_tick(st, song, tb);  // row3 tick0: memory reuse (param 0x00)
+    for (int t = 0; t < 5; t++) player_produce_tick(st, song, tb);  // row3 ticks1-5: still down -> stays clamped at 0
+    if (tb.ch[0].tgt_volL != 0) {
+        printf("  FAIL: memory-reused down-slide left volume=%d, want 0\n", tb.ch[0].tgt_volL);
+        ok = false;
+    }
+
+    printf("  %s: volume slide clamps at 0 and 64, and reuses memory on a zero param\n", ok ? "PASS" : "FAIL");
+    return ok;
+}
+
+// Tone portamento (3xx) with a new note must NOT retrigger the sample (no
+// generation bump, no TICK_NOTE_ON) -- it only retargets the glide -- and
+// the pitch must move monotonically toward, and eventually reach exactly,
+// the new note's period.
+static bool test_tone_portamento_no_retrigger() {
+    std::vector<Event> rows(3);
+    rows[0] = Event{49, 1, 0, 0, 0, 0};                                   // trigger C-4
+    rows[1] = Event{61, 1, 0, 0, (uint8_t)Effect::TONE_PORTA, 40};        // target C-5, fast speed -- retarget only
+    rows[2] = Event{0, 0, 0, 0, (uint8_t)Effect::TONE_PORTA, 0};          // memory reuse, keep gliding
+    std::vector<uint8_t> blob = fx_test_blob::build(1, {rows}, {3}, /*speed=*/6, /*bpm=*/125);
+    const SongHeader *song = reinterpret_cast<const SongHeader *>(blob.data());
+
+    PlayerState st;
+    player_init(st, song);
+    bool ok = true;
+    TickBlock tb;
+
+    player_produce_tick(st, song, tb);
+    uint8_t trigger_gen = tb.ch[0].trigger;
+    for (int t = 0; t < 5; t++) player_produce_tick(st, song, tb);
+
+    player_produce_tick(st, song, tb);  // row1 tick0: retarget, no retrigger
+    if (tb.ch[0].flags & TICK_NOTE_ON) { printf("  FAIL: tone portamento's note retriggered the sample\n"); ok = false; }
+    if (tb.ch[0].trigger != trigger_gen) {
+        printf("  FAIL: tone portamento bumped the trigger generation (%u != %u)\n", tb.ch[0].trigger, trigger_gen);
+        ok = false;
+    }
+    uint32_t prev_inc = tb.ch[0].inc;
+    bool moved = false;
+    for (int t = 0; t < 5; t++) {
+        player_produce_tick(st, song, tb);
+        if (tb.ch[0].inc > prev_inc) moved = true;  // gliding toward a higher note -> increment should rise
+        prev_inc = tb.ch[0].inc;
+    }
+    if (!moved) { printf("  FAIL: pitch never moved during tone portamento\n"); ok = false; }
+
+    double target_period = tracker_note_to_period(60.0, 0.0, true);  // relative_note(0) + (note61 - 1)
+    uint32_t target_inc = tracker_period_to_inc(target_period, true);
+    for (int t = 0; t < 5; t++) player_produce_tick(st, song, tb);  // row2: enough ticks at speed 40 to arrive
+    if (tb.ch[0].inc != target_inc) {
+        printf("  FAIL: tone portamento settled at inc=%u, want exactly the target note's %u\n", tb.ch[0].inc, target_inc);
+        ok = false;
+    }
+
+    printf("  %s: tone portamento retargets without retriggering, glides, and reaches the target exactly\n", ok ? "PASS" : "FAIL");
+    return ok;
+}
+
+// ============================================================================
 // Render mode: load a real converted blob, drive player.h + mixer.h
 // tick-by-tick, write WAV + CSV trace.
 // ============================================================================
@@ -392,6 +727,15 @@ int main(int argc, char **argv) {
     ok = test_note_trigger_and_retrigger() && ok;
     printf("\n== sample_map 0xFF entry produces no trigger ==\n");
     ok = test_missing_sample_map_entry_is_silent() && ok;
+
+    printf("\n== arpeggio: tick-0 exclusion, base/+y/+x cycling ==\n");
+    ok = test_arpeggio_tick0_exclusion_and_cycle() && ok;
+    printf("\n== position jump (Bxx) + pattern break (Dxx), including combined ==\n");
+    ok = test_position_jump_and_pattern_break() && ok;
+    printf("\n== volume slide (Axy): clamp + memory ==\n");
+    ok = test_volume_slide_clamp_and_memory() && ok;
+    printf("\n== tone portamento (3xx): no retrigger, glides to target ==\n");
+    ok = test_tone_portamento_no_retrigger() && ok;
 
     printf(ok ? "\nALL CHECKS PASSED\n" : "\nCHECKS FAILED\n");
     return ok ? 0 : 1;
