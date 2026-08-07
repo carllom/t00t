@@ -946,6 +946,164 @@ static bool test_sample_offset_memory_and_bounds() {
 }
 
 // ============================================================================
+// #22 unit tests -- exact tick-scheduling for the remaining Exy sub-commands
+// (EDx/ECx/E9x/EEx are invisible to Core 1 and only change what Core 0 reads
+// or how long it holds a row/tick, so their correctness lives entirely in
+// this kind of state assertion, not in the audio diff). fine_slides_basic
+// covers E1x/E2x/EAx/EBx end-to-end against openmpt123 already (plain
+// instant tick-0 effects, nothing tick-exact to pin down here that the diff
+// harness can't already see).
+// ============================================================================
+
+// EDx: the row stays silent (no TICK_NOTE_ON) until tick_in_row matches the
+// delay param, then triggers exactly once, then restates normally.
+static bool test_note_delay_exact_tick() {
+    std::vector<Event> rows(2);
+    rows[0] = Event{0, 0, 0, 0, 0, 0};                                          // silence
+    rows[1] = Event{49, 1, 0, 0, (uint8_t)Effect::NOTE_DELAY, 3};               // ED3
+    std::vector<uint8_t> blob = fx_test_blob::build(1, {rows}, {2}, /*speed=*/6, /*bpm=*/125);
+    const SongHeader *song = reinterpret_cast<const SongHeader *>(blob.data());
+
+    PlayerState st;
+    player_init(st, song);
+    bool ok = true;
+    TickBlock tb;
+
+    for (int t = 0; t < 6; t++) player_produce_tick(st, song, tb);  // row0: 6 silent ticks
+
+    for (int t = 0; t < 3; t++) {
+        player_produce_tick(st, song, tb);  // row1 ticks 0-2: still waiting
+        if (tb.ch[0].flags & TICK_NOTE_ON) {
+            printf("  FAIL: row1 tick%d triggered before the ED3 delay elapsed\n", t);
+            ok = false;
+        }
+    }
+    player_produce_tick(st, song, tb);  // row1 tick3: the delayed trigger fires
+    if (!(tb.ch[0].flags & TICK_NOTE_ON)) { printf("  FAIL: row1 tick3 did not trigger on the delay tick\n"); ok = false; }
+    if (tb.ch[0].inc != 49u * 1000u) { printf("  FAIL: delayed trigger inc=%u, want %u\n", tb.ch[0].inc, 49u * 1000u); ok = false; }
+
+    for (int t = 0; t < 2; t++) {
+        player_produce_tick(st, song, tb);  // row1 ticks 4-5: plain restatement
+        if (tb.ch[0].flags & TICK_NOTE_ON) { printf("  FAIL: row1 tick%d unexpectedly retriggered\n", t + 4); ok = false; }
+    }
+
+    printf("  %s: EDx stays silent until its delay tick, triggers exactly once there\n", ok ? "PASS" : "FAIL");
+    return ok;
+}
+
+// ECx: volume cuts to 0 (and TICK_NOTE_CUT is set) on the tick matching the
+// param, not before and not repeated on later ticks of the same row.
+static bool test_note_cut_exact_tick() {
+    std::vector<Event> rows(1);
+    rows[0] = Event{49, 1, 0, 0, (uint8_t)Effect::NOTE_CUT, 3};  // EC3
+    std::vector<uint8_t> blob = fx_test_blob::build(1, {rows}, {6}, /*speed=*/6, /*bpm=*/125);
+    const SongHeader *song = reinterpret_cast<const SongHeader *>(blob.data());
+
+    PlayerState st;
+    player_init(st, song);
+    bool ok = true;
+    TickBlock tb;
+
+    for (int t = 0; t < 3; t++) {
+        player_produce_tick(st, song, tb);
+        if (tb.ch[0].tgt_volL == 0) { printf("  FAIL: tick%d already cut, want full volume until tick3\n", t); ok = false; }
+        if (tb.ch[0].flags & TICK_NOTE_CUT) { printf("  FAIL: TICK_NOTE_CUT set early on tick%d\n", t); ok = false; }
+    }
+    player_produce_tick(st, song, tb);  // tick3: cuts
+    if (tb.ch[0].tgt_volL != 0 || tb.ch[0].tgt_volR != 0) { printf("  FAIL: tick3 did not cut volume to 0\n"); ok = false; }
+    if (!(tb.ch[0].flags & TICK_NOTE_CUT)) { printf("  FAIL: TICK_NOTE_CUT not set on the cut tick\n"); ok = false; }
+
+    for (int t = 0; t < 2; t++) {
+        player_produce_tick(st, song, tb);  // ticks 4-5: stays cut, flag doesn't refire
+        if (tb.ch[0].tgt_volL != 0) { printf("  FAIL: tick%d un-cut itself\n", t + 4); ok = false; }
+        if (tb.ch[0].flags & TICK_NOTE_CUT) { printf("  FAIL: TICK_NOTE_CUT refired on tick%d\n", t + 4); ok = false; }
+    }
+
+    printf("  %s: ECx cuts volume and sets TICK_NOTE_CUT exactly once, on its own tick\n", ok ? "PASS" : "FAIL");
+    return ok;
+}
+
+// E9x: retriggers every `interval` ticks, excluding tick 0 (this row's own
+// natural trigger already covers that tick), bumping the generation counter
+// each time.
+static bool test_retrigger_interval() {
+    std::vector<Event> rows(2);
+    rows[0] = Event{49, 1, 0, 0, 0, 0};  // plain trigger
+    const uint8_t interval = 2;
+    // E9x's decode already strips the sub-command nibble before it reaches
+    // Effect's param (effects.py), so the fixture supplies only the
+    // interval -- no volume-change nibble, matching a real E9x cell.
+    rows[1] = Event{0, 0, 0, 0, (uint8_t)Effect::RETRIG_NOTE, interval};
+    std::vector<uint8_t> blob = fx_test_blob::build(1, {rows}, {2}, /*speed=*/6, /*bpm=*/125);
+    const SongHeader *song = reinterpret_cast<const SongHeader *>(blob.data());
+
+    PlayerState st;
+    player_init(st, song);
+    bool ok = true;
+    TickBlock tb;
+
+    for (int t = 0; t < 6; t++) player_produce_tick(st, song, tb);  // row0
+    uint8_t trigger_after_row0 = tb.ch[0].trigger;
+
+    int retrig_count = 0;
+    for (uint32_t tick_in_row = 0; tick_in_row < 6; tick_in_row++) {
+        player_produce_tick(st, song, tb);
+        bool triggered = tb.ch[0].flags & TICK_NOTE_ON;
+        bool want = (tick_in_row != 0) && (tick_in_row % interval == 0);
+        if (triggered != want) {
+            printf("  FAIL: row1 tick%u triggered=%d, want %d\n", tick_in_row, triggered, want);
+            ok = false;
+        }
+        if (triggered) retrig_count++;
+    }
+    if (retrig_count != 2) { printf("  FAIL: saw %d retriggers in row1, want 2 (ticks 2 and 4)\n", retrig_count); ok = false; }
+    if (tb.ch[0].trigger != (uint8_t)(trigger_after_row0 + 2)) {
+        printf("  FAIL: trigger generation=%u after row1, want %u\n", tb.ch[0].trigger, (uint8_t)(trigger_after_row0 + 2));
+        ok = false;
+    }
+
+    printf("  %s: E9x retriggers on ticks 2 and 4 of a 6-tick row (interval 2, tick 0 excluded)\n", ok ? "PASS" : "FAIL");
+    return ok;
+}
+
+// EEx: holds row 0 for one extra full-speed pass (8 ticks total at speed 4)
+// before row 1's trigger appears, with no re-trigger on the held repeat.
+static bool test_pattern_delay_row_hold() {
+    std::vector<Event> rows(2);
+    rows[0] = Event{49, 1, 0, 0, (uint8_t)Effect::PATTERN_DELAY, 1};  // EE1: hold for 1 extra pass
+    rows[1] = Event{61, 1, 0, 0, 0, 0};
+    std::vector<uint8_t> blob = fx_test_blob::build(1, {rows}, {2}, /*speed=*/4, /*bpm=*/125);
+    const SongHeader *song = reinterpret_cast<const SongHeader *>(blob.data());
+
+    PlayerState st;
+    player_init(st, song);
+    bool ok = true;
+    TickBlock tb;
+
+    int row1_trigger_tick = -1;
+    for (int tick = 0; tick < 12 && row1_trigger_tick < 0; tick++) {
+        player_produce_tick(st, song, tb);
+        if ((tb.ch[0].flags & TICK_NOTE_ON) && tb.ch[0].inc == 61u * 1000u) row1_trigger_tick = tick;
+        // Row 0's own trigger (tick 0) aside, nothing should retrigger while
+        // the pattern delay holds row 0 -- a spurious extra TICK_NOTE_ON
+        // here would mean the held repeat's tick 0 was mistaken for a fresh
+        // row_boundary.
+        if (tick > 0 && tick < 8 && (tb.ch[0].flags & TICK_NOTE_ON)) {
+            printf("  FAIL: tick%d unexpectedly retriggered during the pattern-delay hold\n", tick);
+            ok = false;
+        }
+    }
+    if (row1_trigger_tick != 8) {
+        printf("  FAIL: row1 triggered at tick %d, want tick 8 (row0's normal 4 ticks + 4 held-repeat ticks)\n",
+               row1_trigger_tick);
+        ok = false;
+    }
+
+    printf("  %s: EEx holds row 0 for exactly one extra full-speed pass before row 1 triggers\n", ok ? "PASS" : "FAIL");
+    return ok;
+}
+
+// ============================================================================
 // Render mode: load a real converted blob, drive player.h + mixer.h
 // tick-by-tick, write WAV + CSV trace.
 // ============================================================================
@@ -1086,6 +1244,15 @@ int main(int argc, char **argv) {
 
     printf("\n== 9xx sample offset: memory, *256 scaling, past-end suppression ==\n");
     ok = test_sample_offset_memory_and_bounds() && ok;
+
+    printf("\n== EDx note delay: silent until the delay tick, triggers once ==\n");
+    ok = test_note_delay_exact_tick() && ok;
+    printf("\n== ECx note cut: cuts + TICK_NOTE_CUT on the exact tick, once ==\n");
+    ok = test_note_cut_exact_tick() && ok;
+    printf("\n== E9x retrigger: fires every interval ticks, tick 0 excluded ==\n");
+    ok = test_retrigger_interval() && ok;
+    printf("\n== EEx pattern delay: holds the row for the stated extra passes ==\n");
+    ok = test_pattern_delay_row_hold() && ok;
 
     printf(ok ? "\nALL CHECKS PASSED\n" : "\nCHECKS FAILED\n");
     return ok ? 0 : 1;
