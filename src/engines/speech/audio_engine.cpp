@@ -43,6 +43,16 @@ static int32_t fx_buf[SAMPLES_PER_BUFFER];
 // Per-voice render state (Core 1 only, never crosses ParamExchange).
 static SpeechVoice voices[MAX_VOICES];
 
+// #37 display telemetry (engine.h): published once per buffer by the normal
+// (non-profiling) loop below. The #31 profiling build's synthetic loop has
+// no display to feed (see its own comment) and leaves this at its
+// PHONEME_COUNT ("none") default.
+static SpeechVoiceUiState s_voice_ui[MAX_VOICES];
+
+void speech_voice_ui_state(uint32_t voice, SpeechVoiceUiState *out) {
+    *out = (voice < MAX_VOICES) ? s_voice_ui[voice] : SpeechVoiceUiState{0, 0, PHONEME_COUNT, false};
+}
+
 // Post-mix effects (Core 1 only). Linked unconditionally, unlike the
 // tracker's skeleton -- speech.md: "Delay/reverb stay linked ... speech has
 // no sample-RAM pressure".
@@ -200,7 +210,10 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
                        // osc_init_sine() call with res2p_init(): every sample
                        // was getting multiplied by gain 0 from an all-zero
                        // wavetable, silent output despite correct DSP upstream.
-    for (uint32_t v = 0; v < MAX_VOICES; v++) voices[v] = SpeechVoice{};
+    for (uint32_t v = 0; v < MAX_VOICES; v++) {
+        voices[v] = SpeechVoice{};
+        s_voice_ui[v] = { 0, 0, PHONEME_COUNT, false };
+    }
     fx_delay.init();
     fx_reverb.init();
 
@@ -234,6 +247,7 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
                                      p.jitter, p.shimmer, p.lfo_rate, p.lfo_depth,
                                      dry_l, dry_r, NATIVE_SAMPLES_PER_BUFFER);
                 if (p.gate) active_mask |= (1u << v);
+                s_voice_ui[v] = { (uint16_t)voices[v].F[0], (uint16_t)voices[v].F[1], p.phoneme, p.gate };
             } else {
                 // #34 segment sequencer: active stays set until the
                 // utterance itself completes (sv.active, sequencer.h/
@@ -246,12 +260,18 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
                 // by tools/host_render/render_speech.cpp's #34-specific
                 // regression checks, which need HELLO/CAT's exact known
                 // phoneme strings, not whatever speech_phrases.txt says).
+                const SpeechUtterance &utt = SPEECH_PHRASES[p.utterance % SPEECH_PHRASE_COUNT];
                 speech_render_voice_seq(voices[v], p.phase_inc, (float)SPEECH_RATE, p.trigger,
-                                         p.amplitude, p.gate, SPEECH_PHRASES[p.utterance % SPEECH_PHRASE_COUNT],
+                                         p.amplitude, p.gate, utt,
                                          p.mode, p.rate, p.pan, p.formant_shift, p.bandwidth_scale,
                                          p.jitter, p.shimmer, p.lfo_rate, p.lfo_depth,
                                          dry_l, dry_r, NATIVE_SAMPLES_PER_BUFFER);
                 if (voices[v].active) active_mask |= (1u << v);
+                // #37: the sequencer (sequencer.h) tracks position as
+                // seg_index into `utt`, not a phoneme id directly -- resolve
+                // it here, same lookup speech_seg_load() itself does.
+                uint8_t cur_phoneme = (voices[v].seg_index < utt.length) ? utt.phonemes[voices[v].seg_index] : PH_SIL;
+                s_voice_ui[v] = { (uint16_t)voices[v].F[0], (uint16_t)voices[v].F[1], cur_phoneme, voices[v].active };
             }
         }
 
