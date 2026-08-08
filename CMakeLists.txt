@@ -118,6 +118,14 @@ foreach(_lever FM_RIG_VOICES FM_RIG_BLOCK FM_RIG_TABLE_BITS FM_RIG_INTERLEAVE FM
     endif()
 endforeach()
 
+# #45 BLOCK confirmation (FM engine's real EG control-rate block size, op.h's
+# FM_BLOCK — distinct from FM_RIG_BLOCK above, which only affects the #42
+# profiling rig). Unset/"default" leaves op.h's own #ifndef default (16) in
+# place, same convention as DMA_BUFFER_SIZE.
+if(DEFINED FM_BLOCK AND NOT FM_BLOCK STREQUAL "default")
+    target_compile_definitions(t00t PRIVATE T00T_FM_BLOCK=${FM_BLOCK})
+endif()
+
 # See ENGINE_VOICE_ALLOC above — tells main.cpp to skip the voice_alloc calls
 # it would otherwise fail to link against on the tracker build.
 if(T00T_ENGINE STREQUAL "tracker")

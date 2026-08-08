@@ -172,6 +172,24 @@ projection. Revisit raising `MAX_VOICES` once P2 measures the real EG/LFO
 control-rate cost — the surplus P0 came back with is real, it's just not
 spent on a projection.
 
+**Measured, #45** (`breadboard_rp2350`, real `EnvDX`, 16 voices, no FX):
+**65% Core 1 duty cycle steady-state, 73% under intensive re-triggering.**
+Working back through the same arithmetic as above (65%/73% × 3401 − 15
+idle, ÷16 voices) gives **~137 c/f/voice steady, ~154 c/f/voice under
+bursty re-triggering** — this §3.3 estimate's "~19 c/f/voice" control-rate
+line item was low: the real EG overhead (full voice minus #43/#44's
+100.05 c/f kernel-only baseline) is **~37-54 c/f/voice**, roughly 2-3x the
+original guess, not the LFO/pitch-EG that don't exist yet (P4) but purely
+`EnvDX`'s per-block stepping (env_dx_step_block() plus the exp2 conversion,
+6 operators/voice). Still comfortably inside the ≤130→"20+" / ~160→"16,
+proceed as planned" sensitivity tiers below (137 sits just above the ≤130
+cutoff, confirming 16 was the right call, not a conservative one) — no
+change to `MAX_VOICES`. See `engine.md` §"FM Engine — EnvDX + BLOCK
+Confirmation (#45)" for the full number and what it means for the
+BLOCK=8-vs-16 tradeoff (it strengthens the case for keeping 16, since
+BLOCK=8 would double this now-larger real overhead, not the original
+~19 c/f guess).
+
 Sensitivity (as originally written, kept for the record):
 
 - **≤130 cycles/voice measured** → 20+ voices; consider 6-op as the unconditional
@@ -239,14 +257,25 @@ Measured #43 (`engine.md` §"FM P0 Measurement (#43)"), decisions in §3.4:
    cache is shared by both cores, so this margin isn't guaranteed once Core0
    has real LCD/MIDI/control traffic competing for the same 16 KB.
 3. **Block size.** ~~BLOCK=16 balances per-block overhead against EG time
-   resolution.~~ **Measured: BLOCK=8 is 4.9% cheaper, BLOCK=32 is 10.8% more
-   expensive — inverted from the amortisation story, because this rig has no
-   EG/LFO to amortise. The real driver is GCC's loop-unrolling threshold**
-   (confirmed: `audio_engine_run()` compiles to 5,568 bytes at BLOCK=16 vs.
-   1,336 at BLOCK=32, and BLOCK=32 alone compiles the per-operator loop as a
-   real branch). **Decision: BLOCK=16 stays provisional**, final call
-   deferred to P2 as planned, since that's when the EG-resolution side of
-   the tradeoff actually exists to measure.
+   resolution.~~ **Measured (#43, kernel-only): BLOCK=8 is 4.9% cheaper,
+   BLOCK=32 is 10.8% more expensive — inverted from the amortisation story,
+   because that rig has no EG/LFO to amortise. The real driver is GCC's
+   loop-unrolling threshold** (confirmed: `audio_engine_run()` compiles to
+   5,568 bytes at BLOCK=16 vs. 1,336 at BLOCK=32, and BLOCK=32 alone
+   compiles the per-operator loop as a real branch). **Closed, #45:
+   BLOCK=16 confirmed (not changed)** — see `engine.md` §"FM P2 BLOCK
+   Confirmation (#45)" for the host-rendered rate-99 attack-transient
+   comparison. BLOCK=32 loses on both axes now measured (10.8% more
+   expensive kernel *and* the coarsest, least accurate attack transient: 9
+   steps and an 8% timing overshoot vs. BLOCK=8's 34 steps and BLOCK=16's
+   17); BLOCK=8 wins narrowly on both individually, but doubles how often
+   the new per-block EG step runs (env_dx.h: a handful of table lookups
+   plus one 64-bit divide per operator, absent from #43's kernel-only rig),
+   an unmeasured real cost with no hardware bench to weigh it against
+   BLOCK=8's kernel savings. Kept the already-characterised BLOCK=16 rather
+   than trade a measured kernel win for an unmeasured control-rate loss —
+   revisit with a real profiling-pin reading if BLOCK=8's EG overhead
+   turns out smaller than projected.
 4. **M33 DSP extension.** `smulwb` fuses the `mul` + `asr` pair. **Measured:
    −3.0%, as predicted. Adopted where convenient** — real, no correctness
    cost (host + device verified in #42).
@@ -601,9 +630,16 @@ possibly the 4096-entry table.
 2. ~~Record the results in `engine.md`'s performance table before writing P1.
    Update §3.4 of this document with measured figures and strike the
    provenance caveat.~~ **Done, #43.**
-3. **P1** — engine skeleton with one hardcoded patch. Verify ratios and routing by
-   ear against Dexed on the same algorithm.
-4. **P2** — `EnvDX`. Confirm BLOCK choice against fastest-attack patches.
+3. ~~**P1** — engine skeleton with one hardcoded patch. Verify ratios and routing
+   by ear against Dexed on the same algorithm.~~ **Implemented, #44** (routing
+   compiler, one hardcoded patch, MIDI note on/off, host-verified;
+   `breadboard_rp2350`-measured ~93-95 c/f/voice at 16 voices, at or below
+   #43's kernel-only baseline). The by-ear-against-Dexed half is still
+   Carl's to do.
+4. ~~**P2** — `EnvDX`. Confirm BLOCK choice against fastest-attack patches.~~
+   **Implemented, #45** (4-stage log-domain EG, DX7 level table, velocity
+   sensitivity, BLOCK=16 confirmed — `engine.md` §"FM P2 BLOCK Confirmation
+   (#45)"). By-ear EP/bell check on real hardware still Carl's to do.
 5. **P3** — the converter. This is the largest single piece of work and the one
    that makes everything else verifiable.
 6. **P4–P6** — remaining parameters, free routing, calibration.
@@ -618,8 +654,8 @@ possibly the 4096-entry table.
 |---|---|---|
 | 1 | ~~Measured cycles/operator, and therefore the real voice count~~ **Closed, #43: 100.05 c/f/voice measured (kernel only), `MAX_VOICES=16` confirmed** — `engine.md` §"FM P0 Measurement (#43)". Raising past 16 deferred to a P2 bench pass once EG/LFO exist to measure. | **P0 — done** |
 | 2 | ~~FX insert cost in isolation; is Freeverb worth ~4% in an FM context?~~ **Closed, #43: 268.7 c/f / 7.9% (reused from the subtractive engine's identical shared FX code), not ~4%. Freeverb stays** — the 16-voice budget clears with ~27% margin even at the corrected cost. | **P0 — done** |
-| 3 | BLOCK size — 16 assumed; confirm against rate-99 attacks | P2 |
-| 4 | Extract a shared `BlockClock` for FM and speech, or keep them separate? | P2 |
+| 3 | ~~BLOCK size — 16 assumed; confirm against rate-99 attacks~~ **Closed, #45: BLOCK=16 confirmed, not raised to 32 or lowered to 8** — `engine.md` §"FM P2 BLOCK Confirmation (#45)". | **P2 — done** |
+| 4 | Extract a shared `BlockClock` for FM and speech, or keep them separate? Still open — #45 built EnvDX's block-stepping standalone (env_dx_step_block(), op.h's fm_voice_step_envelopes()), same shape as speech's per-voice segment clocks but not sharing code with them. | P2 |
 | 5 | Global vs. per-voice LFO default (DX7 fidelity vs. better polyphonic behaviour) | P4 |
 | 6 | Algorithms 4 and 6: interleaved fallback (X1) or documented limitation? | P4 |
 | 7 | Patch bank source — ship a curated set, or make `.syx` loading a runtime feature over MIDI SysEx? | P3 |

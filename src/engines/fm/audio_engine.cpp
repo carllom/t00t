@@ -85,14 +85,17 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
 #include "fx/delay.h"
 #include "fx/reverb.h"
 
-// FM engine (#44, fm.md P1): supersedes #41's fixed test-tone skeleton.
-// MAX_VOICES independent 6-operator voices, each driven straight from
-// VoiceParams (phase_inc = bend-scaled note frequency, patch = the whole
-// timbre, amplitude = velocity, gate = held/released) with routing resolved
-// once per note-on (patch.h's fm_resolve_routing()) and re-rendered every
-// buffer through op.h's kernels. No EG yet (fixed gains, #44's own scope --
-// EnvDX is P2), so gate=false silences the voice immediately rather than
-// releasing it.
+// FM engine (#44/#45, fm.md P1/P2): MAX_VOICES independent 6-operator
+// voices, each driven straight from VoiceParams (phase_inc = bend-scaled
+// note frequency, patch = the whole timbre, amplitude = velocity, gate =
+// held/released) with routing resolved once per note-on (patch.h's
+// fm_resolve_routing()), envelopes stepped once per control block (op.h's
+// fm_voice_step_envelopes(), env_dx.h), and rendered through op.h's
+// kernels. #45 supersedes #44's fixed-gain/hard-cutoff behavior: gate=false
+// now releases through each operator's EG instead of cutting the voice
+// immediately, and a voice keeps rendering (and keeps its active_mask bit)
+// until its carriers actually reach EG_IDLE (fm_voice_active()) --
+// mirroring the subtractive engine's trigger/gate/envelope-active idiom.
 
 // `fx_buf` is the mono send/return scratch for the post-mix effect (mono
 // send / stereo return).
@@ -109,6 +112,7 @@ static FmOp     voice_ops[MAX_VOICES][FM_NUM_OPS];
 static FmRouting voice_routing[MAX_VOICES];
 static uint8_t  voice_last_trigger[MAX_VOICES];
 static bool     voice_routing_valid[MAX_VOICES];
+static bool     voice_gated[MAX_VOICES];  // Core 1's own gate-edge tracking, for the release transition
 
 // Shared bus scratch (fm.md §4.3: "one shared scratch for the whole engine,
 // not per-voice" -- reused across every voice, sequentially, within a pass).
@@ -124,11 +128,17 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
 
     fm_init_sine_tab();
     osc_init_sine();  // pan.h's pan_gains_q15() reuses the shared sine table for its quadrature gains
+    env_dx_init_tables();  // #45: level/rate/exp2 tables -- must run before any EG step
     fx_delay.init();
     fx_reverb.init();
     for (uint32_t v = 0; v < MAX_VOICES; v++) {
-        voice_last_trigger[v] = 0xFF;  // guarantees the first real note-on (trigger starts at 1) resolves routing
+        voice_last_trigger[v] = 0;  // matches VoiceParams' default trigger=0 -- a never-triggered voice must NOT look "changed"
         voice_routing_valid[v] = false;
+        voice_gated[v] = false;
+        // A zero-initialized EnvDX is NOT idle (stage 0 == EG_STAGE_1, not
+        // EG_IDLE) -- every voice's EGs need an explicit env_dx_init() so
+        // fm_voice_active() doesn't report a never-triggered voice as active.
+        for (uint32_t i = 0; i < FM_NUM_OPS; i++) env_dx_init(voice_ops[v][i].eg);
     }
 
     FmVoiceBuses bus{ { bus_mod0, bus_mod1, bus_mod2, bus_mod3, bus_mod4, bus_mod5 }, bus_out };
@@ -151,7 +161,7 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
         uint32_t active_mask = 0;
         for (uint32_t v = 0; v < MAX_VOICES; v++) {
             const VoiceParams &p = vp.voices[v];
-            if (!p.gate || !p.patch) continue;
+            if (!p.patch) continue;
 
             // Routing (order/bus pointers/kernel selection/first-writer
             // flags) is resolved once per note-on, from patch data alone
@@ -162,14 +172,31 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
                     fm_voice_note_on(voice_ops[v], *p.patch, p.phase_inc, p.amplitude);
                 }
                 voice_last_trigger[v] = p.trigger;
+                voice_gated[v] = p.gate;
+            } else if (!p.gate && voice_gated[v]) {
+                // Gate-off edge: release through the EG (#45) instead of
+                // #44's hard cutoff -- mirrors the subtractive engine's
+                // "Detect gate-off edge" (Trigger/Gate Signaling, engine.md).
+                if (voice_routing_valid[v]) fm_voice_note_off(voice_ops[v]);
+                voice_gated[v] = false;
+            } else {
+                voice_gated[v] = p.gate;
             }
             if (!voice_routing_valid[v]) continue;  // patch failed DAG validation (fm.md §4.2) -- skip, don't mis-render
 
+            // Keep rendering through release even after gate goes false --
+            // stop only once every carrier's EG has actually gone idle
+            // (fm_voice_active()), never on gate alone. This is what makes
+            // "a voice reports itself free only when its carriers have
+            // actually decayed" true instead of aspirational (fm.md #45,
+            // avoiding the tracker's #21 "key-off never frees a voice" bug).
+            if (!p.gate && !fm_voice_active(voice_ops[v], voice_routing[v])) continue;
+
             // Live pitch bend: re-derive every operator's `inc` from the
             // note's current base increment every buffer, without touching
-            // note-on-only state (gain, routing, feedback history).
+            // note-on-only state (routing, each EG's stage).
             fm_voice_update_pitch(voice_ops[v], *p.patch, p.phase_inc);
-            fm_render_voice(voice_ops[v], voice_routing[v], bus, p.pan, dry_l, dry_r, SAMPLES_PER_BUFFER);
+            fm_render_voice(voice_ops[v], *p.patch, voice_routing[v], bus, p.pan, dry_l, dry_r, SAMPLES_PER_BUFFER);
             active_mask |= (1u << v);
         }
 

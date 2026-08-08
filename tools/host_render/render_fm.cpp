@@ -104,6 +104,57 @@ static bool run_routing_checks() {
     return pass;
 }
 
+// #45's acceptance criteria on env_dx.h directly: operator output level
+// goes through a real nonlinear (log/exp) curve rather than
+// `gain = reference * level/99`, and velocity sensitivity is a genuine
+// per-operator effect (0 at sensitivity=0, real and monotonic otherwise).
+static bool run_level_table_checks() {
+    env_dx_init_tables();
+
+    constexpr int32_t REFERENCE = 1 << 24;  // arbitrary, mid-range reference gain
+
+    // Level 99 = the reference exactly (0 dB offset); level 0 = an exact
+    // digital 0 (env_dx.h's EG_SILENCE_THRESHOLD guarantee); the table is
+    // monotonically non-decreasing across 0-99.
+    int32_t g99 = eg_to_linear(REFERENCE, DX7_LEVEL_TO_LOG2[99]);
+    int32_t g0 = eg_to_linear(REFERENCE, DX7_LEVEL_TO_LOG2[0]);
+    bool unity_ok = g99 == REFERENCE;
+    bool floor_ok = g0 == 0;
+    bool monotonic_ok = true;
+    for (uint32_t lvl = 1; lvl < 100; lvl++) {
+        if (DX7_LEVEL_TO_LOG2[lvl] < DX7_LEVEL_TO_LOG2[lvl - 1]) monotonic_ok = false;
+    }
+
+    // Nonlinear, not "a linear approximation": level 50's linear gain must
+    // NOT be anywhere near reference*50/99 (a straight-line curve) -- the
+    // log-domain table makes it much quieter than that, since half the
+    // level-parameter range is only a fraction of the dB range.
+    int32_t g50 = eg_to_linear(REFERENCE, DX7_LEVEL_TO_LOG2[50]);
+    float linear_guess = (float)REFERENCE * 50.0f / 99.0f;
+    bool nonlinear_ok = (float)g50 < linear_guess * 0.5f;
+
+    // Velocity sensitivity: 0 -> no effect regardless of velocity; nonzero
+    // -> real, monotonic (softer hits are strictly quieter than harder
+    // hits on the same sensitivity, and 0 velocity is strictly quieter at
+    // sensitivity 7 than at sensitivity 1).
+    int32_t sens0_soft = eg_vel_sensitivity_log2(0, 0);
+    int32_t sens0_hard = eg_vel_sensitivity_log2(0, 32767);
+    bool sens_zero_ok = sens0_soft == 0 && sens0_hard == 0;
+
+    int32_t sens7_soft = eg_vel_sensitivity_log2(7, 0);
+    int32_t sens7_hard = eg_vel_sensitivity_log2(7, 32767);
+    int32_t sens1_soft = eg_vel_sensitivity_log2(1, 0);
+    bool sens_effect_ok = sens7_hard == 0 && sens7_soft < 0 && sens7_soft < sens1_soft;
+
+    bool pass = unity_ok && floor_ok && monotonic_ok && nonlinear_ok && sens_zero_ok && sens_effect_ok;
+    printf("%s: level table -- L99=reference(%d)=%d, L0=exact-0(%d), monotonic=%d, "
+           "L50 nonlinear (got %d, linear guess %.0f)=%d, vel_sens=0 no-op=%d, "
+           "vel_sens=7 real+monotonic=%d\n",
+           pass ? "PASS" : "FAIL", (int)unity_ok, g99, (int)floor_ok, (int)monotonic_ok,
+           g50, linear_guess, (int)nonlinear_ok, (int)sens_zero_ok, (int)sens_effect_ok);
+    return pass;
+}
+
 // Goertzel magnitude of a Hann-windowed segment at `freq` Hz. Same technique
 // render_speech.cpp uses for its formant/sideband checks.
 static float goertzel_mag(const std::vector<float> &x, size_t start, size_t n, float freq, float fs) {
@@ -121,22 +172,43 @@ static float goertzel_mag(const std::vector<float> &x, size_t start, size_t n, f
     return sqrtf(real * real + imag * imag) / (float)n;
 }
 
-// Renders one second of FM_TEST_PATCH at `note_hz` through the exact
-// device code path (fm_voice_note_on/fm_voice_update_pitch/fm_render_voice,
-// op.h), mono-summed for spectral analysis.
-static void render_patch_note(float note_hz, const FmRouting &routing, FmVoiceBuses &bus,
-                               std::vector<float> &mono, int32_t &peak) {
+// A "flat EG" copy of FM_TEST_PATCH -- same routing/ratios/levels, but
+// every operator's EG jumps straight to, and holds at, full level (all
+// three pre-release stage levels = 99, fast attack). Used only by
+// run_patch_spectrum_check() below: #44's routing/ratio/sideband claims are
+// about the *routing*, not the *envelope shape*, so measuring them against
+// a stable, non-decaying level isolates that claim from #45's (deliberately
+// fast-decaying, EP-style) real EG shape -- which has its own dedicated
+// checks in run_eg_shape_check().
+static FmPatch flat_eg_patch() {
+    FmPatch p = FM_TEST_PATCH;
+    for (uint8_t i = 0; i < FM_NUM_OPS; i++) {
+        p.op[i].eg_rate[0] = 99;
+        p.op[i].eg_level[0] = 99;
+        p.op[i].eg_level[1] = 99;
+        p.op[i].eg_level[2] = 99;
+    }
+    return p;
+}
+
+// Renders one second of `patch` at `note_hz` through the exact device code
+// path (fm_voice_note_on/fm_voice_update_pitch/fm_render_voice, op.h),
+// mono-summed for spectral analysis. Never releases (no fm_voice_note_off
+// call) -- callers that need release behaviour use render_patch_release()
+// below instead.
+static void render_patch_note(const FmPatch &patch, float note_hz, const FmRouting &routing,
+                               FmVoiceBuses &bus, std::vector<float> &mono, int32_t &peak) {
     FmOp ops[FM_NUM_OPS];
     uint32_t inc = fm_phase_inc(note_hz);
-    fm_voice_note_on(ops, FM_TEST_PATCH, inc, /*amplitude=*/32767);
+    fm_voice_note_on(ops, patch, inc, /*amplitude=*/32767);
 
     const uint32_t total = SAMPLE_RATE;  // 1 second
     std::vector<int32_t> dl(total, 0), dr(total, 0);
     uint32_t done = 0;
     while (done < total) {
         uint32_t n = std::min(NATIVE_BUFFER, total - done);
-        fm_voice_update_pitch(ops, FM_TEST_PATCH, inc);
-        fm_render_voice(ops, routing, bus, /*pan=*/0, dl.data() + done, dr.data() + done, n);
+        fm_voice_update_pitch(ops, patch, inc);
+        fm_render_voice(ops, patch, routing, bus, /*pan=*/0, dl.data() + done, dr.data() + done, n);
         done += n;
     }
 
@@ -158,13 +230,19 @@ static void render_patch_note(float note_hz, const FmRouting &routing, FmVoiceBu
 // the noise floor at non-harmonic bins; (2) that content tracks the note --
 // rendering an octave up moves the fundamental peak with it, proving the
 // per-operator increments really do scale off the note (not some fixed
-// drone), which is what "correct ratios across the keyboard" means.
+// drone), which is what "correct ratios across the keyboard" means. Uses
+// flat_eg_patch() (above), not FM_TEST_PATCH's real EG shape, so a
+// deliberately-fast-decaying modulator (op4, #45's EP timbre) doesn't
+// confound a check that's fundamentally about routing, not envelopes.
 static bool run_patch_spectrum_check() {
     fm_init_sine_tab();
     osc_init_sine();
+    env_dx_init_tables();
+
+    const FmPatch patch = flat_eg_patch();
 
     FmRouting routing;
-    if (!fm_resolve_routing(FM_TEST_PATCH, routing)) {
+    if (!fm_resolve_routing(patch, routing)) {
         printf("FAIL: FM_TEST_PATCH itself failed DAG validation\n");
         return false;
     }
@@ -177,8 +255,8 @@ static bool run_patch_spectrum_check() {
 
     std::vector<float> low, high;
     int32_t peak_low, peak_high;
-    render_patch_note(NOTE_LOW, routing, bus, low, peak_low);
-    render_patch_note(NOTE_HIGH, routing, bus, high, peak_high);
+    render_patch_note(patch, NOTE_LOW, routing, bus, low, peak_low);
+    render_patch_note(patch, NOTE_HIGH, routing, bus, high, peak_high);
 
     // WAV of the low note, for Carl's by-ear check against Dexed on an
     // equivalent patch (fm.md §11 step 3).
@@ -231,11 +309,154 @@ static bool run_patch_spectrum_check() {
     return pass;
 }
 
+// #45's EG acceptance criteria, checked directly on op.h's per-operator
+// `gain` rather than the mixed audio: with six real, distinct EGs summed
+// into one output bus, a spectral/level read of the *mix* can't cleanly
+// attribute a level change to any one operator. Stepping FM_TEST_PATCH's
+// real (non-flat) EGs block-by-block and reading `ops[i].gain` directly
+// is the exact same computation audio_engine.cpp does every buffer, just
+// with the per-operator intermediate values kept instead of thrown away
+// after mixing -- so this is still testing the real code path, not a
+// simulation of it.
+static bool run_eg_shape_check() {
+    fm_init_sine_tab();
+    osc_init_sine();
+    env_dx_init_tables();
+
+    FmOp ops[FM_NUM_OPS];
+    uint32_t inc = fm_phase_inc(220.0f);
+    fm_voice_note_on(ops, FM_TEST_PATCH, inc, /*amplitude=*/32767);
+
+    // Step in FM_BLOCK-sized increments (same granularity the device
+    // uses) up to ~800 ms, recording each operator's gain at a handful of
+    // checkpoints.
+    uint32_t done = 0;
+    auto step_to = [&](uint32_t target_sample, int32_t out_gain[FM_NUM_OPS]) {
+        while (done < target_sample) {
+            uint32_t n = std::min(FM_BLOCK, target_sample - done);
+            fm_voice_step_envelopes(ops, FM_TEST_PATCH, n);
+            done += n;
+        }
+        for (uint8_t i = 0; i < FM_NUM_OPS; i++) out_gain[i] = ops[i].gain;
+    };
+
+    int32_t g_5ms[FM_NUM_OPS], g_100ms[FM_NUM_OPS], g_800ms[FM_NUM_OPS];
+    step_to((uint32_t)(0.005f * SAMPLE_RATE), g_5ms);
+    step_to((uint32_t)(0.100f * SAMPLE_RATE), g_100ms);
+    step_to((uint32_t)(0.800f * SAMPLE_RATE), g_800ms);
+
+    // (1) Attack: every operator should have risen to a real, nonzero
+    // level within 5ms (all six have R1=90-99, sweeping from silence to
+    // near-peak in well under that -- see env_dx.h's rate curve).
+    bool attack_ok = true;
+    for (uint8_t i = 0; i < FM_NUM_OPS; i++) attack_ok = attack_ok && (g_5ms[i] != 0);
+
+    // (2) Independence: op4 (the modulator, EG_LEVEL {99,20,15,0}) decays
+    // to a much smaller fraction of its own 5ms level than op5 (the
+    // carrier, {99,70,60,0}) does of its own -- the whole point of the EP
+    // patch (fm.md P2 gate). Compared as fractions, not raw gain, since
+    // op4 and op5 have very different reference `level` magnitudes
+    // (patch.h's #44 modulator-vs-carrier scale, unrelated to the EG).
+    float op4_frac = std::fabs((float)g_800ms[4] / (float)g_5ms[4]);
+    float op5_frac = std::fabs((float)g_800ms[5] / (float)g_5ms[5]);
+    bool independence_ok = op4_frac < op5_frac * 0.6f;
+
+    // (3) All six operators land at genuinely different gains at 800ms --
+    // six independent EGs, not six copies of one shape (guards against a
+    // copy-paste patch or a step function that ignores per-op rate/level
+    // data entirely).
+    int32_t distinct = 0;
+    for (uint8_t i = 0; i < FM_NUM_OPS; i++) {
+        bool unique = true;
+        for (uint8_t j = 0; j < i; j++) if (g_800ms[i] == g_800ms[j]) unique = false;
+        if (unique) distinct++;
+    }
+    bool distinct_ok = distinct == FM_NUM_OPS;
+
+    bool pass = attack_ok && independence_ok && distinct_ok;
+    printf("%s: EG shape -- attack(5ms) nonzero=%d, op4/op5 800ms-decay-fraction=%.4f/%.4f "
+           "(independence=%d), %d/%d operators land at distinct 800ms gains\n",
+           pass ? "PASS" : "FAIL", attack_ok, op4_frac, op5_frac, independence_ok,
+           (int)distinct, (int)FM_NUM_OPS);
+    if (!attack_ok) printf("  FAIL: at least one operator never rose off silence\n");
+    if (!independence_ok) printf("  FAIL: op4 doesn't decay meaningfully faster/further than op5\n");
+    if (!distinct_ok) printf("  FAIL: two or more operators landed at the identical gain -- not independent\n");
+    return pass;
+}
+
+// #45's acceptance criterion: "Note-off releases through the EG's release
+// stage; a voice reports itself free only when its carriers have actually
+// decayed." Verifies both halves: fm_voice_active() does NOT drop the
+// instant gate goes false (there IS a release, not #44's hard cutoff), and
+// it DOES eventually become false, with the carrier's own gain landing on
+// an exact 0 -- not an epsilon-close guess (env_dx.h's EG_SILENCE_THRESHOLD
+// guarantee) -- avoiding the tracker's #21 "key-off never frees a voice"
+// bug.
+static bool run_release_check() {
+    fm_init_sine_tab();
+    osc_init_sine();
+    env_dx_init_tables();
+
+    FmRouting routing;
+    if (!fm_resolve_routing(FM_TEST_PATCH, routing)) {
+        printf("FAIL: FM_TEST_PATCH failed DAG validation\n");
+        return false;
+    }
+
+    FmOp ops[FM_NUM_OPS];
+    uint32_t inc = fm_phase_inc(220.0f);
+    fm_voice_note_on(ops, FM_TEST_PATCH, inc, /*amplitude=*/32767);
+
+    // Let the note settle into its held (stage-3) shape before releasing --
+    // 300ms is comfortably past every operator's stage-1/2 transition at
+    // FM_TEST_PATCH's rates.
+    uint32_t done = 0;
+    while (done < (uint32_t)(0.3f * SAMPLE_RATE)) {
+        uint32_t n = std::min(FM_BLOCK, (uint32_t)(0.3f * SAMPLE_RATE) - done);
+        fm_voice_step_envelopes(ops, FM_TEST_PATCH, n);
+        done += n;
+    }
+    bool active_before_release = fm_voice_active(ops, routing);
+
+    fm_voice_note_off(ops);
+    bool active_immediately_after = fm_voice_active(ops, routing);  // release just started -- must still be true
+
+    // Step forward up to 5 seconds (comfortably past even a rate-40-ish
+    // release at the far end of env_dx.h's rate curve) looking for idle.
+    bool became_idle = false;
+    uint32_t release_samples = 0;
+    const uint32_t max_samples = (uint32_t)(5.0f * SAMPLE_RATE);
+    while (release_samples < max_samples) {
+        uint32_t n = std::min(FM_BLOCK, max_samples - release_samples);
+        fm_voice_step_envelopes(ops, FM_TEST_PATCH, n);
+        release_samples += n;
+        if (!fm_voice_active(ops, routing)) { became_idle = true; break; }
+    }
+
+    // Once idle, the carrier's own gain (op5) must be an EXACT 0 -- the
+    // real guarantee, not merely "fm_voice_active() said so".
+    bool carrier_zero = became_idle && ops[5].gain == 0 && ops[5].gain_step == 0;
+
+    bool pass = active_before_release && active_immediately_after && became_idle && carrier_zero;
+    printf("%s: release -- active before release=%d, still active right after note-off=%d, "
+           "went idle after %.0f ms, carrier gain exactly 0=%d\n",
+           pass ? "PASS" : "FAIL", active_before_release, active_immediately_after,
+           1000.0f * (float)release_samples / (float)SAMPLE_RATE, carrier_zero);
+    if (!active_before_release) printf("  FAIL: voice wasn't active before release -- test setup is wrong\n");
+    if (!active_immediately_after) printf("  FAIL: note-off silenced the voice instantly -- that's #44's hard cutoff, not a release\n");
+    if (!became_idle) printf("  FAIL: voice never went idle within 5s of release -- this IS the tracker's #21 bug\n");
+    if (became_idle && !carrier_zero) printf("  FAIL: idle but carrier gain isn't exactly 0\n");
+    return pass;
+}
+
 int main() {
     bool ok1 = run_test_tone_check();
     bool ok2 = run_routing_checks();
-    bool ok3 = run_patch_spectrum_check();
-    bool ok = ok1 && ok2 && ok3;
+    bool ok3 = run_level_table_checks();
+    bool ok4 = run_patch_spectrum_check();
+    bool ok5 = run_eg_shape_check();
+    bool ok6 = run_release_check();
+    bool ok = ok1 && ok2 && ok3 && ok4 && ok5 && ok6;
     printf("%s\n", ok ? "ALL PASS" : "SOME FAILED");
     return ok ? 0 : 1;
 }

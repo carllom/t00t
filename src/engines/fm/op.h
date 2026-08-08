@@ -1,5 +1,6 @@
 #pragma once
 
+#include "env_dx.h"
 #include "pan.h"
 #include "patch.h"
 #include "sine_tab.h"
@@ -24,20 +25,30 @@
 // is shared by the device engine and the host render/test harness, exactly
 // like render.h/rig.h.
 
-// fm.md §3.6 lever 3: BLOCK size. Stays provisional at 16 per #43's
-// decision (final call deferred to P2, once EnvDX's time resolution is a
-// real tradeoff to measure against) -- also the shared per-voice bus
-// scratch size (fm.md §4.3).
-static constexpr uint32_t FM_BLOCK = 16;
+// fm.md §3.6 lever 3 / open question 3, closed by #45: BLOCK size. #43
+// deferred the final call to here, since #43's rig has no EG/LFO to give
+// the time-resolution side of the tradeoff anything real to measure against
+// (fm.md: "confirm empirically against the fastest-attack patches"). See
+// engine.md "FM P2 BLOCK Confirmation (#45)" for the comparison and the
+// decision. Overridable at compile time (`-DT00T_FM_BLOCK=8/32`, wired
+// through CMakeLists.txt/Makefile the same way DMA_BUFFER_SIZE is) so that
+// comparison -- and any future one -- doesn't require hand-editing this
+// file. Also the shared per-voice bus scratch size (fm.md §4.3).
+#ifndef T00T_FM_BLOCK
+#define T00T_FM_BLOCK 16
+#endif
+static constexpr uint32_t FM_BLOCK = T00T_FM_BLOCK;
 
 struct FmOp {
     uint32_t phase;
     uint32_t inc;
     int32_t  gain;
-    int32_t  gain_step;    // 0 for the whole P1 voice lifetime -- no EG yet (EnvDX is P2)
+    int32_t  gain_step;    // per-sample delta for this block, from EnvDX (#45, env_dx.h)
     const int32_t *in;     // modulation bus, or fm_zero_bus for an unmodulated operator
     int32_t *out;           // modulation bus, or the shared voice output bus
     int32_t  fb1, fb2;      // op_render_fb only: last two raw table outputs
+    EnvDX    eg;            // #45: this operator's own 4-stage envelope
+    int32_t  static_log2;   // #45: output level + velocity sensitivity, resolved once at note-on
 };
 
 // Read-only all-zero bus, shared by every operator nothing modulates.
@@ -182,46 +193,104 @@ inline uint32_t fm_op_inc(const FmOpParams &p, uint32_t note_inc) {
     return (uint32_t)((float)note_inc * p.ratio * detune_ratio);
 }
 
-// Note-on: resolves every operator's phase/inc/gain from the patch, the
-// note's base increment (already pitch-bent by Core 0) and velocity.
-// gain_step stays 0 -- fixed gains for the whole voice life, no EG yet
-// (fm.md P1: "Fixed gains still -- the EG is the next slice"). Velocity
-// reaches only the carriers' output level ("velocity as plain amplitude",
-// #44); modulator index is untouched by velocity until #45's sensitivity.
+// Note-on: resolves every operator's phase/inc from the patch and the
+// note's base increment (already pitch-bent by Core 0), triggers its EG
+// (env_dx.h's env_dx_trigger() -- stage 1 from silence), and resolves
+// `static_log2`: output level (TL) + velocity sensitivity, the two
+// note-on-time-only pieces of #45's level chain (fm.md §5.6: both are
+// "resolved once per note-on and never touched again"). `gain`/`gain_step`
+// are deliberately NOT set here -- fm_voice_step_envelopes() sets them
+// every block, starting from EG_LOG2_FLOOR (silence) on the very first
+// block of this note, so there is no separate "initial gain" to get right
+// here.
 inline void fm_voice_note_on(FmOp ops[FM_NUM_OPS], const FmPatch &patch,
                               uint32_t note_inc, int16_t amplitude) {
-    float amp_ratio = (float)amplitude / 32767.0f;
     for (uint8_t i = 0; i < FM_NUM_OPS; i++) {
         const FmOpParams &p = patch.op[i];
         FmOp &op = ops[i];
         op.phase = 0;
         op.inc = fm_op_inc(p, note_inc);
-        bool is_carrier = (p.mod_target == FM_TARGET_OUT);
-        op.gain = is_carrier ? (int32_t)((float)p.level * amp_ratio) : p.level;
+        op.gain = 0;
         op.gain_step = 0;
         op.fb1 = 0;
         op.fb2 = 0;
         op.in = fm_zero_bus;
         op.out = nullptr;  // assigned per sub-block by fm_voice_render_block()
+        env_dx_trigger(op.eg);
+        op.static_log2 = DX7_LEVEL_TO_LOG2[p.output_level] + eg_vel_sensitivity_log2(p.vel_sensitivity, amplitude);
     }
+}
+
+// Note-off: releases every operator's EG (env_dx.h's env_dx_release() --
+// jump to stage 4 from wherever it currently is). Every operator releases,
+// not just carriers -- a modulator's own decay shapes the carrier's timbre
+// for as long as the carrier is still sounding (fm.md's EP patch: op4's
+// fast decay is what makes the carrier's tone dim after the attack).
+inline void fm_voice_note_off(FmOp ops[FM_NUM_OPS]) {
+    for (uint8_t i = 0; i < FM_NUM_OPS; i++) {
+        env_dx_release(ops[i].eg);
+    }
+}
+
+// A voice may be reported free only once every operator that actually
+// reaches the final mix (a carrier, r.out_bus[i] == FM_TARGET_OUT) has
+// finished its release -- env_dx.h's EG_IDLE, reached only after an
+// explicit note-off's stage-4 ramp completes. Modulators are irrelevant
+// here: their EGs shape the sound but never reach the ear directly, so a
+// modulator still mid-decay can't keep a voice "active" once its carriers
+// are silent. This is the guarantee the tracker's #21 bug ("key-off never
+// frees a voice") lacked -- EG_IDLE is a real terminal state, not an
+// epsilon-on-a-decaying-value guess.
+inline bool fm_voice_active(const FmOp ops[FM_NUM_OPS], const FmRouting &r) {
+    for (uint8_t i = 0; i < FM_NUM_OPS; i++) {
+        if (r.out_bus[i] == FM_TARGET_OUT && ops[i].eg.active()) return true;
+    }
+    return false;
 }
 
 // Re-derives every operator's `inc` from the note's current (possibly
 // re-bent) base increment, without touching phase/gain/feedback history --
 // called every buffer for a held voice so pitch bend stays live, while
-// note-on-only state (gain, the routing itself) is untouched between notes.
+// note-on-only state (the routing itself, each EG's stage) is untouched
+// between notes.
 inline void fm_voice_update_pitch(FmOp ops[FM_NUM_OPS], const FmPatch &patch, uint32_t note_inc) {
     for (uint8_t i = 0; i < FM_NUM_OPS; i++) {
         ops[i].inc = fm_op_inc(patch.op[i], note_inc);
     }
 }
 
+// Steps every operator's EG by one control block (env_dx.h's
+// env_dx_step_block()) and sets `gain`/`gain_step` from the result --
+// fm.md §5.3's "the kernel is handed gain (start) and gain_step (per-sample
+// delta) for that block". Everything here runs once per block, not once
+// per sample: this is the only place outside note-on that touches `gain`,
+// and op_render/op_render_first/op_render_fb (unchanged since #44) never
+// see any of env_dx.h -- from the kernel's point of view this could be a
+// fixed gain, a hand-set ramp, or an EG, and it wouldn't know the
+// difference (fm.md §4.1's routing claim, restated for the EG).
+inline void fm_voice_step_envelopes(FmOp ops[FM_NUM_OPS], const FmPatch &patch, uint32_t n) {
+    for (uint8_t i = 0; i < FM_NUM_OPS; i++) {
+        const FmOpParams &p = patch.op[i];
+        FmOp &op = ops[i];
+        int32_t log2_start, log2_end;
+        env_dx_step_block(op.eg, p, n, log2_start, log2_end);
+        int32_t gain_start = eg_to_linear(p.level, op.static_log2 + log2_start);
+        int32_t gain_end = eg_to_linear(p.level, op.static_log2 + log2_end);
+        op.gain = gain_start;
+        op.gain_step = (gain_end - gain_start) / (int32_t)n;
+    }
+}
+
 // Renders `frames` samples of one voice in FM_BLOCK-sized sub-blocks,
 // panning the shared output bus into dry_l/dry_r (accumulate: callers with
 // multiple voices must clear dry_l/dry_r once up front, same convention as
-// speech's speech_render_voice()).
-inline void fm_render_voice(FmOp ops[FM_NUM_OPS], const FmRouting &r, const FmVoiceBuses &bus,
-                             int16_t pan, int32_t *dry_l, int32_t *dry_r, uint32_t frames) {
+// speech's speech_render_voice()). Stops early once every carrier's EG has
+// gone idle mid-buffer (fm_voice_active()) -- the remaining sub-blocks
+// would render silence anyway; this just skips paying for it, mirroring
+// the subtractive engine's `if (!envelope[v].active()) break;`.
+inline void fm_render_voice(FmOp ops[FM_NUM_OPS], const FmPatch &patch, const FmRouting &r,
+                             const FmVoiceBuses &bus, int16_t pan,
+                             int32_t *dry_l, int32_t *dry_r, uint32_t frames) {
     int32_t gain_l, gain_r;
     pan_gains_q15(pan, gain_l, gain_r);
 
@@ -229,6 +298,7 @@ inline void fm_render_voice(FmOp ops[FM_NUM_OPS], const FmRouting &r, const FmVo
     while (done < frames) {
         uint32_t n = frames - done;
         if (n > FM_BLOCK) n = FM_BLOCK;
+        fm_voice_step_envelopes(ops, patch, n);
         fm_voice_render_block(ops, r, bus, n);
         for (uint32_t i = 0; i < n; i++) {
             int32_t s = bus.out[i];
@@ -236,5 +306,6 @@ inline void fm_render_voice(FmOp ops[FM_NUM_OPS], const FmRouting &r, const FmVo
             dry_r[done + i] += (s * gain_r) >> 15;
         }
         done += n;
+        if (!fm_voice_active(ops, r)) break;
     }
 }
