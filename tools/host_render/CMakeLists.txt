@@ -53,3 +53,18 @@ target_include_directories(render_speech PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}
     ${CMAKE_CURRENT_LIST_DIR}/../../src
 )
+
+# Host build of src/engines/fm/render.h (#41): the FM engine skeleton's
+# shared device/host test-tone renderer, proving the FM-specific 4096-entry
+# sine table (sine_tab.h, phase >> 20, no interpolation) before any operator
+# kernel exists. Pulls in osc/sine.cpp only for pan_gains_q15's wavetable
+# (pan.h) -- fm_sine_table itself is a header-only inline variable, no extra
+# source needed (sine_tab.h).
+add_executable(render_fm
+    render_fm.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/../../src/osc/sine.cpp
+)
+target_include_directories(render_fm PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}
+    ${CMAKE_CURRENT_LIST_DIR}/../../src
+)

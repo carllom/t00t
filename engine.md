@@ -743,6 +743,84 @@ Landed in `src/engines/speech/engine.h` (was 4 since #27).
 `speech.md`'s Open Question 2 (voice count) is struck and moved into Settled
 Decisions.
 
+## FM Engine (build skeleton, #41)
+
+Fifth build-time engine (`make ENGINE=fm`, `breadboard_rp2350` default),
+proving the build seam before any DX7 logic exists — `fm.md` says "start at
+P0 and do not skip it," but P0's measurement rig needs a build target to
+measure *on*, so this slice exists first, exactly as #13 preceded #15/#16 for
+the tracker and #27 preceded #31 for speech:
+
+- `MAX_VOICES = 16`, defined in `src/engines/fm/engine.h` ahead of its
+  `#include "engine_base.h"`, per #10 — `fm.md` §3.4's working assumption for
+  full 6-operator polyphony, explicitly **provisional pending the P0
+  measurement gate**. Only this engine — the other four are untouched.
+- Standard `ParamExchange`/`voice_alloc` path, same as speech and unlike the
+  tracker: `fm.md` has no fixed channel→voice mapping, so there's no reason to
+  deviate. `src/voice_alloc.cpp` links normally, no `CMakeLists.txt` override.
+- `fx/delay.h`/`fx/reverb.h` **are** linked — `fm.md` §2: "FM's whole working
+  set is ~12 KB... nothing in this design should introduce a dependency on
+  PSRAM," and there's no sample-RAM pressure to protect either. Confirmed by
+  the `.bss` table below: FM's 202,768 bytes sit alongside groovebox's
+  199,764 and subtractive's 198,344 (both link delay+reverb), nowhere near
+  stripped.
+- `src/engines/fm/sine_tab.h` — the FM-specific 4096-entry `int16_t` operator
+  sine table from `fm.md` §5.1: quarter-wave symmetric generation (only the
+  first quarter computed with `sinf()`, the rest mirrored/negated into
+  place) but the full table stored, indexed by `phase >> 20` with **no
+  interpolation** (§3.5: interpolation costs ~45% more per operator for no
+  audible benefit under FM's own harmonic density). Header-only inline
+  variable (C++17), same pattern as `res2p.h`'s `res2p_radius_lut` — no
+  separate `.cpp` needed, so the top-level `CMakeLists.txt`'s engine source
+  list needed no changes at all (unlike the tracker's #13, which added
+  `ENGINE_VOICE_ALLOC`/`ENGINE_TRACKER_PLAYER` overrides). `osc/sine.*`
+  itself is untouched — the shared 1024-entry interpolating table stays
+  exactly as the other four engines left it, and is still used here for
+  `pan.h`'s quadrature pan-gain lookup (a different table, different job).
+- `src/engines/fm/render.h`'s `fm_render_test_tone()` is the literal shared
+  source between the device path (`audio_engine.cpp`, called from the Core 1
+  render loop) and the new host target below — same shape as speech's
+  `speech_render_test_tone()`, proving the table/phase seam identically on
+  both before any operator kernel exists. No pico-sdk dependency (only
+  `sine_tab.h` + `pan.h`).
+- `src/engines/fm/display.cpp` and `midi_controller.cpp` are stubs (no UI, no
+  patch/note logic yet) so the shared `gfx.cpp` path and MIDI transports
+  still link — same reasoning as speech's #27 stubs, including staying off
+  the shared `src/midi/midi_controller.cpp`, which expects a
+  `presets.h`/`VoicePreset` shape this engine's minimal `VoiceParams`
+  doesn't have. The `presets.h`-existence gate that broke on speech (#38) is
+  unaffected — FM has no `presets.h` either, same as speech and groovebox at
+  this stage.
+- Sound source: voice 0 is a hardcoded, always-on 440 Hz test tone (centre
+  pan), rendered through the FM sine table via `fm_render_test_tone()` at the
+  full 44.1 kHz output rate (no ZOH — FM runs at the shared `SAMPLE_RATE`,
+  unlike speech's half-rate native path) — a build/boot smoke test, not a
+  synth. Voices 1–15 are unused placeholders. `PROFILE_PIN` (GPIO 22) is
+  bracketed around the render call, ready for the P0 measurement slice.
+- Host target: `render_fm` (`tools/host_render/render_fm.cpp`, built via
+  `make host`) calls the identical `fm_render_test_tone()`, renders 2 s to
+  `fm_test_tone.wav`, and checks the sine table is an odd function about the
+  origin (`fm_sine_table[i] == -fm_sine_table[N-i]`) — the invariant its
+  quarter-wave-symmetric construction depends on — rather than trusting it by
+  ear. All checks pass as of 2026-08-08.
+
+Measured with `arm-none-eabi-size` on a clean `rm -rf build && make
+ENGINE=fm`, alongside a fresh rebuild of all four other engines to confirm
+#41 changed nothing about them:
+
+| Engine | text | bss | dec |
+|---|---|---|---|
+| fm (skeleton) | 27,784 | 202,768 | 230,552 |
+| subtractive (default) | 206,096 | 198,344 | 404,440 |
+| groovebox | 55,580 | 199,764 | 255,344 |
+| tracker | 58,124 | 409,080 | 467,204 |
+| speech | 73,156 | 196,588 | 269,744 |
+
+`make`, `make ENGINE=groovebox`, and `make ENGINE=tracker` reproduce their
+#27-era table entries byte-for-byte, confirming #41 didn't touch them; the
+speech figures have simply grown since #27 (P2–P4 landed in the meantime),
+unrelated to this change.
+
 ## Host DSP Tooling
 
 `tools/host_render/` (issue #5 phase 2) is a standalone CMake project — no
