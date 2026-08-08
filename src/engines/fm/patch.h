@@ -29,20 +29,28 @@ static constexpr uint8_t FM_BUS_ZERO   = FM_NUM_OPS + 1;  // 7
 
 // One operator's patch data -- the shape tools/syx2patch.py (P3) will emit
 // per DX7 operator (fm.md §7's table): ratio/detune/fixed-frequency mode
-// resolve to the Q32 increment (§5.6), `level` is the modulation index (as
-// a modulator) or output level (as a carrier, further scaled by velocity at
-// note-on -- #44's "velocity as plain amplitude", velocity *sensitivity* is
-// #45), and `mod_target`/`feedback` together are the entire routing input:
-// which operator (or FM_TARGET_OUT) this op's output feeds, and whether its
-// own last two outputs additionally self-modulate its phase.
+// resolve to the Q32 increment (§5.6), `level` is the operator's reference
+// gain -- what op_render's `gain` is at 100% output level, 100% EG level,
+// and velocity-sensitivity-neutral (op.h's fm_mul_gain/FM_OUT_SHIFT scale,
+// unity ≈ 1<<22) -- and `mod_target`/`feedback` together are the entire
+// routing input: which operator (or FM_TARGET_OUT) this op's output feeds,
+// and whether its own last two outputs additionally self-modulate its
+// phase. `output_level`/`vel_sensitivity`/`eg_rate`/`eg_level` (#45,
+// env_dx.h) are the note-on/block-rate-resolved pieces that turn `level`
+// into the actual, time-varying `gain` op_render sees -- see env_dx.h for
+// how they combine.
 struct FmOpParams {
     float   ratio;         // coarse.fine frequency ratio against the note (ignored if fixed_freq)
     float   fixed_hz;      // absolute frequency in Hz, used only when fixed_freq is true
     bool    fixed_freq;
     float   detune_cents;  // fine detune in cents, applied on top of ratio (0 for fixed_freq)
-    int32_t level;         // op.h's gain scale -- unity ≈ 1<<22, see op.h's fm_mul_gain/FM_OUT_SHIFT
+    int32_t level;         // reference gain (env_dx.h's "0 dB" point) -- op.h's fm_mul_gain/FM_OUT_SHIFT scale
     uint8_t mod_target;    // 0..FM_NUM_OPS-1 (another operator), or FM_TARGET_OUT (carrier)
     bool    feedback;      // self-modulation: op_render_fb's 2-sample average (fm.md §5.2)
+    uint8_t output_level;    // DX7 TL, 0-99, through env_dx.h's DX7_LEVEL_TO_LOG2 (#45)
+    uint8_t vel_sensitivity; // 0-7, env_dx.h's eg_vel_sensitivity_log2 (#45)
+    uint8_t eg_rate[4];      // R1-R4, 0-99 (#45)
+    uint8_t eg_level[4];     // L1-L4, 0-99 (#45) -- L4 = 0 lets this operator actually reach silence on release
 };
 
 struct FmPatch {
@@ -190,22 +198,43 @@ inline bool fm_resolve_routing(const FmPatch &patch, FmRouting &r) {
 // tops out around 2^24 even at gain = INT32_MAX -- roughly 0.03-0.05 rad
 // max per modulator stage, since the same int32 `gain` field and shift also
 // has to serve carriers at their own, much smaller, ±32767 int16-audio
-// scale. Modulator levels below are pushed close to that ceiling (not
-// literally INT32_MAX, for headroom against rounding); the resulting
-// sidebands are real, correctly-placed, and well above the noise floor
-// (host-verified), but modest in amplitude -- a genuine limit of this
-// fixed-point convention worth revisiting at P2, when EnvDX's per-operator
-// output-level control hits the same ceiling. Carrier (op5) stays at a
-// conservative fraction of its own ±32767 unity point, leaving headroom for
-// multiple summed voices plus the FX chain.
+// scale (`level` here is that reference ceiling -- env_dx.h's output
+// level/EG/velocity-sensitivity offsets only ever attenuate *below* it).
+// Modulator levels below are pushed close to that ceiling (not literally
+// INT32_MAX, for headroom against rounding); the resulting sidebands are
+// real, correctly-placed, and well above the noise floor (host-verified),
+// but modest in amplitude -- a genuine limit of this fixed-point
+// convention, unresolved by #45 (still open, see env_dx.h). Carrier (op5)
+// stays at a conservative fraction of its own ±32767 unity point, leaving
+// headroom for multiple summed voices plus the FX chain.
+//
+// EG shapes (#45): every operator gets a distinct 4-stage envelope so all
+// six are audibly independent (an explicit acceptance criterion), and every
+// L4 is 0 so every operator -- carrier or modulator -- actually reaches
+// true silence on release (env_dx.h's EG_IDLE), not just fades toward it.
+// op4/op5 (the immediate modulator:carrier pair) follow the classic DX
+// electric-piano shape: both attack instantly (R1=99), but op4 (the
+// modulator, i.e. the *brightness*) decays much faster and further than
+// op5 (the carrier, i.e. the *loudness*) -- a bright pluck that settles
+// into a mellower sustained tone, the P2 gate in fm.md §1 ("A
+// DX-recognisable electric piano or bell"). Velocity sensitivity is
+// highest on op4 (brightness) and op5 (loudness), lower on the other four
+// -- harder hits play brighter AND louder, softer hits duller and quieter,
+// exactly the DX7 EP's signature touch response.
 inline constexpr FmPatch FM_TEST_PATCH = {
     "P1 Test Stack",
     {
-        /* op0 */ { 0.5f, 0.0f, false, 0.0f, 400000000, 2, false },
-        /* op1 */ { 2.0f, 0.0f, false, 0.0f, 1000000000, 4, false },
-        /* op2 */ { 3.0f, 0.0f, false, 0.0f, 1000000000, 4, false },
-        /* op3 */ { 1.0f, 0.0f, false, 0.0f, 1000000000, 4, true  },
-        /* op4 */ { 1.0f, 0.0f, false, 0.0f, 1400000000, 5, false },
-        /* op5 */ { 1.0f, 0.0f, false, 0.0f, 1 << 21, FM_TARGET_OUT, false },
+        /* op0 */ { 0.5f, 0.0f, false, 0.0f, 400000000, 2, false,
+                     99, 2, {99, 50, 20, 60}, {90, 50, 40, 0} },
+        /* op1 */ { 2.0f, 0.0f, false, 0.0f, 1000000000, 4, false,
+                     99, 3, {99, 70, 30, 50}, {99, 60, 55, 0} },
+        /* op2 */ { 3.0f, 0.0f, false, 0.0f, 1000000000, 4, false,
+                     99, 4, {95, 55, 25, 45}, {95, 45, 35, 0} },
+        /* op3 */ { 1.0f, 0.0f, false, 0.0f, 1000000000, 4, true,
+                     99, 3, {90, 65, 35, 55}, {99, 55, 50, 0} },
+        /* op4 */ { 1.0f, 0.0f, false, 0.0f, 1400000000, 5, false,
+                     99, 6, {99, 60, 20, 50}, {99, 20, 15, 0} },
+        /* op5 */ { 1.0f, 0.0f, false, 0.0f, 1 << 21, FM_TARGET_OUT, false,
+                     99, 5, {99, 40, 20, 40}, {99, 70, 60, 0} },
     }
 };

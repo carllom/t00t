@@ -1243,6 +1243,141 @@ that's the only thing this lever changes). The default `FM_PROFILE=1` build
 (no `FM_PROFILE`) reproduces #41's exact 27,784/202,768/230,552 — confirming
 this slice changed nothing observable about either existing build.
 
+## FM Engine — EnvDX + BLOCK Confirmation (#45)
+
+`src/engines/fm/env_dx.h` (new): the DX7 envelope (`fm.md` §5.3, P2's gate).
+Deliberately not `envelope.h`'s ADSR (`fm.md`: "Do not reuse `envelope.*`")
+-- 4 x (rate, level) stages per operator, direction-agnostic (any stage can
+ramp up or down to any target), stepped once per control block, log domain
+throughout with a single exp2-table conversion to linear at each block
+boundary. `op_render`/`op_render_first`/`op_render_fb` (op.h) are
+byte-for-byte unchanged from #44 -- the EG only decides what `gain`/
+`gain_step` are at each block boundary; the per-sample kernel still just
+does `gain += gain_step`, confirmed against the emitted assembly below.
+
+### Fixed-point design
+
+Everything lives in a single "log2 offset from an operator's reference
+level" domain (Q iiii.8, `EG_LOG2_FRAC_BITS = 8`, matching the 256-entry
+exp2 table 1:1, no interpolation needed). Three independent 0-99 DX7
+parameters resolve into this domain and simply add:
+
+- **Operator output level (TL)**, resolved once at note-on.
+- **Each EG stage's target level**, looked up fresh every stage transition.
+- **Velocity sensitivity** (0-7), resolved once at note-on: 0 at
+  sensitivity 0 (regardless of velocity) or at max velocity (regardless of
+  sensitivity); increasingly negative for softer hits on a more sensitive
+  operator (~24 dB / 4 octaves of range at sensitivity 7, velocity 0).
+
+Level 0 (both TL and an EG stage target) maps to a deliberately deep floor
+(-40 octaves) rather than merely "very quiet" -- deep enough that
+`eg_to_linear()` underflows to an *exact* int32 zero for any valid
+reference (references are always < 2^31; 2^31 x 2^-40 < 1). This is what
+makes "a voice reports itself free only when its carriers have actually
+decayed" a real guarantee: `EnvDX` has a genuine terminal `EG_IDLE` state,
+reached only by completing the release stage, not an epsilon-on-a-
+decaying-value guess -- the tracker's #21 bug ("key-off never frees a
+voice") was exactly a missing version of this guarantee, in a different
+engine.
+
+The level curve (both TL and EG stage levels) and the rate curve (0-99 ->
+octaves/second, independent of BLOCK size) are honest approximations of
+the real DX7's general shape -- linear-in-dB level curve (~96 dB across
+1-99), exponential rate curve (~20s slowest full sweep, ~6ms fastest) --
+not a byte-exact reproduction of Yamaha's hardware tables. Exact
+replication is P3/P6 territory, once real `.syx` patches exist to compare
+directly against Dexed.
+
+### Host-verified (`tools/host_render/render_fm`, extended)
+
+- **Level table**: level 99 = the reference exactly; level 0 = an exact
+  digital 0; monotonic across 0-99; level 50's linear gain is far below
+  `reference * 50/99` (a real nonlinear/log curve, not "a linear
+  approximation" -- an explicit acceptance criterion).
+- **Velocity sensitivity**: sensitivity 0 is a true no-op at any velocity;
+  sensitivity 7 is real and monotonic (softer hits quieter, more so at
+  higher sensitivity).
+- **Six independent EGs**: stepping `FM_TEST_PATCH`'s real (non-flat) EGs
+  block-by-block and reading each operator's `gain` directly (not the mixed
+  audio, which can't cleanly attribute a level to one operator) --
+  op4 (the modulator driving the carrier, EG level `{99,20,15,0}`) decays
+  to 3.2% of its own 5ms level by 800ms; op5 (the carrier, `{99,70,60,0}`)
+  *grows* to 4.9x its own 5ms level over the same window (still mid-attack
+  at 5ms) -- and all six operators land at six distinct gains at 800ms.
+  This is `fm.md`'s DX-EP shape (bright pluck settling into a mellower
+  sustain) confirmed in the actual per-operator numbers, not just eyeballed
+  from a mixed WAV.
+- **Release**: a held note stays active through release (no #44-style hard
+  cutoff), goes idle (`EG_IDLE`) 783 ms after note-off at `FM_TEST_PATCH`'s
+  rates, and the carrier's `gain`/`gain_step` are both an exact 0 at that
+  point -- not merely below some threshold.
+- **Routing/spectrum** (#44's checks, re-verified against a "flat EG"
+  variant of `FM_TEST_PATCH` -- same routing/ratios/levels, EG jumps to and
+  holds at full immediately -- so the routing claim is measured in
+  isolation from #45's deliberately fast-decaying real EG shape): unchanged
+  from #44's PASS.
+
+### Kernel identity, confirmed against the emitted assembly
+
+`make ENGINE=fm` (real, non-profiling build) compiles clean;
+`arm-none-eabi-objdump` on `audio_engine.cpp.o` shows the same 48 `smlawb`
+instances as #44's build, and the per-sample body is unchanged in shape:
+
+```
+adds  r4, r6, r2      @ phase += inc (register-carried across the unrolled block)
+add   r0, r4          @ + modulation bus value
+lsrs  r0, r0, #20      @ table index -- unchanged
+ldrsh.w r6, [r5, r0, lsl #1]  @ table lookup -- unchanged
+add   lr, r7           @ gain += gain_step -- the ONE add #45 adds nothing to
+smlawb r6, ip, r6, sl   @ x gain -- unchanged
+add.w r0, r0, r6, asr #6  @ accumulate/store -- unchanged
+str   r0, [r3, #0]
+```
+
+Exactly one extra `add` per sample versus #44 (`add lr, r7` / `add ip, r7`,
+feeding the running gain register into the next `smlawb`) -- `fm.md` §5.3's
+"per-sample cost in the kernel is one add" claim, confirmed against real
+compiled output, not assumed from the source.
+
+### BLOCK Confirmation (fm.md open question 3, closed)
+
+`op.h`'s `FM_BLOCK` is now a compile-time override (`T00T_FM_BLOCK`, wired
+through `CMakeLists.txt`/`Makefile` as `make ENGINE=fm FM_BLOCK=8|32`, same
+convention as `DMA_BUFFER_SIZE`) -- distinct from `FM_RIG_BLOCK`, which only
+affects the #42 profiling rig. Compared via a standalone host probe
+stepping a single carrier operator (R1=99, the fastest DX7 attack) through
+`env_dx_step_block()` at each candidate BLOCK size, recording gain at every
+block boundary:
+
+| `FM_BLOCK` | ms/block | Steps to 99% of full scale | Time to 99% | vs. BLOCK=16 |
+|---|---|---|---|---|
+| 8 | 0.181 | 34 | 6.17 ms | smoothest, most accurate |
+| 16 | 0.363 | 17 | 6.17 ms | baseline |
+| 32 | 0.726 | 9 | 6.53 ms | coarsest, 8% timing overshoot |
+
+BLOCK=32 loses on both axes now measured -- #43's kernel-only bench already
+found it 10.8% more expensive, and this reading adds a real timing/
+granularity cost on top (fewest distinct gain steps across the fastest
+attack, and the only one of the three whose "reached target" check lands
+measurably late). Ruled out.
+
+BLOCK=8 edges out BLOCK=16 on both the #43 kernel cost (4.9% cheaper) and
+this reading (smoothest ramp, no timing overshoot) -- but #43's rig has no
+EG, and BLOCK=8 means twice as many `env_dx_step_block()` calls per second
+as BLOCK=16 (a 64-bit divide plus a handful of table lookups per operator,
+6 operators per voice). A back-of-envelope projection (`fm.md` §3.3's own
+~19 c/f/voice BLOCK=16 EG-overhead estimate, doubled for BLOCK=8 ≈ 37.5
+c/f/voice, ×16 voices ≈ +300 c/f) plausibly outweighs BLOCK=8's ~78 c/f
+total kernel saving (16 x 4.9% of 100.5 c/f) -- but this is a projection,
+not a bench reading; #43's own "surplus isn't spent on a projection"
+discipline applies here too.
+
+**Decision: BLOCK=16 confirmed, not changed.** Neither the smaller nor
+larger candidate is a clear-cut win once EG overhead exists to weigh
+against kernel cost, and BLOCK=32's regression on both axes is unambiguous
+enough to rule out outright. Revisit BLOCK=8 with a real profiling-pin
+reading (not this projection) if a future issue wants to chase it.
+
 ## Host DSP Tooling
 
 `tools/host_render/` (issue #5 phase 2) is a standalone CMake project — no

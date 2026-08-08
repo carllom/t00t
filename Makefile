@@ -48,6 +48,15 @@ FM_RIG_NOT_IN_FLASH ?= default
 FM_RIG_SMULWB       ?= default
 FM_RIG_FB           ?= default
 
+# #45 BLOCK confirmation: the FM engine's real EG control-rate block size
+# (op.h's FM_BLOCK) — distinct from FM_RIG_BLOCK above, which only affects
+# the #42 profiling rig, not real MIDI-driven playback. "default" leaves
+# op.h's own #ifndef default (16) in place. See engine.md "FM P2 BLOCK
+# Confirmation (#45)".
+#   make ENGINE=fm FM_BLOCK=8
+#   make ENGINE=fm FM_BLOCK=32
+FM_BLOCK ?= default
+
 CMAKE_FLAGS = -DPICO_BOARD=$(BOARD) -DPICO_PLATFORM=rp2350 \
               -DMIDI_USB=$(MIDI_USB) -DMIDI_UART=$(MIDI_UART) \
               -DT00T_ENGINE=$(ENGINE) -DDMA_BUFFER_SIZE=$(DMA_BUFFER_SIZE) \
@@ -55,7 +64,7 @@ CMAKE_FLAGS = -DPICO_BOARD=$(BOARD) -DPICO_PLATFORM=rp2350 \
               -DFM_RIG_VOICES=$(FM_RIG_VOICES) -DFM_RIG_BLOCK=$(FM_RIG_BLOCK) \
               -DFM_RIG_TABLE_BITS=$(FM_RIG_TABLE_BITS) -DFM_RIG_INTERLEAVE=$(FM_RIG_INTERLEAVE) \
               -DFM_RIG_NOT_IN_FLASH=$(FM_RIG_NOT_IN_FLASH) -DFM_RIG_SMULWB=$(FM_RIG_SMULWB) \
-              -DFM_RIG_FB=$(FM_RIG_FB)
+              -DFM_RIG_FB=$(FM_RIG_FB) -DFM_BLOCK=$(FM_BLOCK)
 
 HOST_BUILD_DIR = tools/host_render/build
 
