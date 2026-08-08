@@ -190,23 +190,36 @@ inline bool fm_resolve_routing(const FmPatch &patch, FmRouting &r) {
 //
 // Levels: NOT rig.h's MOD_GAIN/CARRIER_GAIN (1<<15/1<<16) -- those were
 // deliberately scaled down for a 24-voice non-clipping bench check (rig.h's
-// own comment), never meant to produce audible modulation depth. Op.h's
-// verified kernel caps how much phase deviation a modulator can produce at
-// all: `in[i]` is added directly to a 32-bit phase accumulator indexed by
-// its top 12 bits, so 1 radian of deviation needs raw magnitude
-// ≈ 2^32/2π ≈ 6.8e8, but the gain/shift chain (fm_mul_gain, >>FM_OUT_SHIFT)
-// tops out around 2^24 even at gain = INT32_MAX -- roughly 0.03-0.05 rad
-// max per modulator stage, since the same int32 `gain` field and shift also
-// has to serve carriers at their own, much smaller, ±32767 int16-audio
-// scale (`level` here is that reference ceiling -- env_dx.h's output
-// level/EG/velocity-sensitivity offsets only ever attenuate *below* it).
-// Modulator levels below are pushed close to that ceiling (not literally
-// INT32_MAX, for headroom against rounding); the resulting sidebands are
-// real, correctly-placed, and well above the noise floor (host-verified),
-// but modest in amplitude -- a genuine limit of this fixed-point
-// convention, unresolved by #45 (still open, see env_dx.h). Carrier (op5)
-// stays at a conservative fraction of its own ±32767 unity point, leaving
-// headroom for multiple summed voices plus the FX chain.
+// own comment), never meant to produce audible modulation depth. `in[i]` is
+// added directly to a 32-bit phase accumulator indexed by its top 12 bits,
+// so 1 radian of deviation needs raw magnitude ≈ 2^32/2π ≈ 6.8e8. Op.h's
+// kernel used to cap this around 2^24 even at gain=INT32_MAX -- roughly
+// 0.03-0.05 rad max, since the same int32 `gain` field and shift served
+// carriers at their own, much smaller, ±32767 int16-audio scale too --
+// fixed in two parts by #57. Part 1 (`FM_OUT_SHIFT_MODULATOR`, op.h) gave
+// modulators their own shift, extracting the max magnitude a 32-bit
+// `gain*sample` product can yield at all (~64x more headroom, ~1.57 rad
+// ceiling). Part 2 (`FM_MOD_INPUT_SHIFT`, op.h) closed the actual gap that
+// remained -- comparing against Dexed's real kernel found this engine's
+// phase representation needs 2^32 units per cycle where Dexed's only needs
+// 2^24, taxing every modulator ~256x for no real reason -- by pre-scaling
+// incoming modulation left by 4 bits at the point it's added to phase.
+// `level` here is still the reference ceiling -- env_dx.h's output level/
+// EG/velocity-sensitivity offsets only ever attenuate *below* it -- but
+// three of these levels (op1/op2/op3, all summed into op4's bus) are
+// divided by 3 rather than left equal: at real headroom, 3 modulators
+// summed on one bus gets uncomfortably close to int32 range, the same
+// overflow risk #57 found and fixed in tools/syx2patch.py's carrier/
+// modulator fan-in scaling. All five modulator levels here were re-tuned
+// down again after part 2 landed -- the pre-#57 constants (pushed toward
+// int32 max, when max still meant "barely audible") badly over-drove at
+// the new combined headroom, and on op3 specifically (R1=90, slightly
+// slower than the other operators' R1=99) that was severe enough to
+// underflow `eg_to_linear()` to an exact zero mid-attack -- a real bug,
+// caught before hardware. Carrier (op5) stays at a conservative fraction
+// of its own ±32767 unity point, leaving headroom for multiple summed
+// voices plus the FX chain -- unaffected by #57 (FM_OUT_SHIFT_CARRIER is
+// unchanged from #44/#45).
 //
 // EG shapes (#45): every operator gets a distinct 4-stage envelope so all
 // six are audibly independent (an explicit acceptance criterion), and every
@@ -224,15 +237,15 @@ inline bool fm_resolve_routing(const FmPatch &patch, FmRouting &r) {
 inline constexpr FmPatch FM_TEST_PATCH = {
     "P1 Test Stack",
     {
-        /* op0 */ { 0.5f, 0.0f, false, 0.0f, 400000000, 2, false,
+        /* op0 */ { 0.5f, 0.0f, false, 0.0f, 100000000, 2, false,
                      99, 2, {99, 50, 20, 60}, {90, 50, 40, 0} },
-        /* op1 */ { 2.0f, 0.0f, false, 0.0f, 1000000000, 4, false,
+        /* op1 */ { 2.0f, 0.0f, false, 0.0f, 83000000, 4, false,
                      99, 3, {99, 70, 30, 50}, {99, 60, 55, 0} },
-        /* op2 */ { 3.0f, 0.0f, false, 0.0f, 1000000000, 4, false,
+        /* op2 */ { 3.0f, 0.0f, false, 0.0f, 83000000, 4, false,
                      99, 4, {95, 55, 25, 45}, {95, 45, 35, 0} },
-        /* op3 */ { 1.0f, 0.0f, false, 0.0f, 1000000000, 4, true,
+        /* op3 */ { 1.0f, 0.0f, false, 0.0f, 83000000, 4, true,
                      99, 3, {90, 65, 35, 55}, {99, 55, 50, 0} },
-        /* op4 */ { 1.0f, 0.0f, false, 0.0f, 1400000000, 5, false,
+        /* op4 */ { 1.0f, 0.0f, false, 0.0f, 350000000, 5, false,
                      99, 6, {99, 60, 20, 50}, {99, 20, 15, 0} },
         /* op5 */ { 1.0f, 0.0f, false, 0.0f, 1 << 21, FM_TARGET_OUT, false,
                      99, 5, {99, 40, 20, 40}, {99, 70, 60, 0} },

@@ -1568,6 +1568,10 @@ masked 2's-complement checksum.
    fully instead of holding a residual level, since this engine has no
    sustain-pedal semantics to make that distinction meaningful anyway.
 
+A third — the modulator-side equivalent of bug 1, only possible once #57
+raised modulator headroom ~64× — surfaced immediately after this section was
+written; see "FM Kernel — Modulation-Depth Ceiling Fix (#57)" below.
+
 ### Patch select
 
 Behind `T00T_FM_HAS_PATCHES` (both `CMakeLists.txt`s — see below):
@@ -1605,6 +1609,209 @@ renders a 3-second A3 note per converted patch to `fm_patches/*.wav` and
 checks every one is bounded and non-silent — all 28 of ROM1A's pass, 5488 B
 total flash cost (196 B/patch, matching fm.md §8's ~200 B/patch estimate).
 `make ENGINE=fm` builds clean both with and without `patches.h` present.
+
+## FM Kernel — Modulation-Depth Ceiling Fix (#57)
+
+Filed immediately after #47's hardware listen: real ROM1A patches sounded
+like near-plain sine tones on real `breadboard_rp2350` hardware, differing
+only in envelope/octave, never in timbre — "whistling," Carl's word. Traced
+with a direct Goertzel measurement on the converted "BRASS 1" patch (not
+guessed): its two FM-modulated operators produced real but tiny sidebands
+(~0.2–1% of their own fundamental), while the algorithm's two *unmodulated*
+carriers dominated the mix outright. Likely also the deeper explanation for
+#45's "marimba, very weak sustain" report — that fix (a quadratic instead of
+linear output-level curve) was independently correct, but a marimba is
+essentially a struck near-sine with fast harmonic decay, exactly the
+signature this ceiling produces regardless of envelope shape.
+
+**Root cause:** `op.h`'s kernel computed `out[i] = fm_mul_gain(sample, gain)
+>> FM_OUT_SHIFT` (`FM_OUT_SHIFT = 6`, on top of `fm_mul_gain`'s own implicit
+`>>16`) identically for every operator, whether its `out[]` became final
+int16-range audio (a carrier) or the *next* operator's raw phase-modulation
+input, added directly into a full-circle (`2^32` = 2π) `uint32_t` phase
+accumulator (a modulator). One shift serving both meant modulator deviation
+topped out around ~0.03–0.05 rad even at `gain = INT32_MAX` — already noted
+as a real, unresolved limitation in `patch.h`'s `FM_TEST_PATCH` comment
+since #44, never revisited until real DX7 data made it impossible to ignore.
+
+**Fix:** split the shift by role — `FM_OUT_SHIFT_CARRIER = 6` (unchanged;
+carrier headroom/loudness doesn't move at all) and
+`FM_OUT_SHIFT_MODULATOR = 0` (only `fm_mul_gain`'s built-in `>>16` applies),
+raising modulator headroom ~64× to ~1.57 rad at `gain = INT32_MAX`. Passed
+as a per-call `out_shift` parameter to `op_render`/`op_render_first`/
+`op_render_fb` — chosen once by `fm_voice_render_block()` from the routing
+(`r.out_bus[i] == FM_TARGET_OUT`), never inside the per-sample loop — so the
+loop's instruction shape is unchanged. Disassembly-verified against the
+device build: still exactly 48 `smlawb` instances, same as #44/#45's own
+counts; the shift itself becomes a register operand (`asr.w rX, rY, r9`)
+instead of a baked-in immediate, resolved once per block, not per sample.
+
+**A second overflow risk, found by the same headroom increase:** several
+real algorithms (7, 8, 10, 12, 13 — all present in ROM1A/B) sum 2–3
+modulators into one shared bus; at the new ~64× headroom that's a genuine
+int32 risk the old ceiling never made possible. Fixed the same way #47 fixed
+multi-carrier overflow: both `tools/syx2patch.py` (`fan_in` dict, divides
+each modulator's `level` by how many operators share its target) and
+`FM_TEST_PATCH` (`patch.h`: op1/op2/op3 all feed op4, now `1e9/3` each
+instead of `1e9`) divide by fan-in count. New unit test:
+`tools/test_syx2patch.py`'s `test_multi_modulator_level_scaled_down`
+(algorithm 12's 3-way fan-in).
+
+**Carl re-flashed and reported back: profiling roughly unchanged (good —
+the register-operand shift is cost-neutral, as expected), but still "soft,"
+nothing like real brass bite.** That prompted a direct question — how does
+Dexed actually implement this, what are we missing — answered by fetching
+Dexed's real per-sample kernel (`Source/msfa/fm_op_kernel.cc`/`sin.h`,
+Apache-2.0) rather than guessing further. `FM_OUT_SHIFT_MODULATOR = 0`
+already extracts the maximum magnitude a 32-bit `gain * sample` product can
+yield — no smaller shift exists, that multiply structurally caps there. But
+Dexed doesn't need a bigger magnitude at all: its phase representation only
+needs `2^24` units per full cycle (`Sin::lookup`'s table read ignores every
+bit above bit 23), not `2^32` like this engine's `phase`. The real gap was
+never raw output magnitude — it's how much phase deviation a given
+magnitude buys, and this engine's wider per-cycle convention (chosen for
+`inc`'s own pitch precision, not modulation sensitivity) was quietly taxing
+every modulator ~256× relative to Dexed's own choice.
+
+**Second fix:** `FM_MOD_INPUT_SHIFT = 4` (op.h) pre-scales incoming
+modulation (`in[i]`, and self-feedback's `fb1`/`fb2` average) left by 4 bits
+*at the point it's added to `phase`*, using unsigned wraparound — the same
+trick a narrower phase representation gets for free, applied only where
+needed. `in[]`/`out[]` stay `int32_t` (the fan-in/carrier-count overflow
+fixes above are untouched); only how aggressively a stored value bends
+phase changes. `FM_TEST_PATCH`'s own modulator levels needed retuning down
+at the new headroom — a real bug caught in the process: its old
+near-ceiling constants (picked before this shift existed) over-drove badly
+enough at op3's slightly-slower attack rate (R1=90, not 99) to underflow
+`eg_to_linear()` and produce an exact-zero gain mid-attack.
+
+**Host-measured, after both fixes:** across ROM1A's 28 converted patches,
+2nd-harmonic/fundamental ratios (per-patch diagnostic in `render_fm`'s
+patch-bank render, computed from each patch's own lowest-ratio carrier —
+carriers can run at fractional ratios) now span ~0.0 (patches with no real
+modulation at that voicing, e.g. VIBE/MARIMBA/TIMPANI — legitimate, not a
+bug) to several times the fundamental (BRASS 1 ~3.9×, ORCHESTRA ~7.0×) —
+real variety, not a uniform near-zero.
+
+**A test bug this surfaced, not an audio bug:** `render_fm`'s own routing/
+ratio spectrum check (`run_patch_spectrum_check`) started failing at the
+new depth. `FM_TEST_PATCH`'s op0 (ratio 0.5, feeding the carrier two hops
+upstream through op2→op4) barely mattered at the old, tiny ceiling; at real
+depth it visibly pulls the whole chain's true fundamental down to half the
+played note (110 Hz, not 220 Hz). The check's "noise floor" probe
+(`note*4.5` = 990 Hz) turned out to be exactly the 9th harmonic of that real
+110 Hz fundamental — confirmed by sweeping the full spectrum (every
+multiple of 110 Hz populated, a genuinely off-grid probe at `note*4.3`
+measuring ~0.01) rather than assumed. Fixed by moving the probe frequency,
+not by detuning the patch further to satisfy a check with the wrong
+reference. Worth remembering: a "broadband noise" symptom from a spectral
+check is only real if the probe frequency is verified off *every* harmonic
+grid a patch's own ratios can produce, not just the played note's own.
+
+**Still needs Carl:** re-flash and re-listen (again) — this second fix
+changes the timbre further, and should be the one that actually delivers
+real brass/bell bite; a fresh profiling read wouldn't hurt either, though
+this change is a compile-time constant shift with no new per-sample cost
+either way.
+
+## FM Level & Rate Curves — Ported from Dexed (#58, #59)
+
+Two more rounds in the same investigation #57 started, both following the
+same method: when a hand-fit curve is suspect, port and *run* Dexed's real
+code to get ground truth, rather than adjust the fit by ear.
+
+### #58 — level curve
+
+Carl's report after #57's depth fix: "more character now... but still
+sounds incorrect, almost overdriven sometimes." A direct question — "how
+does Dexed implement the operator math, what are we missing" — led to
+porting Dexed's real `Env`/`Exp2` pipeline (Source/msfa/env.cc/exp2.cc,
+Apache-2.0) into a standalone harness and running it, rather than continuing
+to hand-adjust #57's depth constants. That first confirmed #57's own
+modulation-index calibration was already in the right ballpark (Dexed's
+real TL=99 index ≈12.57 rad / 2.0 cycles matches what `FM_MOD_INPUT_SHIFT`
+produces) — the actual problem was one level upstream.
+
+`env_dx.h`'s `DX7_LEVEL_TO_LOG2[]` (#45's hand-fit quadratic-in-dB curve,
+shared by operator output level and EG stage levels) is considerably
+flatter than the real DX7 curve across most of the 0-99 range:
+
+| Level | #45 curve | Real DX7 (Dexed, measured) |
+|---|---|---|
+| 90 | -0.8 dB | -6.8 dB |
+| 70 | -8.2 dB | -21.9 dB |
+| 50 | -23.5 dB | -36.9 dB |
+
+Most real modulators sit at TL 70-90, not 99 — so #57's newly-unlocked
+depth was running hot on nearly everything, not because the ceiling was
+wrong but because the curve let mid-range TL values stay too close to full
+strength. Fixed by porting Dexed's real `Env::scaleoutlevel()` directly
+into `env_dx_init_level_table()` (`dx7_scaleoutlevel()`, env_dx.h) —
+verified structurally equivalent to this engine's existing "two independent
+log2 offsets, added, one `eg_to_linear` call" design (Dexed's own TL and
+EG-level combine the same way before one `Exp2::lookup`), so no
+architecture change, just a correct table. One `scaleoutlevel(v)*32` unit
+is exactly 1/256 octave in Dexed's own convention — exactly this file's
+existing `EG_LOG2_ONE` scale, direct subtraction, no rescaling needed.
+
+Host-measured after the fix: the 2nd-harmonic/fundamental spread across
+ROM1A's 28 patches tightened into a much more realistic range (mostly
+0.02-0.7, matching how real DX7 patches mostly use moderate TL), while
+BRASS 1 (whose modulator genuinely uses TL=86, closer to the top) stayed
+meaningfully rich (~3.9x). One diagnostic-only quirk noted, not a bug:
+ORCHESTRA's ratio (141x, later 59.7x after the rate fix below) is inflated
+because its "2nd harmonic" probe bin coincides with a *second, independent
+carrier's own fundamental* (op2 at ratio 2.0), not a real sideband of op0 —
+a known limitation of the simple lowest-ratio-carrier diagnostic for
+patches with multiple harmonically-related carriers.
+
+### #59 — rate curve
+
+Carl's next report: "envelopes feel a bit sluggish, particularly in
+program 3 and 4 (STRINGS 1/2)... a noticeable 'delay' from note on until
+something audible comes out. The duty cycle shows activity immediately, but
+the attack feels delayed." Same method: ported and ran Dexed's real
+`Env::advance()`/`getsample()` rate derivation rather than adjust by ear.
+
+`env_dx.h`'s `DX7_RATE_TO_STEP[]` (#45's smooth single-exponential fit,
+rate 0 ~20s to rate 99 ~6ms for a full 40-octave sweep) turned out
+dramatically too slow at the fast end:
+
+| Rate | #45 curve | Real DX7 (Dexed, measured) | Ratio |
+|---|---|---|---|
+| 0 | 2.0 oct/s | 2.7 oct/s | 1.35x |
+| 20 | 10.3 oct/s | 21.5 oct/s | 2.1x |
+| 50 | 120.3 oct/s | 689.1 oct/s | 5.7x |
+| 70 | 619.4 oct/s | 5512.5 oct/s | 8.9x |
+| 90 | 3189.0 oct/s | 55125.0 oct/s | 17.3x |
+| 99 | 6666.7 oct/s | 154350.0 oct/s | 23.2x |
+
+Real DX7 rate isn't smooth — it's piecewise, built from a `qrate` value and
+a `(4+(qrate&3)) << (2+6+(qrate>>2))` bit-shift step that accelerates far
+more steeply toward the high end than any single exponential fit can.
+R1=99 (an extremely common "instant attack" choice, including
+`FM_TEST_PATCH` and most of ROM1A/B) was landing ~20x slower than real
+hardware — exactly matching "duty cycle shows activity immediately, attack
+feels delayed": the EG genuinely was running (CPU cost identical either
+way), just at roughly 1/20th real speed. Fixed by porting the real
+`qrate`/`inc_` formula into `env_dx_init_rate_table()`
+(`dx7_rate_to_octaves_per_sec_q8()`, env_dx.h); keyboard rate scaling
+(Dexed's `rate_scaling_` term) stays deferred to #48, same as key level
+scaling, since this engine has no per-note rate scaling yet at all.
+
+Host-measured: `FM_TEST_PATCH` now reaches its stage-3 sustain within
+~200ms instead of ~800ms+ (directly probed: op4/op5 gain both flat,
+unchanging, well before 200ms) — `render_fm`'s own EG-shape checkpoints
+(5/100/800ms, calibrated to the old curve) were updated to 1/200ms to
+still capture "near attack peak" vs. "settled" at the new, correct speed.
+Release now reaches `EG_IDLE` in ~163ms instead of ~871ms. All host tests
+pass; disassembly unaffected (48 `smlawb`, table-generation-only changes,
+same as #58).
+
+**Still needs Carl:** re-flash and re-listen once more — #58 should have
+tamed the overdrive, #59 should have fixed the sluggish/delayed attacks,
+together getting closer to real DX7 timing and character on top of #57's
+depth fix.
 
 ## MIDI Input
 

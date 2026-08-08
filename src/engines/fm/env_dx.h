@@ -36,26 +36,25 @@ static constexpr int32_t EG_LOG2_ONE = 1 << EG_LOG2_FRAC_BITS;  // 256
 // Level-parameter (0-99) dynamic range, applied to BOTH the operator output
 // level (TL) and each EG stage's target level -- real DX7 hardware shares
 // one curve between the two (fm.md §7: "Operator output level (0-99) ->
-// Log-domain attenuation, via the DX7's nonlinear level table"). ~96 dB
-// across levels 1-99, genuinely nonlinear in the LINEAR amplitude this
-// eventually becomes via eg_to_linear's exp2 conversion -- not
+// Log-domain attenuation, via the DX7's nonlinear level table").
+// ~96 dB across levels 1-99, genuinely nonlinear -- not
 // `gain = reference * level/99`, which is what "a linear approximation" in
-// the acceptance criteria means and rejects. This is an honest
-// approximation of the real DX7 curve's general shape, not a byte-exact
-// reproduction of Yamaha's hardware table -- exact replication is P3/P6
-// territory, once real .syx patches exist to compare against Dexed
-// (fm.md §7's "fail loudly" converter, §11's calibration pass).
+// the acceptance criteria means and rejects.
 //
-// The curve is QUADRATIC in dB, not uniform-per-unit (env_dx_init_level_table
-// below): flatter near 99, steeper near 0 -- `db(level) = -(99-level)^2 *
-// EG_LEVEL_DB_RANGE/99^2`. First cut used a uniform ~1 dB/unit, which put a
-// typical "sustain" value like 60-70 about 30-38 dB below the attack peak --
-// heard on real hardware (#45, Carl) as a loud attack that decays to
-// near-nothing, not a held tone ("more like a marimba. Very weak sustain.").
-// The quadratic shape keeps levels 70-99 within roughly 8 dB of the peak
-// (audibly present, a real sustain) while still reaching the same -96 dB
-// floor by level 0 -- closer to how real DX7 patches actually use 60-85 as
-// an audible-but-softer sustain value, not a near-silent one.
+// History: #45's first cut used a uniform ~1 dB/unit, which put a typical
+// "sustain" value like 60-70 about 30-38 dB below the attack peak -- heard
+// on real hardware as a loud attack decaying to near-nothing, not a held
+// tone ("more like a marimba. Very weak sustain."). #45 then tried a
+// hand-fit quadratic-in-dB curve (flatter near 99, steeper near 0), which
+// fixed that complaint but was still considerably flatter than the real
+// DX7 curve across most of the range (#58 measured -0.8 dB at level 90 here
+// vs the genuine -6.8 dB, by porting and running Dexed's actual Env/Exp2
+// pipeline rather than re-deriving from a formula guess) -- real enough to
+// let #57's newly-unlocked modulation depth run hot on anything short of a
+// near-maxed operator, surfacing as "sometimes overdriven." #58 replaced
+// the hand-fit curve with `dx7_scaleoutlevel()` (below), a direct port of
+// Dexed's own `Env::scaleoutlevel()`, closing that gap for real instead of
+// re-fitting another approximation.
 static constexpr float EG_LEVEL_DB_RANGE = 96.0f;
 static constexpr float EG_DB_PER_OCTAVE = 6.0206f;  // 20*log10(2)
 
@@ -95,19 +94,26 @@ static constexpr float EG_VEL_SENS_MAX_OCTAVES = 4.0f;
 // Rate-parameter (0-99) dynamic range: fixed-point OCTAVES PER SECOND,
 // independent of block size (BLOCK only decides how finely that per-second
 // rate gets sampled -- see op.h's FM_BLOCK / T00T_FM_BLOCK and this issue's
-// BLOCK-confirmation acceptance criterion). Exponential across the 0-99
-// range, same "each unit roughly compounds" shape real DX7 rate parameters
-// have: rate 0 sweeps EG_FLOOR_OCTAVES worth of range in ~20s (a "molasses"
-// pad-style attack), rate 99 in ~6ms (DX7's documented near-instantaneous
-// fastest segments). Approximate, not hardware-measured -- see the level
-// table comment; what this issue's BLOCK-confirmation criterion actually
-// needs is SOME fast segment whose transient is short enough to be
-// BLOCK-size-sensitive, and rate 99 here comfortably is one (6ms is 8-17
-// control blocks at BLOCK 8-16, so BLOCK's own granularity is a real
-// fraction of the segment, not lost in the noise).
+// BLOCK-confirmation acceptance criterion).
+//
+// History: originally a smooth single exponential across 0-99 (rate 0 ~20s,
+// rate 99 ~6ms for a full EG_FLOOR_OCTAVES sweep) -- an "approximate" guess,
+// like #45's original level curve. #59 found it badly wrong by the same
+// method #58 used for the level curve: porting and running Dexed's actual
+// `Env::advance()`/`getsample()` rate-to-speed formula (Source/msfa/env.cc)
+// rather than re-deriving from a shape guess. Real DX7 rate isn't a smooth
+// exponential -- it's piecewise, built from a `qrate` value and a
+// `(4+(qrate&3)) << (2+6+(qrate>>2))` bit-shift step -- and it accelerates
+// far more steeply toward the high end than any single smooth exponential
+// can: 1.35x faster than this curve at rate 0, growing to ~23x faster at
+// rate 99. That gap is a direct, well-evidenced explanation for "envelopes
+// feel sluggish" / "noticeable delay from note-on until audible" (Carl,
+// after #58) -- R1=99 (an extremely common "instant attack" choice in real
+// patches, including FM_TEST_PATCH) was landing roughly 20x slower than
+// real hardware. `dx7_rate_to_octaves_per_sec()` below replaces the
+// exponential fit with the real formula; `EG_RATE_SWEEP_OCTAVES` stays as
+// this file's own floor-to-unity range definition (unrelated to the fix).
 static constexpr float EG_RATE_SWEEP_OCTAVES = -(float)EG_FLOOR_OCTAVES;  // 40
-static constexpr float EG_RATE_MIN_SECONDS = 20.0f;   // rate 0
-static constexpr float EG_RATE_MAX_SECONDS = 0.006f;  // rate 99
 
 static constexpr uint32_t DX7_LEVEL_COUNT = 100;
 inline int32_t DX7_LEVEL_TO_LOG2[DX7_LEVEL_COUNT];   // fixed-point octave offset, <= 0, index 99 == 0
@@ -119,26 +125,61 @@ static constexpr uint32_t EG_EXP2_BITS = EG_LOG2_FRAC_BITS;
 static constexpr uint32_t EG_EXP2_SIZE = 1u << EG_EXP2_BITS;  // 256
 inline uint16_t eg_exp2_table[EG_EXP2_SIZE];  // Q15: 2^(i/256), range [32768, 65280]
 
+// Dexed's own `Env::scaleoutlevel()` (Source/msfa/env.cc, Apache-2.0) --
+// ported verbatim, not re-derived, since #58 found the earlier "honest
+// approximation" (quadratic-in-dB, above) was still considerably flatter
+// than the real curve across most of the 0-99 range (e.g. -0.8 dB at
+// level 90 here vs the real -6.8 dB; -8.2 dB at level 70 here vs -21.9 dB
+// real), letting anything short of a near-maxed operator run noticeably
+// hotter than authentic DX7 behavior -- the actual root cause behind #57's
+// "sometimes overdriven" report, not modulation depth itself. Levels 0-19
+// are a measured, non-formulaic table on real hardware; 20-99 is `28 + level`.
+inline int dx7_scaleoutlevel(int level) {
+    static constexpr int levellut[20] = {0, 5, 9, 13, 17, 20, 23, 25, 27, 29,
+                                          31, 33, 35, 37, 39, 41, 42, 43, 45, 46};
+    return level >= 20 ? 28 + level : levellut[level];
+}
+
+// #58: replaces the #45 quadratic-in-dB approximation with Dexed's actual
+// curve, ported exactly rather than re-fit. Verified by direct port-and-run
+// against Dexed's real Exp2/Env pipeline (not hand-derived): one unit of
+// `dx7_scaleoutlevel(level) * 32` is exactly 1/256 octave in Dexed's own
+// fixed-point convention -- the same Q iiii.8 scale this file already uses
+// (EG_LOG2_ONE), so the conversion is a direct subtraction, no rescaling.
+// Real DX7 hardware shares this exact curve between operator output level
+// (TL) and each EG stage's target level (fm.md §7) -- Dexed's own formula
+// for the two differs only by an integer-truncation rounding difference
+// this table doesn't distinguish (both go through the same
+// scaleoutlevel()*32 shape), matching the "one shared curve" convention
+// this file already documents above.
 inline void env_dx_init_level_table() {
-    DX7_LEVEL_TO_LOG2[0] = EG_LOG2_FLOOR;
-    static constexpr float DB_PER_UNIT_SQ = EG_LEVEL_DB_RANGE / (99.0f * 99.0f);
+    DX7_LEVEL_TO_LOG2[0] = EG_LOG2_FLOOR;  // deliberately deeper than real hardware's ~-96 dB -- see this constant's own comment (exact-zero voice-free guarantee, not a fidelity claim)
+    const int32_t reference = dx7_scaleoutlevel(99) * 32;  // = 4064
     for (uint32_t level = 1; level < DX7_LEVEL_COUNT; level++) {
-        float below = 99.0f - (float)level;               // 0 at level 99, 99 at level 0
-        float db = -(below * below) * DB_PER_UNIT_SQ;       // quadratic: flatter near 99, steeper near 0
-        float octaves = db / EG_DB_PER_OCTAVE;
-        DX7_LEVEL_TO_LOG2[level] = (int32_t)(octaves * (float)EG_LOG2_ONE);
+        DX7_LEVEL_TO_LOG2[level] = (dx7_scaleoutlevel((int)level) * 32) - reference;
     }
+}
+
+// Dexed's own `Env::advance()` rate derivation (Source/msfa/env.cc,
+// Apache-2.0), ported verbatim (#59) -- `qrate` folds in keyboard rate
+// scaling too (`+= rate_scaling_`), not modeled here yet (deferred to #48,
+// same as key level scaling), so this is rate_scaling=0 only. `inc_` comes
+// out in Q24 octaves/sample at a 44100 Hz reference (Dexed's own
+// `sr_multiplier` just re-normalizes for other playback rates, moot here
+// since this engine's SAMPLE_RATE is 44100 too) -- converted to this file's
+// Q iiii.8 octaves/second convention by `* SAMPLE_RATE >> 16` (the >>16
+// covers 2^24 octave units becoming 2^8 EG_LOG2_ONE units, i.e. >>16, folded
+// into one shift with the *SAMPLE_RATE multiply).
+inline int32_t dx7_rate_to_octaves_per_sec_q8(int rate) {
+    int qrate = (rate * 41) >> 6;
+    qrate = qrate > 63 ? 63 : qrate;
+    int64_t inc = (int64_t)(4 + (qrate & 3)) << (2 + 6 + (qrate >> 2));  // 6 = Dexed's own per-block LG_N
+    return (int32_t)((inc * (int64_t)SAMPLE_RATE) >> 16);
 }
 
 inline void env_dx_init_rate_table() {
     for (uint32_t rate = 0; rate < DX7_RATE_COUNT; rate++) {
-        float t = (float)rate / (float)(DX7_RATE_COUNT - 1);  // 0..1
-        // Exponential interpolation between the slowest and fastest sweep
-        // times, then convert "seconds for the full sweep" to "octaves per
-        // second" by dividing the swept range by that time.
-        float seconds = EG_RATE_MIN_SECONDS * powf(EG_RATE_MAX_SECONDS / EG_RATE_MIN_SECONDS, t);
-        float octaves_per_sec = EG_RATE_SWEEP_OCTAVES / seconds;
-        DX7_RATE_TO_STEP[rate] = (int32_t)(octaves_per_sec * (float)EG_LOG2_ONE);
+        DX7_RATE_TO_STEP[rate] = dx7_rate_to_octaves_per_sec_q8((int)rate);
     }
 }
 

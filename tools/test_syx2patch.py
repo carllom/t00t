@@ -161,6 +161,33 @@ def test_multi_carrier_level_scaled_down() -> None:
         assert op.level == sp.FM_CARRIER_LEVEL_REF // 6
 
 
+def test_multi_modulator_level_scaled_down() -> None:
+    # Algorithm 12 (index 11): OP6/OP5/OP4 all target OP3 (3-way modulator
+    # fan-in) -- #57 raised the modulator headroom ceiling ~64x, which makes
+    # this the same overflow risk multi-carrier summing already was.
+    decode = sp.decode_algorithm(sp.DX7_ALGORITHMS[11])
+    fan_in_target = decode.routing[0].target  # OP6's target -- the shared bus
+    assert decode.routing[1].target == fan_in_target  # OP5
+    assert decode.routing[2].target == fan_in_target  # OP4
+
+    ops = [_flat_op() for _ in range(6)]
+    voice = sp.DX7Voice(ops=ops, algorithm=11, feedback_level=0, name="THREEMOD",
+                         osc_key_sync=0, transpose=24)
+    warnings: list = []
+    out = sp.convert_voice(0, voice, warnings)
+    assert out is not None
+    engine_target = sp.FM_TARGET_OUT if fan_in_target == "OUT" else (5 - fan_in_target)
+    fed = [op for op in out.ops if op.mod_target == engine_target]
+    assert len(fed) == 3
+    for op in fed:
+        assert op.level == sp.FM_MODULATOR_LEVEL_REF // 3
+
+    # Worst-case overflow sanity: N modulators each holding 1/N of the
+    # reference must still sum back to (approximately) one modulator's own
+    # ceiling, comfortably under int32 range, not N times it.
+    assert sum(op.level for op in fed) <= sp.FM_MODULATOR_LEVEL_REF
+
+
 # --- Bit-packing / sysex parsing (synthetic fixtures) -----------------------
 
 def _pack_op(eg_rate, eg_level, bp, ld, rd, lc, rc, rs, det, kvs, ams, ol, mode, fcoarse, ffine) -> bytes:
@@ -333,6 +360,7 @@ def main() -> None:
     run("carrier L4 forced to 0 for voice-lifetime correctness", test_carrier_l4_forced_to_zero)
     run("feedback_level=0 disables feedback exactly", test_feedback_level_zero_disables_feedback)
     run("multi-carrier level scaled down by carrier count", test_multi_carrier_level_scaled_down)
+    run("multi-modulator level scaled down by fan-in count", test_multi_modulator_level_scaled_down)
     run("unpack_voice: bit-packing round-trip", test_unpack_voice_roundtrip)
     run("parse_syx_bulk: checksum validation", test_bulk_parse_and_checksum)
     run("parse_syx_bulk: header/length rejection", test_bulk_parse_rejects_bad_header)
