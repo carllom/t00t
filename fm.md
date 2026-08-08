@@ -547,6 +547,61 @@ All of the following are resolved once per note-on and never touched again:
 This is where the DX7's nonlinearity lives, and none of it belongs in the render
 loop.
 
+**Implemented, #48**, same session as #57/#58/#59, all four ported directly
+from Dexed (`dx7note.cc`'s `ScaleRate`/`ScaleLevel`/`ScaleCurve`,
+`osc_freq()`'s fixed-frequency branch), not re-derived approximations:
+
+- **Key level scaling** (`env_dx.h`'s `dx7_scale_level`/`dx7_scale_curve`):
+  resolved at note-on, combined with TL *before* the log2 conversion and
+  clamped to [0,127] exactly like Dexed's own `outlevel = min(127,
+  outlevel)` — not added as a separate, unclamped log2 offset. A boosting
+  curve (DX7 curve 2/3, "+EXP"/"+LIN") at high depth and an extreme note can
+  otherwise push the combined value well past what a reference `level` was
+  ever meant to represent, and `eg_to_linear()`'s shift has no defined
+  behavior for a large positive log2 offset — this clamp is what keeps it
+  inside the range that function already guarantees is safe.
+- **Rate scaling** (`env_dx.h`'s `dx7_scale_rate`): resolved at note-on into
+  a qrate *delta* (`FmOp::rate_scale_qrate`), added to the base rate's own
+  qrate at every stage transition — matching Dexed's `qrate +=
+  rate_scaling_` order exactly, not applied as a post-hoc scale on the
+  already-converted octaves/second value (a different, less faithful order
+  of operations). Zero-delta is the exact same table-lookup fast path #59
+  already verified, so this is behavior-neutral for every existing patch.
+- **Detune**: applied via the Q32 increment path that already existed since
+  #44 (`FmOpParams::detune_cents`, previously always 0 from the converter).
+  Approximated as a fixed ±7 cents at the DX7 detune extremes rather than
+  Dexed's real note-frequency-dependent formula — replicating that exactly
+  needs the full pitch pipeline's absolute log-frequency value, which
+  `tools/syx2patch.py` (a note-independent, note-on-baking converter)
+  doesn't have; small enough that "audible as beating between two operators
+  at the same ratio" (this issue's own acceptance bar) holds regardless.
+- **Fixed-frequency mode**: also the Q32 increment path (`FmOpParams::
+  fixed_hz`/`fixed_freq`, previously unused since the converter skipped
+  every fixed-frequency patch outright). `tools/syx2patch.py`'s
+  `op_fixed_hz()` reduces Dexed's `osc_freq()` fixed-mode branch to a
+  closed form, `Hz = 10^(((coarse&3)*100+fine)/100)` — Dexed's own constant
+  `4458616` is exactly `(2^24 * log2(10) * 0.01) << 3`, so no need to
+  replicate its Q24-log-frequency/`Freqlut` machinery. All 32 of ROM1A now
+  convert (was 28/32 — the 4 previously-skipped patches, "TUB BELLS"/"STEEL
+  DRUM"/"REFS WHISL"/"TRAIN", all use fixed-frequency operators for
+  inharmonic bell/percussion partials, exactly the DX7 use case this
+  unblocks).
+
+`VoiceParams` gained a raw MIDI `note` field (0-127) — key level/rate
+scaling need the actual note, which `phase_inc` alone (already bend-scaled
+into a frequency) can't reconstruct. `fm_voice_note_on()`'s signature grew
+a `midinote` parameter accordingly; every existing caller (device and host)
+updated. Host-verified with a dedicated check (`render_fm`'s
+`run_key_rate_scaling_check()`) that builds a patch with deliberately
+nonzero scaling and confirms both the resolved note-on values and the
+actual per-sample speed/level differ in the expected direction between a
+low and a high note — nothing else in the test suite would have exercised
+these code paths at all, since `FM_TEST_PATCH`'s own scaling fields default
+to zero (no scaling, preserving its exact existing behavior). Kernel
+disassembly unaffected (still 48 `smlawb` instances) — everything here is
+note-on/block-rate, never inside the per-sample loop, exactly as this
+section's own opening claim requires.
+
 ---
 
 ## 6. Architecture integration
@@ -703,7 +758,7 @@ patch — long enough to catch a deliberately slow-swelling patch like ROM1A's
 |---|---|---|
 | Operator sine table (4096 × int16) | 8 KB | SRAM |
 | Exp2 table for EG (256 × int16) | 0.5 KB | SRAM |
-| Patch bank (32 × ~200 B, runtime form) | ~6.4 KB | Flash (read-only) — **measured, #47**: ROM1A's 28 converted patches are 5488 B (196 B/patch), matching the estimate; scales to ~6.3 KB at a full 32 |
+| Patch bank (32 × ~200 B, runtime form) | ~6.4 KB | Flash (read-only) — **measured, #47**: ROM1A's 28 converted patches were 5488 B (196 B/patch) pre-#48; **updated, #48**: FmOpParams grew 6 bytes/op (key level scaling + rate scaling fields) — all 32/32 of ROM1A now convert (fixed-frequency support), 7040 B total (220 B/patch) |
 | Per-voice state (16 × ~200 B) | ~3.2 KB | SRAM |
 | Shared bus scratch (7 × 16 × int32) | 448 B | SRAM |
 | Mix scratch | reuses existing `scratch[]` | SRAM |
@@ -788,24 +843,29 @@ possibly the 4096-entry table.
    **Implemented, #45** (4-stage log-domain EG, DX7 level table, velocity
    sensitivity, BLOCK=16 confirmed — `engine.md` §"FM P2 BLOCK Confirmation
    (#45)"). By-ear EP/bell check on real hardware still Carl's to do.
-5. ~~**P3** — the converter.~~ **Implemented (v1), #47** (`tools/syx2patch.py`:
-   32-voice .syx unpack, all 32 algorithms mapped to `mod_target`/`feedback`
-   via one generic bus-simulation decode, algorithm 4/6 interleaved-feedback
-   detected via cycle analysis and collapsed to single self-feedback with a
-   logged warning, EG rates/levels/output level/velocity sensitivity copied
-   straight through since env_dx.h already converts them at runtime, coarse/
-   fine ratio computed, per-carrier level scaled down by carrier count to
-   avoid int16 overflow on multi-carrier algorithms — a real bug caught by
-   host-rendering the actual bank, not assumed). Key level scaling, rate
-   scaling, detune, fixed-frequency mode, pitch EG, LFO, and transpose are
-   parsed/validated but not wired in — v2, #48. 28/32 of ROM1A converted and
-   host-rendered clean (4 skipped: fixed-frequency-mode patches, "TUB BELLS"/
-   "STEEL DRUM"/"REFS WHISL"/"TRAIN", all deferred to the same #48). The
-   `.syx` input and generated `patches.h` are both gitignored (Yamaha's own
-   patch data, same policy `xm2t00t`'s `xm/` already established for
-   copyrighted third-party content) — see `engine.md`'s "syx2patch Host
-   Converter (#47)" section for the full writeup and usage.
-6. **P4–P6** — remaining parameters, free routing, calibration.
+5. ~~**P3** — the converter.~~ **Implemented, #47 (v1) + #48 (v2)**
+   (`tools/syx2patch.py`: 32-voice .syx unpack, all 32 algorithms mapped to
+   `mod_target`/`feedback` via one generic bus-simulation decode, algorithm
+   4/6 interleaved-feedback detected via cycle analysis and collapsed to
+   single self-feedback with a logged warning, EG rates/levels/output
+   level/velocity sensitivity copied straight through since env_dx.h
+   already converts them at runtime, coarse/fine ratio computed, per-
+   carrier/per-modulator level scaled down by fan-in to avoid int32
+   overflow on multi-carrier/multi-modulator algorithms — real bugs caught
+   by host-rendering the actual bank, not assumed). #48 added key level
+   scaling and rate scaling (both ported from Dexed's real `ScaleLevel`/
+   `ScaleRate`, resolved at note-on from a new `VoiceParams::note` field),
+   detune (a fixed ±7-cents approximation), and fixed-frequency mode (a
+   closed-form Hz formula also derived from Dexed's `osc_freq()`) — see
+   §5.6's own writeup. All 32/32 of ROM1A now convert and host-render clean
+   (was 28/32 before #48; the 4 previously-skipped fixed-frequency patches,
+   "TUB BELLS"/"STEEL DRUM"/"REFS WHISL"/"TRAIN", all convert now). Pitch
+   EG, LFO, and transpose remain unwired — no `pitch_eg.h`/`lfo.h` exists
+   yet at all, that's P4. The `.syx` input and generated `patches.h` are
+   both gitignored (Yamaha's own patch data, same policy `xm2t00t`'s `xm/`
+   already established for copyrighted third-party content) — see
+   `engine.md`'s syx2patch sections for the full writeup and usage.
+6. **P4–P6** — pitch EG + LFO, free routing UI, calibration against Dexed.
 
 `WAVE_FM2` (§10) can be slotted in anywhere; it does not gate anything.
 

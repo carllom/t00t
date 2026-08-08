@@ -51,6 +51,21 @@ struct FmOpParams {
     uint8_t vel_sensitivity; // 0-7, env_dx.h's eg_vel_sensitivity_log2 (#45)
     uint8_t eg_rate[4];      // R1-R4, 0-99 (#45)
     uint8_t eg_level[4];     // L1-L4, 0-99 (#45) -- L4 = 0 lets this operator actually reach silence on release
+    // #48: key level scaling -- an output-level offset that depends on the
+    // played note vs. `scale_breakpoint`, resolved once at note-on
+    // (env_dx.h's dx7_scale_level(), a direct Dexed port) and folded into
+    // `static_log2` alongside output_level/vel_sensitivity. curve values
+    // match DX7: 0=-LIN, 1=-EXP, 2=+EXP, 3=+LIN (env_dx.h's dx7_scale_curve()).
+    uint8_t scale_breakpoint;  // MIDI note, DX7 units (C3 = 0x27 = 39)
+    uint8_t scale_left_depth;  // 0-99
+    uint8_t scale_right_depth; // 0-99
+    uint8_t scale_left_curve;  // 0-3
+    uint8_t scale_right_curve; // 0-3
+    // #48: rate scaling -- higher notes get faster envelopes. 0-7,
+    // env_dx.h's dx7_scale_rate() (a direct Dexed port), resolved once at
+    // note-on into a qrate delta applied at every stage transition
+    // (env_dx_step_block).
+    uint8_t rate_scaling;
 };
 
 struct FmPatch {

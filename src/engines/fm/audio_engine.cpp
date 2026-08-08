@@ -169,7 +169,7 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
             if (p.trigger != voice_last_trigger[v]) {
                 voice_routing_valid[v] = fm_resolve_routing(*p.patch, voice_routing[v]);
                 if (voice_routing_valid[v]) {
-                    fm_voice_note_on(voice_ops[v], *p.patch, p.phase_inc, p.amplitude);
+                    fm_voice_note_on(voice_ops[v], *p.patch, p.phase_inc, p.amplitude, p.note);
                 }
                 voice_last_trigger[v] = p.trigger;
                 voice_gated[v] = p.gate;

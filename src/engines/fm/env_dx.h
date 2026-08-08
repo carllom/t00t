@@ -161,20 +161,77 @@ inline void env_dx_init_level_table() {
 }
 
 // Dexed's own `Env::advance()` rate derivation (Source/msfa/env.cc,
-// Apache-2.0), ported verbatim (#59) -- `qrate` folds in keyboard rate
-// scaling too (`+= rate_scaling_`), not modeled here yet (deferred to #48,
-// same as key level scaling), so this is rate_scaling=0 only. `inc_` comes
-// out in Q24 octaves/sample at a 44100 Hz reference (Dexed's own
-// `sr_multiplier` just re-normalizes for other playback rates, moot here
-// since this engine's SAMPLE_RATE is 44100 too) -- converted to this file's
-// Q iiii.8 octaves/second convention by `* SAMPLE_RATE >> 16` (the >>16
-// covers 2^24 octave units becoming 2^8 EG_LOG2_ONE units, i.e. >>16, folded
-// into one shift with the *SAMPLE_RATE multiply).
-inline int32_t dx7_rate_to_octaves_per_sec_q8(int rate) {
+// Apache-2.0), ported verbatim (#59), split into its two halves so #48's
+// rate scaling can add a qrate delta between them (real DX7 hardware adds
+// keyboard rate scaling directly to qrate, once per stage transition, not
+// as a separate offset applied after the octaves/second conversion --
+// `Env::advance()`'s own `qrate += rate_scaling_`). `inc_` comes out in Q24
+// octaves/sample at a 44100 Hz reference (Dexed's own `sr_multiplier` just
+// re-normalizes for other playback rates, moot here since this engine's
+// SAMPLE_RATE is 44100 too) -- converted to this file's Q iiii.8 octaves/
+// second convention by `* SAMPLE_RATE >> 16` (the >>16 covers 2^24 octave
+// units becoming 2^8 EG_LOG2_ONE units, folded into one shift with the
+// *SAMPLE_RATE multiply).
+inline int dx7_rate_to_qrate(int rate) {
     int qrate = (rate * 41) >> 6;
-    qrate = qrate > 63 ? 63 : qrate;
+    return qrate > 63 ? 63 : qrate;
+}
+
+inline int32_t dx7_qrate_to_octaves_per_sec_q8(int qrate) {
+    if (qrate < 0) qrate = 0;
+    if (qrate > 63) qrate = 63;
     int64_t inc = (int64_t)(4 + (qrate & 3)) << (2 + 6 + (qrate >> 2));  // 6 = Dexed's own per-block LG_N
     return (int32_t)((inc * (int64_t)SAMPLE_RATE) >> 16);
+}
+
+inline int32_t dx7_rate_to_octaves_per_sec_q8(int rate) {
+    return dx7_qrate_to_octaves_per_sec_q8(dx7_rate_to_qrate(rate));
+}
+
+// Dexed's `ScaleRate()` (dx7note.cc, Apache-2.0), ported verbatim (#48): a
+// qrate DELTA from how far above a low reference note the played note is
+// (`x`, clamped 0-31 -- roughly the octave-and-a-bit starting around A1),
+// scaled by the operator's own rate scaling (RS, 0-7). Real DX7: higher
+// notes get faster envelopes -- why bells/plucked patches tighten up
+// correctly across the keyboard instead of the same shape at every pitch.
+// Resolved once at note-on (op.h's fm_voice_note_on) into `FmOp`'s own
+// `rate_scale_qrate`, then added to `dx7_rate_to_qrate(rate)` at every
+// stage transition (env_dx_step_block) -- matching Dexed's own "added to
+// qrate, not to the final speed" order exactly.
+inline int32_t dx7_scale_rate(int midinote, int sensitivity) {
+    int x = midinote / 3 - 7;
+    if (x < 0) x = 0;
+    if (x > 31) x = 31;
+    return (sensitivity * x) >> 3;
+}
+
+// Dexed's `ScaleCurve()`/`ScaleLevel()` (dx7note.cc, Apache-2.0), ported
+// verbatim (#48). Same raw-unit scale as `dx7_scaleoutlevel()` above (both
+// feed the identical pre-`<<5` "outlevel" pipeline on real hardware) --
+// `fm_voice_note_on()` multiplies the result by 32 to fold it into this
+// file's octave (`EG_LOG2_ONE`) convention, same as
+// `env_dx_init_level_table()` does for TL. Curve values match DX7: 0=-LIN,
+// 1=-EXP, 2=+EXP, 3=+LIN.
+inline int dx7_scale_curve(int group, int depth, int curve) {
+    static constexpr uint8_t exp_scale_data[33] = {
+        0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 14, 16, 19, 23, 27, 33, 39, 47, 56, 66,
+        80, 94, 110, 126, 142, 158, 174, 190, 206, 222, 238, 250
+    };
+    int scale;
+    if (curve == 0 || curve == 3) {
+        scale = (group * depth * 329) >> 12;  // linear
+    } else {
+        int g = group > 32 ? 32 : group;
+        scale = (exp_scale_data[g] * depth * 329) >> 15;  // exponential
+    }
+    return curve < 2 ? -scale : scale;
+}
+
+inline int32_t dx7_scale_level(int midinote, int break_pt, int left_depth, int right_depth,
+                                int left_curve, int right_curve) {
+    int offset = midinote - break_pt - 17;
+    if (offset >= 0) return dx7_scale_curve((offset + 1) / 3, right_depth, right_curve);
+    return dx7_scale_curve(-(offset - 1) / 3, left_depth, left_curve);
 }
 
 inline void env_dx_init_rate_table() {
@@ -269,9 +326,19 @@ inline void env_dx_release(EnvDX &eg) {
 // op.h's fm_voice_step_envelopes()). A stage transition that would land
 // mid-block is deferred to the next block boundary (clamped exactly at the
 // target for this block instead) -- same "bounded by one block, inaudible"
-// convention as envelope.h's advance_block().
+// convention as envelope.h's advance_block(). `rate_qrate_delta` is #48's
+// key rate scaling, resolved once at note-on (FmOp::rate_scale_qrate) and
+// added directly to this stage's own qrate every time a stage starts --
+// matching Dexed's `qrate += rate_scaling_` exactly, rather than scaling
+// the already-converted octaves/second value (a different, less faithful
+// order of operations). 0 for every existing caller/patch until #48 wires
+// real DX7 data through -- identical to #59's own DX7_RATE_TO_STEP[] table
+// lookup in that case (dx7_rate_to_octaves_per_sec_q8() IS
+// dx7_qrate_to_octaves_per_sec_q8(dx7_rate_to_qrate(rate) + 0)), so this
+// change is behavior-neutral for every patch that doesn't use rate scaling.
 inline void env_dx_step_block(EnvDX &eg, const FmOpParams &op, uint32_t n,
-                               int32_t &log2_start, int32_t &log2_end) {
+                               int32_t &log2_start, int32_t &log2_end,
+                               int32_t rate_qrate_delta = 0) {
     log2_start = eg.current_log2;
     if (eg.stage == EG_IDLE) {
         log2_end = log2_start;
@@ -279,7 +346,9 @@ inline void env_dx_step_block(EnvDX &eg, const FmOpParams &op, uint32_t n,
     }
 
     int32_t target = DX7_LEVEL_TO_LOG2[op.eg_level[eg.stage]];
-    int32_t rate_per_sec = DX7_RATE_TO_STEP[op.eg_rate[eg.stage]];
+    int32_t rate_per_sec = rate_qrate_delta == 0
+        ? DX7_RATE_TO_STEP[op.eg_rate[eg.stage]]
+        : dx7_qrate_to_octaves_per_sec_q8(dx7_rate_to_qrate(op.eg_rate[eg.stage]) + rate_qrate_delta);
     int32_t step = (int32_t)(((int64_t)rate_per_sec * n) / SAMPLE_RATE);
     if (step < 1) step = 1;  // guarantee forward progress every block, even at rate 0 with a short final sub-block
 

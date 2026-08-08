@@ -112,14 +112,63 @@ def _flat_op(**overrides) -> "sp.DX7Op":
     return sp.DX7Op(**base)
 
 
-def test_fixed_freq_skips_patch() -> None:
-    voice = sp.DX7Voice(ops=[_flat_op(osc_mode=1)] + [_flat_op() for _ in range(5)],
+def test_op_fixed_hz_formula() -> None:
+    # Verified against Dexed's osc_freq() mode!=0 branch (#48): Hz =
+    # 10^(((coarse&3)*100+fine)/100).
+    op = _flat_op(freq_coarse=0, freq_fine=0)
+    assert abs(sp.op_fixed_hz(op) - 1.0) < 1e-6
+    op = _flat_op(freq_coarse=1, freq_fine=0)
+    assert abs(sp.op_fixed_hz(op) - 10.0) < 1e-6
+    op = _flat_op(freq_coarse=2, freq_fine=0)
+    assert abs(sp.op_fixed_hz(op) - 100.0) < 1e-6
+    op = _flat_op(freq_coarse=3, freq_fine=99)
+    assert abs(sp.op_fixed_hz(op) - 10.0 ** 3.99) < 1e-3
+
+
+def test_op_detune_cents_formula() -> None:
+    assert sp.op_detune_cents(_flat_op(detune=7)) == 0.0
+    assert sp.op_detune_cents(_flat_op(detune=0)) == -7.0
+    assert sp.op_detune_cents(_flat_op(detune=14)) == 7.0
+
+
+def test_fixed_freq_converts_with_real_hz() -> None:
+    # #48: fixed-frequency operators used to be skipped outright (v1); now
+    # they convert with a real Hz value and detune_cents forced to 0 (no
+    # ratio-mode detune formula applies to a fixed-frequency operator).
+    voice = sp.DX7Voice(ops=[_flat_op(osc_mode=1, freq_coarse=1, freq_fine=0)] + [_flat_op() for _ in range(5)],
                          algorithm=0, feedback_level=0, name="FIXEDTEST",
                          osc_key_sync=0, transpose=24)
     warnings: list = []
     out = sp.convert_voice(0, voice, warnings)
-    assert out is None
-    assert any("fixed-frequency" in w for w in warnings)
+    assert out is not None
+    fixed_op = out.ops[5]  # bus-order j=0 (OP6) -> engine index 5-0=5
+    assert fixed_op.fixed_freq is True
+    assert abs(fixed_op.fixed_hz - 10.0) < 1e-6
+    assert fixed_op.detune_cents == 0.0
+    assert not any("fixed-frequency" in w for w in warnings)
+
+
+def test_key_level_and_rate_scaling_pass_through() -> None:
+    op = _flat_op()
+    op.break_point = 39
+    op.scale_left_depth = 50
+    op.scale_right_depth = 60
+    op.scale_left_curve = 1
+    op.scale_right_curve = 2
+    op.rate_scale = 5
+    voice = sp.DX7Voice(ops=[op] + [_flat_op() for _ in range(5)],
+                         algorithm=0, feedback_level=0, name="SCALETEST",
+                         osc_key_sync=0, transpose=24)
+    warnings: list = []
+    out = sp.convert_voice(0, voice, warnings)
+    assert out is not None
+    scaled_op = out.ops[5]
+    assert scaled_op.scale_breakpoint == 39
+    assert scaled_op.scale_left_depth == 50
+    assert scaled_op.scale_right_depth == 60
+    assert scaled_op.scale_left_curve == 1
+    assert scaled_op.scale_right_curve == 2
+    assert scaled_op.rate_scaling == 5
 
 
 def test_carrier_l4_forced_to_zero() -> None:
@@ -356,7 +405,10 @@ def main() -> None:
     run("algorithm decode: algorithm 32 all-carriers", test_algorithm_32_all_carriers)
     run("algorithm decode: algorithms 4/6 interleaved fallback", test_algorithm_4_and_6_interleaved)
     run("coarse/fine ratio formula", test_coarse_ratio)
-    run("fixed-frequency mode skips the patch", test_fixed_freq_skips_patch)
+    run("op_fixed_hz() formula", test_op_fixed_hz_formula)
+    run("op_detune_cents() formula", test_op_detune_cents_formula)
+    run("fixed-frequency mode converts with real Hz", test_fixed_freq_converts_with_real_hz)
+    run("key level/rate scaling pass through", test_key_level_and_rate_scaling_pass_through)
     run("carrier L4 forced to 0 for voice-lifetime correctness", test_carrier_l4_forced_to_zero)
     run("feedback_level=0 disables feedback exactly", test_feedback_level_zero_disables_feedback)
     run("multi-carrier level scaled down by carrier count", test_multi_carrier_level_scaled_down)

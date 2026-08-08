@@ -70,6 +70,7 @@ static void midi_voice_on(VoiceParamBlock &shadow, int v, uint8_t note, uint8_t 
     vp.amplitude = (int16_t)(velocity * 258);  // 0..127 -> ~0..32766, "velocity as plain amplitude" (#44)
     vp.pan = channel_pan[channel];
     vp.patch = channel_patch[channel];
+    vp.note = note;  // #48: key level/rate scaling need the raw note, not just phase_inc
     vp.trigger++;
     vp.gate = true;
 
