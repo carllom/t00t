@@ -363,12 +363,22 @@ static bool run_eg_shape_check() {
 
     // Step in FM_BLOCK-sized increments (same granularity the device
     // uses), recording each operator's gain at a handful of checkpoints.
-    // Checkpoints were 5/100/800ms until #59: real DX7 rates (ported from
-    // Dexed, replacing #45's ~20x-too-slow-at-R99 exponential guess) settle
-    // FM_TEST_PATCH's envelopes into their stage-3 sustain within ~200ms,
-    // not ~800ms+ -- host-probed directly (op4/op5 both flat, unchanging,
-    // well before 200ms) before picking these -- so 1ms/200ms is what
-    // "near attack peak" / "settled" now actually mean.
+    // Checkpoints were 1ms/200ms from #59 until the rate-conversion fix
+    // below: `env_dx.h`'s `dx7_qrate_to_octaves_per_sec_q8()` was missing a
+    // `>> LG_N` (LG_N=6, Dexed's own real per-render-call block size,
+    // Source/msfa/synth.h) when converting Dexed's real `inc_` -- a Q24
+    // octaves-per-*64-sample-Dexed-block* delta -- into an octaves-per-
+    // *second* rate, so every stage of every envelope ran a real 64x too
+    // fast (confirmed by building Dexed's actual env.cc/exp2.cc standalone
+    // and A/B-rendering a real ROM1A patch against it -- a decay this
+    // engine finished in ~600ms was, in real Dexed, still clearly sounding
+    // past 2000ms). Host-probed directly against the *fixed* rate table:
+    // FM_TEST_PATCH's slowest-attack operator (op3, R1=90) is still
+    // *exactly* zero at 16ms and first nonzero at 17ms, and every operator
+    // has fully settled into its stage-3 sustain (bit-for-bit unchanging
+    // block to block) by 800ms -- so 25ms/1000ms (comfortable margin either
+    // side) is what "near attack peak" / "settled" now actually mean, not
+    // 1ms/200ms.
     uint32_t done = 0;
     auto step_to = [&](uint32_t target_sample, int32_t out_gain[FM_NUM_OPS]) {
         while (done < target_sample) {
@@ -379,41 +389,43 @@ static bool run_eg_shape_check() {
         for (uint8_t i = 0; i < FM_NUM_OPS; i++) out_gain[i] = ops[i].gain;
     };
 
-    int32_t g_1ms[FM_NUM_OPS], g_200ms[FM_NUM_OPS];
-    step_to((uint32_t)(0.001f * SAMPLE_RATE), g_1ms);
-    step_to((uint32_t)(0.200f * SAMPLE_RATE), g_200ms);
+    int32_t g_25ms[FM_NUM_OPS], g_1000ms[FM_NUM_OPS];
+    step_to((uint32_t)(0.025f * SAMPLE_RATE), g_25ms);
+    step_to((uint32_t)(1.000f * SAMPLE_RATE), g_1000ms);
 
     // (1) Attack: every operator should have risen to a real, nonzero
-    // level within 1ms (all six have R1=90-99; real DX7 R1=99 is near-
-    // instantaneous, ~0.02ms for a full sweep -- see env_dx.h's rate curve).
+    // level within 25ms (all six have R1=90-99; real DX7 R1=99 is
+    // near-instantaneous, ~6.6ms for a full 16-octave sweep -- see
+    // env_dx.h's rate curve -- but R1=90's slower stage-1 needs the extra
+    // margin, see the checkpoint comment above).
     bool attack_ok = true;
-    for (uint8_t i = 0; i < FM_NUM_OPS; i++) attack_ok = attack_ok && (g_1ms[i] != 0);
+    for (uint8_t i = 0; i < FM_NUM_OPS; i++) attack_ok = attack_ok && (g_25ms[i] != 0);
 
     // (2) Independence: op4 (the modulator, EG_LEVEL {99,20,15,0}) decays
-    // to a much smaller fraction of its own 1ms level than op5 (the
+    // to a much smaller fraction of its own 25ms level than op5 (the
     // carrier, {99,70,60,0}) does of its own -- the whole point of the EP
     // patch (fm.md P2 gate). Compared as fractions, not raw gain, since
     // op4 and op5 have very different reference `level` magnitudes
     // (patch.h's #44 modulator-vs-carrier scale, unrelated to the EG).
-    float op4_frac = std::fabs((float)g_200ms[4] / (float)g_1ms[4]);
-    float op5_frac = std::fabs((float)g_200ms[5] / (float)g_1ms[5]);
+    float op4_frac = std::fabs((float)g_1000ms[4] / (float)g_25ms[4]);
+    float op5_frac = std::fabs((float)g_1000ms[5] / (float)g_25ms[5]);
     bool independence_ok = op4_frac < op5_frac * 0.6f;
 
-    // (3) All six operators land at genuinely different gains at 200ms --
+    // (3) All six operators land at genuinely different gains at 1000ms --
     // six independent EGs, not six copies of one shape (guards against a
     // copy-paste patch or a step function that ignores per-op rate/level
     // data entirely).
     int32_t distinct = 0;
     for (uint8_t i = 0; i < FM_NUM_OPS; i++) {
         bool unique = true;
-        for (uint8_t j = 0; j < i; j++) if (g_200ms[i] == g_200ms[j]) unique = false;
+        for (uint8_t j = 0; j < i; j++) if (g_1000ms[i] == g_1000ms[j]) unique = false;
         if (unique) distinct++;
     }
     bool distinct_ok = distinct == FM_NUM_OPS;
 
     bool pass = attack_ok && independence_ok && distinct_ok;
-    printf("%s: EG shape -- attack(1ms) nonzero=%d, op4/op5 200ms-decay-fraction=%.4f/%.4f "
-           "(independence=%d), %d/%d operators land at distinct 200ms gains\n",
+    printf("%s: EG shape -- attack(25ms) nonzero=%d, op4/op5 1000ms-decay-fraction=%.4f/%.4f "
+           "(independence=%d), %d/%d operators land at distinct 1000ms gains\n",
            pass ? "PASS" : "FAIL", attack_ok, op4_frac, op5_frac, independence_ok,
            (int)distinct, (int)FM_NUM_OPS);
     if (!attack_ok) printf("  FAIL: at least one operator never rose off silence\n");
@@ -732,11 +744,12 @@ static bool run_lfo_check() {
     fm_voice_note_on(ops_b, patch, inc, 32767, 57);
     // Run both to a real, settled nonzero gain first (rate-99's attack is
     // fast but not literally one FM_BLOCK=16-sample/0.36ms step, per
-    // run_eg_shape_check()'s own 1ms checkpoint) before comparing --
+    // run_eg_shape_check()'s own 25ms checkpoint -- env_dx.h's rate-
+    // conversion fix, see that function's comment) before comparing --
     // otherwise both would still read exactly 0 and "b < a" would trivially
     // fail without AM being the reason.
     uint32_t settle = 0;
-    while (settle < (uint32_t)(0.005f * SAMPLE_RATE)) {
+    while (settle < (uint32_t)(0.05f * SAMPLE_RATE)) {
         fm_voice_step_envelopes(ops_a, patch, FM_BLOCK, 0.0f);
         fm_voice_step_envelopes(ops_b, patch, FM_BLOCK, 0.0f);
         settle += FM_BLOCK;

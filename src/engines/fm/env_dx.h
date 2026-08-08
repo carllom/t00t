@@ -165,13 +165,48 @@ inline void env_dx_init_level_table() {
 // rate scaling can add a qrate delta between them (real DX7 hardware adds
 // keyboard rate scaling directly to qrate, once per stage transition, not
 // as a separate offset applied after the octaves/second conversion --
-// `Env::advance()`'s own `qrate += rate_scaling_`). `inc_` comes out in Q24
-// octaves/sample at a 44100 Hz reference (Dexed's own `sr_multiplier` just
-// re-normalizes for other playback rates, moot here since this engine's
-// SAMPLE_RATE is 44100 too) -- converted to this file's Q iiii.8 octaves/
-// second convention by `* SAMPLE_RATE >> 16` (the >>16 covers 2^24 octave
-// units becoming 2^8 EG_LOG2_ONE units, folded into one shift with the
-// *SAMPLE_RATE multiply).
+// `Env::advance()`'s own `qrate += rate_scaling_`).
+//
+// A second real bug, found by building Dexed's actual env.cc/exp2.cc/
+// fm_op_kernel.cc standalone (not re-derived) and A/B-rendering a real
+// ROM1A patch (E.PIANO 1) against this engine: `inc_` is NOT a Q24
+// octaves/SAMPLE delta, despite what this comment used to say -- it's a Q24
+// octaves-per-*Dexed-render-call* delta, and one Dexed render call
+// (`Dx7Note::compute()`, via `FmCore::render()`) always advances exactly
+// `N = 1 << LG_N = 64` samples (synth.h). `Env::getsample()` -- the only
+// thing that ever applies `inc_` to `level_` -- is called exactly once per
+// that 64-sample call, not once per sample (confirmed by reading
+// `Dx7Note::compute()`'s op loop: one `env_[op].getsample()` per call, and
+// each call is handed a fixed N=64-sample output buffer to fill). The old
+// conversion (`* SAMPLE_RATE >> 16`) implicitly assumed a per-sample delta
+// (block size 1), so it came out exactly `N` = 64x too fast: every stage of
+// every envelope -- attacks, decays, releases -- ran two orders of
+// magnitude quicker than real DX7 hardware. Measured effect, not
+// theoretical: the buggy formula puts a real rate-25 stage (E.PIANO 1's own
+// carrier decay, ROM1A) at a 372ms full-floor sweep; the standalone Dexed
+// build of the *same patch* is still clearly sounding, mid-decay, past
+// 2000ms held. A rate-99 attack goes from an implausible ~0.1ms (under 5
+// samples -- not even one control block) to ~6.6ms, which matches commonly
+// cited real DX7 "instant attack" timing. This is almost certainly why
+// patches kept sounding "thin and dull" after #57/#58/#59's other fixes:
+// with every envelope stage compressed 64x, a patch's bright attack
+// transient collapses into a fraction of a control block (often literally
+// unresolvable at BLOCK=16) and whatever should have been a multi-second
+// natural decay/evolution (this E.PIANO's own long, mellowing decay being
+// the textbook case) instead reaches near-silence almost immediately --
+// modulation depth and level curve were never the problem for those
+// patches, timing was.
+//
+// Fixed by adding the missing `>> LG_N` (LG_N=6, Dexed's own per-block
+// exponent, already baked into `inc`'s own shift above and named
+// explicitly here so the two `6`s are visibly the same constant): converts
+// "Q24 octaves per Dexed-internal 64-sample block" into "Q24 octaves per
+// second" by dividing by that block's real-time duration
+// (SAMPLE_RATE/N seconds⁻¹), before the existing Q24->Q iiii.8
+// (EG_LOG2_ONE) rescale. t00t's own BLOCK (FM_BLOCK/T00T_FM_BLOCK, op.h) is
+// a separate, independent choice (16, not 64) for *this* engine's own
+// control-rate stepping granularity -- LG_N here is Dexed's internal
+// constant being ported, not a reference to that.
 inline int dx7_rate_to_qrate(int rate) {
     int qrate = (rate * 41) >> 6;
     return qrate > 63 ? 63 : qrate;
@@ -180,8 +215,9 @@ inline int dx7_rate_to_qrate(int rate) {
 inline int32_t dx7_qrate_to_octaves_per_sec_q8(int qrate) {
     if (qrate < 0) qrate = 0;
     if (qrate > 63) qrate = 63;
-    int64_t inc = (int64_t)(4 + (qrate & 3)) << (2 + 6 + (qrate >> 2));  // 6 = Dexed's own per-block LG_N
-    return (int32_t)((inc * (int64_t)SAMPLE_RATE) >> 16);
+    constexpr int32_t DEXED_LG_N = 6;  // Dexed's own per-block sample count, 1<<6 = 64 (synth.h's LG_N)
+    int64_t inc = (int64_t)(4 + (qrate & 3)) << (2 + DEXED_LG_N + (qrate >> 2));
+    return (int32_t)((inc * (int64_t)SAMPLE_RATE) >> (16 + DEXED_LG_N));
 }
 
 inline int32_t dx7_rate_to_octaves_per_sec_q8(int rate) {
