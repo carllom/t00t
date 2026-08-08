@@ -234,7 +234,23 @@ def test_feedback_level_zero_disables_feedback() -> None:
     out = sp.convert_voice(0, voice, warnings)
     assert out is not None
     # bus-order op0 (OP6) is algorithm 1's primary feedback op -> engine index 5.
-    assert out.ops[5].feedback is False
+    assert out.ops[5].feedback_level == 0
+
+
+def test_feedback_level_nonzero_passes_through() -> None:
+    # The real 0-7 depth must survive convert_voice() unchanged (not
+    # collapsed to a bool) -- op.h's op_render_fb relies on the exact value
+    # to reproduce DX7's real per-level feedback depth range.
+    ops = [_flat_op() for _ in range(6)]
+    voice = sp.DX7Voice(ops=ops, algorithm=0, feedback_level=5, name="FEEDBACK5",
+                         **_VOICE_LFO_PEG_DEFAULTS, osc_key_sync=0, transpose=24)
+    warnings: list = []
+    out = sp.convert_voice(0, voice, warnings)
+    assert out is not None
+    assert out.ops[5].feedback_level == 5
+    # Every non-feedback-capable operator stays at 0 regardless of the
+    # voice's feedback_level -- only the algorithm's primary op carries it.
+    assert all(out.ops[i].feedback_level == 0 for i in range(5))
 
 
 def test_multi_carrier_level_scaled_down() -> None:
@@ -472,6 +488,7 @@ def main() -> None:
     run("LFO/pitch EG pass through", test_lfo_and_pitch_eg_pass_through)
     run("carrier L4 forced to 0 for voice-lifetime correctness", test_carrier_l4_forced_to_zero)
     run("feedback_level=0 disables feedback exactly", test_feedback_level_zero_disables_feedback)
+    run("feedback_level nonzero passes through exactly", test_feedback_level_nonzero_passes_through)
     run("multi-carrier level scaled down by carrier count", test_multi_carrier_level_scaled_down)
     run("multi-modulator level scaled down by fan-in count", test_multi_modulator_level_scaled_down)
     run("unpack_voice: bit-packing round-trip", test_unpack_voice_roundtrip)
