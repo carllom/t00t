@@ -23,9 +23,16 @@
 #include "wav_writer.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
+#include <string>
+#include <sys/stat.h>
 #include <vector>
+
+#ifdef T00T_FM_HAS_PATCHES
+#include "../../src/engines/fm/patches.h"
+#endif
 
 static constexpr float    TEST_TONE_HZ = 440.0f;
 static constexpr uint32_t NATIVE_BUFFER = 256;  // matches the device's default SAMPLES_PER_BUFFER
@@ -191,18 +198,18 @@ static FmPatch flat_eg_patch() {
     return p;
 }
 
-// Renders one second of `patch` at `note_hz` through the exact device code
-// path (fm_voice_note_on/fm_voice_update_pitch/fm_render_voice, op.h),
-// mono-summed for spectral analysis. Never releases (no fm_voice_note_off
-// call) -- callers that need release behaviour use render_patch_release()
-// below instead.
+// Renders `total` samples of `patch` at `note_hz` (default: one second)
+// through the exact device code path (fm_voice_note_on/
+// fm_voice_update_pitch/fm_render_voice, op.h), mono-summed for spectral
+// analysis. Never releases (no fm_voice_note_off call) -- callers that need
+// release behaviour use render_patch_release() below instead.
 static void render_patch_note(const FmPatch &patch, float note_hz, const FmRouting &routing,
-                               FmVoiceBuses &bus, std::vector<float> &mono, int32_t &peak) {
+                               FmVoiceBuses &bus, std::vector<float> &mono, int32_t &peak,
+                               uint32_t total = SAMPLE_RATE) {
     FmOp ops[FM_NUM_OPS];
     uint32_t inc = fm_phase_inc(note_hz);
     fm_voice_note_on(ops, patch, inc, /*amplitude=*/32767);
 
-    const uint32_t total = SAMPLE_RATE;  // 1 second
     std::vector<int32_t> dl(total, 0), dr(total, 0);
     uint32_t done = 0;
     while (done < total) {
@@ -273,13 +280,21 @@ static bool run_patch_spectrum_check() {
     // Skip each note's onset transient (routing/bus history settling).
     size_t start = SAMPLE_RATE / 4, n = SAMPLE_RATE / 2;
 
-    // (1) harmonic content: 2nd harmonic must clear the noise floor (the
-    // un-driven 5th harmonic bin) by a real margin, and the higher/mostly-
-    // silent harmonics must NOT (otherwise the "signal" is just broadband
-    // noise, not the specific sideband structure 1:1 FM predicts).
+    // (1) harmonic content: 2nd harmonic must clear the noise floor by a
+    // real margin, and a genuinely off-grid probe must NOT (otherwise the
+    // "signal" is just broadband noise, not the specific sideband structure
+    // FM predicts). The floor probe used to sit at NOTE_LOW*4.5 -- safely
+    // off-grid back when op0's real modulation depth was negligible (pre-
+    // #57's ceiling fix), because the audible spectrum was then dominated
+    // by NOTE_LOW's own 220 Hz-multiple grid. #57 raised real depth enough
+    // that op0's ratio (0.5, two hops upstream of the carrier through op2/
+    // op4) now visibly pulls the *true* fundamental down to NOTE_LOW*0.5 --
+    // host-verified (#57): every multiple of 110 Hz carries real energy,
+    // and 990 Hz (NOTE_LOW*4.5) is exactly the 9th one, not noise at all.
+    // NOTE_LOW*4.3 (946 Hz) isn't a multiple of either grid -- verified ~0.01.
     float h1 = goertzel_mag(low, start, n, NOTE_LOW * 1, (float)SAMPLE_RATE);
     float h2 = goertzel_mag(low, start, n, NOTE_LOW * 2, (float)SAMPLE_RATE);
-    float floor_mag = goertzel_mag(low, start, n, NOTE_LOW * 4.5f, (float)SAMPLE_RATE);  // between harmonics -- true noise floor
+    float floor_mag = goertzel_mag(low, start, n, NOTE_LOW * 4.3f, (float)SAMPLE_RATE);
     bool harmonics_ok = h1 > 100.0f && h2 > floor_mag * 5.0f;
 
     // (2) ratio tracking: the strongest nearby peak in each render should
@@ -328,8 +343,13 @@ static bool run_eg_shape_check() {
     fm_voice_note_on(ops, FM_TEST_PATCH, inc, /*amplitude=*/32767);
 
     // Step in FM_BLOCK-sized increments (same granularity the device
-    // uses) up to ~800 ms, recording each operator's gain at a handful of
-    // checkpoints.
+    // uses), recording each operator's gain at a handful of checkpoints.
+    // Checkpoints were 5/100/800ms until #59: real DX7 rates (ported from
+    // Dexed, replacing #45's ~20x-too-slow-at-R99 exponential guess) settle
+    // FM_TEST_PATCH's envelopes into their stage-3 sustain within ~200ms,
+    // not ~800ms+ -- host-probed directly (op4/op5 both flat, unchanging,
+    // well before 200ms) before picking these -- so 1ms/200ms is what
+    // "near attack peak" / "settled" now actually mean.
     uint32_t done = 0;
     auto step_to = [&](uint32_t target_sample, int32_t out_gain[FM_NUM_OPS]) {
         while (done < target_sample) {
@@ -340,42 +360,41 @@ static bool run_eg_shape_check() {
         for (uint8_t i = 0; i < FM_NUM_OPS; i++) out_gain[i] = ops[i].gain;
     };
 
-    int32_t g_5ms[FM_NUM_OPS], g_100ms[FM_NUM_OPS], g_800ms[FM_NUM_OPS];
-    step_to((uint32_t)(0.005f * SAMPLE_RATE), g_5ms);
-    step_to((uint32_t)(0.100f * SAMPLE_RATE), g_100ms);
-    step_to((uint32_t)(0.800f * SAMPLE_RATE), g_800ms);
+    int32_t g_1ms[FM_NUM_OPS], g_200ms[FM_NUM_OPS];
+    step_to((uint32_t)(0.001f * SAMPLE_RATE), g_1ms);
+    step_to((uint32_t)(0.200f * SAMPLE_RATE), g_200ms);
 
     // (1) Attack: every operator should have risen to a real, nonzero
-    // level within 5ms (all six have R1=90-99, sweeping from silence to
-    // near-peak in well under that -- see env_dx.h's rate curve).
+    // level within 1ms (all six have R1=90-99; real DX7 R1=99 is near-
+    // instantaneous, ~0.02ms for a full sweep -- see env_dx.h's rate curve).
     bool attack_ok = true;
-    for (uint8_t i = 0; i < FM_NUM_OPS; i++) attack_ok = attack_ok && (g_5ms[i] != 0);
+    for (uint8_t i = 0; i < FM_NUM_OPS; i++) attack_ok = attack_ok && (g_1ms[i] != 0);
 
     // (2) Independence: op4 (the modulator, EG_LEVEL {99,20,15,0}) decays
-    // to a much smaller fraction of its own 5ms level than op5 (the
+    // to a much smaller fraction of its own 1ms level than op5 (the
     // carrier, {99,70,60,0}) does of its own -- the whole point of the EP
     // patch (fm.md P2 gate). Compared as fractions, not raw gain, since
     // op4 and op5 have very different reference `level` magnitudes
     // (patch.h's #44 modulator-vs-carrier scale, unrelated to the EG).
-    float op4_frac = std::fabs((float)g_800ms[4] / (float)g_5ms[4]);
-    float op5_frac = std::fabs((float)g_800ms[5] / (float)g_5ms[5]);
+    float op4_frac = std::fabs((float)g_200ms[4] / (float)g_1ms[4]);
+    float op5_frac = std::fabs((float)g_200ms[5] / (float)g_1ms[5]);
     bool independence_ok = op4_frac < op5_frac * 0.6f;
 
-    // (3) All six operators land at genuinely different gains at 800ms --
+    // (3) All six operators land at genuinely different gains at 200ms --
     // six independent EGs, not six copies of one shape (guards against a
     // copy-paste patch or a step function that ignores per-op rate/level
     // data entirely).
     int32_t distinct = 0;
     for (uint8_t i = 0; i < FM_NUM_OPS; i++) {
         bool unique = true;
-        for (uint8_t j = 0; j < i; j++) if (g_800ms[i] == g_800ms[j]) unique = false;
+        for (uint8_t j = 0; j < i; j++) if (g_200ms[i] == g_200ms[j]) unique = false;
         if (unique) distinct++;
     }
     bool distinct_ok = distinct == FM_NUM_OPS;
 
     bool pass = attack_ok && independence_ok && distinct_ok;
-    printf("%s: EG shape -- attack(5ms) nonzero=%d, op4/op5 800ms-decay-fraction=%.4f/%.4f "
-           "(independence=%d), %d/%d operators land at distinct 800ms gains\n",
+    printf("%s: EG shape -- attack(1ms) nonzero=%d, op4/op5 200ms-decay-fraction=%.4f/%.4f "
+           "(independence=%d), %d/%d operators land at distinct 200ms gains\n",
            pass ? "PASS" : "FAIL", attack_ok, op4_frac, op5_frac, independence_ok,
            (int)distinct, (int)FM_NUM_OPS);
     if (!attack_ok) printf("  FAIL: at least one operator never rose off silence\n");
@@ -449,6 +468,105 @@ static bool run_release_check() {
     return pass;
 }
 
+#ifdef T00T_FM_HAS_PATCHES
+// #47's acceptance criterion: "render_fm renders a fixed set of notes per
+// patch to WAV on the host, so #53 has something to diff against Dexed."
+// One held note (A3, matching NOTE_LOW's convention above), 3 seconds --
+// longer than render_patch_note()'s 1s default, since real DX7 patches
+// include deliberately slow-swelling sound effects (ROM1A's "TAKE OFF",
+// R1=9, is inaudible inside 1s but real inside 3s) -- per patch in the
+// generated bank. #53's own job is the actual Dexed diff and any
+// multi-note/velocity-layer coverage that needs; this just has to produce
+// real, bounded, non-silent audio for every patch that made it through
+// syx2patch.py, through the exact same fm_resolve_routing()/
+// fm_voice_note_on()/fm_render_voice() path everything else in this file
+// uses. Conditionally compiled -- patches.h is generated locally and
+// gitignored (see CMakeLists.txt), so this function (and its #include
+// above) only exist once someone has run tools/syx2patch.py.
+static bool run_patch_bank_render() {
+    fm_init_sine_tab();
+    osc_init_sine();
+    env_dx_init_tables();
+
+    mkdir("fm_patches", 0755);  // ignore EEXIST -- fine if it's already there
+
+    constexpr float NOTE_HZ = 220.0f;
+    constexpr uint32_t DURATION = SAMPLE_RATE * 3;
+    int32_t bus0[FM_BLOCK], bus1[FM_BLOCK], bus2[FM_BLOCK];
+    int32_t bus3[FM_BLOCK], bus4[FM_BLOCK], bus5[FM_BLOCK], bus_out[FM_BLOCK];
+    FmVoiceBuses bus{ { bus0, bus1, bus2, bus3, bus4, bus5 }, bus_out };
+
+    uint32_t rendered = 0, bounded_ok = 0;
+    for (uint32_t p = 0; p < FM_PATCH_COUNT; p++) {
+        const FmPatch &patch = FM_PATCHES[p];
+        FmRouting routing;
+        if (!fm_resolve_routing(patch, routing)) {
+            printf("FAIL: patch %u (\"%s\") failed DAG validation -- syx2patch.py should "
+                   "never emit an unresolvable patch\n", p, patch.name);
+            continue;
+        }
+
+        std::vector<float> mono;
+        int32_t peak;
+        render_patch_note(patch, NOTE_HZ, routing, bus, mono, peak, DURATION);
+        rendered++;
+
+        std::string fname = "fm_patches/";
+        for (const char *c = patch.name; *c; c++) {
+            fname += (isalnum((unsigned char)*c)) ? *c : '_';
+        }
+        fname += ".wav";
+
+        std::vector<int16_t> wav(mono.size() * 2);
+        for (size_t i = 0; i < mono.size(); i++) {
+            int16_t s = (int16_t)std::clamp(mono[i], -32768.0f, 32767.0f);
+            wav[i * 2 + 0] = s;
+            wav[i * 2 + 1] = s;
+        }
+        bool wrote = write_wav_pcm16(fname.c_str(), wav, SAMPLE_RATE, 2);
+        bool bounded = wrote && peak > 0 && peak < 32768;
+        if (bounded) bounded_ok++;
+
+        // #57 regression guard: real sideband energy relative to the
+        // patch's own fundamental, not just "bounded and non-silent"
+        // (which #47 alone already checked, and which a near-pure sine
+        // satisfies just as well as a rich FM tone -- exactly the bug #57
+        // fixed). The fundamental is the *lowest-ratio carrier's* own
+        // frequency, not necessarily note_hz -- carriers can run at
+        // fractional ratios (BRASS 1's op0 is 0.5x), so assuming note_hz
+        // would silently probe the wrong bin for those patches.
+        float fundamental_ratio = -1.0f;
+        for (uint8_t i = 0; i < FM_NUM_OPS; i++) {
+            if (patch.op[i].mod_target == FM_TARGET_OUT) {
+                if (fundamental_ratio < 0.0f || patch.op[i].ratio < fundamental_ratio) {
+                    fundamental_ratio = patch.op[i].ratio;
+                }
+            }
+        }
+        float thd_ratio = 0.0f;
+        if (fundamental_ratio > 0.0f) {
+            float fundamental_hz = NOTE_HZ * fundamental_ratio;
+            size_t start = SAMPLE_RATE / 4, n = SAMPLE_RATE / 2;
+            float f1 = goertzel_mag(mono, start, n, fundamental_hz, (float)SAMPLE_RATE);
+            float f2 = goertzel_mag(mono, start, n, fundamental_hz * 2.0f, (float)SAMPLE_RATE);
+            if (f1 > 1.0f) thd_ratio = f2 / f1;
+        }
+
+        printf("  %s: %s -- peak=%d, 2nd-harmonic/fundamental=%.3f\n",
+               bounded ? "ok" : "FAIL", fname.c_str(), peak, thd_ratio);
+    }
+
+    bool pass = rendered == FM_PATCH_COUNT && bounded_ok == FM_PATCH_COUNT;
+    printf("%s: patch bank render -- %u/%u patches rendered, %u/%u bounded+non-silent, "
+           "wrote fm_patches/*.wav (2nd-harmonic/fundamental ratio printed per patch -- "
+           "#57 regression guard, not an automatic per-patch gate: a patch with no real "
+           "modulation, e.g. an all-carrier algorithm at feedback_level=0, legitimately "
+           "has close to zero)\n", pass ? "PASS" : "FAIL", rendered, (uint32_t)FM_PATCH_COUNT,
+           bounded_ok, (uint32_t)FM_PATCH_COUNT);
+    return pass;
+}
+#endif
+
 int main() {
     bool ok1 = run_test_tone_check();
     bool ok2 = run_routing_checks();
@@ -457,6 +575,10 @@ int main() {
     bool ok5 = run_eg_shape_check();
     bool ok6 = run_release_check();
     bool ok = ok1 && ok2 && ok3 && ok4 && ok5 && ok6;
+#ifdef T00T_FM_HAS_PATCHES
+    bool ok7 = run_patch_bank_render();
+    ok = ok && ok7;
+#endif
     printf("%s\n", ok ? "ALL PASS" : "SOME FAILED");
     return ok ? 0 : 1;
 }

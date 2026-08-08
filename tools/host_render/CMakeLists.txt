@@ -69,6 +69,13 @@ target_include_directories(render_fm PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}/../../src
 )
 
+# #47 P3 patch bank: patches.h is generated locally by tools/syx2patch.py
+# and gitignored (see the top-level CMakeLists.txt's matching gate) --
+# render_fm.cpp's patch-bank render only compiles in when it's present.
+if(EXISTS ${CMAKE_CURRENT_LIST_DIR}/../../src/engines/fm/patches.h)
+    target_compile_definitions(render_fm PRIVATE T00T_FM_HAS_PATCHES=1)
+endif()
+
 # Host build of src/engines/fm/rig.h (#42): the P0 measurement rig's
 # stripped 6-operator x N-voice mixer, checked here for correctness (real,
 # finite, non-clipping audio through all three kernel variants) before the

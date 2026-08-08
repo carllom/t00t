@@ -454,6 +454,18 @@ def convert_voice(idx: int, voice: DX7Voice, warnings: List[str]) -> Optional[Fm
     # carrier gets 1/carrier_count of the reference so N summed carriers at
     # output_level=99 land back at the same envelope one carrier alone would.
     carrier_count = sum(1 for r in decode.routing if r.target == "OUT")
+    # #57 raised the modulator headroom ceiling ~64x (FM_OUT_SHIFT_MODULATOR),
+    # which makes the same overflow risk real on the *modulator* side too:
+    # several real algorithms (7, 8, 10, 12, 13 -- all present in ROM1A/B)
+    # sum 2-3 modulators into one shared bus. Each gets 1/fan_in of the
+    # reference, same reasoning as carrier_count above -- N summed
+    # modulators at output_level=99 land back at one modulator's intended
+    # ceiling, not N times it (risking int32 wraparound on the shared bus).
+    fan_in: Dict[object, int] = {}
+    for r in decode.routing:
+        if r.target != "OUT":
+            fan_in[r.target] = fan_in.get(r.target, 0) + 1
+
     ops_out: List[Optional[FmOpOut]] = [None] * FM_NUM_OPS
     for j in range(6):
         r = decode.routing[j]
@@ -461,7 +473,10 @@ def convert_voice(idx: int, voice: DX7Voice, warnings: List[str]) -> Optional[Fm
         engine_idx = 5 - j  # bus order (OP6..OP1) -> this engine's op index
 
         is_carrier = (r.target == "OUT")
-        level = (FM_CARRIER_LEVEL_REF // carrier_count) if is_carrier else FM_MODULATOR_LEVEL_REF
+        if is_carrier:
+            level = FM_CARRIER_LEVEL_REF // carrier_count
+        else:
+            level = FM_MODULATOR_LEVEL_REF // fan_in[r.target]
         # Feedback level 0 means real, exact silence on real hardware too --
         # not an approximation, so no warning needed for this branch.
         feedback = r.feedback_capable and voice.feedback_level > 0

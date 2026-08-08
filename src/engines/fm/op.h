@@ -16,8 +16,15 @@
 // FmRouting (patch.h) into real audio. Per-sample bodies are the exact
 // #42/#43-measured kernels (rig.h's op_render/op_render_first/op_render_fb)
 // -- same table (sine_tab.h's real, hardware-verified 4096-entry table, not
-// rig.h's standalone bench copy), same fm_mul_gain/FM_OUT_SHIFT convention,
-// same phase-wrap-is-free indexing. fm.md §3.6's decisions are already
+// rig.h's standalone bench copy), same fm_mul_gain convention, same
+// phase-wrap-is-free indexing. The output shift is now a per-call parameter
+// rather than a single compile-time FM_OUT_SHIFT constant (#57: carriers
+// and modulators need very different headroom, see FM_OUT_SHIFT_CARRIER/
+// FM_OUT_SHIFT_MODULATOR below) -- same instruction shape either way
+// (disassembly-verified, #57: still 48 `smlawb` instances in the device
+// build, same as #44/#45; the shift becomes a register operand instead of
+// an immediate, resolved once per fm_voice_render_block() call, never
+// inside the per-sample loop). fm.md §3.6's decisions are otherwise still
 // baked in: SMULWB adopted (lever 4, "adopted where convenient"), plain
 // `inline` in flash, not not_in_flash_func (lever 2, SRAM measured worse),
 // no op-pair interleaving (lever 1, not adopted). No pico-sdk dependency
@@ -71,11 +78,64 @@ inline int32_t fm_mul_gain(int32_t sample, int32_t gain) {
     return (int32_t)(((int64_t)gain * (int16_t)sample) >> 16);
 #endif
 }
-static constexpr int32_t FM_OUT_SHIFT = 6;
+
+// #57: two roles, two shifts, on top of `fm_mul_gain`'s own implicit >>16.
+// A carrier's `out[]` becomes final int16-range audio (mixed with other
+// voices, needs headroom for that sum) -- FM_OUT_SHIFT_CARRIER=6 is
+// unchanged from #44/#45's already-hardware-verified value, so carrier
+// loudness/headroom doesn't move at all. A modulator's `out[]` instead
+// becomes the *next* operator's raw phase-modulation input, added directly
+// into a full-circle (2^32 = 2*pi) uint32_t phase accumulator -- the same
+// >>6 there capped deviation at ~0.03-0.05 rad even at gain=INT32_MAX (see
+// patch.h's FM_TEST_PATCH comment, and #57's own writeup), nowhere near
+// enough for real FM character. FM_OUT_SHIFT_MODULATOR=0 (i.e. only
+// `fm_mul_gain`'s built-in >>16 applies) raises that ceiling to ~1.57 rad
+// at gain=INT32_MAX -- 64x more headroom, comfortably inside the range
+// expressive DX7-style patches actually use. Passed as a parameter (not a
+// second constant baked into a duplicated function body) so the per-sample
+// loop shape -- and #43's measured instruction count -- stays identical;
+// only the shift's operand value differs per call, chosen once by
+// fm_voice_render_block() from the routing, never inside the hot loop.
+static constexpr int32_t FM_OUT_SHIFT_CARRIER = 6;
+static constexpr int32_t FM_OUT_SHIFT_MODULATOR = 0;
+
+// #57 part 2: FM_OUT_SHIFT_MODULATOR=0 already extracts the maximum
+// magnitude a 32-bit `gain * sample` product can yield -- there is no
+// smaller shift to give, that multiply structurally cannot produce a wider
+// result. But real DX7 hardware (via Dexed, the ground-truth reference,
+// fm.md §7) doesn't need a bigger raw magnitude at all: it uses a phase
+// representation that only needs 2^24 units per full cycle (`Sin::lookup`'s
+// table read ignores every bit above bit 23), not 2^32 like this engine's
+// `phase`. That's the actual gap -- not raw output magnitude, but how much
+// phase deviation a given magnitude buys. `FM_MOD_INPUT_SHIFT` closes it at
+// the one place it needs to be closed: pre-scaling incoming modulation
+// (`in[i]`, or feedback's own history) *before* it's added to `phase`,
+// using unsigned wraparound (well-defined, and exactly how a real cycle
+// works -- the same trick a narrower phase representation gets for free).
+// Nothing is stored any wider than before (`in[]`/`out[]` stay `int32_t`,
+// so #57 part 1's fan-in/carrier-count overflow fixes are untouched) --
+// this only changes how aggressively the same stored value bends phase.
+// Chosen generously (real DX7 patches routinely exceed one full modulation
+// cycle for bright/bell/brass character) since `level`/`output_level`/the
+// EG are still the real per-patch depth control, same as on real hardware
+// -- this shift is not a substitute for tuning those, just headroom big
+// enough that they're never the thing running out first. Host-measured
+// (#57) across ROM1A's 28 converted patches: 2nd-harmonic/fundamental
+// ratios now span ~0.0 (patches with no real modulation at that voicing --
+// legitimate, not a bug) to several times the fundamental (BRASS 1 ~3.9x,
+// ORCHESTRA ~7.0x) -- real per-patch variety, not a uniform near-zero.
+// `FM_TEST_PATCH` (patch.h) needed its own modulator levels re-tuned down
+// after this landed -- its old near-ceiling constants, chosen when this
+// shift didn't exist, now over-drive badly enough at some (not all) EG
+// rates to underflow `eg_to_linear()` during the attack (a real, caught-
+// before-hardware bug: a 90-rate attack landing on an exact zero mid-ramp).
+static constexpr int32_t FM_MOD_INPUT_SHIFT = 4;
 
 // Plain kernel: accumulates (+=) into `out`. fm.md §3.2's 13-instruction
-// listing (as measured by #43) is this loop body.
-inline void op_render(FmOp &op, uint32_t n) {
+// listing (as measured by #43) is this loop body -- `out_shift` replaces
+// the #44/#45 compile-time FM_OUT_SHIFT constant (#57), same instruction
+// shape either way.
+inline void op_render(FmOp &op, uint32_t n, int32_t out_shift) {
     uint32_t phase = op.phase;
     uint32_t inc = op.inc;
     int32_t gain = op.gain;
@@ -86,9 +146,9 @@ inline void op_render(FmOp &op, uint32_t n) {
         phase += inc;
         // Phase wrap is free: the shift alone produces exactly a
         // FM_TABLE_BITS-wide index, no mask, no modulo (fm.md §3.2).
-        uint32_t idx = (phase + (uint32_t)in[i]) >> FM_PHASE_SHIFT;
+        uint32_t idx = (phase + ((uint32_t)in[i] << FM_MOD_INPUT_SHIFT)) >> FM_PHASE_SHIFT;
         int32_t sample = fm_sine_table[idx];
-        out[i] += fm_mul_gain(sample, gain) >> FM_OUT_SHIFT;
+        out[i] += fm_mul_gain(sample, gain) >> out_shift;
         gain += gain_step;
     }
     op.phase = phase;
@@ -97,7 +157,7 @@ inline void op_render(FmOp &op, uint32_t n) {
 
 // First-writer variant: stores instead of accumulating, so its target bus
 // never needs clearing (fm.md §4.3/§5.2).
-inline void op_render_first(FmOp &op, uint32_t n) {
+inline void op_render_first(FmOp &op, uint32_t n, int32_t out_shift) {
     uint32_t phase = op.phase;
     uint32_t inc = op.inc;
     int32_t gain = op.gain;
@@ -106,9 +166,9 @@ inline void op_render_first(FmOp &op, uint32_t n) {
     int32_t *out = op.out;
     for (uint32_t i = 0; i < n; i++) {
         phase += inc;
-        uint32_t idx = (phase + (uint32_t)in[i]) >> FM_PHASE_SHIFT;
+        uint32_t idx = (phase + ((uint32_t)in[i] << FM_MOD_INPUT_SHIFT)) >> FM_PHASE_SHIFT;
         int32_t sample = fm_sine_table[idx];
-        out[i] = fm_mul_gain(sample, gain) >> FM_OUT_SHIFT;
+        out[i] = fm_mul_gain(sample, gain) >> out_shift;
         gain += gain_step;
     }
     op.phase = phase;
@@ -120,7 +180,7 @@ inline void op_render_first(FmOp &op, uint32_t n) {
 // accumulates (+=) -- patch.h's routing compiler guarantees this is safe by
 // either scheduling a non-feedback first-writer ahead of it on a shared
 // bus, or (clear_bus_mask) pre-zeroing a bus whose only writer is this op.
-inline void op_render_fb(FmOp &op, uint32_t n) {
+inline void op_render_fb(FmOp &op, uint32_t n, int32_t out_shift) {
     uint32_t phase = op.phase;
     uint32_t inc = op.inc;
     int32_t gain = op.gain;
@@ -128,11 +188,17 @@ inline void op_render_fb(FmOp &op, uint32_t n) {
     int32_t *out = op.out;
     int32_t fb1 = op.fb1, fb2 = op.fb2;
     for (uint32_t i = 0; i < n; i++) {
+        // fb1/fb2 are raw table outputs (~+-32767), not gain-scaled at all --
+        // FM_MOD_INPUT_SHIFT still applies (same phase-per-cycle gap as any
+        // other modulation input) but self-feedback *depth* (real DX7's
+        // separate 0-7 feedback-level parameter) is still no-op-or-full, a
+        // known, separate, unresolved gap (patch.h's `feedback` is a bool) --
+        // #57 doesn't claim to fix that here.
         int32_t fb_mod = (fb1 + fb2) >> 1;
         phase += inc;
-        uint32_t idx = (phase + (uint32_t)fb_mod) >> FM_PHASE_SHIFT;
+        uint32_t idx = (phase + ((uint32_t)fb_mod << FM_MOD_INPUT_SHIFT)) >> FM_PHASE_SHIFT;
         int32_t sample = fm_sine_table[idx];
-        out[i] += fm_mul_gain(sample, gain) >> FM_OUT_SHIFT;
+        out[i] += fm_mul_gain(sample, gain) >> out_shift;
         fb2 = fb1;
         fb1 = sample;
         gain += gain_step;
@@ -173,12 +239,14 @@ inline void fm_voice_render_block(FmOp ops[FM_NUM_OPS], const FmRouting &r,
     for (uint8_t k = 0; k < FM_NUM_OPS; k++) {
         uint8_t i = r.order[k];
         FmOp &op = ops[i];
+        bool is_carrier = (r.out_bus[i] == FM_TARGET_OUT);
         op.in = (r.in_bus[i] == FM_BUS_ZERO) ? fm_zero_bus : bus.mod[r.in_bus[i]];
-        op.out = (r.out_bus[i] == FM_TARGET_OUT) ? bus.out : bus.mod[r.out_bus[i]];
+        op.out = is_carrier ? bus.out : bus.mod[r.out_bus[i]];
+        int32_t out_shift = is_carrier ? FM_OUT_SHIFT_CARRIER : FM_OUT_SHIFT_MODULATOR;
         switch (r.kernel[i]) {
-            case FM_KERNEL_FIRST:    op_render_first(op, n); break;
-            case FM_KERNEL_FEEDBACK: op_render_fb(op, n);    break;
-            default:                 op_render(op, n);       break;
+            case FM_KERNEL_FIRST:    op_render_first(op, n, out_shift); break;
+            case FM_KERNEL_FEEDBACK: op_render_fb(op, n, out_shift);    break;
+            default:                 op_render(op, n, out_shift);       break;
         }
     }
 }
