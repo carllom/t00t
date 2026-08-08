@@ -36,14 +36,17 @@ FM_PROFILE ?= 0
 #   make ENGINE=fm FM_PROFILE=1 FM_RIG_BLOCK=32
 #   make ENGINE=fm FM_PROFILE=1 FM_RIG_TABLE_BITS=10       # 1024-entry table
 #   make ENGINE=fm FM_PROFILE=1 FM_RIG_INTERLEAVE=1        # interleave op0/op1
-#   make ENGINE=fm FM_PROFILE=1 FM_RIG_NOT_IN_FLASH=1      # kernels in SRAM
+#   make ENGINE=fm FM_PROFILE=1 FM_RIG_NOT_IN_FLASH=1      # kernels in SRAM (noinline)
+#   make ENGINE=fm FM_PROFILE=1 FM_RIG_NOT_IN_FLASH=2      # kernels noinline, still flash (control)
 #   make ENGINE=fm FM_PROFILE=1 FM_RIG_SMULWB=1             # M33 smulwb fusion
+#   make ENGINE=fm FM_PROFILE=1 FM_RIG_FB=0                 # op3 plain, not self-feedback
 FM_RIG_VOICES      ?= default
 FM_RIG_BLOCK        ?= default
 FM_RIG_TABLE_BITS   ?= default
 FM_RIG_INTERLEAVE   ?= default
 FM_RIG_NOT_IN_FLASH ?= default
 FM_RIG_SMULWB       ?= default
+FM_RIG_FB           ?= default
 
 CMAKE_FLAGS = -DPICO_BOARD=$(BOARD) -DPICO_PLATFORM=rp2350 \
               -DMIDI_USB=$(MIDI_USB) -DMIDI_UART=$(MIDI_UART) \
@@ -51,7 +54,8 @@ CMAKE_FLAGS = -DPICO_BOARD=$(BOARD) -DPICO_PLATFORM=rp2350 \
               -DSPEECH_PROFILE=$(SPEECH_PROFILE) -DFM_PROFILE=$(FM_PROFILE) \
               -DFM_RIG_VOICES=$(FM_RIG_VOICES) -DFM_RIG_BLOCK=$(FM_RIG_BLOCK) \
               -DFM_RIG_TABLE_BITS=$(FM_RIG_TABLE_BITS) -DFM_RIG_INTERLEAVE=$(FM_RIG_INTERLEAVE) \
-              -DFM_RIG_NOT_IN_FLASH=$(FM_RIG_NOT_IN_FLASH) -DFM_RIG_SMULWB=$(FM_RIG_SMULWB)
+              -DFM_RIG_NOT_IN_FLASH=$(FM_RIG_NOT_IN_FLASH) -DFM_RIG_SMULWB=$(FM_RIG_SMULWB) \
+              -DFM_RIG_FB=$(FM_RIG_FB)
 
 HOST_BUILD_DIR = tools/host_render/build
 

@@ -112,7 +112,7 @@ endif()
 
 # fm.md §3.6 tuning levers on the #42 rig — each "default"/unset leaves
 # rig.h's own #ifndef default in place, same convention as DMA_BUFFER_SIZE.
-foreach(_lever FM_RIG_VOICES FM_RIG_BLOCK FM_RIG_TABLE_BITS FM_RIG_INTERLEAVE FM_RIG_NOT_IN_FLASH FM_RIG_SMULWB)
+foreach(_lever FM_RIG_VOICES FM_RIG_BLOCK FM_RIG_TABLE_BITS FM_RIG_INTERLEAVE FM_RIG_NOT_IN_FLASH FM_RIG_SMULWB FM_RIG_FB)
     if(DEFINED ${_lever} AND NOT ${_lever} STREQUAL "default")
         target_compile_definitions(t00t PRIVATE ${_lever}=${${_lever}})
     endif()

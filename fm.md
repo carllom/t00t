@@ -12,14 +12,19 @@ proceed in either order.
 
 Status: **design draft.** No code written yet.
 
-> **Provenance of the numbers in this document.** The per-operator cycle figures
-> in §3 are derived from *static instruction counts* of kernels cross-compiled
-> with `arm-none-eabi-gcc -O3 -mcpu=cortex-m33 -mthumb -mfloat-abi=hard
-> -mfpu=fpv5-sp-d16`. They are **not** profiling-pin measurements. Historically on
-> this codebase, real measured cost has run 25–50% above naive static analysis
-> once flash/XIP, SRAM bank contention and surrounding machinery are accounted
-> for. **P0 exists to replace these estimates with measurements before any DX7
-> logic is written.** Do not treat §3 as settled until the scope traces confirm it.
+> ~~**Provenance of the numbers in this document.** The per-operator cycle
+> figures in §3 are derived from *static instruction counts*... **P0 exists to
+> replace these estimates with measurements before any DX7 logic is
+> written.**~~ **Struck, #43.** P0's profiling-pin bench pass is done
+> (`engine.md` §"FM P0 Measurement (#43)") — the per-operator kernel costs in
+> §3.2/§3.3 are now confirmed by real hardware measurement, matching the
+> static analysis closely (unlike the tracker/speech pattern of measured
+> running 25–50% *above* static, this landed at or slightly below). One piece
+> remains an estimate rather than a measurement: §3.3's ~19 c/f/voice
+> EG/LFO/pitch-EG control-rate overhead, which P0's rig deliberately excludes
+> (no EG, no LFO — that's P2 scope, per §1's phasing table). Treat the
+> per-operator/per-voice kernel numbers as settled; treat the full-voice
+> total (kernel + EG/LFO) as a measured-plus-estimated projection until P2.
 
 ---
 
@@ -144,24 +149,43 @@ instead of `+=`, resolved at note-on when the routing is compiled.
 
 ### 3.4 Headline number
 
+**Measured, #43** (`engine.md` §"FM P0 Measurement (#43)", `breadboard_rp2350`,
+2026-08-08): raw 6-operator kernel cost is **100.05 c/f/voice** (linear fit,
+flat 2–24 voices, 7.79 c/f fixed overhead), against a corrected available
+budget of **2607 c/f** (85% × 3401 − 15 idle − 268.7 measured FX reserve, §9).
+P0's rig excludes EG/LFO/pitch-EG by design (§1) — the ~19 c/f/voice
+control-rate line item below is still §3.3's estimate, not measured, pending
+a P2 bench pass once `EnvDX`/LFO exist:
+
 | | Cycles/sample/voice | Voices |
 |---|---|---|
-| Available (85% utilisation − idle − FX reserve) | 2726 | — |
-| Static analysis, as compiled | 126 | **21** |
-| Derated 25% for the static→measured gap | 158 | **17** |
-| Derated 50% (worst case) | 189 | **14** |
+| Available (85% utilisation − idle − measured FX reserve) | 2607 | — |
+| **Measured, kernel only (P0)** | **100.5** | **25** |
+| Projected total (measured kernel + §3.3's unmeasured ~19 c/f EG/LFO) | ~120 | **21** |
 
-**Plan against 16 voices of full 6-operator FM.** That is DX7 parity, and it is
-the number to design the allocator, patch bank and display around. If P0 comes
-back better than expected, the surplus is spent on polyphony, not on features.
+**Decision: `MAX_VOICES = 16`, confirmed** (not raised, despite the
+projection clearing the ≤130 "20+" tier below) — the projection leans on an
+unverified P2 estimate, not a bench reading, so this document doesn't spend
+the apparent surplus yet. 16 voices costs 1,608 c/f of the 2607 available, a
+comfortable ~27% margin under even the conservative 120 c/f/voice
+projection. Revisit raising `MAX_VOICES` once P2 measures the real EG/LFO
+control-rate cost — the surplus P0 came back with is real, it's just not
+spent on a projection.
 
-Sensitivity:
+Sensitivity (as originally written, kept for the record):
 
 - **≤130 cycles/voice measured** → 20+ voices; consider 6-op as the unconditional
   default and revisit X2 operator waveforms.
 - **~160 cycles/voice** → 16 voices. Proceed as planned.
 - **≥200 cycles/voice** → 12 voices. Make 4-op the default patch shape with 6-op
   as an opt-in, and prioritise §3.6 tuning before P2.
+
+P0's measured 100.5 c/f/voice is so far under all three tiers (even the
+projected ~120 c/f total clears the ≤130 tier) that the sensitivity table's
+main job — deciding whether to retreat to 12 or 4-op-default — turned out
+not to be needed. The tiers stay as-written for P2's use, since that's when
+the number they were meant to gate (the full voice cost, EG/LFO included)
+actually gets measured.
 
 This is Core 1 only. Splitting voices across both cores would roughly double the
 count, but it conflicts with the established Core 0 = I/O / Core 1 = DSP split and
@@ -185,19 +209,50 @@ but that is not a dependency.)
 
 ### 3.6 Tuning levers, in expected order of value
 
-To be tried during P0, not later:
+Measured #43 (`engine.md` §"FM P0 Measurement (#43)"), decisions in §3.4:
 
-1. **Two operators interleaved in one loop body.** The `lsrs` → `ldrsh` → `mul`
-   chain is a serial dependency with a load-use stall. Interleaving two
-   independent operators hides it. Likely the single largest win.
-2. **`__not_in_flash_func` on the kernel and the sine table in SRAM.** Non-negotiable;
-   measure with and without to quantify it.
-3. **Block size.** BLOCK=16 balances per-block overhead against EG time
-   resolution (§5.3). Measure 8 / 16 / 32.
-4. **M33 DSP extension.** `smulwb` fuses the `mul` + `asr` pair. ~1 cycle/op.
-5. **SIO interpolators.** The hardware INTERP blocks can generate the table
-   address. Two per core, setup cost per operator; probably not worth it with a
-   non-interpolating lookup, but cheap to test.
+1. **Two operators interleaved in one loop body.** ~~Likely the single
+   largest win.~~ **Measured: −1.5%, not the largest win.** Plausible cause:
+   GCC's own scheduler already exploits most of the independent-load-use
+   slack once both calls inline into the render loop, ahead of the explicit
+   software pairing. **Decision: not adopted** — too small a win for the
+   added kernel-selection complexity.
+2. **`__not_in_flash_func` on the kernel and the sine table in SRAM.**
+   ~~Non-negotiable.~~ First pass **measured 0% — the lever didn't actually
+   engage** (the attribute targets functions that fully inline away before
+   linking, so there's no separate symbol left to place; confirmed via
+   `objdump`, identical `.text` either way — genuinely always flash). Fixed
+   in `rig.h` using the pico-sdk's `__no_inline_not_in_flash_func`, and
+   re-measured (tests 14/15, `engine.md` §"FM P0 Measurement (#43)"):
+   **SRAM is +4.9 c/f/voice *worse* than flash**, isolated from the noinline
+   call overhead via a flash-only control — backwards from this item's
+   "non-negotiable" assumption. Confirmed by evidence, not asserted: the
+   SRAM build has three linker-generated veneer stubs the flash build
+   doesn't, because a call from the flash-resident render loop into
+   SRAM-placed code crosses a ~256 MB gap outside a Thumb `BL`'s range.
+   RP2350's XIP cache already erases most of flash's latency disadvantage
+   for a small loop reused every sub-block, leaving the veneer indirection
+   as a pure cost with nothing to offset it. **Decision: keep the kernel
+   inlined in flash** — beats both noinline variants outright regardless of
+   placement, so this isn't even close. **Caveat (open question 10):**
+   measured with Core0 doing essentially no flash-side work; RP2350's XIP
+   cache is shared by both cores, so this margin isn't guaranteed once Core0
+   has real LCD/MIDI/control traffic competing for the same 16 KB.
+3. **Block size.** ~~BLOCK=16 balances per-block overhead against EG time
+   resolution.~~ **Measured: BLOCK=8 is 4.9% cheaper, BLOCK=32 is 10.8% more
+   expensive — inverted from the amortisation story, because this rig has no
+   EG/LFO to amortise. The real driver is GCC's loop-unrolling threshold**
+   (confirmed: `audio_engine_run()` compiles to 5,568 bytes at BLOCK=16 vs.
+   1,336 at BLOCK=32, and BLOCK=32 alone compiles the per-operator loop as a
+   real branch). **Decision: BLOCK=16 stays provisional**, final call
+   deferred to P2 as planned, since that's when the EG-resolution side of
+   the tradeoff actually exists to measure.
+4. **M33 DSP extension.** `smulwb` fuses the `mul` + `asr` pair. **Measured:
+   −3.0%, as predicted. Adopted where convenient** — real, no correctness
+   cost (host + device verified in #42).
+5. **SIO interpolators.** Not tried — `fm.md`'s own prediction ("probably not
+   worth it with a non-interpolating lookup") held up well enough by the
+   other levers' small margins that this wasn't worth #43's bench time.
 
 ---
 
@@ -487,14 +542,21 @@ design invariant of the module.
 | Item | Cycles/sample | % of 3401 |
 |---|---|---|
 | Idle / DMA / IPC (measured) | ~15 | 0.44% |
-| Global FX insert (reverb — *unmeasured, reserved*) | ~150 | 4.4% |
-| 16 × 6-op voice @ 158 (derated) | ~2528 | 74% |
-| **Total** | **~2693** | **~79%** |
+| Global FX insert (reverb — measured, reused from the subtractive engine's identical shared code, `engine.md` §"FM P0 Measurement (#43)") | 268.7 | 7.9% |
+| 16 × 6-op voice @ 100.5 measured kernel + ~19 unmeasured EG/LFO (P2) ≈ 120 | ~1920 | 56.5% |
+| **Total** | **~2204** | **~65%** |
 
-The Freeverb figure is a reservation, not a measurement — `engine.md` does not
-currently profile the FX insert in isolation. **P0 should measure it**, since at
-~4% it is one of the larger single line items and a cheaper reverb would buy back
-most of a voice.
+Both line items are now real measurements, not reservations: the reverb
+figure reuses `fx/delay.h`/`fx/reverb.h`'s already-measured subtractive-engine
+deltas (unchanged, engine-agnostic, global post-mix code — the reservation
+was low by about 1.8×), and the voice figure is #43's bench-measured
+100.5 c/f/voice kernel cost, still carrying §3.3's original ~19 c/f/voice
+EG/LFO estimate forward unmeasured (P0's rig has no EG/LFO by design; that
+piece is P2's to measure). Total Core 1 load at 16 voices + reverb, using
+the best current numbers, is well under the budget this table originally
+targeted — see `engine.md` §"FM P0 Measurement (#43)" for the full
+derivation and the decision not to raise `MAX_VOICES` on this projection
+alone.
 
 ---
 
@@ -536,9 +598,9 @@ possibly the 4096-entry table.
    no EG, no patch logic. Scope GPIO 22. In the same session, measure:
    flash vs. `__not_in_flash_func`; 1024 vs. 4096 table; interleaved vs. plain
    kernel; BLOCK = 8/16/32; and the FX insert in isolation.
-2. **Record the results in `engine.md`'s performance table** before writing P1.
-   Update §3.4 of this document with measured figures and strike the provenance
-   caveat.
+2. ~~Record the results in `engine.md`'s performance table before writing P1.
+   Update §3.4 of this document with measured figures and strike the
+   provenance caveat.~~ **Done, #43.**
 3. **P1** — engine skeleton with one hardcoded patch. Verify ratios and routing by
    ear against Dexed on the same algorithm.
 4. **P2** — `EnvDX`. Confirm BLOCK choice against fastest-attack patches.
@@ -554,8 +616,8 @@ possibly the 4096-entry table.
 
 | # | Question | When |
 |---|---|---|
-| 1 | Measured cycles/operator, and therefore the real voice count | **P0 — blocks everything** |
-| 2 | FX insert cost in isolation; is Freeverb worth ~4% in an FM context? | P0 |
+| 1 | ~~Measured cycles/operator, and therefore the real voice count~~ **Closed, #43: 100.05 c/f/voice measured (kernel only), `MAX_VOICES=16` confirmed** — `engine.md` §"FM P0 Measurement (#43)". Raising past 16 deferred to a P2 bench pass once EG/LFO exist to measure. | **P0 — done** |
+| 2 | ~~FX insert cost in isolation; is Freeverb worth ~4% in an FM context?~~ **Closed, #43: 268.7 c/f / 7.9% (reused from the subtractive engine's identical shared FX code), not ~4%. Freeverb stays** — the 16-voice budget clears with ~27% margin even at the corrected cost. | **P0 — done** |
 | 3 | BLOCK size — 16 assumed; confirm against rate-99 attacks | P2 |
 | 4 | Extract a shared `BlockClock` for FM and speech, or keep them separate? | P2 |
 | 5 | Global vs. per-voice LFO default (DX7 fidelity vs. better polyphonic behaviour) | P4 |
@@ -563,6 +625,7 @@ possibly the 4096-entry table.
 | 7 | Patch bank source — ship a curated set, or make `.syx` loading a runtime feature over MIDI SysEx? | P3 |
 | 8 | Does per-voice multitimbrality warrant a MIDI channel→patch mapping UI on the LCD? | P5 |
 | 9 | X2 operator waveforms — only if P0 leaves headroom | P6 |
+| 10 | **Core0/Core1 XIP cache contention.** #43's "keep the kernel in flash" decision (§3.6 item 2) was measured with Core0 doing essentially no flash-side work — MIDI/LCD/control are still stubs (#41/#42). RP2350 has one 16 KB XIP cache shared by *both* cores (`hardware_xip_cache.h`); once Core0 does real LCD/MIDI/control work, its flash traffic can evict the FM kernel's cache lines, right when Core0 is busiest — a risk #43 didn't test and can't yet, since there's no real Core0 workload to contend against. Mitigation available if it turns out to matter: `xip_cache_pin_range()` (RP2350-only) permanently reserves the kernel's flash range against eviction by anything else, keeping flash's speed without the exposure. If pinning doesn't pan out, SRAM's #43 "measured worse" verdict was itself measured in isolation — SRAM sidesteps this specific shared-cache problem entirely (its own contention risk is per-bank and controllable), so it's a fallback, not dead. | **P1+, once Core0 has a real workload to bench against** |
 
 ---
 

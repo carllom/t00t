@@ -20,15 +20,30 @@
 //   FM_RIG_TABLE_BITS     -- table size: 10 (1024) or 12 (4096, default)
 //   FM_RIG_INTERLEAVE     -- 0/1: interleave the op0/op1 pair in one loop
 //                            body instead of two sequential calls
-//   FM_RIG_NOT_IN_FLASH   -- 0/1: __not_in_flash_func on the kernels (the
-//                            table itself is already a runtime-generated,
-//                            non-const array -- always SRAM/.bss, never
-//                            flash/.rodata, so this axis only measures code
-//                            placement, not data placement)
+//   FM_RIG_NOT_IN_FLASH   -- 0 (default): inlined, flash -- unchanged from
+//                            #42. 1: SRAM, via __no_inline_not_in_flash_func
+//                            (plain __not_in_flash_func measured zero effect
+//                            in #43 -- it targets an out-of-line symbol that
+//                            inlining had already erased, so noinline is
+//                            required to give it something to place). 2:
+//                            noinline, still flash -- a control so diffing 2
+//                            against 1 isolates the SRAM-vs-flash placement
+//                            effect from the call/return overhead noinline
+//                            itself adds. (The table itself is already a
+//                            runtime-generated, non-const array -- always
+//                            SRAM/.bss, never flash/.rodata, so this axis
+//                            only ever measured code placement.)
 //   FM_RIG_SMULWB         -- 0/1: fuse the gain>>8 + mul step with the M33
 //                            DSP extension's __smulwb (arm_acle.h); host
 //                            builds get a portable equivalent expression for
 //                            correctness, not the real instruction
+//   FM_RIG_FB             -- 0/1 (default 1): op3 uses op_render_fb
+//                            (self-feedback) when 1, or plain op_render when
+//                            0 -- lets #43's bench session diff self-feedback
+//                            against a plain operator on an otherwise
+//                            identical topology (fm.md §3.3's 22-vs-17-cycle
+//                            budget), which the fixed topology alone can't
+//                            isolate since op3 was always op_render_fb.
 
 #ifndef FM_RIG_VOICES
 #define FM_RIG_VOICES 24
@@ -47,6 +62,9 @@
 #endif
 #ifndef FM_RIG_SMULWB
 #define FM_RIG_SMULWB 0
+#endif
+#ifndef FM_RIG_FB
+#define FM_RIG_FB 1
 #endif
 
 // arm_acle.h only exists for ARM targets -- the host build (tools/host_render)
@@ -91,9 +109,35 @@ inline uint32_t fm_rig_phase_inc(float freq_hz, float sample_rate_hz) {
 #ifndef __not_in_flash_func
 #define __not_in_flash_func(func) func
 #endif
+#ifndef __no_inline_not_in_flash_func
+#define __no_inline_not_in_flash_func(func) func
+#endif
+#ifndef __noinline
+#define __noinline
+#endif
 
-#if FM_RIG_NOT_IN_FLASH
-#define FM_RIG_HOT(func) __not_in_flash_func(func)
+// #43 finding: plain __not_in_flash_func() has NO effect here, because
+// op_render() etc. are `inline` and fully inline into audio_engine_run() at
+// -O3 -- the attribute places an *out-of-line* function's code in SRAM, and
+// inlining erases the separate symbol before that ever applies (confirmed
+// via objdump: FM_RIG_NOT_IN_FLASH=0 and =1 produced byte-identical .text).
+// The pico-sdk documents this exact trap and ships the fix:
+// __no_inline_not_in_flash_func() adds noinline so there's a real symbol for
+// the section-placement attribute to act on.
+//
+//   FM_RIG_NOT_IN_FLASH=0 (default) -- inlined, flash. Unchanged from #42;
+//     matches every reading already taken.
+//   FM_RIG_NOT_IN_FLASH=1 -- noinline, SRAM (.time_critical). A genuine
+//     placement test, but it also adds real call/return overhead that the
+//     inlined default never pays -- comparing =1 against the default
+//     baseline conflates "moved to SRAM" with "stopped being inlined."
+//   FM_RIG_NOT_IN_FLASH=2 -- noinline, flash (control). Same call overhead
+//     as =1, same code, only placement differs -- diff =2 against =1 to
+//     isolate the SRAM-vs-flash effect alone.
+#if FM_RIG_NOT_IN_FLASH == 1
+#define FM_RIG_HOT(func) __no_inline_not_in_flash_func(func)
+#elif FM_RIG_NOT_IN_FLASH == 2
+#define FM_RIG_HOT(func) __noinline func
 #else
 #define FM_RIG_HOT(func) func
 #endif
@@ -268,7 +312,8 @@ struct FmRigBuses {
 //   op1 -> bus[1]            first-writer  (op_render_first, in=zero)
 //                             -- op0/op1 interleaved when FM_RIG_INTERLEAVE
 //   op2 -> bus[1] (+=)       accumulate    (op_render, in=bus[0])
-//   op3 -> bus[1] (+=)       accumulate    (op_render_fb, self-feedback)
+//   op3 -> bus[1] (+=)       accumulate    (op_render_fb if FM_RIG_FB else
+//                                           plain op_render, self-feedback)
 //   op4 -> bus[3]            first-writer  (op_render_first, in=bus[1])
 //   op5 -> OUT               first-writer  (op_render_first, in=bus[3])
 //
@@ -290,7 +335,15 @@ inline void fm_rig_render_voice_block(FmRigOp ops[6], const FmRigBuses &bus, uin
     op_render(ops[2], n);
 
     ops[3].out = bus.mod[1];
+#if FM_RIG_FB
     op_render_fb(ops[3], n);
+#else
+    // Plain accumulate, unmodulated (in=zero) -- the direct comparison point
+    // for isolating op_render_fb's self-feedback overhead: same position in
+    // the chain, same accumulate-onto-bus[1] role, only the kernel differs.
+    ops[3].in = fm_rig_zero_bus;
+    op_render(ops[3], n);
+#endif
 
     ops[4].in = bus.mod[1]; ops[4].out = bus.mod[3];
     op_render_first(ops[4], n);
