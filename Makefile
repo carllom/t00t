@@ -23,10 +23,35 @@ DMA_BUFFER_SIZE ?= default
 #   make ENGINE=speech SPEECH_PROFILE=1
 SPEECH_PROFILE ?= 0
 
+# #42 P0 rig: replaces the FM engine's normal test-tone build with the
+# stripped N-voice x 6-operator mixer (src/engines/fm/rig.h). No effect on
+# other engines. See engine.md "FM P0 Rig (#42)".
+#   make ENGINE=fm FM_PROFILE=1
+FM_PROFILE ?= 0
+
+# fm.md §3.6 tuning levers, each a compile-time switch on the #42 rig (only
+# meaningful with FM_PROFILE=1) — "default" leaves rig.h's own #ifndef
+# default in place, same sentinel convention as MIDI_USB/DMA_BUFFER_SIZE above.
+#   make ENGINE=fm FM_PROFILE=1 FM_RIG_VOICES=32
+#   make ENGINE=fm FM_PROFILE=1 FM_RIG_BLOCK=32
+#   make ENGINE=fm FM_PROFILE=1 FM_RIG_TABLE_BITS=10       # 1024-entry table
+#   make ENGINE=fm FM_PROFILE=1 FM_RIG_INTERLEAVE=1        # interleave op0/op1
+#   make ENGINE=fm FM_PROFILE=1 FM_RIG_NOT_IN_FLASH=1      # kernels in SRAM
+#   make ENGINE=fm FM_PROFILE=1 FM_RIG_SMULWB=1             # M33 smulwb fusion
+FM_RIG_VOICES      ?= default
+FM_RIG_BLOCK        ?= default
+FM_RIG_TABLE_BITS   ?= default
+FM_RIG_INTERLEAVE   ?= default
+FM_RIG_NOT_IN_FLASH ?= default
+FM_RIG_SMULWB       ?= default
+
 CMAKE_FLAGS = -DPICO_BOARD=$(BOARD) -DPICO_PLATFORM=rp2350 \
               -DMIDI_USB=$(MIDI_USB) -DMIDI_UART=$(MIDI_UART) \
               -DT00T_ENGINE=$(ENGINE) -DDMA_BUFFER_SIZE=$(DMA_BUFFER_SIZE) \
-              -DSPEECH_PROFILE=$(SPEECH_PROFILE)
+              -DSPEECH_PROFILE=$(SPEECH_PROFILE) -DFM_PROFILE=$(FM_PROFILE) \
+              -DFM_RIG_VOICES=$(FM_RIG_VOICES) -DFM_RIG_BLOCK=$(FM_RIG_BLOCK) \
+              -DFM_RIG_TABLE_BITS=$(FM_RIG_TABLE_BITS) -DFM_RIG_INTERLEAVE=$(FM_RIG_INTERLEAVE) \
+              -DFM_RIG_NOT_IN_FLASH=$(FM_RIG_NOT_IN_FLASH) -DFM_RIG_SMULWB=$(FM_RIG_SMULWB)
 
 HOST_BUILD_DIR = tools/host_render/build
 
