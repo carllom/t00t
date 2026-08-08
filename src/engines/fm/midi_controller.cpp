@@ -5,14 +5,27 @@
 #include "voice_alloc.h"
 #include <cmath>
 
+#ifdef T00T_FM_HAS_PATCHES
+#include "patches.h"
+#endif
+
 // FM MIDI controller (#44, fm.md P1): note on/off + pitch bend + velocity,
 // mirroring the shared src/midi/midi_controller.cpp's channel-bend/pan
 // pattern. Own controller (not the shared one) for the same reason the #41
 // skeleton stub gave: this engine's VoiceParams carries a patch pointer, not
-// a VoicePreset the shared controller's presets.h shape expects. Every
-// note-on uses FM_TEST_PATCH (patch.h) -- #44's "one hardcoded 6-op patch";
-// per-channel/per-program patch selection is P3+ territory, once
-// tools/syx2patch.py gives this engine more than one patch to choose from.
+// a VoicePreset the shared controller's presets.h shape expects.
+//
+// Patch select (#47, fm.md P3): every note-on used FM_TEST_PATCH
+// unconditionally until tools/syx2patch.py gave this engine more than one
+// patch to choose from. patches.h is generated locally and gitignored (a
+// real DX7 bank's patch data, not something to check into git history --
+// see CMakeLists.txt's T00T_FM_HAS_PATCHES gate), so patch select itself is
+// conditionally compiled: Program Change and CC30 (data2, same range) both
+// pick `patches[value % FM_PATCH_COUNT]` -- CC30 exists because the
+// BeatStep Pro's encoders are absolute CC (16-31) and can't reliably send a
+// real Program Change, same reasoning #36 gave speech's phrase-bank CCs.
+// Without patches.h, every voice still plays FM_TEST_PATCH, exactly as
+// before #47.
 
 static MidiParser midi_parser;
 static int8_t midi_note_voice[128];
@@ -29,6 +42,8 @@ static constexpr float PITCH_BEND_RANGE_SEMITONES = 2.0f;
 
 static float   channel_bend_ratio[NUM_CHANNELS];  // phase_inc multiplier (1.0 = centered)
 static int16_t channel_pan[NUM_CHANNELS];         // CC10 pan, Q15
+static const FmPatch *channel_patch[NUM_CHANNELS];  // #47: defaults to FM_TEST_PATCH, PC/CC30 override it
+static uint8_t channel_program[NUM_CHANNELS];       // FM_PATCHES[] index, for ui_state.program
 
 // --- UI snapshot (updated on each event, read by the display) ---
 static MidiUiState ui_state;
@@ -54,14 +69,14 @@ static void midi_voice_on(VoiceParamBlock &shadow, int v, uint8_t note, uint8_t 
     vp.phase_inc = (uint32_t)((float)base * channel_bend_ratio[channel]);
     vp.amplitude = (int16_t)(velocity * 258);  // 0..127 -> ~0..32766, "velocity as plain amplitude" (#44)
     vp.pan = channel_pan[channel];
-    vp.patch = &FM_TEST_PATCH;
+    vp.patch = channel_patch[channel];
     vp.trigger++;
     vp.gate = true;
 
     ui_state.last_note = note;
     ui_state.last_velocity = velocity;
     ui_state.last_channel = channel;
-    ui_state.program = 0;  // one patch until P3
+    ui_state.program = channel_program[channel];
 }
 
 // Re-scale phase_inc for every held voice on a channel after a bend change.
@@ -90,6 +105,8 @@ void midi_controller_init() {
     for (uint8_t ch = 0; ch < NUM_CHANNELS; ch++) {
         channel_bend_ratio[ch] = 1.0f;
         channel_pan[ch] = 0;
+        channel_patch[ch] = &FM_TEST_PATCH;
+        channel_program[ch] = 0;
     }
     ui_state.last_note = 0xFF;
     ui_state.last_velocity = 0;
@@ -171,7 +188,18 @@ void midi_controller_process(const uint8_t *data, uint32_t len, ParamExchange *p
                         ui_state.fx_p2 = ev.data2;
                         changed = true;
                         break;
-                    default:  break;  // other CCs — to be mapped later (patch select, etc., P3+)
+#ifdef T00T_FM_HAS_PATCHES
+                    case 30: {  // patch select (#47) — CC alternative to Program Change
+                        uint8_t idx = (uint8_t)(ev.data2 % FM_PATCH_COUNT);
+                        channel_patch[ev.channel] = &FM_PATCHES[idx];
+                        channel_program[ev.channel] = idx;
+                        ui_state.program = idx;
+                        ui_state.last_channel = ev.channel;
+                        changed = true;
+                        break;
+                    }
+#endif
+                    default:  break;  // other CCs unmapped
                 }
                 break;
             }
@@ -184,6 +212,17 @@ void midi_controller_process(const uint8_t *data, uint32_t len, ParamExchange *p
                 changed = true;
                 break;
             }
+#ifdef T00T_FM_HAS_PATCHES
+            case MIDI_PROGRAM_CHANGE: {  // #47 — see CC30 above for the BeatStep Pro alternative
+                uint8_t idx = (uint8_t)(ev.data1 % FM_PATCH_COUNT);
+                channel_patch[ev.channel] = &FM_PATCHES[idx];
+                channel_program[ev.channel] = idx;
+                ui_state.program = idx;
+                ui_state.last_channel = ev.channel;
+                changed = true;
+                break;
+            }
+#endif
             default: break;
         }
     }

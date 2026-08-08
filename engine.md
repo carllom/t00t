@@ -1484,6 +1484,128 @@ Verified against 5 real modules (2026-08-07): `118in64.xm` (18ch),
 check above; all convert well under the default SRAM budget (93-241 KB of a
 380 KB budget).
 
+## syx2patch Host Converter (#47)
+
+`tools/syx2patch.py` — a pure-Python, stdlib-only tool (no CMake project,
+same as `xm2t00t/`) that turns a real DX7 32-voice `.syx` bulk dump into
+`src/engines/fm/patches.h`. Per fm.md §7, the device never parses DX7
+sysex — this runs once, offline. Unlike `xm2t00t`/`speechgen.py`, most of
+the actual DSP conversion work was *already done* by #45's `env_dx.h`
+(rate/level tables, log-domain conversion, all resolved at runtime from raw
+0-99 bytes) — this converter's real job is almost entirely structural: unpack
+the bit-packed sysex format correctly, and turn a DX7 algorithm number into
+`patch.h`'s `mod_target`/`feedback` shape.
+
+```
+syx2patch.py convert <in.syx> <out.h>   # writes patches.h (enum FmPatchId,
+                                          # FM_PATCH_COUNT, const FmPatch
+                                          # FM_PATCHES[], FM_PATCH_NAMES[])
+syx2patch.py dump <in.syx>               # prints a per-voice summary
+                                          # (algorithm, name, warnings), writes nothing
+```
+
+### Algorithm decode
+
+`DX7_ALGORITHMS[32]` is Dexed's own bus-flag table (Source/msfa/fm_core.cc,
+Apache-2.0), reused as data — not because Dexed's 2-bus render scheme is
+copied, but because it's a compact, already-correct encoding of all 32
+algorithms' topology. `decode_algorithm()` simulates DX7's fixed OP6→OP1
+processing order once, generically, to reconstruct each operator's real
+`mod_target`: a bus (1 or 2) is a stack, written by a contiguous run of
+operators, and the next operator that reads that bus number is,
+unambiguously, every writer in that run's actual downstream target. One
+function handles all 32 rows — the acceptance criterion "generated or
+table-driven, not 32 hand-written cases" is met by the data being a table
+and the decode being one generic simulation, not per-algorithm branches.
+Hand-verified against algorithm 1 (two independent chains,
+`6→5→4→3→OUT`/`2→1→OUT`, feedback on OP6) and algorithm 32 (all six
+operators as independent carriers, feedback on OP6) — both match every
+published DX7 algorithm chart.
+
+Algorithms 4 and 6 each have a second operator with the FB_OUT bit set
+alone (not paired with FB_IN, unlike the algorithm's primary feedback
+operator) — real DX7 hardware routes that operator's output into the same
+shared feedback register the primary operator reads, a genuine
+operator-spanning loop closed only across block-processing order. Detected
+generically (not by hardcoding "algorithm == 4 or 6"): a test graph adds a
+tentative edge from every such secondary operator to the primary, and a real
+cycle check runs over it. `needs_interleaved` is set when a cycle is found;
+the fallback is simply that the secondary edge was never added to the real
+emitted routing in the first place — `patches.h` gets a per-patch comment
+and the tool logs a warning, `#54` is the eventual real fix.
+
+### Packed-voice unpacking
+
+`unpack_voice()` is a bit-for-bit port of Dexed's
+`Cartridge::unpackProgram` (Source/PluginData.cpp, Apache-2.0), cross-checked
+against the DX7 MIDI Data Format Sheet's own published "Bulk Dump Packed
+Format" table. Every field is range-checked against its documented range
+(0-99, 0-31, 0-7, …) and raises rather than silently clamping — unlike
+Dexed's own `normparm`, which clamps corrupted bytes defensively since it
+has to keep running against whatever's already loaded. `parse_syx_bulk()`
+validates the full `F0 43 0n 09 20 00 … checksum F7` envelope, including the
+masked 2's-complement checksum.
+
+### Two bugs caught by actually rendering a real bank, not by design review
+
+1. **Multi-carrier int16 overflow.** `FmOpParams::level` (the reference-gain
+   ceiling — not DX7 data, see `patch.h`'s own comment) was set flat per role
+   using `FM_TEST_PATCH`'s own precedent (`FM_CARRIER_LEVEL_REF = 1<<21`,
+   `FM_MODULATOR_LEVEL_REF = 1400000000`). `FM_TEST_PATCH` only ever has one
+   carrier, so this was never exercised; real DX7 algorithms 19-32 sum 3-6
+   carriers into one voice, and each at the same flat reference clipped
+   badly (measured on ROM1A: BRASS 1's peak hit 43185, E.ORGAN 1's 46675,
+   both well past int16's 32767). Fixed by scaling each carrier's reference
+   by `1/carrier_count` — N summed carriers at output_level=99 land back at
+   the same envelope one carrier alone would, exactly mirroring how
+   `output_level` already carries the real per-patch balance.
+2. **Carrier release level never reaching idle.** A carrier operator with a
+   nonzero EG L4 (release-stage target) never reaches `env_dx.h`'s
+   `EG_IDLE` — the exact shape of the tracker's #21 "key-off never frees a
+   voice" bug, just reached through DX7 patch data instead of engine logic.
+   `convert_voice()` forces carrier L4 to 0 with a logged warning; the
+   audible cost is that a handful of sustained-pad-style patches release
+   fully instead of holding a residual level, since this engine has no
+   sustain-pedal semantics to make that distinction meaningful anyway.
+
+### Patch select
+
+Behind `T00T_FM_HAS_PATCHES` (both `CMakeLists.txt`s — see below):
+`midi_controller.cpp` wires Program Change and CC30 (the BeatStep Pro can't
+reliably send real Program Change, same reasoning #36 gave speech's
+phrase-bank CCs) to `FM_PATCHES[value % FM_PATCH_COUNT]`. Without
+`patches.h`, every voice still plays `FM_TEST_PATCH`, unconditionally,
+exactly as before #47.
+
+### Gitignored, not wired into CMakeLists.txt unconditionally
+
+Both the `.syx` input and the generated `patches.h` are gitignored — a real
+DX7 bank is Yamaha's own commercial patch data, the same policy `xm2t00t`'s
+`xm/` already established for copyrighted `.xm` songs. `patches.h`'s
+presence is detected at configure time (`if(EXISTS …)`, same pattern the
+top-level `CMakeLists.txt` already uses for other optional generated files)
+and gates `T00T_FM_HAS_PATCHES` in both the device build and
+`tools/host_render`'s `render_fm` target — the build succeeds either way.
+
+### Validation
+
+`python3 tools/test_syx2patch.py` — unit checks (all 32 algorithms decode
+and only 4/6 flag interleaved, algorithm 1/32 topology by hand, coarse/fine
+ratio formula, fixed-frequency skip, carrier L4 forcing, feedback-level-0
+exactness, multi-carrier level scaling, bit-packing round-trip on a
+synthetic voice, checksum/header rejection paths) always run; corpus-
+dependent checks run against whatever `.syx` files are in `../syx/`
+(gitignored, same as `xm/`) and skip cleanly if empty. Verified against
+ROM1A and ROM1B (2026-08-08): 28/32 and 31/32 voices converted respectively
+(skips: fixed-frequency-mode patches — ROM1A's "TUB BELLS"/"STEEL
+DRUM"/"REFS WHISL"/"TRAIN", ROM1B's "PIPES 2" — all deferred to #48); ROM1B
+exercises the algorithm 4/6 fallback for real ("CLAV 2"/"CLAV 3"/"PIPES 4").
+`render_fm`'s patch-bank render (host-only, `T00T_FM_HAS_PATCHES`-gated)
+renders a 3-second A3 note per converted patch to `fm_patches/*.wav` and
+checks every one is bounded and non-silent — all 28 of ROM1A's pass, 5488 B
+total flash cost (196 B/patch, matching fm.md §8's ~200 B/patch estimate).
+`make ENGINE=fm` builds clean both with and without `patches.h` present.
+
 ## MIDI Input
 
 Control comes from buttons (VGA board only) and MIDI. There is no intermediate

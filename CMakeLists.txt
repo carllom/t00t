@@ -126,6 +126,16 @@ if(DEFINED FM_BLOCK AND NOT FM_BLOCK STREQUAL "default")
     target_compile_definitions(t00t PRIVATE T00T_FM_BLOCK=${FM_BLOCK})
 endif()
 
+# #47 P3 patch bank (FM engine only): patches.h is generated locally by
+# tools/syx2patch.py from a real DX7 .syx dump and gitignored, same as xm/'s
+# handling of copyrighted .xm songs (engine.md's xm2t00t precedent) — a real
+# DX7 bank's patch data is Yamaha's commercial sound-design work, not
+# something to check into git history. Guarded here so the build still
+# succeeds (FM_TEST_PATCH only) when nobody has generated it locally yet.
+if(EXISTS ${CMAKE_CURRENT_LIST_DIR}/src/engines/fm/patches.h)
+    target_compile_definitions(t00t PRIVATE T00T_FM_HAS_PATCHES=1)
+endif()
+
 # See ENGINE_VOICE_ALLOC above — tells main.cpp to skip the voice_alloc calls
 # it would otherwise fail to link against on the tracker build.
 if(T00T_ENGINE STREQUAL "tracker")

@@ -7,3 +7,5 @@ lcdex/
 xm/
 __pycache__/
 assets/
+syx/
+src/engines/fm/patches.h

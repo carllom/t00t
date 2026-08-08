@@ -532,32 +532,66 @@ Following the principle established by the tracker's converter: **relocate all
 awkward, nonlinear, one-time work to the host, so the runtime sees only increments
 and pointers.**
 
-Input: a DX7 32-voice bulk dump `.syx` (4096-byte payload, 128 packed bytes per
-voice).
+**Implemented (v1), #47.** Input: a DX7 32-voice bulk dump `.syx` (4096-byte
+payload, 128 packed bytes per voice, unpacked bit-for-bit against Dexed's own
+`Cartridge::unpackProgram` — cross-checked against the published DX7 MIDI
+Data Format Sheet too, and verified byte-for-byte via a synthetic-fixture
+round-trip test, `tools/test_syx2patch.py`).
 
-Output: `src/engines/fm/patches.h` — a `const FmPatch patches[]` array in flash.
+Output: `src/engines/fm/patches.h` — a `const FmPatch FM_PATCHES[]` array in
+flash, plus `enum FmPatchId` and `FM_PATCH_NAMES[]`. Both the `.syx` input
+and the generated header are gitignored, never committed — a real DX7 bank
+is Yamaha's own commercial patch data, the same reasoning `xm2t00t`'s `xm/`
+already established for copyrighted third-party `.xm` songs. The device and
+`tools/host_render`'s `render_fm` both compile against `patches.h`'s absence
+gracefully (`T00T_FM_HAS_PATCHES`, gated in both `CMakeLists.txt`s) — every
+voice just plays `FM_TEST_PATCH` until someone runs the converter locally.
 
-The converter resolves:
+v1 actually resolves:
 
-| DX7 source data | Baked output |
+| DX7 source data | v1 handling |
 |---|---|
-| Algorithm number (0–31) | `order[6]`, `in_bus[6]`, `out_bus[6]`, first-writer flags, kernel selection, feedback operator index |
-| EG rates/levels (0–99) | Per-stage log-domain increments at the 2756 Hz control rate, plus target levels |
-| Operator output level (0–99) | Log-domain attenuation, via the DX7's nonlinear level table |
-| Key level scaling (breakpoint, curves, depths) | Per-note offset table or curve coefficients |
-| Rate scaling (0–7) | EG rate offset coefficients |
-| Coarse/fine ratio, detune, osc mode | Q16 ratio multiplier, or absolute Hz for fixed mode |
-| Velocity sensitivity (0–7) | Level offset coefficients |
-| LFO rate/delay/waveform/PMS/AMS | Control-rate increments and depth scalars |
-| SCC detection | `needs_interleaved` flag for algorithms 4 and 6 |
+| Algorithm number (0–31) | `mod_target`/`feedback` per operator, via one generic bus-flag decode (Dexed's own `FmAlgorithm` table, reconstructed into this engine's shape) applied uniformly to all 32 rows — `order`/`in_bus`/`out_bus`/kernel selection itself is *already* resolved at note-on by `fm_resolve_routing()` (#44), so the converter's only job is picking the right `mod_target` |
+| EG rates/levels (0–99) | Copied straight through as raw bytes — `env_dx.h` (#45) already converts these at block-rate, so there is no host-side log-domain math to do |
+| Operator output level (0–99), velocity sensitivity (0–7) | Copied straight through, same reasoning |
+| Coarse/fine ratio | `ratio = (coarse==0 ? 0.5 : coarse) * (1 + fine/100)`, verified against Dexed's `osc_freq()`/`coarsemul[]` |
+| Feedback level (0–7) | `feedback` bool on the algorithm's primary operator; level 0 is exact, not approximated (real hardware silence too) — the kernel has no depth control, so any nonzero level becomes "on" |
+| Algorithms 4 and 6 | `needs_interleaved` detected via a real cycle check (not hardcoded algorithm numbers) on a test graph augmenting the ordinary routing with the secondary FB_OUT operator's tentative edge back to the primary — collapsed to single self-feedback, logged, never silent |
+| Voice name | Retained, becomes `FM_PATCH_NAMES[]` and the sanitized `FmPatchId` enum value |
 
-The converter should **fail loudly** on anything it cannot represent, rather than
-approximating silently.
+Deferred to v2 (#48), same v1/v2 split `speechgen.py` used (#32/#35): key
+level scaling, rate scaling, detune, fixed-frequency mode, pitch EG, LFO,
+transpose. All are parsed and range-checked from the `.syx` (so `.syx`
+corruption still fails loudly) but not wired into `FmOpParams` — a patch
+using fixed-frequency mode on any operator is skipped outright rather than
+approximated, since v1 has no way to represent it without silently changing
+the patch's character.
+
+Two real, unanticipated issues surfaced only by actually host-rendering a
+real bank (ROM1A), not by design review alone: multi-carrier algorithms
+(19–32, 3–6 carriers summed into one voice) clipped int16 range under a flat
+per-role reference gain — fixed by scaling each carrier's reference by
+`1/carrier_count`; and a nonzero carrier release level (L4) would leave
+`env_dx.h` unable to ever reach `EG_IDLE`, exactly the tracker's #21 "voice
+never frees" bug shape — fixed by forcing carrier L4 to 0 with a logged
+warning. `FmOpParams::level` itself (the reference-gain ceiling) is *not*
+DX7 data on either side of that fix — see `patch.h`'s own comment and
+`FM_TEST_PATCH`'s precedent, which v1 reuses directly (`FM_CARRIER_LEVEL_REF
+= FM_TEST_PATCH`'s carrier constant, `FM_MODULATOR_LEVEL_REF` its highest
+modulator constant).
+
+Patch select is wired into `midi_controller.cpp` behind the same
+`T00T_FM_HAS_PATCHES` gate: Program Change and CC30 (the BeatStep Pro can't
+reliably send real Program Change, same reasoning #36 gave speech's
+phrase-bank CCs) both pick `FM_PATCHES[value % FM_PATCH_COUNT]`.
 
 **Verification asset:** because real DX7 banks load, [Dexed](https://asb2m10.github.io/dexed/)
 becomes the ground-truth reference renderer for this module — the same role
 `openmpt123` plays for the tracker and `say -v Fred` plays for speech. P6 is a
 calibration pass comparing per-patch output against Dexed on a fixed set of notes.
+`render_fm`'s patch-bank render (`fm_patches/*.wav`, one 3-second note per
+patch — long enough to catch a deliberately slow-swelling patch like ROM1A's
+"TAKE OFF") is what #53 will diff against Dexed.
 
 ---
 
@@ -567,7 +601,7 @@ calibration pass comparing per-patch output against Dexed on a fixed set of note
 |---|---|---|
 | Operator sine table (4096 × int16) | 8 KB | SRAM |
 | Exp2 table for EG (256 × int16) | 0.5 KB | SRAM |
-| Patch bank (32 × ~200 B, runtime form) | ~6.4 KB | Flash (read-only) |
+| Patch bank (32 × ~200 B, runtime form) | ~6.4 KB | Flash (read-only) — **measured, #47**: ROM1A's 28 converted patches are 5488 B (196 B/patch), matching the estimate; scales to ~6.3 KB at a full 32 |
 | Per-voice state (16 × ~200 B) | ~3.2 KB | SRAM |
 | Shared bus scratch (7 × 16 × int32) | 448 B | SRAM |
 | Mix scratch | reuses existing `scratch[]` | SRAM |
@@ -652,8 +686,23 @@ possibly the 4096-entry table.
    **Implemented, #45** (4-stage log-domain EG, DX7 level table, velocity
    sensitivity, BLOCK=16 confirmed — `engine.md` §"FM P2 BLOCK Confirmation
    (#45)"). By-ear EP/bell check on real hardware still Carl's to do.
-5. **P3** — the converter. This is the largest single piece of work and the one
-   that makes everything else verifiable.
+5. ~~**P3** — the converter.~~ **Implemented (v1), #47** (`tools/syx2patch.py`:
+   32-voice .syx unpack, all 32 algorithms mapped to `mod_target`/`feedback`
+   via one generic bus-simulation decode, algorithm 4/6 interleaved-feedback
+   detected via cycle analysis and collapsed to single self-feedback with a
+   logged warning, EG rates/levels/output level/velocity sensitivity copied
+   straight through since env_dx.h already converts them at runtime, coarse/
+   fine ratio computed, per-carrier level scaled down by carrier count to
+   avoid int16 overflow on multi-carrier algorithms — a real bug caught by
+   host-rendering the actual bank, not assumed). Key level scaling, rate
+   scaling, detune, fixed-frequency mode, pitch EG, LFO, and transpose are
+   parsed/validated but not wired in — v2, #48. 28/32 of ROM1A converted and
+   host-rendered clean (4 skipped: fixed-frequency-mode patches, "TUB BELLS"/
+   "STEEL DRUM"/"REFS WHISL"/"TRAIN", all deferred to the same #48). The
+   `.syx` input and generated `patches.h` are both gitignored (Yamaha's own
+   patch data, same policy `xm2t00t`'s `xm/` already established for
+   copyrighted third-party content) — see `engine.md`'s "syx2patch Host
+   Converter (#47)" section for the full writeup and usage.
 6. **P4–P6** — remaining parameters, free routing, calibration.
 
 `WAVE_FM2` (§10) can be slotted in anywhere; it does not gate anything.
@@ -669,7 +718,7 @@ possibly the 4096-entry table.
 | 3 | ~~BLOCK size — 16 assumed; confirm against rate-99 attacks~~ **Closed, #45: BLOCK=16 confirmed, not raised to 32 or lowered to 8** — `engine.md` §"FM P2 BLOCK Confirmation (#45)". | **P2 — done** |
 | 4 | ~~Extract a shared `BlockClock` for FM and speech, or keep them separate?~~ **Closed, #46: reject — common pattern, no common code.** Compared the real `EnvDX` (§5.3) against speech's segment sequencer: per-operator vs. per-voice instancing, fixed 4-stage log2 vs. variable-length float segments, exact per-sample `gain_step` interpolation vs. per-sub-block-constant IIR smoothing. See §5.3's cross-module note and `architecture.md` "Settled Decisions". Speech's sequencer (#34/#36/#37) untouched. | **P2 — done** |
 | 5 | Global vs. per-voice LFO default (DX7 fidelity vs. better polyphonic behaviour) | P4 |
-| 6 | Algorithms 4 and 6: interleaved fallback (X1) or documented limitation? | P4 |
+| 6 | Algorithms 4 and 6: interleaved fallback (X1) or documented limitation? **Partially closed, #47**: v1 documents the limitation and applies a collapse-to-single-self-feedback fallback (detected generically via cycle analysis, logged, never silent) — real X1 interleaved rendering (the actual two-operator loop) is `#54`, still open. | P4 |
 | 7 | Patch bank source — ship a curated set, or make `.syx` loading a runtime feature over MIDI SysEx? | P3 |
 | 8 | Does per-voice multitimbrality warrant a MIDI channel→patch mapping UI on the LCD? | P5 |
 | 9 | X2 operator waveforms — only if P0 leaves headroom | P6 |
