@@ -966,6 +966,283 @@ hand-analyzed one closely enough that the upcoming cycle-count bench session
 is measuring what `fm.md` §3 actually modeled, not a compiler-introduced
 detour.
 
+## FM P0 Measurement (#43) — measured, decisions, FX-insert estimate
+
+`fm.md` §11 step 1's actual bench session — the direct analogue of the
+tracker's #16 and speech's #31. Measured on `breadboard_rp2350`, GPIO 22,
+2026-08-08, via a 13-build sweep (`tools/fm_rig_sweep.sh`) each flashed and
+read individually, since the #42 rig holds one fixed voice-count/lever
+combination per build rather than self-cycling through phases like #16/#31.
+
+### FX insert in isolation — reused, not freshly measured
+
+`fx/delay.h`/`fx/reverb.h` are unchanged, engine-agnostic, global post-mix
+code (`fm.md` §2: "Unchanged — global insert on Core 1"; §11 step 1 itself
+suggested this cross-check: "`engine.md`'s existing subtractive table has
+delay/reverb deltas that can be sanity-checked against whatever comes out
+here"). Their cost is a fixed per-buffer tax applied after the voice mix,
+independent of which engine produced that mix — so the subtractive engine's
+already-measured deltas (Performance §, post-#12 table) are valid FX-insert
+numbers for FM too, without a new build:
+
+| | Idle duty | Delta vs. no-FX | Cycles/frame (×3401) |
+|---|---|---|---|
+| No FX | 0.6% | — | — |
+| Delay FX | 2.1% | +1.5% | **51.0 c/f** |
+| Reverb FX | 8.5% | +7.9% | **268.7 c/f** |
+
+This **replaces `fm.md` §9's ~150 c/f (4.4%) reservation** for reverb with a
+measured 268.7 c/f (7.9%) — about 1.8× the reservation. Re-running §3.4's
+headline arithmetic with the corrected FX cost (available budget =
+85% × 3401 − 15 idle − 268.7 FX = 2607.15, vs. the original 2726):
+
+| Derate scenario | Cycles/voice | Voices (§9 reservation, 150 c/f) | Voices (measured FX, 268.7 c/f) |
+|---|---|---|---|
+| Static, as compiled | 126 | 21 | 20 |
+| 25% derated | 158 | 17 | 16 |
+| 50% derated (worst case) | 189 | 14 | 13 |
+
+The correction costs about one voice at every tier. **It does not change the
+plan-against-16 decision** at the 25%-derate tier fm.md §3.4 flags as the
+expected case (2607/158 = 16.5, still rounds down to 16) — and as the
+operator bake-off below found, the real per-voice number (measured ~100.5
+c/f kernel-only, projected ~120 c/f with P2's still-unmeasured EG/LFO added)
+lands nowhere near the 200 c/f/voice tier where the thinner headroom would
+have mattered.
+
+Caveat: this is a reused number from a different engine's build, not a fresh
+reading from an FM binary with delay/reverb linked (the #42 rig's
+`T00T_FM_PROFILE` branch deliberately excludes `fx/`, per engine.md's #42
+section, to keep `.bss` small for the operator sweep). The code path is
+identical either way, so a divergence would be surprising, but this was not
+re-confirmed on an FM-specific build in this pass — a follow-up reading
+(`make ENGINE=fm`, normal non-profile build, delay/reverb toggled) would
+upgrade this from "reused" to "confirmed," at effectively no cost since
+#41's skeleton already links both effects. Not done here since the 16-voice
+decision doesn't depend on the last few percent of precision in this number.
+
+### Voice-count sweep
+
+`make ENGINE=fm FM_PROFILE=1 FM_RIG_VOICES=<n>`, defaults otherwise (BLOCK=16,
+TABLE_BITS=12, INTERLEAVE=0, NOT_IN_FLASH=0, SMULWB=0, FB=1):
+
+| Voices | Duty | Cycles/frame | Per-voice (c/f) |
+|---|---|---|---|
+| 1 | 2.97% | 101.0 | 101.0 |
+| 2 | 6.2% | 210.9 | 105.4 |
+| 4 | 12.1% | 411.5 | 102.9 |
+| 8 | 23.8% | 809.4 | 101.2 |
+| 16 | 47.3% | 1608.7 | 100.5 |
+| 24 | 70.8% | 2407.9 | 100.3 |
+
+Linear regression across all six points: **slope 100.05 c/f/voice, intercept
+7.79 c/f** (fixed per-buffer overhead — buffer clear, DMA/FIFO handoff,
+`__ssat` output write; no MIDI/IPC cost, since the rig bypasses
+`ParamExchange` entirely). Flat to within measurement noise from 2 to 24
+voices — no falloff or superlinear growth, same shape #16 and #31 found for
+their own sweeps.
+
+**This is markedly *below* `fm.md` §3.3's ~126 c/f static estimate — the
+opposite direction from the tracker/speech historical pattern** (measured
+usually runs 25–50% *above* static, which is exactly why P0 exists). Fully
+explained, not just noted: §3.3's 126 c/f bundles two things this P0 rig
+deliberately excludes. (1) It assumed "5 plain operators + 1 self-feedback,"
+but the actual topology (§"FM P0 Rig (#42)" above) is 4 first-writer
+operators + 1 modulated `op_render` + 1 `op_render_fb` — `op_render_first`
+is cheaper (12 compiled instructions vs. 13, #42's assembly extraction), so
+4 of the 6 operators cost less than §3.3 assumed. (2) §3.3's ~19 c/f/voice
+"per-block overhead amortised (6× EG step + exp2, LFO, pitch EG, bus setup)"
+has nothing to measure here — P0's rig has no EG, no LFO, no pitch EG by
+design (`fm.md` §1's P0 scope). Recovering per-operator costs by fitting the
+`FM_RIG_FB=0` vs. `FM_RIG_FB=1` delta below to the compiled instruction-count
+ratios (12:13:14.5 for first-writer:plain:self-feedback) gives **first ≈
+15.6 c/f, plain render ≈ 16.9 c/f, self-feedback ≈ 21.3 c/f** — matching
+§3.2's original hand-analyzed 16–18 / 21–23 c/f predictions closely. §3.2's
+*per-operator* numbers were right; §3.3's *per-voice total* was only off
+because of the topology miscount and the not-yet-existing EG/LFO line item,
+both now accounted for.
+
+### Lever bake-off (all at `FM_RIG_VOICES=16`, one lever changed per row vs. the table above's 100.5 c/f/voice baseline)
+
+| Lever | Duty | c/f/voice | Δ vs. baseline |
+|---|---|---|---|
+| Baseline (all defaults) | 47.3% | 100.5 | — |
+| Interleaved pair (`FM_RIG_INTERLEAVE=1`) | 46.57% | 99.0 | **−1.5 c/f (−1.5%)** |
+| SRAM-resident kernel (`FM_RIG_NOT_IN_FLASH=1`, original rig) | 47.3% | 100.5 | **0 — lever didn't engage, see below** |
+| BLOCK=8 | 44.97% | 95.6 | **−4.9 c/f (−4.9%)** |
+| BLOCK=32 | 52.41% | 111.4 | **+10.9 c/f (+10.8%)** |
+| 1024-entry table (`FM_RIG_TABLE_BITS=10`) | 47.3% | 100.5 | **0** |
+| `smulwb` fusion | 45.9% | 97.6 | **−3.0 c/f (−3.0%)** |
+| Plain vs. self-feedback (`FM_RIG_FB=0`) | 45.2% | 96.1 | **−4.5 c/f** (isolates the fb premium: 21.3 − 16.9 ≈ 4.4, matches) |
+
+Two results need explaining, not just recording:
+
+**`FM_RIG_NOT_IN_FLASH` measured zero effect — because the lever didn't
+actually engage.** Checked directly: `arm-none-eabi-objdump -h` on both
+builds showed an identical `.text` section (size and load address) whether
+`FM_RIG_NOT_IN_FLASH` was 0 or 1. Cause: `op_render()` etc. are `inline`
+functions that fully inline into `audio_engine_run()` at `-O3` (the same
+inlining #42's assembly-extraction section relied on). `__not_in_flash_func`
+places a function's *out-of-line* code in a linker section; once GCC inlines
+the body away, there is no separate symbol left for the attribute to apply
+to, so it does nothing — confirming the code really was always executing
+from flash (`.text` sits at `0x10000000`, RP2350's XIP range; SRAM starts at
+`0x20000000`).
+
+**Fixed and re-measured, tests 14/15** (`tools/fm_rig_sram_retest.sh`,
+`breadboard_rp2350`, 2026-08-08). `rig.h` now uses the pico-sdk's own
+`__no_inline_not_in_flash_func` for `FM_RIG_NOT_IN_FLASH=1` — the SDK
+documents this exact inlining trap and ships the fix (adds `noinline` so
+there's a real symbol for the section-placement attribute to act on).
+Device-verified the placement genuinely changed this time: `nm` shows
+`op_render`/`op_render_first`/`op_render_fb` at `0x2000....` (SRAM) for
+`=1`, vs. `0x1000....` (flash) for the new `=2` control (noinline, still
+flash — isolates the SRAM-vs-flash effect from the call/return overhead
+`noinline` itself adds, which the fully-inlined default never paid):
+
+| Build | Duty | c/f/voice | Δ vs. inlined-flash baseline (100.5) |
+|---|---|---|---|
+| 14: noinline, flash (control) | 51.83% | 110.2 | **+9.7 c/f (noinline cost alone)** |
+| 15: noinline, SRAM | 54.13% | 115.1 | **+14.6 c/f (noinline + SRAM)** |
+
+**Isolated SRAM-vs-flash effect (15 − 14): +4.9 c/f/voice — SRAM is *more*
+expensive, not less.** Backwards from the naive "SRAM is faster than flash"
+assumption `fm.md` §3.6 item 2 built the "non-negotiable" framing on.
+Explained, confirmed by evidence rather than asserted: `nm` on the `=1`
+build shows three linker-generated veneer stubs
+(`___Z9op_renderR7FmRigOpm_veneer` and two siblings) that the `=2` build
+does not have at all. Flash sits at `0x10000000` and SRAM at `0x20000000` —
+a ~256 MB gap, outside a Thumb `BL`'s encodable range, so every call from
+the still-flash-resident render loop into the SRAM-placed kernel must
+detour through an indirection the same-region flash call never pays. RP2350
+also XIP-caches flash reads, and this kernel is small and reused every
+sub-block — exactly the case where the cache erases most of flash's
+latency disadvantage, leaving the veneer indirection as a net cost with
+nothing to offset it.
+
+**Decision: keep the kernel inlined in flash.** Not just "SRAM measured
+worse than the noinline-flash control" — inlined-flash (today's actual
+default, `FM_RIG_NOT_IN_FLASH=0`) beats *both* noinline variants by a wide
+margin (100.5 vs. 110.2/115.1), since inlining also removes the call/return
+overhead entirely. There is no configuration in this data where moving the
+kernel out of flash helps; `fm.md` §3.6 item 2 is closed against the
+opposite of its original assumption.
+
+**Caveat, `fm.md` open question 10.** All of the above was measured with
+Core0 doing essentially no flash-side work — MIDI/LCD/control are still
+stubs. RP2350's 16 KB XIP cache is one shared resource for both cores
+(`hardware_xip_cache.h`), so this margin isn't guaranteed once Core0 has
+real LCD/MIDI/control traffic that can evict the FM kernel's cache lines
+right when Core0 is busiest — exactly the timing where an audio glitch
+would be most noticeable, and exactly what this measurement, run with a
+quiet Core0, could not catch. Not retested here since there's no real Core0
+workload yet to contend against. Mitigation on hand if it turns out to
+matter: `xip_cache_pin_range()` (RP2350-only) permanently reserves the
+kernel's flash range against eviction by anything else. If that doesn't pan
+out, SRAM's "measured worse" verdict above was itself measured in
+isolation — SRAM sidesteps this specific shared-cache problem entirely (its
+own contention risk is per-bank and controllable), so it remains a fallback,
+not a closed door.
+
+**BLOCK direction is inverted from `fm.md` §3.6 item 3's framing, and the
+cause is unrolling, not per-block amortisation.** §3.6 assumed larger BLOCK
+saves cost by amortising per-block overhead — but that overhead (EG step,
+exp2, LFO) doesn't exist in this rig (same reason as the voice-sweep
+discrepancy above), so there was nothing for a larger BLOCK to amortise.
+What actually happened: `arm-none-eabi-size` on the compiled
+`audio_engine.cpp.o` shows `audio_engine_run()` at 3,172 bytes (BLOCK=8),
+**5,568 bytes (BLOCK=16, the largest of the three)**, and 1,336 bytes
+(BLOCK=32) — and disassembly confirms why: at BLOCK=32 the per-operator
+sample loop compiles to a real branching loop (`bne.n`, 13-instruction body,
+exact match to §3.2's hand-analyzed listing), while BLOCK=8 and BLOCK=16 get
+substantially unrolled by GCC (no backward branch in an isolated,
+`noinline`-wrapped probe of the same loop), eliminating the per-sample
+loop-control cost that BLOCK=32 keeps paying. This is a compiler
+unrolling-threshold artifact specific to this EG/LFO-free rig, not a
+property of BLOCK size itself — once P2 adds the real per-block control-rate
+work, that will reintroduce genuine amortisation and could shift the balance
+back. Recorded as the "operator-cost side of the trade" `fm.md` asked P0 to
+settle; final confirmation is still P2's, as already planned.
+
+The interleaved-pair result (−1.5%) is real but far smaller than §3.6 item
+1's "likely the single largest win" expectation. Plausible explanation, not
+confirmed by disassembly: op0/op1 are called as two sequential
+`op_render_first()` invocations even at `FM_RIG_INTERLEAVE=0`, and once both
+fully inline into `audio_engine_run()`, GCC's own instruction scheduler has
+the same independent-load-use-stall visibility across that boundary that the
+hand-written interleaved kernel provides deliberately — so much of the
+win may already be captured by the compiler before the lever is even
+applied.
+
+Table size (0) and `smulwb` (−3.0%) landed exactly as predicted: §3.5's
+"identical instruction count" claim for 4096 vs. 1024 holds, and the DSP
+fusion buys a small, real win with no correctness cost (already host- and
+device-verified in #42).
+
+### Decisions
+
+- **`MAX_VOICES = 16`, confirmed** (was `fm.md` §3.4's provisional plan
+  value since #41). Projected real per-voice cost = measured kernel (100.5
+  c/f) + `fm.md` §3.3's still-unmeasured ~19 c/f EG/LFO reservation (P2
+  scope, out of reach for this EG/LFO-free rig) ≈ **119.5 c/f/voice**.
+  Against the FX-corrected budget (2607 c/f, below), 16 voices costs 1,608
+  c/f — a comfortable ~27% margin even before any credit for the P0 kernel
+  number beating its own static estimate. The projection also clears §3.4's
+  ≤130 c/f "20+ voices" threshold, but that number leans on an unverified P2
+  estimate rather than a bench reading, so raising `MAX_VOICES` past 16 is
+  deferred to a P2 bench pass once `EnvDX`/LFO exist to measure for real,
+  per §3.4's own "surplus is spent on polyphony, not features" guidance —
+  not decided here on a projection.
+- **BLOCK = 16, provisional** (unchanged from `fm.md`'s assumption). The
+  kernel-only measurement doesn't clearly favor a change: BLOCK=8 is 4.9%
+  cheaper but BLOCK=32 is 10.8% more expensive, and both effects are
+  compiler-unrolling artifacts of this EG-free rig rather than the
+  per-block amortisation §5.3's actual BLOCK/EG-resolution tradeoff is
+  about. Final call stays P2's, against real rate-99 attacks, as `fm.md`
+  already planned.
+- **Kernel form: plain, not interleaved.** −1.5% doesn't justify the
+  two-operand interleaved kernel's added complexity (only valid for
+  mutually-independent operand pairs, more code paths in the eventual
+  routing compiler). `op_render_pair()` stays in `rig.h`, unused by the
+  decision.
+- **Self-feedback stays "always on," no cheap fallback needed.** Measured
+  premium (~4.4–4.5 c/f, isolated two ways: the FB=0/FB=1 rig delta and the
+  fitted per-operator decomposition) matches `fm.md` §3.3's assumed 22-vs-17
+  budget closely (fitted: 21.3 vs. 16.9). No surprise here to explain.
+- **Keep the kernel inlined in flash — do not move it to SRAM** (tests 14/15,
+  above). Isolated SRAM-vs-flash effect is +4.9 c/f/voice *worse*, not
+  better (linker veneers on every call crossing the flash→SRAM gap, with no
+  offsetting win since RP2350's XIP cache already erases most of flash's
+  latency disadvantage for a small, reused-every-block loop like this one).
+  Inlined-flash beats both noinline variants outright regardless of
+  placement. Closes `fm.md` §3.6 item 2 against the opposite of its
+  original "non-negotiable" assumption.
+- **Freeverb stays.** Real cost is 268.7 c/f (7.9%), not the ~150 c/f (4.4%)
+  reservation, but the 16-voice budget still clears with margin (above) —
+  see the FX-insert section below for the full number.
+
+`fm.md`'s provenance caveat, §3.4, and open questions 1–2 are updated to
+match — see `fm.md` directly.
+
+The `FM_RIG_FB` lever, the CMake/Makefile plumbing for it, and the isolated-
+plain-vs-feedback topology fork in `fm_rig_render_voice_block()` did not
+exist before #43 — #42's fixed topology could exercise `op_render_fb()`
+correctly but had no way to A/B it against a plain operator in the same
+chain position. Host-verified (`render_fm_rig`, direct compile-flag sweep):
+`FM_RIG_FB=0`, `FM_RIG_FB=0 FM_RIG_INTERLEAVE=1`, and the `FM_RIG_FB=1`
+default all pass the existing bounded/non-silent checks. Device-verified:
+`make ENGINE=fm FM_PROFILE=1 FM_RIG_FB=0` builds clean, and a combined-
+levers build with `FM_RIG_FB=0` added to #42's existing combination
+(`FM_RIG_INTERLEAVE=1 FM_RIG_TABLE_BITS=10 FM_RIG_BLOCK=8 FM_RIG_VOICES=32
+FM_RIG_NOT_IN_FLASH=1 FM_RIG_SMULWB=1`) builds clean at 29,144/18,296/47,440
+(text/bss/dec) — smaller than #42's all-levers-combined 29,104/18,296/47,400
+by the expected margin (`op_render()` is shorter than `op_render_fb()`, and
+that's the only thing this lever changes). The default `FM_PROFILE=1` build
+(all levers unset, `FM_RIG_FB` implicitly 1) reproduces #42's exact
+32,080/23,064/55,144 byte-for-byte, and the plain `make ENGINE=fm` skeleton
+(no `FM_PROFILE`) reproduces #41's exact 27,784/202,768/230,552 — confirming
+this slice changed nothing observable about either existing build.
+
 ## Host DSP Tooling
 
 `tools/host_render/` (issue #5 phase 2) is a standalone CMake project — no

@@ -71,11 +71,11 @@ static bool run_rig_check(const char *label) {
 
     bool nonsilent = peak > 100.0f;
     bool pass = ok && bounded && nonsilent;
-    printf("%s: [%s] voices=%u block=%u table_bits=%u interleave=%d not_in_flash=%d smulwb=%d "
+    printf("%s: [%s] voices=%u block=%u table_bits=%u interleave=%d not_in_flash=%d smulwb=%d fb=%d "
            "peak=%.0f bounded=%s\n",
            pass ? "PASS" : "FAIL", label, (unsigned)FM_RIG_VOICES, (unsigned)FM_RIG_BLOCK,
            (unsigned)FM_RIG_TABLE_BITS, FM_RIG_INTERLEAVE, FM_RIG_NOT_IN_FLASH, FM_RIG_SMULWB,
-           peak, bounded ? "yes" : "no");
+           FM_RIG_FB, peak, bounded ? "yes" : "no");
     if (!bounded) printf("  FAIL: accumulator exceeded the plausible per-voice-unity bound -- overflow?\n");
     if (!nonsilent) printf("  FAIL: rig produced near-silent output\n");
     if (!ok) printf("  FAIL: could not write WAV file\n");
