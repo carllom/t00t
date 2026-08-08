@@ -395,12 +395,24 @@ Block size is chosen by EG time resolution, not by the operator kernel. BLOCK=16
 gives 0.36 ms granularity, adequate for the DX7's fastest attacks; BLOCK=32 (0.73 ms)
 is likely too coarse for rate-99 attacks. Confirm empirically in P2.
 
-> **Cross-module note.** This is structurally the same problem as the speech
-> module's per-voice segment clocks: *N independent control-rate clocks per voice*,
-> stepped at block boundaries, driving per-sample interpolated values. The
-> tracker's single ordered `TickBlock` ring does not serve either case. If a
-> shared `BlockClock` abstraction is worth extracting, FM and speech are the two
-> customers — decide once, at P2, rather than twice.
+> **Cross-module note, closed #46: reject, no shared code.** This looked
+> structurally like the speech module's per-voice segment clocks: *N
+> independent control-rate clocks per voice*, stepped at block boundaries,
+> driving per-sample interpolated values. Compared against the real trees
+> (`env_dx.h`/`op.h` here vs. `sequencer.h`/`tract.h` in speech) once both
+> existed, the shared shape turned out to be only "check a countdown at a
+> block boundary, then update state something downstream reads." Everything
+> below that diverges: `EnvDX` is one instance *per operator* (6 independent
+> fixed-4-stage machines per voice) in log2 fixed-point, handing the kernel
+> an exact `gain`/`gain_step` pair for true per-sample linear interpolation;
+> speech's sequencer is one clock *per voice* driving a variable-length
+> phoneme segment list in plain float, and its "step" is a one-pole IIR
+> smooth toward target held constant for the whole sub-block — no per-sample
+> interpolation at all. A shared `BlockClock` would force a lowest-common-
+> denominator template that costs FM cycles it doesn't pay today and gives
+> speech an interpolation mechanism it doesn't use. Common pattern, no common
+> code — see `architecture.md` "Settled Decisions" for the full writeup.
+> Speech's sequencer (#34/#36/#37, hardware-verified) is untouched.
 
 ### 5.4 `fm/pitch_eg.h` — pitch envelope
 
@@ -655,7 +667,7 @@ possibly the 4096-entry table.
 | 1 | ~~Measured cycles/operator, and therefore the real voice count~~ **Closed, #43: 100.05 c/f/voice measured (kernel only), `MAX_VOICES=16` confirmed** — `engine.md` §"FM P0 Measurement (#43)". Raising past 16 deferred to a P2 bench pass once EG/LFO exist to measure. | **P0 — done** |
 | 2 | ~~FX insert cost in isolation; is Freeverb worth ~4% in an FM context?~~ **Closed, #43: 268.7 c/f / 7.9% (reused from the subtractive engine's identical shared FX code), not ~4%. Freeverb stays** — the 16-voice budget clears with ~27% margin even at the corrected cost. | **P0 — done** |
 | 3 | ~~BLOCK size — 16 assumed; confirm against rate-99 attacks~~ **Closed, #45: BLOCK=16 confirmed, not raised to 32 or lowered to 8** — `engine.md` §"FM P2 BLOCK Confirmation (#45)". | **P2 — done** |
-| 4 | Extract a shared `BlockClock` for FM and speech, or keep them separate? Still open — #45 built EnvDX's block-stepping standalone (env_dx_step_block(), op.h's fm_voice_step_envelopes()), same shape as speech's per-voice segment clocks but not sharing code with them. | P2 |
+| 4 | ~~Extract a shared `BlockClock` for FM and speech, or keep them separate?~~ **Closed, #46: reject — common pattern, no common code.** Compared the real `EnvDX` (§5.3) against speech's segment sequencer: per-operator vs. per-voice instancing, fixed 4-stage log2 vs. variable-length float segments, exact per-sample `gain_step` interpolation vs. per-sub-block-constant IIR smoothing. See §5.3's cross-module note and `architecture.md` "Settled Decisions". Speech's sequencer (#34/#36/#37) untouched. | **P2 — done** |
 | 5 | Global vs. per-voice LFO default (DX7 fidelity vs. better polyphonic behaviour) | P4 |
 | 6 | Algorithms 4 and 6: interleaved fallback (X1) or documented limitation? | P4 |
 | 7 | Patch bank source — ship a curated set, or make `.syx` loading a runtime feature over MIDI SysEx? | P3 |
