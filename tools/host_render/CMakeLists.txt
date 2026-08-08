@@ -68,3 +68,14 @@ target_include_directories(render_fm PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}
     ${CMAKE_CURRENT_LIST_DIR}/../../src
 )
+
+# Host build of src/engines/fm/rig.h (#42): the P0 measurement rig's
+# stripped 6-operator x N-voice mixer, checked here for correctness (real,
+# finite, non-clipping audio through all three kernel variants) before the
+# actual cycle-count bench session. Fully self-contained -- rig.h has its own
+# table and doesn't touch osc/sine.h or pan.h -- so no extra source needed.
+add_executable(render_fm_rig render_fm_rig.cpp)
+target_include_directories(render_fm_rig PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}
+    ${CMAKE_CURRENT_LIST_DIR}/../../src
+)

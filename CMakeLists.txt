@@ -105,6 +105,19 @@ if(DEFINED SPEECH_PROFILE AND NOT SPEECH_PROFILE STREQUAL "0")
     target_compile_definitions(t00t PRIVATE T00T_SPEECH_PROFILE=1)
 endif()
 
+# #42 P0 rig override (FM engine only, see src/engines/fm/rig.h/audio_engine.cpp).
+if(DEFINED FM_PROFILE AND NOT FM_PROFILE STREQUAL "0")
+    target_compile_definitions(t00t PRIVATE T00T_FM_PROFILE=1)
+endif()
+
+# fm.md §3.6 tuning levers on the #42 rig — each "default"/unset leaves
+# rig.h's own #ifndef default in place, same convention as DMA_BUFFER_SIZE.
+foreach(_lever FM_RIG_VOICES FM_RIG_BLOCK FM_RIG_TABLE_BITS FM_RIG_INTERLEAVE FM_RIG_NOT_IN_FLASH FM_RIG_SMULWB)
+    if(DEFINED ${_lever} AND NOT ${_lever} STREQUAL "default")
+        target_compile_definitions(t00t PRIVATE ${_lever}=${${_lever}})
+    endif()
+endforeach()
+
 # See ENGINE_VOICE_ALLOC above — tells main.cpp to skip the voice_alloc calls
 # it would otherwise fail to link against on the tracker build.
 if(T00T_ENGINE STREQUAL "tracker")

@@ -821,6 +821,151 @@ ENGINE=fm`, alongside a fresh rebuild of all four other engines to confirm
 speech figures have simply grown since #27 (P2–P4 landed in the meantime),
 unrelated to this change.
 
+## FM P0 Rig (#42)
+
+`fm.md` §11: "Start at P0 — measure." This is the measurement rig itself, not
+the measurement — it's blocked ahead of the actual bench session (a future
+issue), the same relationship #16's tracker mixer rig and #31's speech
+profiling rig had to their own follow-up bench passes. It **decides nothing**
+about voice count, table size, BLOCK, or any other §3.6 lever; it only makes
+all of them buildable and switchable in one bench sitting.
+
+Self-contained in `src/engines/fm/rig.h`, entirely separate from #41's real
+engine skeleton (`engine.h`/`sine_tab.h`/`render.h` are untouched) so nothing
+here risks the already hardware-verified #41 build. Selected by `make
+ENGINE=fm FM_PROFILE=1` (`T00T_FM_PROFILE`, same pattern as speech's
+`SPEECH_PROFILE` — see `src/engines/fm/audio_engine.cpp`'s `#if`/`#else`),
+with every `fm.md` §3.6 lever as its own compile-time switch, documented in
+the Makefile next to `FM_PROFILE`:
+
+| Switch | Values | Default |
+|---|---|---|
+| `FM_RIG_VOICES` | voice count | 24 (past the predicted 12–21 ceiling, §3.4) |
+| `FM_RIG_BLOCK` | 8 / 16 / 32 | 16 |
+| `FM_RIG_TABLE_BITS` | 10 (1024) / 12 (4096) | 12 |
+| `FM_RIG_INTERLEAVE` | 0 / 1 | 0 |
+| `FM_RIG_NOT_IN_FLASH` | 0 / 1 | 0 |
+| `FM_RIG_SMULWB` | 0 / 1 | 0 |
+
+`FM_RIG_NOT_IN_FLASH` only moves the kernel *code*; the table itself
+(`fm_rig_table`) is a runtime-generated, non-`const` array — always `.bss`/
+SRAM, never flash `.rodata` — so that axis was never independently
+toggleable to begin with, and the lever really measures code placement only.
+`FM_RIG_SMULWB` fuses the `gain >> 8` + multiply into one M33 instruction;
+this GCC's `arm_acle.h` has no standalone `__smulwb` wrapper, only
+`__smlawb` (multiply-*accumulate*) — `__smlawb(gain, sample, 0)` is exactly
+SMULWB with the accumulate operand forced to zero.
+
+**Topology.** No patch, no DAG compiler (`fm.md` explicitly: "no patch
+logic") — a fixed 6-operator chain per voice, hand-assigned so every
+`op_render`/`op_render_fb` accumulate (`+=`) is guaranteed a preceding
+`op_render_first` store on the same bus (the property the real engine's
+note-on-time router will handle later):
+
+```
+op0 -> bus0            first-writer  (op_render_first, in=zero)      \_ interleaved
+op1 -> bus1            first-writer  (op_render_first, in=zero)      /  when FM_RIG_INTERLEAVE=1
+op2 -> bus1 (+=)       accumulate    (op_render, in=bus0)
+op3 -> bus1 (+=)       accumulate    (op_render_fb, self-feedback)
+op4 -> bus3            first-writer  (op_render_first, in=bus1)
+op5 -> OUT             first-writer  (op_render_first, in=bus3)   -- the voice's carrier
+```
+
+All three kernel variants land in a topology that's correct by construction
+rather than by convention: bus1 gets three real writers (op1 first, op2 and
+op3 accumulating on top), proving the first-writer/no-clearing claim isn't
+just asserted but exercised. `bus2`/`bus4`/`bus5` are allocated (`FmRigBuses`
+always carries all 6 mod + 1 out) but unused by this particular chain — real
+algorithms with more parallel modulators would use them.
+
+**Fixed increments/gains** (`fm_rig_init_voice()`): every operator gets a
+harmonic-multiple frequency and a flat gain (`gain_step = 0` throughout —
+the field and the kernels' `gain += gain_step` instruction still exist and
+execute every sample, since that's the actual cost being measured; it's the
+*value* that's fixed, not the instruction). Scaled well below unity so
+`FM_RIG_VOICES` summed carriers don't just sit at flat `__ssat` clipping —
+a rig that saturates for its whole run can't tell a healthy render from a
+broken one by ear or by eye.
+
+**Host correctness check** (`tools/host_render/render_fm_rig.cpp`, `render_fm_rig`
+target): calls the exact `fm_rig_render_buffer()` the device's `T00T_FM_PROFILE`
+branch calls, in device-sized chunks, and checks the output is non-silent and
+its magnitude stays within a generous per-voice-unity bound (catching a real
+accumulator overflow without false-triggering on ordinary saturation, which
+device `__ssat()` handles the same way regardless). Verified locally against
+every lever combination by compiling the driver directly with each `-D` (host
+`cmake`/`make` only builds the default combination; sweeping the rest is a
+compile-flag exercise, not something worth a matrix of CMake targets):
+default, `FM_RIG_INTERLEAVE=1`, `FM_RIG_TABLE_BITS=10`, `FM_RIG_SMULWB=1`,
+`FM_RIG_BLOCK=8/32`, `FM_RIG_VOICES=1/32` — all pass, and every non-default
+lever reproduces the default's exact peak (7644), confirming each is a pure
+performance/placement change with zero effect on the arithmetic.
+
+**Device build.** `make ENGINE=fm FM_PROFILE=1` and a combined-levers build
+(`FM_RIG_INTERLEAVE=1 FM_RIG_TABLE_BITS=10 FM_RIG_BLOCK=8 FM_RIG_VOICES=32
+FM_RIG_NOT_IN_FLASH=1 FM_RIG_SMULWB=1`) both build clean:
+
+| Build | text | bss | dec |
+|---|---|---|---|
+| fm, FM_PROFILE=1 (defaults) | 32,080 | 23,064 | 55,144 |
+| fm, FM_PROFILE=1 (all levers combined) | 29,104 | 18,296 | 47,400 |
+| fm, FM_PROFILE=0 (#41 skeleton, unchanged) | 27,784 | 202,768 | 230,552 |
+
+The profiling build's `.bss` is far smaller than #41's skeleton because
+`T00T_FM_PROFILE`'s branch doesn't link `fx/delay.h`/`fx/reverb.h` at all —
+the rig has no use for the 128 KB delay line, and `fm.md` never asked this
+slice to carry it. `rm -rf build && make ENGINE=fm` (no `FM_PROFILE`)
+reproduces #41's exact 27,784/202,768/230,552 byte-for-byte, and `subtractive`/
+`groovebox`/`tracker`/`speech` all rebuilt clean and unchanged from their #41
+table.
+
+**Emitted assembly vs. `fm.md` §3.2.** Extracted by compiling `rig.h`
+directly with the flags `fm.md`'s own provenance note specifies
+(`arm-none-eabi-g++ -O3 -mcpu=cortex-m33 -mthumb -mfloat-abi=hard
+-mfpu=fpv5-sp-d16 -std=gnu++17`) through a `noinline` wrapper, since
+`op_render()` normally inlines completely into `audio_engine_run()` at `-O3`.
+First attempt reloaded `op.inc`/`op.gain_step` from memory every sample (15
+instructions, not 13) — the C++ source only hoisted `phase`/`gain`/`in`/`out`
+into locals, not `inc`/`gain_step`, and GCC's strict-aliasing rules can't
+prove an `int32_t*` write to the output bus doesn't alias those `FmRigOp`
+fields, so it played it safe and reloaded them. Hoisting all four fixed the
+gap — a real, source-level finding this exercise existed to catch, not a
+compiler quirk to shrug off. The corrected `op_render()` loop body:
+
+```
+ldr   r3, [r2, #4]!         @ modulation bus in (pre-increment)
+add   lr, lr, r7            @ phase += inc
+add   r3, r3, lr            @ phase + modulation
+lsrs  r3, r3, #20            @ table index (20, not fm.md's #22 -- this rig's
+                              @ default is the 4096-entry table #41 settled on)
+ldrsh fp, [r1, r3, lsl #1]  @ table lookup
+asrs  r3, r4, #8             @ gain >> 8
+mul   fp, r3, fp             @ x sample
+ldr   r3, [ip, #4]!         @ output bus accumulate (pre-increment)
+cmp   r5, r2
+add   r3, r3, fp, asr #14    @ >>14, accumulate
+add   r4, r4, r6             @ gain += gain_step
+str   r3, [ip]
+bne   .L3
+```
+
+**13 instructions, exact match to `fm.md` §3.2's hand-analyzed listing** —
+same instruction sequence, same register roles (phase/inc/gain/gain_step/
+in-ptr/out-ptr/table-ptr each resident for the whole loop), same
+pre-increment addressing GCC chose on its own. The only difference is the
+shift amount (`#20` vs. the original draft's `#22`), which is exactly the
+1024-vs-4096-table difference `fm.md` §3.5/§5.1 already settled — not a
+discrepancy, a confirmation. `op_render_first()` compiles to 12 instructions
+(one less: no pre-read of the output bus before storing, exactly the
+saving §5.2 attributes to that variant). `op_render_fb()` compiles to
+14–15 instructions per iteration (the self-feedback average and history
+shuffle add real cost, smaller than the original draft's 1024-table-era
+18-instruction estimate but the same direction). None of this is a bench
+result — it's confirmation that the *compiled* kernel matches the
+hand-analyzed one closely enough that the upcoming cycle-count bench session
+is measuring what `fm.md` §3 actually modeled, not a compiler-introduced
+detour.
+
 ## Host DSP Tooling
 
 `tools/host_render/` (issue #5 phase 2) is a standalone CMake project — no
