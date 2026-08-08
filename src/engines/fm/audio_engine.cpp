@@ -81,21 +81,18 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
 
 #else
 
-#include "render.h"
+#include "op.h"
 #include "fx/delay.h"
 #include "fx/reverb.h"
 
-// Build/boot smoke test (#41): no operator kernel, no patch struct, no
-// envelope, no algorithm table yet -- fm.md's P0 measurement gate (#42) is
-// the very next slice, and it needs this build target to measure on. Proves
-// the build seam, MAX_VOICES=16 (provisional), the FM-specific 4096-entry
-// sine table (sine_tab.h/render.h), and that delay/reverb stay linked (fm.md
-// §2: FM's whole working set is ~12 KB, so the 128 KB delay line costs it
-// nothing it needs). Voice 0 is a hardcoded, always-on test tone rather than
-// MIDI-driven; voices 1..15 are silent placeholders.
-static constexpr float TEST_TONE_HZ = 440.0f;  // matches the other full-rate skeletons (subtractive/groovebox/tracker)
-
-static uint32_t voice0_phase;
+// FM engine (#44, fm.md P1): supersedes #41's fixed test-tone skeleton.
+// MAX_VOICES independent 6-operator voices, each driven straight from
+// VoiceParams (phase_inc = bend-scaled note frequency, patch = the whole
+// timbre, amplitude = velocity, gate = held/released) with routing resolved
+// once per note-on (patch.h's fm_resolve_routing()) and re-rendered every
+// buffer through op.h's kernels. No EG yet (fixed gains, #44's own scope --
+// EnvDX is P2), so gate=false silences the voice immediately rather than
+// releasing it.
 
 // `fx_buf` is the mono send/return scratch for the post-mix effect (mono
 // send / stereo return).
@@ -107,19 +104,34 @@ static FxDelay  fx_delay;
 static FxReverb fx_reverb;
 static uint8_t  s_last_fx_type = 0xFF;
 
+// Per-voice render state (Core 1 only, never crosses ParamExchange).
+static FmOp     voice_ops[MAX_VOICES][FM_NUM_OPS];
+static FmRouting voice_routing[MAX_VOICES];
+static uint8_t  voice_last_trigger[MAX_VOICES];
+static bool     voice_routing_valid[MAX_VOICES];
+
+// Shared bus scratch (fm.md §4.3: "one shared scratch for the whole engine,
+// not per-voice" -- reused across every voice, sequentially, within a pass).
+static int32_t bus_mod0[FM_BLOCK], bus_mod1[FM_BLOCK], bus_mod2[FM_BLOCK];
+static int32_t bus_mod3[FM_BLOCK], bus_mod4[FM_BLOCK], bus_mod5[FM_BLOCK];
+static int32_t bus_out[FM_BLOCK];
+
 void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
     // Init profiling pin
     gpio_init(PROFILE_PIN);
     gpio_set_dir(PROFILE_PIN, GPIO_OUT);
     gpio_put(PROFILE_PIN, 0);
 
-    voice0_phase = 0;
     fm_init_sine_tab();
     osc_init_sine();  // pan.h's pan_gains_q15() reuses the shared sine table for its quadrature gains
     fx_delay.init();
     fx_reverb.init();
+    for (uint32_t v = 0; v < MAX_VOICES; v++) {
+        voice_last_trigger[v] = 0xFF;  // guarantees the first real note-on (trigger starts at 1) resolves routing
+        voice_routing_valid[v] = false;
+    }
 
-    const uint32_t inc = fm_phase_inc(TEST_TONE_HZ);
+    FmVoiceBuses bus{ { bus_mod0, bus_mod1, bus_mod2, bus_mod3, bus_mod4, bus_mod5 }, bus_out };
 
     while (true) {
         // Wait for DMA ISR to tell us which buffer to fill
@@ -128,12 +140,38 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
         gpio_put(PROFILE_PIN, 1);
         uint32_t t_start = time_us_32();
 
-        // Snapshot committed params — unused until the operator kernel
-        // lands, but read every pass so the double-buffer handoff is
-        // exercised.
+        // Snapshot committed params
         const VoiceParamBlock &vp = params->active();
 
-        fm_render_test_tone(voice0_phase, inc, /*pan=*/0, dry_l, dry_r, SAMPLES_PER_BUFFER);
+        for (uint32_t i = 0; i < SAMPLES_PER_BUFFER; i++) {
+            dry_l[i] = 0;
+            dry_r[i] = 0;
+        }
+
+        uint32_t active_mask = 0;
+        for (uint32_t v = 0; v < MAX_VOICES; v++) {
+            const VoiceParams &p = vp.voices[v];
+            if (!p.gate || !p.patch) continue;
+
+            // Routing (order/bus pointers/kernel selection/first-writer
+            // flags) is resolved once per note-on, from patch data alone
+            // (fm.md §5.6) -- a new `trigger` value is exactly that event.
+            if (p.trigger != voice_last_trigger[v]) {
+                voice_routing_valid[v] = fm_resolve_routing(*p.patch, voice_routing[v]);
+                if (voice_routing_valid[v]) {
+                    fm_voice_note_on(voice_ops[v], *p.patch, p.phase_inc, p.amplitude);
+                }
+                voice_last_trigger[v] = p.trigger;
+            }
+            if (!voice_routing_valid[v]) continue;  // patch failed DAG validation (fm.md §4.2) -- skip, don't mis-render
+
+            // Live pitch bend: re-derive every operator's `inc` from the
+            // note's current base increment every buffer, without touching
+            // note-on-only state (gain, routing, feedback history).
+            fm_voice_update_pitch(voice_ops[v], *p.patch, p.phase_inc);
+            fm_render_voice(voice_ops[v], voice_routing[v], bus, p.pan, dry_l, dry_r, SAMPLES_PER_BUFFER);
+            active_mask |= (1u << v);
+        }
 
         // Post-mix effect (delay / reverb, selected by CC74) — identical
         // shape to the other engines' chain. Mono send / stereo return:
@@ -170,8 +208,8 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
         uint32_t busy_us = time_us_32() - t_start;
         gpio_put(PROFILE_PIN, 0);
 
-        // Active-voice bitmap to Core 0 (non-blocking): voice 0 always sounding.
-        multicore_fifo_push_timeout_us(1u, 0);
+        // Active-voice bitmap to Core 0 (non-blocking).
+        multicore_fifo_push_timeout_us(active_mask, 0);
 
         // Publish render load for the UI. EMA (alpha 1/8) of the per-buffer render
         // time as a fraction of the buffer deadline.
