@@ -95,12 +95,12 @@ static bool run_routing_checks() {
     FmPatch cyclic = FM_TEST_PATCH;
     cyclic.op[2].mod_target = 3;
     cyclic.op[3].mod_target = 2;
-    cyclic.op[3].feedback = false;
+    cyclic.op[3].feedback_level = 0;
     FmRouting r_cyclic;
     bool cyclic_accepted = fm_resolve_routing(cyclic, r_cyclic);
 
     FmPatch self_target = FM_TEST_PATCH;
-    self_target.op[1].mod_target = 1;  // malformed: not the `feedback` flag's job
+    self_target.op[1].mod_target = 1;  // malformed: not `feedback_level`'s job
     FmRouting r_self_target;
     bool self_target_accepted = fm_resolve_routing(self_target, r_self_target);
 

@@ -55,7 +55,7 @@ struct FmOp {
     int32_t  gain_step;    // per-sample delta for this block, from EnvDX (#45, env_dx.h)
     const int32_t *in;     // modulation bus, or fm_zero_bus for an unmodulated operator
     int32_t *out;           // modulation bus, or the shared voice output bus
-    int32_t  fb1, fb2;      // op_render_fb only: last two raw table outputs
+    int32_t  fb1, fb2;      // op_render_fb only: last two post-gain outputs (see op_render_fb's own comment)
     EnvDX    eg;            // #45: this operator's own 4-stage envelope
     int32_t  static_log2;   // #45/#48: output level + velocity sensitivity + key level scaling, resolved once at note-on
     int32_t  rate_scale_qrate; // #48: key rate scaling, resolved once at note-on, added to every stage's qrate (env_dx.h's env_dx_step_block)
@@ -178,12 +178,41 @@ inline void op_render_first(FmOp &op, uint32_t n, int32_t out_shift) {
     op.gain = gain;
 }
 
-// Self-feedback: the modulation input is this operator's own last two raw
-// table outputs, averaged, instead of an external bus (DX7-style). Always
-// accumulates (+=) -- patch.h's routing compiler guarantees this is safe by
-// either scheduling a non-feedback first-writer ahead of it on a shared
-// bus, or (clear_bus_mask) pre-zeroing a bus whose only writer is this op.
-inline void op_render_fb(FmOp &op, uint32_t n, int32_t out_shift) {
+// Self-feedback: the modulation input is this operator's own last two
+// outputs, averaged and attenuated by `fb_shift` (patch.h's FmRouting,
+// resolved at note-on from FmOpParams::feedback_level, DX7 units 0-7),
+// instead of an external bus (DX7-style). Always accumulates (+=) --
+// patch.h's routing compiler guarantees this is safe by either scheduling a
+// non-feedback first-writer ahead of it on a shared bus, or (clear_bus_mask)
+// pre-zeroing a bus whose only writer is this op.
+//
+// Two real bugs fixed here, found by comparing against Dexed's actual
+// `compute_fb`/`fb_buf` (Source/msfa/fm_op_kernel.cc, Apache-2.0) after #57's
+// shift fixes still left real ROM1A patches "soft" on hardware:
+//
+// 1. `fb_shift` used to not exist at all -- self-feedback was no-op-or-full
+//    (a bool), always at the single fixed depth this kernel happened to
+//    produce. Real DX7 hardware (dx7note.cc: `fb_shift_ = feedback ? 8 -
+//    feedback : 16`; fm_op_kernel.cc: `scaled_fb = (y0+y) >> (fb_shift+1)`)
+//    spans a 64x (2^6) depth range across levels 1-7 -- collapsing that to
+//    "on" threw away exactly the parameter DX7 patches use for their edge
+//    (brass bite, EP pluck, etc). `fb_shift` (patch.h's FmRouting::fb_shift,
+//    `8 - feedback_level`) restores the real per-level spacing, anchored so
+//    level 7 (max) reproduces this kernel's old, already-safe "always full"
+//    >>1 behavior exactly -- see patch.h's FmRouting::fb_shift comment.
+// 2. `fb1`/`fb2` used to store the *raw* table lookup (`sample`, before
+//    `fm_mul_gain`) -- constant magnitude regardless of the operator's own
+//    envelope, so a decaying/releasing operator's feedback "buzz" never
+//    faded with it. Dexed's own `fb_buf` stores `y` *after* the gain
+//    multiply (fm_op_kernel.cc's `compute_fb`: `y = (y*gain)>>24; ...
+//    fb_buf[1] = y`) -- feedback intensity tracks the envelope on real
+//    hardware, which is why it "breathes" with the note. Fixed by storing
+//    `scaled` (post-`fm_mul_gain`, pre-`out_shift`) below instead of `sample`
+//    -- pre-`out_shift` deliberately, so feedback strength doesn't depend on
+//    whether this op happens to be a carrier or modulator in the current
+//    algorithm (FM_OUT_SHIFT_CARRIER/MODULATOR is a t00t-only artifact of
+//    #57's phase-precision fix; Dexed has no such split to replicate).
+inline void op_render_fb(FmOp &op, uint32_t n, int32_t out_shift, int32_t fb_shift) {
     uint32_t phase = op.phase;
     uint32_t inc = op.inc;
     int32_t gain = op.gain;
@@ -191,19 +220,14 @@ inline void op_render_fb(FmOp &op, uint32_t n, int32_t out_shift) {
     int32_t *out = op.out;
     int32_t fb1 = op.fb1, fb2 = op.fb2;
     for (uint32_t i = 0; i < n; i++) {
-        // fb1/fb2 are raw table outputs (~+-32767), not gain-scaled at all --
-        // FM_MOD_INPUT_SHIFT still applies (same phase-per-cycle gap as any
-        // other modulation input) but self-feedback *depth* (real DX7's
-        // separate 0-7 feedback-level parameter) is still no-op-or-full, a
-        // known, separate, unresolved gap (patch.h's `feedback` is a bool) --
-        // #57 doesn't claim to fix that here.
-        int32_t fb_mod = (fb1 + fb2) >> 1;
+        int32_t fb_mod = (fb1 + fb2) >> fb_shift;
         phase += inc;
         uint32_t idx = (phase + ((uint32_t)fb_mod << FM_MOD_INPUT_SHIFT)) >> FM_PHASE_SHIFT;
         int32_t sample = fm_sine_table[idx];
-        out[i] += fm_mul_gain(sample, gain) >> out_shift;
+        int32_t scaled = fm_mul_gain(sample, gain);
+        out[i] += scaled >> out_shift;
         fb2 = fb1;
-        fb1 = sample;
+        fb1 = scaled;
         gain += gain_step;
     }
     op.phase = phase;
@@ -248,7 +272,7 @@ inline void fm_voice_render_block(FmOp ops[FM_NUM_OPS], const FmRouting &r,
         int32_t out_shift = is_carrier ? FM_OUT_SHIFT_CARRIER : FM_OUT_SHIFT_MODULATOR;
         switch (r.kernel[i]) {
             case FM_KERNEL_FIRST:    op_render_first(op, n, out_shift); break;
-            case FM_KERNEL_FEEDBACK: op_render_fb(op, n, out_shift);    break;
+            case FM_KERNEL_FEEDBACK: op_render_fb(op, n, out_shift, r.fb_shift[i]); break;
             default:                 op_render(op, n, out_shift);       break;
         }
     }

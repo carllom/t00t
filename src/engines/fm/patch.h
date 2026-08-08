@@ -32,10 +32,11 @@ static constexpr uint8_t FM_BUS_ZERO   = FM_NUM_OPS + 1;  // 7
 // resolve to the Q32 increment (§5.6), `level` is the operator's reference
 // gain -- what op_render's `gain` is at 100% output level, 100% EG level,
 // and velocity-sensitivity-neutral (op.h's fm_mul_gain/FM_OUT_SHIFT scale,
-// unity ≈ 1<<22) -- and `mod_target`/`feedback` together are the entire
-// routing input: which operator (or FM_TARGET_OUT) this op's output feeds,
-// and whether its own last two outputs additionally self-modulate its
-// phase. `output_level`/`vel_sensitivity`/`eg_rate`/`eg_level` (#45,
+// unity ≈ 1<<22) -- and `mod_target`/`feedback_level` together are the
+// entire routing input: which operator (or FM_TARGET_OUT) this op's output
+// feeds, and how strongly (0-7, DX7 units) its own last two outputs
+// additionally self-modulate its phase. `output_level`/`vel_sensitivity`/
+// `eg_rate`/`eg_level` (#45,
 // env_dx.h) are the note-on/block-rate-resolved pieces that turn `level`
 // into the actual, time-varying `gain` op_render sees -- see env_dx.h for
 // how they combine.
@@ -46,7 +47,14 @@ struct FmOpParams {
     float   detune_cents;  // fine detune in cents, applied on top of ratio (0 for fixed_freq)
     int32_t level;         // reference gain (env_dx.h's "0 dB" point) -- op.h's fm_mul_gain/FM_OUT_SHIFT scale
     uint8_t mod_target;    // 0..FM_NUM_OPS-1 (another operator), or FM_TARGET_OUT (carrier)
-    bool    feedback;      // self-modulation: op_render_fb's 2-sample average (fm.md §5.2)
+    // Self-modulation depth, DX7 units (0-7; 0 = off). Was a bool (fm.md
+    // §5.2's original "no-op-or-full" self-feedback) until real Dexed source
+    // (dx7note.cc's `fb_shift_ = feedback ? 8-feedback : 16`, fm_op_kernel.cc's
+    // `compute_fb`) showed real hardware spans a 64x (2^6) depth range across
+    // levels 1-7, not a switch -- collapsing it lost exactly the "bite" DX7
+    // feedback patches (brass, EP, plucked) are voiced around. See op.h's
+    // op_render_fb for how this resolves into FmRouting::fb_shift at note-on.
+    uint8_t feedback_level;
     uint8_t output_level;    // DX7 TL, 0-99, through env_dx.h's DX7_LEVEL_TO_LOG2 (#45)
     uint8_t vel_sensitivity; // 0-7, env_dx.h's eg_vel_sensitivity_log2 (#45)
     uint8_t eg_rate[4];      // R1-R4, 0-99 (#45)
@@ -137,13 +145,26 @@ struct FmRouting {
     uint8_t in_bus[FM_NUM_OPS];
     uint8_t out_bus[FM_NUM_OPS];
     uint8_t clear_bus_mask;
+    // Total right-shift op_render_fb applies to (fb1+fb2) before feeding it
+    // back into phase -- resolved once here from FmOpParams::feedback_level,
+    // same "nothing in the render loop reasons about patch data" convention
+    // as everything else in this struct. Only meaningful where kernel[i] ==
+    // FM_KERNEL_FEEDBACK. `8 - feedback_level` anchors level 7 (max) to
+    // >>1 -- exactly this engine's old, already-hardware-tuned "always full"
+    // behavior (FM_TEST_PATCH's op3 was safe against eg_to_linear()
+    // underflow at that depth, #57) -- and steps one octave per level below
+    // that, matching Dexed's own per-level spacing (dx7note.cc's
+    // `fb_shift_ = 8 - feedback`) even though the absolute magnitude scale
+    // differs (this engine's `level`/gain convention was never unit-matched
+    // to Dexed's Q24 one).
+    uint8_t fb_shift[FM_NUM_OPS];
     bool    valid;
 };
 
 // Resolves `patch` into `r`. Returns false (r.valid = false) if the patch's
 // mod_target graph contains a cycle spanning two or more operators -- the
 // one routing shape block-inner rendering can't evaluate without a
-// block-length delay (fm.md §4.2). Self-modulation (the `feedback` flag) is
+// block-length delay (fm.md §4.2). Self-modulation (`feedback_level` > 0) is
 // accepted unconditionally: it never enters this graph at all, because it's
 // satisfied entirely inside op_render_fb's own per-sample fb1/fb2 history,
 // not by bus-write ordering -- so there is nothing for a cycle check to
@@ -152,7 +173,7 @@ inline bool fm_resolve_routing(const FmPatch &patch, FmRouting &r) {
     r.valid = false;
 
     // A patch that targets its own index is malformed: that's not a valid
-    // way to express self-modulation in this model (use `feedback`
+    // way to express self-modulation in this model (use `feedback_level`
     // instead) -- routing it through the ordinary bus mechanism would need
     // exactly the block-length delay §4.2 rules out.
     for (uint8_t i = 0; i < FM_NUM_OPS; i++) {
@@ -202,7 +223,9 @@ inline bool fm_resolve_routing(const FmPatch &patch, FmRouting &r) {
         uint8_t i = r.order[k];
         uint8_t bus = patch.op[i].mod_target;  // FM_TARGET_OUT doubles as the OUT bus id
         r.out_bus[i] = bus;
-        bool fb = patch.op[i].feedback;
+        uint8_t level = patch.op[i].feedback_level;
+        bool fb = level > 0;
+        if (fb) r.fb_shift[i] = (uint8_t)(8 - level);
         if (first_writer[bus] < 0) {
             first_writer[bus] = (int8_t)i;
             if (fb) {
@@ -223,13 +246,13 @@ inline bool fm_resolve_routing(const FmPatch &patch, FmRouting &r) {
 // One hardcoded 6-op patch (#44's P1 acceptance criterion), deliberately
 // built to the *exact* topology #42/#43 already measured on hardware (see
 // rig.h's fm_rig_render_voice_block comment) -- just expressed as
-// mod_target/feedback data instead of hand-unrolled C++ calls:
+// mod_target/feedback_level data instead of hand-unrolled C++ calls:
 //
-//   op0 -> op2            (op0 unmodulated: nothing targets it)
-//   op1 -> op4             (op1 unmodulated)
-//   op2 -> op4             (op2 modulated by op0)
-//   op3 -> op4, feedback   (self-modulated, DX7 2-sample average)
-//   op4 -> op5             (modulated by op1+op2+op3 summed)
+//   op0 -> op2                    (op0 unmodulated: nothing targets it)
+//   op1 -> op4                     (op1 unmodulated)
+//   op2 -> op4                     (op2 modulated by op0)
+//   op3 -> op4, feedback_level=7   (self-modulated, DX7 2-sample average, max depth)
+//   op4 -> op5                     (modulated by op1+op2+op3 summed)
 //   op5 -> OUT             (carrier, modulated by op4)
 //
 // fm_resolve_routing() on this patch reproduces the rig's exact bus
@@ -304,7 +327,7 @@ inline constexpr FmPatch FM_TEST_PATCH = {
                      99, 3, {99, 70, 30, 50}, {99, 60, 55, 0} },
         /* op2 */ { 3.0f, 0.0f, false, 0.0f, 83000000, 4, false,
                      99, 4, {95, 55, 25, 45}, {95, 45, 35, 0} },
-        /* op3 */ { 1.0f, 0.0f, false, 0.0f, 83000000, 4, true,
+        /* op3 */ { 1.0f, 0.0f, false, 0.0f, 83000000, 4, 7,
                      99, 3, {90, 65, 35, 55}, {99, 55, 50, 0} },
         /* op4 */ { 1.0f, 0.0f, false, 0.0f, 350000000, 5, false,
                      99, 6, {99, 60, 20, 50}, {99, 20, 15, 0} },
