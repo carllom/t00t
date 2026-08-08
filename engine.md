@@ -1901,6 +1901,226 @@ tamed the overdrive, #59 should have fixed the sluggish/delayed attacks,
 together getting closer to real DX7 timing and character on top of #57's
 depth fix.
 
+## FM P4 — Pitch EG + Per-Voice LFO (#49)
+
+Picked up as the next item on fm.md's own roadmap after #48 (P3v2): the
+last of the DX7 parameter set, both control-rate-only per fm.md's own zero-
+per-sample-cost constraint. Same method as #57/#58/#59/#48: real Dexed
+source (`Source/msfa/pitchenv.{h,cc}`, `lfo.{h,cc}`, and the relevant
+`dx7note.cc`/`PluginData.cpp` glue, all Apache-2.0) fetched directly and
+either ported verbatim (data tables) or run in a standalone calibration
+harness to pin down real numbers before committing to this engine's own
+re-expression of the combination math.
+
+### Pitch EG (`fm/pitch_eg.h`, new file)
+
+One per voice (not per operator, unlike `EnvDX`), same 4-stage
+(rate, level) shape and block-rate-stepping convention, but in a plain-float
+cents domain instead of `EnvDX`'s log2 fixed point, and consumed
+differently: instead of a `gain`/`gain_step` pair for the kernel, its
+per-block result scales every non-fixed-frequency operator's `inc`
+(`fm_voice_step_pitch_and_mod()`, op.h).
+
+`DX7_PITCHENV_LEVEL`/`DX7_PITCHENV_RATE` (Dexed's `pitchenv_tab`/
+`pitchenv_rate`) ported verbatim. Calibration harness run against Dexed's
+real formula before committing to the cents re-expression:
+
+| | Dexed real value | This engine's derivation |
+|---|---|---|
+| Level 0/50/99 | -4800 / 0 / +4762.5 cents | table's own ±128 raw span *is* the real ±4-octave range — `raw * 37.5` cents, no rescaling surprise |
+| Rate 0/99 | 0.047 / 11.97 octaves/sec | `raw / 21.3` — Dexed's own `21.3` constant, N/sample-rate cancel out of `PitchEnv::init()` the same way #59 found for the amplitude EG's own rate table |
+
+Rate 99's ~0.67s full-8-octave sweep is real DX7 character, not a bug — the
+pitch EG's own "attack blip"/"brass scoop" character is a fast *relative*
+move over tens/hundreds of cents, not a full-range sweep; the amplitude
+EG's own rate 99 (near-instant) is a different, unrelated parameter.
+
+The 4-stage state machine turned out to be exactly isomorphic to `EnvDX`'s,
+confirmed by reasoning through Dexed's real `PitchEnv::getsample()`/
+`keydown()` condition (`ix_<3 || (ix_<4 && !down_)`) rather than assumed:
+stages 1-2 auto-advance on reaching target, stage 3 holds forever while a
+note is held (real hardware never applies R4/L4 until release, even if
+natural progression would otherwise reach that stage), release
+(`fm_pitch_eg_release()`) jumps to stage 4 from wherever the EG currently
+is — same convention `env_dx_release()` already uses.
+
+One real footgun, caught and documented before it could bite: `PitchEnv::
+set()` starts each note from L4 (release level), not silence — there's no
+"silence" for pitch, so real hardware (and this port) resumes from wherever
+the previous note's release left off, approximated by L4 itself. This means
+a **zero-initialized `FmPitchEgParams`** (level all 0) is a real ~4-octave
+pitch drop applied to every note, not "off" — "off" is level
+`{50,50,50,50}` (DX7 hardware center, 0 cents). `FM_TEST_PATCH` (and every
+copy-constructed test patch derived from it) needed this set explicitly;
+`tools/syx2patch.py` never hits the pitfall since it always copies real
+patch bytes straight through, never leaves a field at its implicit zero.
+
+### LFO (`fm/lfo.h`, new file)
+
+One per voice. All six DX7 waveforms (triangle/saw down/saw up/square/
+sine/sample & hold — same numbering as real hardware, no remapping needed
+by the converter), rate, delay, key sync, PMD, AMD, PMS (voice-wide), plus
+each operator's own AM sensitivity (`FmOpParams::am_sensitivity`, 0-3).
+
+**Closes fm.md open question 5: per-voice, global-phase mode dropped, not
+built.** fm.md's own text already recommended per-voice-with-key-sync as
+"strictly better for polyphony," keeping a global-phase patch flag as an
+option "where DX7 fidelity on specific patches matters." That flag was
+built as far as the design stage and then deliberately not implemented:
+#48's multitimbrality (one patch pointer per voice) means a literal single
+shared LFO instance has no principled behavior once two simultaneously-
+active voices request global phase with two *different* patches' rates —
+whose rate does the one shared phase follow? Real DX7 hardware never faces
+this question (one patch loaded at a time), so there's no "real DX7
+behavior" to fall back on, only an arbitrary tie-break to invent. Per-
+voice-with-key-sync already gives every note struck at the same instant
+identical LFO phase — the common "block chord" case DX7 fidelity actually
+cares about. The residual gap (notes of the *same* patch struck at
+different times drift slightly out of phase with each other over a long
+sustained chord) is small, patch-dependent, and not worth the architectural
+ambiguity above. Revisit only if #53's real Dexed-diff work finds this
+audible on a reference bank — not before.
+
+Waveform generation is reasoned through against Dexed's real per-waveform
+bit tricks (`Lfo::getsample()`) and cross-checked shape-by-shape (triangle
+peaks at the cycle's center per Dexed's own complement-past-halfway trick,
+not at the edges as a naive guess might assume), but re-expressed as a
+plain float function of this engine's own Q32 phase convention rather than
+replicating Dexed's `phase_>>7`/`phase_>>8` bit-for-bit — those shifts are
+tuned to Dexed's own internal table/Q-format, not a property of the DX7's
+real waveform shapes, and control-rate cost (~2756 Hz at BLOCK=16) makes
+float math effectively free either way.
+
+Rate table (`DX7_LFO_RATE_SOURCE`, Dexed's `lfoSource`) *is* ported
+verbatim. Real Hz derivation (`dx7_lfo_rate_to_hz()`) cancels Dexed's own
+per-block/sample-rate normalization the same way the pitch EG's rate table
+did — cross-checked against commonly cited real DX7 figures: rate 0 ≈
+0.065 Hz (~15.5s period), rate 99 ≈ 50.9 Hz, both matching.
+
+Delay ramp (`dx7_lfo_delay_seconds()`) reduces Dexed's real two-stage Q32
+accumulator (`Lfo::reset()`/`getdelay()`) to a single dominant-stage real-
+seconds formula — a documented simplification, not a fidelity claim (the
+two-stage curve exists to serve Dexed's own fixed-point arithmetic, not
+because the perceptual "not yet audible, then fading in" curve genuinely
+needs two pieces). Cross-checked anchors: delay 0 → instant, delay 99 →
+~2.66s, delay 50 → ~0.31s, all matching commonly cited real DX7 figures.
+
+PMD/PMS/AMD combination *is* numerically equivalent to Dexed's real
+`Dx7Note::compute()` LFO-driven pitch/amp-mod terms (`pmod_1`/`amod_1`) —
+the real integer formula `(pmd*lfo_delay * pms*(lfo_val-center)) >> 39` is
+exactly four independent multiplicative factors with no cross-term, so
+re-deriving it as plain fractions times one calibration constant
+(`FM_LFO_PMD_MAX_CENTS = 1200 * 255*255*256 / 2^24 ≈ 1190.6` cents — just
+under an octave, at PMD=99/PMS=7/LFO-extreme) is *exact*, not approximate,
+verified against a standalone harness running Dexed's real integer formula
+(16,646,400 raw Q24-octave units at those settings, matching this engine's
+own closed-form expression exactly) — just without the Q24/Q32/`>>39`
+bit-shift plumbing that only ever existed to keep Dexed itself integer-only.
+
+Dexed's *separate* non-LFO controller-driven pitch-mod path (`ctrls->
+pitch_mod`, a JUCE-plugin-configurable mod-matrix feature letting
+aftertouch/breath/wheel target pitch/amp/EG independently, real DX7
+hardware's own wheel assignment being a global synth setting outside any
+patch's own bulk-dump data) is **not** replicated — #49's own acceptance
+criterion ("mod wheel scales LFO depth") asks for the simpler, extremely
+common convention `lfo.h` implements instead: mod wheel is a 0..1
+multiplier on the LFO's own configured PMD/AMD depth, the same "mod wheel
+→ vibrato depth" convention speech's own CC1 handling already uses (#36).
+Worth flagging clearly for the first hardware listen: with `mod_wheel`
+defaulting to 0, a patch with real vibrato/tremolo configured (PMD/AMD > 0)
+will sound completely flat until the wheel is actually moved — by design,
+not a missing feature.
+
+### New runtime plumbing
+
+`VoiceParams` gained `mod_wheel` (Q15, `engine.h`) — wired into
+`midi_controller.cpp` via CC1, live-pushed to held voices the same way
+CC10/CC21/CC22 already are in this engine/speech. `fm_voice_note_on()`/
+`fm_voice_note_off()` gained optional `FmPitchEg*`/`FmLfo*` parameters
+(default `nullptr`, so any existing caller that doesn't pass them keeps
+#44/#45/#48's exact old behavior) to trigger/release the voice's pitch EG
+and LFO alongside its six amplitude EGs. `fm_voice_update_pitch()` (#44) is
+superseded by `fm_voice_step_pitch_and_mod()`, called once per control
+block from inside `fm_render_voice()` (previously the old function ran
+once per whole audio buffer) — a strict precision improvement for ordinary
+pitch bend, not just the new pitch EG/LFO's own home. `fm_voice_step_
+envelopes()` gained an `amp_atten` parameter (default 0.0, same
+behavior-neutral-default pattern #48's `rate_qrate_delta` used) that
+multiplies each operator's already-computed linear gain by
+`1 - amp_atten * DX7_AMP_MOD_SENS[am_sensitivity]` — real DX7 AMS is a
+2-bit (0-3) field, its own small ported table (`ampmodsenstab`, Dexed's
+real Q24 values re-expressed as 0..1 floats).
+
+### Converter (`tools/syx2patch.py` v3)
+
+Voice-wide pitch EG (bulk offset 102-109: R1-4, L1-4) and LFO (offset
+112-116: speed/delay/PMD/AMD, then a packed byte — LKS bit 0, LFW bits
+1-3, LPMS bits 4-6) copied straight through as raw bytes, same "no host-
+side DSP math needed" reasoning as every other field — offsets and the
+byte-116 bit-packing cross-checked against Dexed's own `Cartridge::
+unpackProgram` (`Source/PluginData.cpp`, Apache-2.0), not guessed from the
+MIDI format sheet alone. `test_syx2patch.py` gained a dedicated round-trip
+assertion (`test_unpack_voice_roundtrip`, extended) and a pass-through
+check (`test_lfo_and_pitch_eg_pass_through`) — 20/20 passing (was 19).
+
+### Verification
+
+Two new dedicated host checks in `render_fm` — nothing else in the suite
+would exercise pitch EG/LFO at all, since `FM_TEST_PATCH`'s own `pmd`/`amd`
+default to 0 (no LFO effect regardless of rate/waveform) and its
+`pitch_eg.level` is explicitly `{50,50,50,50}` (no deviation).
+
+- `run_pitch_eg_check()`: builds a patch with a real L4≠center (so trigger
+  starts from a real nonzero offset), fast rise to L1 (the "attack blip"),
+  settle at center, slow release swoop to L4. Verifies the exact trajectory
+  (start value, blip direction/magnitude, settle value+stage, release
+  motion+final value+stage) *and* the operator-increment consequence: a
+  ratio operator's `inc` moves with the blip, a fixed-frequency operator's
+  does not (matching Dexed's own `osc_freq()` fixed-mode exemption — pitch
+  EG/LFO never reach a fixed-frequency operator on real hardware either).
+- `run_lfo_check()`: all six waveform shapes sampled at known phase points
+  (unit-level, direct against `fm_lfo_waveform_unipolar()`); rate/delay
+  calibration anchors; a full block-rate integration run (fast LFO, max
+  depth/sensitivity) showing real pitch oscillation near the calibrated
+  max and real amp-mod swing; `mod_wheel=0` silencing both outputs
+  regardless of patch depth; the delay ramp actually suppressing the very
+  first block's output (using square, not sine, so the check isn't
+  confounded by sine's own zero-crossing start); and an integration check
+  that `fm_voice_step_envelopes()`'s AM path really reduces a sensitive
+  operator's gain while leaving an insensitive one untouched.
+
+One real regression caught and root-caused during this pass, not a bug in
+the new code: after wiring `FmPatch`'s two new trailing members (`lfo`,
+`pitch_eg`), `render_fm`'s own patch-bank render briefly showed
+2nd-harmonic/fundamental ≈ 0.000 for every patch (previously real and
+varied, e.g. BRASS 1 ≈ 3.9x per #57). Root cause: the *stale*, previously-
+generated `patches.h` sitting in the local tree (gitignored, from before
+#49's `patch.h` change) zero-initialized every patch's `pitch_eg` via plain
+C++ aggregate rules — exactly the footgun documented above, hitting every
+converter-generated patch at once because `tools/syx2patch.py` hadn't been
+updated yet to populate it. Not a bug in the runtime (`fm_pitch_eg_trigger()`
+correctly read the zero-initialized level and produced a real -4800-cent
+drop, exactly as designed) or the test (the spectral probe was simply
+looking at the wrong, un-shifted frequency once the real audio moved down
+four octaves) — resolved by finishing the converter update and regenerating
+`patches.h`, after which the 2nd-harmonic ratios returned to real, varied
+values (BRASS 1 ≈ 2.77x).
+
+`test_syx2patch.py`: 20/20 passing. `render_fm`: all checks pass, including
+the two new ones. Kernel disassembly unaffected (still 48 `smlawb`
+instances, device build) — confirms the "zero per-sample cost" constraint
+this feature's own acceptance criteria opens with; everything here is
+note-on or control-block work. `make ENGINE=fm` builds clean with and
+without `patches.h`.
+
+**Still needs Carl:** hardware listen. Test first with the mod wheel
+actually moved (a patch with vibrato/tremolo configured will sound
+completely flat at wheel=0, by design — see this section's own note on the
+mod-wheel convention chosen). Listen for: a real pitch "blip"/"scoop" on
+patches whose pitch EG differs meaningfully from a flat center (many of
+ROM1A's brass/bass patches do); real vibrato depth and rate that tracks
+the mod wheel; tremolo (amplitude wobble) on patches with real AMD/AMS.
+
 ## MIDI Input
 
 Control comes from buttons (VGA board only) and MIDI. There is no intermediate

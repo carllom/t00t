@@ -1,8 +1,10 @@
 #pragma once
 
 #include "env_dx.h"
+#include "lfo.h"
 #include "pan.h"
 #include "patch.h"
+#include "pitch_eg.h"
 #include "sine_tab.h"
 #include <cmath>
 #include <cstdint>
@@ -276,7 +278,8 @@ inline uint32_t fm_op_inc(const FmOpParams &p, uint32_t note_inc) {
 // first block of this note, so there is no separate "initial gain" to get
 // right here.
 inline void fm_voice_note_on(FmOp ops[FM_NUM_OPS], const FmPatch &patch,
-                              uint32_t note_inc, int16_t amplitude, uint8_t midinote) {
+                              uint32_t note_inc, int16_t amplitude, uint8_t midinote,
+                              FmPitchEg *peg = nullptr, FmLfo *lfo = nullptr) {
     for (uint8_t i = 0; i < FM_NUM_OPS; i++) {
         const FmOpParams &p = patch.op[i];
         FmOp &op = ops[i];
@@ -308,6 +311,12 @@ inline void fm_voice_note_on(FmOp ops[FM_NUM_OPS], const FmPatch &patch,
         op.static_log2 = output_and_key_log2 + eg_vel_sensitivity_log2(p.vel_sensitivity, amplitude);
         op.rate_scale_qrate = dx7_scale_rate(midinote, p.rate_scaling);
     }
+    // #49: pitch EG/LFO are per-VOICE (not per-operator), so their state
+    // lives in the caller's own arrays (audio_engine.cpp), not FmOp --
+    // optional pointers so callers that don't care about #49's feature set
+    // (older/simpler host tests) can still call this unchanged.
+    if (peg) fm_pitch_eg_trigger(*peg, patch.pitch_eg);
+    if (lfo) fm_lfo_trigger(*lfo, patch.lfo.key_sync);
 }
 
 // Note-off: releases every operator's EG (env_dx.h's env_dx_release() --
@@ -315,10 +324,11 @@ inline void fm_voice_note_on(FmOp ops[FM_NUM_OPS], const FmPatch &patch,
 // not just carriers -- a modulator's own decay shapes the carrier's timbre
 // for as long as the carrier is still sounding (fm.md's EP patch: op4's
 // fast decay is what makes the carrier's tone dim after the attack).
-inline void fm_voice_note_off(FmOp ops[FM_NUM_OPS]) {
+inline void fm_voice_note_off(FmOp ops[FM_NUM_OPS], FmPitchEg *peg = nullptr) {
     for (uint8_t i = 0; i < FM_NUM_OPS; i++) {
         env_dx_release(ops[i].eg);
     }
+    if (peg) fm_pitch_eg_release(*peg);  // #49: jump to the pitch EG's own release stage from wherever it is, same convention as the amplitude EGs above
 }
 
 // A voice may be reported free only once every operator that actually
@@ -337,15 +347,41 @@ inline bool fm_voice_active(const FmOp ops[FM_NUM_OPS], const FmRouting &r) {
     return false;
 }
 
-// Re-derives every operator's `inc` from the note's current (possibly
-// re-bent) base increment, without touching phase/gain/feedback history --
-// called every buffer for a held voice so pitch bend stays live, while
-// note-on-only state (the routing itself, each EG's stage) is untouched
-// between notes.
-inline void fm_voice_update_pitch(FmOp ops[FM_NUM_OPS], const FmPatch &patch, uint32_t note_inc) {
+// #49: supersedes #44's fm_voice_update_pitch() -- re-derives every
+// operator's `inc` from the note's current (possibly re-bent) base
+// increment, same as before, but now ALSO steps the voice's pitch EG
+// (pitch_eg.h) and LFO (lfo.h) by this control block and folds their
+// combined cents output into the same increment recompute (fm.md §5.4/§5.5:
+// "applied by scaling all six operator increments at each block
+// boundary"). Called once per control block from fm_render_voice() below
+// (previously fm_voice_update_pitch() ran once per whole audio buffer from
+// audio_engine.cpp -- strictly finer-grained now, not a behavior change for
+// plain pitch bend, since BLOCK-rate recompute can only make a held bend
+// glide MORE accurately timed, never less). Fixed-frequency operators
+// (`p.fixed_freq`) skip the pitch EG/LFO term entirely -- matches Dexed's
+// own `osc_freq()` fixed-mode branch, which only ever receives pitch bend
+// (`pitch_base`) and never `pitch_mod` (pitchenv + LFO): a fixed-frequency
+// bell/percussion partial's absolute pitch doesn't wobble with the rest of
+// the voice's vibrato on real hardware, so it doesn't here either. Returns
+// this block's amplitude-mod attenuation fraction (0..1, before each
+// operator's own AM sensitivity weights it) for the caller to hand to
+// fm_voice_step_envelopes().
+inline float fm_voice_step_pitch_and_mod(FmOp ops[FM_NUM_OPS], const FmPatch &patch,
+                                          FmPitchEg &peg, FmLfo &lfo, uint32_t note_inc, uint32_t n,
+                                          int16_t mod_wheel) {
+    float peg_cents = fm_pitch_eg_step_block(peg, patch.pitch_eg, n);
+    float mod_wheel_frac = (float)mod_wheel / 32767.0f;
+    float lfo_pitch_cents, lfo_amp_atten;
+    fm_lfo_step_block(lfo, patch.lfo, n, mod_wheel_frac, lfo_pitch_cents, lfo_amp_atten);
+
+    float total_cents = peg_cents + lfo_pitch_cents;
+    float pitch_ratio = (total_cents != 0.0f) ? exp2f(total_cents * (1.0f / 1200.0f)) : 1.0f;
     for (uint8_t i = 0; i < FM_NUM_OPS; i++) {
-        ops[i].inc = fm_op_inc(patch.op[i], note_inc);
+        const FmOpParams &p = patch.op[i];
+        uint32_t base_inc = fm_op_inc(p, note_inc);
+        ops[i].inc = p.fixed_freq ? base_inc : (uint32_t)((float)base_inc * pitch_ratio);
     }
+    return lfo_amp_atten;
 }
 
 // Steps every operator's EG by one control block (env_dx.h's
@@ -357,7 +393,18 @@ inline void fm_voice_update_pitch(FmOp ops[FM_NUM_OPS], const FmPatch &patch, ui
 // see any of env_dx.h -- from the kernel's point of view this could be a
 // fixed gain, a hand-set ramp, or an EG, and it wouldn't know the
 // difference (fm.md §4.1's routing claim, restated for the EG).
-inline void fm_voice_step_envelopes(FmOp ops[FM_NUM_OPS], const FmPatch &patch, uint32_t n) {
+//
+// #49: `amp_atten` (0..1, lfo.h's own tremolo-attenuation output, default 0
+// so every pre-#49 caller is behavior-neutral) is weighted by each
+// operator's own `am_sensitivity` (0-3, DX7 AMS) and multiplied straight
+// into the already-computed linear gain -- fm.md's own "amplitude mod folds
+// into each operator's gain/gain_step computation according to its AM
+// sensitivity", applied AFTER eg_to_linear() rather than as another log2
+// offset, since a multiplicative tremolo on top of the EG's own linear gain
+// is the natural place for it (no interaction with EnvDX's own state at
+// all).
+inline void fm_voice_step_envelopes(FmOp ops[FM_NUM_OPS], const FmPatch &patch, uint32_t n,
+                                     float amp_atten = 0.0f) {
     for (uint8_t i = 0; i < FM_NUM_OPS; i++) {
         const FmOpParams &p = patch.op[i];
         FmOp &op = ops[i];
@@ -365,6 +412,12 @@ inline void fm_voice_step_envelopes(FmOp ops[FM_NUM_OPS], const FmPatch &patch, 
         env_dx_step_block(op.eg, p, n, log2_start, log2_end, op.rate_scale_qrate);
         int32_t gain_start = eg_to_linear(p.level, op.static_log2 + log2_start);
         int32_t gain_end = eg_to_linear(p.level, op.static_log2 + log2_end);
+        if (amp_atten > 0.0f && p.am_sensitivity > 0) {
+            float mult = 1.0f - amp_atten * (DX7_AMP_MOD_SENS[p.am_sensitivity & 3]);
+            if (mult < 0.0f) mult = 0.0f;
+            gain_start = (int32_t)((float)gain_start * mult);
+            gain_end = (int32_t)((float)gain_end * mult);
+        }
         op.gain = gain_start;
         op.gain_step = (gain_end - gain_start) / (int32_t)n;
     }
@@ -377,9 +430,22 @@ inline void fm_voice_step_envelopes(FmOp ops[FM_NUM_OPS], const FmPatch &patch, 
 // gone idle mid-buffer (fm_voice_active()) -- the remaining sub-blocks
 // would render silence anyway; this just skips paying for it, mirroring
 // the subtractive engine's `if (!envelope[v].active()) break;`.
+//
+// #49: `peg`/`lfo` are optional (default nullptr, same convention
+// fm_voice_note_on()/fm_voice_note_off() use) -- when both are given, every
+// sub-block also steps the voice's pitch EG and LFO (fm_voice_step_pitch_and_mod(),
+// superseding #44's fm_voice_update_pitch(), which ran this same increment
+// recompute once per whole buffer instead of once per control block) and
+// folds the LFO's amplitude-mod output into fm_voice_step_envelopes(). A
+// caller that omits them gets exactly #44/#45/#48's old behavior (no live
+// pitch bend recompute at all) -- every real caller (device and host) is
+// updated to pass real state; nullptr only exists for isolated kernel-only
+// tests that don't care about any of this.
 inline void fm_render_voice(FmOp ops[FM_NUM_OPS], const FmPatch &patch, const FmRouting &r,
                              const FmVoiceBuses &bus, int16_t pan,
-                             int32_t *dry_l, int32_t *dry_r, uint32_t frames) {
+                             int32_t *dry_l, int32_t *dry_r, uint32_t frames,
+                             FmPitchEg *peg = nullptr, FmLfo *lfo = nullptr,
+                             uint32_t note_inc = 0, int16_t mod_wheel = 0) {
     int32_t gain_l, gain_r;
     pan_gains_q15(pan, gain_l, gain_r);
 
@@ -387,7 +453,12 @@ inline void fm_render_voice(FmOp ops[FM_NUM_OPS], const FmPatch &patch, const Fm
     while (done < frames) {
         uint32_t n = frames - done;
         if (n > FM_BLOCK) n = FM_BLOCK;
-        fm_voice_step_envelopes(ops, patch, n);
+        if (peg && lfo) {
+            float amp_atten = fm_voice_step_pitch_and_mod(ops, patch, *peg, *lfo, note_inc, n, mod_wheel);
+            fm_voice_step_envelopes(ops, patch, n, amp_atten);
+        } else {
+            fm_voice_step_envelopes(ops, patch, n);
+        }
         fm_voice_render_block(ops, r, bus, n);
         for (uint32_t i = 0; i < n; i++) {
             int32_t s = bus.out[i];

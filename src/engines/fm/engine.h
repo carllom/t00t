@@ -33,11 +33,12 @@ struct VoiceParams {
     int16_t  pan;            // Q15 pan: -32768 = full left, 0 = center, 32767 = full right
     const FmPatch *patch;    // the whole timbre, one pointer (fm.md §6.3) -- always &FM_TEST_PATCH until P3's converter
     uint8_t  note;           // #48: raw MIDI note (0-127), unbent -- key level/rate scaling need the note itself, not just phase_inc's already-bend-scaled frequency
+    int16_t  mod_wheel;      // #49: Q15, 0..32767 -- CC1, scales the patch's own LFO PMD/AMD depth (lfo.h)
 };
 
 template <>
 inline VoiceParams voice_params_default<VoiceParams>() {
-    return { 0, 0, 0, false, 0, &FM_TEST_PATCH, 0 };
+    return { 0, 0, 0, false, 0, &FM_TEST_PATCH, 0, 0 };
 }
 
 using VoiceParamBlock = VoiceParamBlockT<VoiceParams>;
