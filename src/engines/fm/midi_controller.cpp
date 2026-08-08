@@ -44,6 +44,7 @@ static float   channel_bend_ratio[NUM_CHANNELS];  // phase_inc multiplier (1.0 =
 static int16_t channel_pan[NUM_CHANNELS];         // CC10 pan, Q15
 static const FmPatch *channel_patch[NUM_CHANNELS];  // #47: defaults to FM_TEST_PATCH, PC/CC30 override it
 static uint8_t channel_program[NUM_CHANNELS];       // FM_PATCHES[] index, for ui_state.program
+static int16_t channel_mod_wheel[NUM_CHANNELS];     // #49: CC1, Q15 -- scales the patch's own LFO depth (live)
 
 // --- UI snapshot (updated on each event, read by the display) ---
 static MidiUiState ui_state;
@@ -71,6 +72,7 @@ static void midi_voice_on(VoiceParamBlock &shadow, int v, uint8_t note, uint8_t 
     vp.pan = channel_pan[channel];
     vp.patch = channel_patch[channel];
     vp.note = note;  // #48: key level/rate scaling need the raw note, not just phase_inc
+    vp.mod_wheel = channel_mod_wheel[channel];  // #49
     vp.trigger++;
     vp.gate = true;
 
@@ -99,6 +101,17 @@ static void apply_channel_pan(VoiceParamBlock &shadow, uint8_t channel) {
     }
 }
 
+// Push mod wheel (CC1, #49) to every held voice on a channel -- live, same
+// "sweeping the knob is audible mid-note" treatment CC21/22 use in speech's
+// midi_controller.cpp.
+static void apply_channel_mod_wheel(VoiceParamBlock &shadow, uint8_t channel) {
+    for (uint32_t v = 0; v < MAX_VOICES; v++) {
+        if (voice_held[v] && voice_channel[v] == channel) {
+            shadow.voices[v].mod_wheel = channel_mod_wheel[channel];
+        }
+    }
+}
+
 void midi_controller_init() {
     midi_parser.init();
     for (int i = 0; i < 128; i++) midi_note_voice[i] = -1;
@@ -108,6 +121,7 @@ void midi_controller_init() {
         channel_pan[ch] = 0;
         channel_patch[ch] = &FM_TEST_PATCH;
         channel_program[ch] = 0;
+        channel_mod_wheel[ch] = 0;  // #49: wheel at 0 = no LFO effect, matching real-world "push the wheel to add vibrato" patch convention (lfo.h's own header comment)
     }
     ui_state.last_note = 0xFF;
     ui_state.last_velocity = 0;
@@ -163,6 +177,13 @@ void midi_controller_process(const uint8_t *data, uint32_t len, ParamExchange *p
             }
             case MIDI_CC: {
                 switch (ev.data1) {
+                    case 1:  // mod wheel (#49) — scales the patch's own LFO PMD/AMD depth, live
+                        channel_mod_wheel[ev.channel] = (int16_t)(ev.data2 * 258);
+                        apply_channel_mod_wheel(shadow, ev.channel);
+                        ui_state.mod = ev.data2;
+                        ui_state.last_channel = ev.channel;
+                        changed = true;
+                        break;
                     case 10:  // pan (CC10) — 0=full left, 64=center, 127=full right
                         channel_pan[ev.channel] = (int16_t)(((int32_t)ev.data2 - 64) * 512);
                         apply_channel_pan(shadow, ev.channel);

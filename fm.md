@@ -522,6 +522,32 @@ One per voice, same 4-stage shape as `EnvDX` but operating on pitch (in cents)
 rather than amplitude. Applied by scaling all six operator increments at each
 block boundary. Per-sample cost: **zero**.
 
+**Implemented, #49.** Rate and level tables (`DX7_PITCHENV_RATE`/
+`DX7_PITCHENV_LEVEL`) ported verbatim from Dexed's `PitchEnv` (Source/msfa/
+pitchenv.{h,cc}, Apache-2.0), same rigor #58/#59 already established for
+`env_dx.h`'s own tables — cross-checked by porting and running Dexed's real
+formula in a standalone calibration harness before committing to the
+cents-domain re-expression: level 0/50/99 → -4800/0/+4762.5 cents (the
+table's own ±128 raw span *is* the DX7's real ±4-octave pitch EG range, no
+rescaling surprises), rate 0/99 → 0.047/11.97 octaves/sec (a rate-99 pitch
+EG sweeps its full ~8-octave span in ~0.67s — a real, audible swoop, not
+instant like the amplitude EG's own rate 99, which is correct DX7 character:
+the "attack blip"/"brass scoop" this issue names is a fast *relative* move
+over tens/hundreds of cents, well under that full-span figure). The
+4-stage state machine is exactly isomorphic to `EnvDX`'s (reasoned through
+against Dexed's real `PitchEnv::getsample()`/`keydown()` logic, not assumed):
+stages 1-2 auto-advance on reaching target, stage 3 holds forever while a
+note is held, stage 4 (release) is entered only by `fm_pitch_eg_release()`,
+jumping from wherever the EG currently is — same convention
+`env_dx_release()` already uses. One real footgun documented and guarded
+against: `fm_pitch_eg_trigger()` starts from L4 (release level), not
+silence — a zero-initialized `FmPitchEgParams` (level all 0) is a real
+~4-octave pitch drop on every note, not "off"; "off" is level `{50,50,50,50}`
+(DX7 hardware center). Every hand-written `FmPatch` literal (`FM_TEST_PATCH`
+and anything copy-constructed from it) sets this explicitly — see `patch.h`'s
+own comment. `tools/syx2patch.py` never hits this pitfall since it always
+copies real patch bytes straight through.
+
 ### 5.5 `fm/lfo.h` — voice LFO
 
 Rate, delay, waveform (tri/saw up/saw down/square/sine/S&H), key sync, PMD, AMD.
@@ -529,9 +555,78 @@ Evaluated once per control block. Pitch mod folds into the increment scaling
 alongside the pitch EG; amplitude mod folds into each operator's `gain`/`gain_step`
 computation according to its AM sensitivity. Per-sample cost: **zero**.
 
-The DX7 has one global LFO; a per-voice LFO with key sync is strictly better for
-polyphony and costs nothing extra here. Keep a patch flag for global-phase mode if
-DX7 fidelity on specific patches matters.
+**Implemented, #49 — closes open question 5: per-voice, global-phase
+mode dropped (not deferred).** fm.md's own recommendation (per-voice with
+key sync, "strictly better for polyphony") is what shipped; the "patch flag
+for global-phase mode" alternative was considered and rejected, not left
+unbuilt. Reason: #48 already made this engine genuinely multitimbral (one
+patch pointer per voice), and a literal single shared LFO has no principled
+behavior once two simultaneously-active voices request global phase with two
+*different* patches' rates — a case that structurally cannot arise on real
+single-timbral DX7 hardware, so there's no "real DX7 behavior" to fall back
+on for it. Per-voice-with-key-sync already gives every note struck at the
+same instant identical LFO phase (the common "block chord" case DX7 fidelity
+actually cares about); the residual gap — notes of the *same* patch struck at
+different times drifting slightly out of phase — is small and patch-
+dependent, not worth the architectural ambiguity. Revisit only if #53's real
+Dexed-diff work finds this audible on a reference bank.
+
+Waveform math is reasoned-through against Dexed's real per-waveform bit
+tricks (triangle/saw-down/saw-up/square/sine, `Source/msfa/lfo.cc`,
+Apache-2.0) and cross-checked shape-by-shape, but re-expressed as a plain
+float function of this file's own Q32 phase convention rather than
+replicating Dexed's own phase/table Q-format bit-for-bit — that format is
+tuned to Dexed's internal table size, not a property of the DX7's real
+waveform shapes, and control-rate cost (~2756 Hz at BLOCK=16) makes float
+math free either way. Rate table (`DX7_LFO_RATE_SOURCE`) *is* ported
+verbatim (real hardware-calibrated data) — real Hz cross-checked against
+commonly cited DX7 figures: rate 0 ≈ 0.065 Hz (~15.5s period), rate 99 ≈
+50.9 Hz. Delay ramp reduces Dexed's own two-stage Q32 accumulator to a
+single dominant-stage real-seconds formula (delay 0 → instant, delay 99 →
+~2.66s, delay 50 → ~0.31s, all cross-checked) — a documented simplification,
+not a fidelity claim; the two-stage curve exists to serve Dexed's own
+fixed-point arithmetic, not because the perceptual fade-in needs two pieces.
+
+PMD/PMS/AMD combination *is* numerically equivalent to Dexed's real
+`Dx7Note::compute()` LFO-driven pitch/amp-mod terms — the real formula is
+exactly four independent multiplicative factors (depth × sensitivity × delay
+× LFO value) with no cross-term, so re-deriving it as plain fractions times
+one calibration constant (`FM_LFO_PMD_MAX_CENTS`, cross-checked at ≈1190.6
+cents — just under an octave — at PMD=99/PMS=7/LFO-extreme against a
+standalone harness running Dexed's real integer formula) is exact, not
+approximate, just without the Q24/Q32/`>>39` bit-shift plumbing that only
+ever existed to keep Dexed itself integer-only. Dexed's *separate*
+non-LFO controller-driven pitch-mod path (a JUCE-plugin-configurable
+mod-matrix feature) is **not** replicated — this issue's own acceptance
+criterion ("mod wheel scales LFO depth") asks for the simpler, extremely
+common convention `lfo.h` implements instead: mod wheel is a 0..1 multiplier
+on the LFO's own configured PMD/AMD depth, matching speech's own CC1 "mod
+wheel → vibrato depth" precedent (#36) — **not** real DX7 hardware's own
+convention, where a patch's configured PMD/PMS plays at full depth
+regardless of wheel position. Flagged explicitly for the first hardware
+listen: a patch with real vibrato/tremolo configured will sound completely
+flat until the mod wheel is actually moved (`VoiceParams::mod_wheel`,
+CC1) — expected, not a bug.
+
+`VoiceParams` gained `mod_wheel` (Q15, `engine.h`) — §6.3's original sketch
+already anticipated this field name. Host-verified (`render_fm`'s
+`run_pitch_eg_check()`/`run_lfo_check()`): pitch EG's L4-start/attack-blip/
+settle/release-swoop shape and its per-operator increment scaling (moves a
+ratio operator, exempts a fixed-frequency one — matching Dexed's own
+`osc_freq()` fixed-mode branch, which only ever receives pitch bend, never
+pitch/LFO mod); all six LFO waveform shapes; rate/delay calibration anchors;
+a real block-rate pitch/amp swing near the calibrated max; `mod_wheel=0`
+silencing both outputs; the delay ramp actually fading in; and AM reaching
+`fm_voice_step_envelopes()`'s real gain output, weighted by each operator's
+own `am_sensitivity` and leaving `am_sensitivity=0` operators untouched.
+Kernel disassembly unaffected (still 48 `smlawb` instances, device build) —
+everything here is note-on/block-rate, never inside the per-sample loop,
+confirming the "zero per-sample cost" constraint this section opens with.
+`tools/syx2patch.py` bakes the voice-wide pitch EG (bulk offset 102-109) and
+LFO (offset 112-116) bytes straight through, same "no host-side DSP math"
+reasoning as every other field — offsets and the LKS/LFW/LPMS bit-packing in
+byte 116 cross-checked against Dexed's own `Cartridge::unpackProgram`
+(`Source/PluginData.cpp`, Apache-2.0).
 
 ### 5.6 Note-on-time computation (no runtime cost)
 
@@ -716,13 +811,17 @@ v1 actually resolves:
 | Algorithms 4 and 6 | `needs_interleaved` detected via a real cycle check (not hardcoded algorithm numbers) on a test graph augmenting the ordinary routing with the secondary FB_OUT operator's tentative edge back to the primary — collapsed to single self-feedback, logged, never silent |
 | Voice name | Retained, becomes `FM_PATCH_NAMES[]` and the sanitized `FmPatchId` enum value |
 
-Deferred to v2 (#48), same v1/v2 split `speechgen.py` used (#32/#35): key
-level scaling, rate scaling, detune, fixed-frequency mode, pitch EG, LFO,
-transpose. All are parsed and range-checked from the `.syx` (so `.syx`
-corruption still fails loudly) but not wired into `FmOpParams` — a patch
-using fixed-frequency mode on any operator is skipped outright rather than
-approximated, since v1 has no way to represent it without silently changing
-the patch's character.
+Deferred to v2 (#48)/v3 (#49), same v1/v2/v3 split `speechgen.py` used
+(#32/#35): key level scaling, rate scaling, detune, fixed-frequency mode
+(v2, #48); pitch EG and LFO (v3, #49, `pitch_eg`/`lfo` bulk offset 102-109/
+112-116, cross-checked against Dexed's own `Cartridge::unpackProgram`). All
+are parsed and range-checked from the `.syx` (so `.syx` corruption still
+fails loudly) but not wired into `FmOpParams`/`FmPatch` until their runtime
+consumer exists — v1's fixed-frequency operators were skipped outright
+rather than approximated, since v1 had no way to represent them without
+silently changing the patch's character; v2 fixed that. Transpose remains
+deliberately unwired (#49) — it's a Core 0/MIDI-controller-layer concern, not
+something a patch-data-only converter can apply.
 
 Two real, unanticipated issues surfaced only by actually host-rendering a
 real bank (ROM1A), not by design review alone: multi-carrier algorithms
@@ -758,11 +857,11 @@ patch — long enough to catch a deliberately slow-swelling patch like ROM1A's
 |---|---|---|
 | Operator sine table (4096 × int16) | 8 KB | SRAM |
 | Exp2 table for EG (256 × int16) | 0.5 KB | SRAM |
-| Patch bank (32 × ~200 B, runtime form) | ~6.4 KB | Flash (read-only) — **measured, #47**: ROM1A's 28 converted patches were 5488 B (196 B/patch) pre-#48; **updated, #48**: FmOpParams grew 6 bytes/op (key level scaling + rate scaling fields) — all 32/32 of ROM1A now convert (fixed-frequency support), 7040 B total (220 B/patch) |
-| Per-voice state (16 × ~200 B) | ~3.2 KB | SRAM |
+| Patch bank (32 × ~240 B, runtime form) | ~7.5 KB | Flash (read-only) — **measured, #47**: ROM1A's 28 converted patches were 5488 B (196 B/patch) pre-#48; **#48**: all 32/32 convert (fixed-frequency support), 220 B/patch; **updated, #49**: FmOpParams gained `am_sensitivity` (+1 B/op) and FmPatch gained voice-wide `lfo`/`pitch_eg` structs (+~16 B/patch, once per patch not per op) — 7744 B total (242 B/patch), estimate per `tools/syx2patch.py`'s own printed flash-cost line, not a compiled `sizeof()` |
+| Per-voice state (16 × ~200 B, `FmOp[6]`) + pitch EG/LFO (16 × ~24 B, one each per voice) | ~3.6 KB | SRAM |
 | Shared bus scratch (7 × 16 × int32) | 448 B | SRAM |
 | Mix scratch | reuses existing `scratch[]` | SRAM |
-| **Total SRAM** | **~12 KB** | of 520 KB |
+| **Total SRAM** | **~12.5 KB** | of 520 KB |
 
 **No PSRAM. No streaming. No dynamic allocation.** This should be treated as a
 design invariant of the module.
@@ -865,7 +964,18 @@ possibly the 4096-entry table.
    both gitignored (Yamaha's own patch data, same policy `xm2t00t`'s `xm/`
    already established for copyrighted third-party content) — see
    `engine.md`'s syx2patch sections for the full writeup and usage.
-6. **P4–P6** — pitch EG + LFO, free routing UI, calibration against Dexed.
+6. ~~**P4** — pitch EG + LFO.~~ **Implemented, #49** (`pitch_eg.h`/`lfo.h`:
+   4-stage pitch EG in cents, LFO with all six waveforms/rate/delay/PMD/AMD/
+   key-sync/PMS/per-op AM sensitivity, both ported from Dexed's real
+   `PitchEnv`/`Lfo` and cross-checked via a calibration harness the same way
+   #58/#59 verified `env_dx.h`'s tables; `tools/syx2patch.py` v3 bakes both
+   from the `.syx`'s bulk offset 102-109/112-116). Closes open question 5:
+   per-voice LFO, global-phase mode considered and dropped (see §5.5's own
+   writeup for why). Zero per-sample cost confirmed against device
+   disassembly (48 `smlawb` instances, unchanged). Hardware listen still
+   Carl's to do — see §5.5's note on `mod_wheel` defaulting to 0 (no
+   vibrato/tremolo until the wheel moves, by design, not a bug).
+7. **P5–P6** — free routing UI, calibration against Dexed.
 
 `WAVE_FM2` (§10) can be slotted in anywhere; it does not gate anything.
 
@@ -879,7 +989,7 @@ possibly the 4096-entry table.
 | 2 | ~~FX insert cost in isolation; is Freeverb worth ~4% in an FM context?~~ **Closed, #43: 268.7 c/f / 7.9% (reused from the subtractive engine's identical shared FX code), not ~4%. Freeverb stays** — the 16-voice budget clears with ~27% margin even at the corrected cost. | **P0 — done** |
 | 3 | ~~BLOCK size — 16 assumed; confirm against rate-99 attacks~~ **Closed, #45: BLOCK=16 confirmed, not raised to 32 or lowered to 8** — `engine.md` §"FM P2 BLOCK Confirmation (#45)". | **P2 — done** |
 | 4 | ~~Extract a shared `BlockClock` for FM and speech, or keep them separate?~~ **Closed, #46: reject — common pattern, no common code.** Compared the real `EnvDX` (§5.3) against speech's segment sequencer: per-operator vs. per-voice instancing, fixed 4-stage log2 vs. variable-length float segments, exact per-sample `gain_step` interpolation vs. per-sub-block-constant IIR smoothing. See §5.3's cross-module note and `architecture.md` "Settled Decisions". Speech's sequencer (#34/#36/#37) untouched. | **P2 — done** |
-| 5 | Global vs. per-voice LFO default (DX7 fidelity vs. better polyphonic behaviour) | P4 |
+| 5 | ~~Global vs. per-voice LFO default~~ **Closed, #49: per-voice, global-phase mode dropped (not built), by design.** #48's multitimbrality (one patch pointer per voice) leaves a literal shared LFO with no principled behavior once two active voices with *different* patches both request global phase — a case that can't arise on real single-timbral hardware, so there's no real DX7 behavior to match. Per-voice-with-key-sync already covers the common "block chord" fidelity case. See §5.5's own writeup. | **P4 — done** |
 | 6 | Algorithms 4 and 6: interleaved fallback (X1) or documented limitation? **Partially closed, #47**: v1 documents the limitation and applies a collapse-to-single-self-feedback fallback (detected generically via cycle analysis, logged, never silent) — real X1 interleaved rendering (the actual two-operator loop) is `#54`, still open. | P4 |
 | 7 | Patch bank source — ship a curated set, or make `.syx` loading a runtime feature over MIDI SysEx? | P3 |
 | 8 | Does per-voice multitimbrality warrant a MIDI channel→patch mapping UI on the LCD? | P5 |

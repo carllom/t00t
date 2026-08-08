@@ -103,6 +103,19 @@ def test_coarse_ratio() -> None:
     assert abs(sp.op_ratio(op) - 0.5) < 1e-9
 
 
+# #49: DX7Voice grew required (no-default) pitch EG/LFO fields -- every
+# hand-built DX7Voice() in this file needs them. 50/50/50/50 for pitch_eg
+# level matches patch.h's own "50 = no deviation" convention (see
+# FmPitchEgParams' comment); the rest are 0 (also safe/no-effect, 0-depth
+# LFO), same as this file's other "doesn't matter for what this test checks"
+# fixture values.
+_VOICE_LFO_PEG_DEFAULTS = dict(
+    pitch_eg_rate=[50, 50, 50, 50], pitch_eg_level=[50, 50, 50, 50],
+    lfo_speed=0, lfo_delay=0, lfo_pmd=0, lfo_amd=0,
+    lfo_key_sync=0, lfo_waveform=0, lfo_pms=0,
+)
+
+
 def _flat_op(**overrides) -> "sp.DX7Op":
     base = dict(eg_rate=[99, 50, 30, 40], eg_level=[99, 70, 60, 0], output_level=99,
                 key_vel_sens=0, osc_mode=0, freq_coarse=1, freq_fine=0, break_point=0,
@@ -137,7 +150,7 @@ def test_fixed_freq_converts_with_real_hz() -> None:
     # ratio-mode detune formula applies to a fixed-frequency operator).
     voice = sp.DX7Voice(ops=[_flat_op(osc_mode=1, freq_coarse=1, freq_fine=0)] + [_flat_op() for _ in range(5)],
                          algorithm=0, feedback_level=0, name="FIXEDTEST",
-                         osc_key_sync=0, transpose=24)
+                         **_VOICE_LFO_PEG_DEFAULTS, osc_key_sync=0, transpose=24)
     warnings: list = []
     out = sp.convert_voice(0, voice, warnings)
     assert out is not None
@@ -158,7 +171,7 @@ def test_key_level_and_rate_scaling_pass_through() -> None:
     op.rate_scale = 5
     voice = sp.DX7Voice(ops=[op] + [_flat_op() for _ in range(5)],
                          algorithm=0, feedback_level=0, name="SCALETEST",
-                         osc_key_sync=0, transpose=24)
+                         **_VOICE_LFO_PEG_DEFAULTS, osc_key_sync=0, transpose=24)
     warnings: list = []
     out = sp.convert_voice(0, voice, warnings)
     assert out is not None
@@ -171,12 +184,39 @@ def test_key_level_and_rate_scaling_pass_through() -> None:
     assert scaled_op.rate_scaling == 5
 
 
+def test_lfo_and_pitch_eg_pass_through() -> None:
+    # #49: voice-wide LFO/pitch EG bytes are copied straight through,
+    # unmodified, same "no host-side DSP math" reasoning as every other
+    # field -- fm/lfo.h and fm/pitch_eg.h do the real conversion at note-on/
+    # block-rate on the device.
+    ops = [_flat_op() for _ in range(6)]
+    voice = sp.DX7Voice(
+        ops=ops, algorithm=0, feedback_level=0, name="LFOTEST",
+        pitch_eg_rate=[11, 22, 33, 44], pitch_eg_level=[55, 66, 77, 88],
+        lfo_speed=37, lfo_delay=12, lfo_pmd=50, lfo_amd=25,
+        lfo_key_sync=1, lfo_waveform=4, lfo_pms=6,
+        osc_key_sync=0, transpose=24,
+    )
+    warnings: list = []
+    out = sp.convert_voice(0, voice, warnings)
+    assert out is not None
+    assert out.pitch_eg.rate == [11, 22, 33, 44]
+    assert out.pitch_eg.level == [55, 66, 77, 88]
+    assert out.lfo.rate == 37
+    assert out.lfo.delay == 12
+    assert out.lfo.pmd == 50
+    assert out.lfo.amd == 25
+    assert out.lfo.key_sync is True
+    assert out.lfo.waveform == 4
+    assert out.lfo.pms == 6
+
+
 def test_carrier_l4_forced_to_zero() -> None:
     # Algorithm 1 (index 0): bus-order op3 (OP3) and op5 (OP1) are carriers.
     ops = [_flat_op() for _ in range(6)]
     ops[3] = _flat_op(eg_level=[99, 70, 60, 40])  # OP3, carrier, nonzero L4
     voice = sp.DX7Voice(ops=ops, algorithm=0, feedback_level=0, name="SUSTAINPAD",
-                         osc_key_sync=0, transpose=24)
+                         **_VOICE_LFO_PEG_DEFAULTS, osc_key_sync=0, transpose=24)
     warnings: list = []
     out = sp.convert_voice(0, voice, warnings)
     assert out is not None
@@ -189,7 +229,7 @@ def test_carrier_l4_forced_to_zero() -> None:
 def test_feedback_level_zero_disables_feedback() -> None:
     ops = [_flat_op() for _ in range(6)]
     voice = sp.DX7Voice(ops=ops, algorithm=0, feedback_level=0, name="NOFEEDBACK",
-                         osc_key_sync=0, transpose=24)
+                         **_VOICE_LFO_PEG_DEFAULTS, osc_key_sync=0, transpose=24)
     warnings: list = []
     out = sp.convert_voice(0, voice, warnings)
     assert out is not None
@@ -201,7 +241,7 @@ def test_multi_carrier_level_scaled_down() -> None:
     # Algorithm 32 (index 31): all six operators are carriers.
     ops = [_flat_op() for _ in range(6)]
     voice = sp.DX7Voice(ops=ops, algorithm=31, feedback_level=0, name="ALLCARRIERS",
-                         osc_key_sync=0, transpose=24)
+                         **_VOICE_LFO_PEG_DEFAULTS, osc_key_sync=0, transpose=24)
     warnings: list = []
     out = sp.convert_voice(0, voice, warnings)
     assert out is not None
@@ -221,7 +261,7 @@ def test_multi_modulator_level_scaled_down() -> None:
 
     ops = [_flat_op() for _ in range(6)]
     voice = sp.DX7Voice(ops=ops, algorithm=11, feedback_level=0, name="THREEMOD",
-                         osc_key_sync=0, transpose=24)
+                         **_VOICE_LFO_PEG_DEFAULTS, osc_key_sync=0, transpose=24)
     warnings: list = []
     out = sp.convert_voice(0, voice, warnings)
     assert out is not None
@@ -260,10 +300,14 @@ def _pack_voice(name: str, algorithm: int, feedback_level: int) -> bytes:
     op = _pack_op([9, 19, 29, 39], [98, 68, 58, 8], 27, 11, 12, 1, 2, 3, 4, 6, 2, 77, 0, 15, 33)
     for j in range(6):
         buf[j * 17:(j + 1) * 17] = op
-    buf[102:110] = bytes([1, 2, 3, 4, 5, 6, 7, 8])  # pitch EG, unread
+    buf[102:110] = bytes([1, 2, 3, 4, 5, 6, 7, 8])  # pitch EG rate1-4, level1-4 (#49)
     buf[110] = algorithm & 0x1F
     buf[111] = feedback_level & 7  # osc_key_sync=0
-    buf[112:117] = bytes([10, 20, 30, 40])[:0] + bytes([10, 20, 30, 40, 0])  # lfo fields, unread
+    buf[112] = 10  # lfo_speed
+    buf[113] = 20  # lfo_delay
+    buf[114] = 30  # lfo_pmd
+    buf[115] = 40  # lfo_amd
+    buf[116] = 1 | (3 << 1) | (5 << 4)  # #49: LKS=1, LFW=3 (square), LPMS=5 -> 0x57
     buf[117] = 24  # transpose
     name_bytes = (name + " " * 10)[:10].encode("ascii")
     buf[118:128] = name_bytes
@@ -284,6 +328,16 @@ def test_unpack_voice_roundtrip() -> None:
     assert voice.algorithm == 17
     assert voice.feedback_level == 5
     assert voice.name == "ROUNDTRIP"
+    # #49: voice-wide pitch EG (bulk 102-109) + LFO (bulk 112-116).
+    assert voice.pitch_eg_rate == [1, 2, 3, 4]
+    assert voice.pitch_eg_level == [5, 6, 7, 8]
+    assert voice.lfo_speed == 10
+    assert voice.lfo_delay == 20
+    assert voice.lfo_pmd == 30
+    assert voice.lfo_amd == 40
+    assert voice.lfo_key_sync == 1
+    assert voice.lfo_waveform == 3
+    assert voice.lfo_pms == 5
     for op in voice.ops:
         assert op.eg_rate == [9, 19, 29, 39]
         assert op.eg_level == [98, 68, 58, 8]
@@ -376,6 +430,12 @@ def test_corpus_bank(path: str) -> None:
             assert 0 <= op.vel_sensitivity <= 7
             assert all(0 <= v <= 99 for v in op.eg_rate)
             assert all(0 <= v <= 99 for v in op.eg_level)
+        assert all(0 <= v <= 99 for v in p.pitch_eg.rate)
+        assert all(0 <= v <= 99 for v in p.pitch_eg.level)
+        assert 0 <= p.lfo.rate <= 99 and 0 <= p.lfo.delay <= 99
+        assert 0 <= p.lfo.pmd <= 99 and 0 <= p.lfo.amd <= 99
+        assert 0 <= p.lfo.waveform <= 5
+        assert 0 <= p.lfo.pms <= 7
 
 
 def corpus_paths():
@@ -409,6 +469,7 @@ def main() -> None:
     run("op_detune_cents() formula", test_op_detune_cents_formula)
     run("fixed-frequency mode converts with real Hz", test_fixed_freq_converts_with_real_hz)
     run("key level/rate scaling pass through", test_key_level_and_rate_scaling_pass_through)
+    run("LFO/pitch EG pass through", test_lfo_and_pitch_eg_pass_through)
     run("carrier L4 forced to 0 for voice-lifetime correctness", test_carrier_l4_forced_to_zero)
     run("feedback_level=0 disables feedback exactly", test_feedback_level_zero_disables_feedback)
     run("multi-carrier level scaled down by carrier count", test_multi_carrier_level_scaled_down)

@@ -199,14 +199,26 @@ static FmPatch flat_eg_patch() {
 }
 
 // Renders `total` samples of `patch` at `note_hz` (default: one second)
-// through the exact device code path (fm_voice_note_on/
-// fm_voice_update_pitch/fm_render_voice, op.h), mono-summed for spectral
-// analysis. Never releases (no fm_voice_note_off call) -- callers that need
-// release behaviour use render_patch_release() below instead.
+// through the exact device code path (fm_voice_note_on/fm_render_voice,
+// op.h), mono-summed for spectral analysis. Never releases (no
+// fm_voice_note_off call) -- callers that need release behaviour use
+// render_patch_release() below instead.
+//
+// #49: always drives a real FmPitchEg/FmLfo (not the nullptr-skip path) --
+// this is the "exact device code path" harness, and FM_TEST_PATCH's own
+// pmd=amd=0 means every EXISTING caller here is still unaffected (lfo.h's
+// own depth-fraction math is exactly 0 regardless of mod_wheel). Default
+// mod_wheel=32767 (full) rather than 0 so a real DX7 patch bank's
+// configured vibrato/tremolo (once syx2patch.py bakes lfo/pitch_eg fields)
+// is actually audible in the batch-rendered fm_patches/*.wav bank by
+// default -- see lfo.h's own header comment on why 0 would otherwise mean
+// "no effect at all" regardless of patch data.
 static void render_patch_note(const FmPatch &patch, float note_hz, const FmRouting &routing,
                                FmVoiceBuses &bus, std::vector<float> &mono, int32_t &peak,
-                               uint32_t total = SAMPLE_RATE) {
+                               uint32_t total = SAMPLE_RATE, int16_t mod_wheel = 32767) {
     FmOp ops[FM_NUM_OPS];
+    FmPitchEg peg;
+    FmLfo lfo;
     uint32_t inc = fm_phase_inc(note_hz);
     // #48: fm_voice_note_on() now needs the raw MIDI note (key level/rate
     // scaling), not just the Hz-derived phase increment -- inverting
@@ -215,14 +227,14 @@ static void render_patch_note(const FmPatch &patch, float note_hz, const FmRouti
     // here would have to also track alongside note_hz.
     int note_round = (int)lroundf(69.0f + 12.0f * log2f(note_hz / 440.0f));
     uint8_t midinote = (uint8_t)std::clamp(note_round, 0, 127);
-    fm_voice_note_on(ops, patch, inc, /*amplitude=*/32767, midinote);
+    fm_voice_note_on(ops, patch, inc, /*amplitude=*/32767, midinote, &peg, &lfo);
 
     std::vector<int32_t> dl(total, 0), dr(total, 0);
     uint32_t done = 0;
     while (done < total) {
         uint32_t n = std::min(NATIVE_BUFFER, total - done);
-        fm_voice_update_pitch(ops, patch, inc);
-        fm_render_voice(ops, patch, routing, bus, /*pan=*/0, dl.data() + done, dr.data() + done, n);
+        fm_render_voice(ops, patch, routing, bus, /*pan=*/0, dl.data() + done, dr.data() + done, n,
+                         &peg, &lfo, inc, mod_wheel);
         done += n;
     }
 
@@ -547,6 +559,214 @@ static bool run_key_rate_scaling_check() {
     return pass;
 }
 
+// #49's pitch EG acceptance criterion: "applied by scaling all six operator
+// increments at block boundaries ... zero per-sample cost." Checked
+// directly against pitch_eg.h's own state machine (trigger/step/release)
+// plus op.h's fm_voice_step_pitch_and_mod() increment scaling, the same
+// "read the intermediate state, not just the mixed audio" method
+// run_eg_shape_check() uses for the amplitude EG -- a single voice's pitch
+// is a scalar the mixed spectrum can't cleanly separate from ordinary
+// vibrato/detune.
+static bool run_pitch_eg_check() {
+    fm_init_sine_tab();
+    env_dx_init_tables();
+
+    FmPatch patch = FM_TEST_PATCH;
+    // Fast rise to L1 (80, well above center) = the "attack blip"; settles
+    // at center (L2=L3=50); slow swoop to L4 (20, well below center) on
+    // release. L4 != 50 is deliberate -- it's what makes fm_pitch_eg_trigger()
+    // start from a real nonzero offset (matching Dexed's own "starts where
+    // the previous note's release left off" convention) instead of 0.
+    patch.pitch_eg = { {99, 99, 99, 60}, {80, 50, 50, 20} };
+    patch.op[0].fixed_freq = true;  // must NOT be affected by pitch EG/LFO (matches Dexed's own fixed-mode exemption)
+    patch.op[0].fixed_hz = 440.0f;
+
+    FmPitchEg peg;
+    fm_pitch_eg_trigger(peg, patch.pitch_eg);
+    float start_cents = peg.current_cents;
+    bool start_ok = std::fabs(start_cents - dx7_pitchenv_level_to_cents(20)) < 0.5f;
+
+    uint32_t done = 0;
+    float blip_cents = start_cents;
+    while (done < (uint32_t)(0.01f * SAMPLE_RATE)) {
+        blip_cents = fm_pitch_eg_step_block(peg, patch.pitch_eg, FM_BLOCK);
+        done += FM_BLOCK;
+    }
+    bool blip_ok = blip_cents > start_cents + 50.0f;  // real upward movement within 10ms, not just nonzero noise
+
+    while (done < (uint32_t)(0.3f * SAMPLE_RATE)) {
+        fm_pitch_eg_step_block(peg, patch.pitch_eg, FM_BLOCK);
+        done += FM_BLOCK;
+    }
+    float settled_cents = peg.current_cents;
+    uint8_t settled_stage = peg.stage;
+    bool settle_ok = std::fabs(settled_cents) < 1.0f && settled_stage == PEG_STAGE_3;  // holds at center, stage 3, while note is held
+
+    fm_pitch_eg_release(peg);
+    float just_after_release = fm_pitch_eg_step_block(peg, patch.pitch_eg, FM_BLOCK);
+    bool release_moving_ok = just_after_release < settled_cents
+                            && just_after_release > dx7_pitchenv_level_to_cents(20) + 1.0f;
+    done = 0;
+    while (done < (uint32_t)(2.0f * SAMPLE_RATE)) {
+        fm_pitch_eg_step_block(peg, patch.pitch_eg, FM_BLOCK);
+        done += FM_BLOCK;
+    }
+    bool release_settled_ok = std::fabs(peg.current_cents - dx7_pitchenv_level_to_cents(20)) < 1.0f
+                             && peg.stage == PEG_STAGE_4;
+
+    // Operator increment scaling: a non-fixed operator's `inc` moves with
+    // the blip; a fixed-frequency operator's does not.
+    FmOp ops[FM_NUM_OPS];
+    FmPitchEg peg2;
+    FmLfo lfo2;
+    uint32_t note_inc = fm_phase_inc(220.0f);
+    fm_voice_note_on(ops, patch, note_inc, 32767, /*midinote=*/57, &peg2, &lfo2);
+    uint32_t base_inc_op1 = fm_op_inc(patch.op[1], note_inc);
+    uint32_t base_inc_op0 = fm_op_inc(patch.op[0], note_inc);
+    fm_voice_step_pitch_and_mod(ops, patch, peg2, lfo2, note_inc, FM_BLOCK, /*mod_wheel=*/32767);
+    bool op1_moved_ok = ops[1].inc != base_inc_op1;
+    bool op0_fixed_ok = ops[0].inc == base_inc_op0;
+
+    bool pass = start_ok && blip_ok && settle_ok && release_moving_ok && release_settled_ok
+              && op1_moved_ok && op0_fixed_ok;
+    printf("%s: pitch EG -- start=%.1fc (want %.1f), blip(10ms)=%.1fc (>%.1f), "
+           "settled=%.1fc@stage%d, release(1blk)=%.1fc, release_settled=%.1fc@stage%d, "
+           "op1 inc moved=%d, op0(fixed) inc unchanged=%d\n",
+           pass ? "PASS" : "FAIL", start_cents, dx7_pitchenv_level_to_cents(20), blip_cents,
+           start_cents + 50.0f, settled_cents, settled_stage, just_after_release,
+           peg.current_cents, peg.stage, op1_moved_ok, op0_fixed_ok);
+    if (!start_ok) printf("  FAIL: trigger didn't start from L4\n");
+    if (!blip_ok) printf("  FAIL: no real upward blip toward L1\n");
+    if (!settle_ok) printf("  FAIL: didn't settle at center / stage 3\n");
+    if (!release_moving_ok) printf("  FAIL: release didn't start swooping toward L4\n");
+    if (!release_settled_ok) printf("  FAIL: release didn't settle at L4 / stage 4\n");
+    if (!op1_moved_ok) printf("  FAIL: a ratio operator's inc didn't move with the pitch EG\n");
+    if (!op0_fixed_ok) printf("  FAIL: a fixed-frequency operator's inc moved -- should be exempt\n");
+    return pass;
+}
+
+// #49's LFO acceptance criteria: all six waveforms, rate, delay, PMD/AMD,
+// key sync are real and correctly shaped -- checked directly against
+// lfo.h's own tables/functions, plus one integration check that AM
+// actually reaches fm_voice_step_envelopes()'s gain output.
+static bool run_lfo_check() {
+    fm_init_sine_tab();
+    env_dx_init_tables();
+
+    // (1) Waveform shapes, sampled at phase 0 / quarter / half / three-quarter.
+    constexpr uint32_t Q0 = 0, Q1 = 0x40000000u, Q2 = 0x80000000u, Q3 = 0xC0000000u;
+    bool tri_ok = fm_lfo_waveform_unipolar(Q0, 0) < 0.05f && fm_lfo_waveform_unipolar(Q2, 0) > 0.95f;
+    bool sawdown_ok = fm_lfo_waveform_unipolar(Q0, 1) > 0.95f && fm_lfo_waveform_unipolar(Q3, 1) < 0.3f;
+    bool sawup_ok = fm_lfo_waveform_unipolar(Q0, 2) < 0.05f && fm_lfo_waveform_unipolar(Q3, 2) > 0.7f;
+    bool square_ok = fm_lfo_waveform_unipolar(Q1, 3) > 0.95f && fm_lfo_waveform_unipolar(Q3, 3) < 0.05f;
+    bool sine_ok = fm_lfo_waveform_unipolar(Q1, 4) > 0.95f && fm_lfo_waveform_unipolar(Q3, 4) < 0.05f
+                && std::fabs(fm_lfo_waveform_unipolar(Q0, 4) - 0.5f) < 0.05f;
+    bool waveforms_ok = tri_ok && sawdown_ok && sawup_ok && square_ok && sine_ok;
+
+    // (2) Rate table: real-Hz anchors (rate 0 ~0.065 Hz / ~15.5s period,
+    // rate 99 ~50.9 Hz -- cross-checked against a standalone calibration
+    // harness running Dexed's own real Lfo::init() formula).
+    float hz0 = dx7_lfo_rate_to_hz(0), hz99 = dx7_lfo_rate_to_hz(99);
+    bool rate_ok = hz0 > 0.05f && hz0 < 0.08f && hz99 > 45.0f && hz99 < 55.0f;
+
+    // (3) Delay: instant at 0, ~2.66s at 99 (same calibration method).
+    float delay0 = dx7_lfo_delay_seconds(0), delay99 = dx7_lfo_delay_seconds(99);
+    bool delay_ok = delay0 == 0.0f && delay99 > 2.0f && delay99 < 3.5f;
+
+    // (4) Full block-rate integration: fast LFO (rate 99, ~51 Hz), max
+    // depth/sensitivity, sine, delay=0, mod_wheel at max -- over 0.5s
+    // (>20 cycles at ~51Hz, densely sampled every FM_BLOCK) the pitch
+    // output must swing through both signs near the calibrated max, and
+    // amp_atten must swing up toward its own max.
+    FmLfoParams p{ 99, 0, 99, 99, /*waveform=*/4, false, 7 };
+    FmLfo lfo;
+    fm_lfo_init(lfo);
+    fm_lfo_trigger(lfo, false);
+    float min_cents = 1e9f, max_cents = -1e9f, max_atten = 0.0f;
+    uint32_t done = 0;
+    while (done < (uint32_t)(0.5f * SAMPLE_RATE)) {
+        float pc, aa;
+        fm_lfo_step_block(lfo, p, FM_BLOCK, /*mod_wheel_frac=*/1.0f, pc, aa);
+        min_cents = std::min(min_cents, pc);
+        max_cents = std::max(max_cents, pc);
+        max_atten = std::max(max_atten, aa);
+        done += FM_BLOCK;
+    }
+    bool oscillates_ok = min_cents < -900.0f && max_cents > 900.0f;  // FM_LFO_PMD_MAX_CENTS is ~1190.6
+    bool amp_swings_ok = max_atten > 0.7f;
+
+    // (5) mod_wheel=0 must silence both outputs regardless of depth.
+    FmLfo lfo_wheel0;
+    fm_lfo_init(lfo_wheel0);
+    fm_lfo_trigger(lfo_wheel0, false);
+    bool wheel_zero_ok = true;
+    done = 0;
+    while (done < (uint32_t)(0.1f * SAMPLE_RATE)) {
+        float pc, aa;
+        fm_lfo_step_block(lfo_wheel0, p, FM_BLOCK, /*mod_wheel_frac=*/0.0f, pc, aa);
+        if (pc != 0.0f || aa != 0.0f) wheel_zero_ok = false;
+        done += FM_BLOCK;
+    }
+
+    // (6) Delay: with a slow delay (99, ~2.66s) and a waveform whose very
+    // first sample is already at a bipolar extreme (square, unlike sine's
+    // own zero-crossing start), the very first block after trigger must be
+    // far smaller than that extreme -- the fade-in is real, not a no-op.
+    FmLfoParams p_delay{ 99, 99, 99, 99, /*waveform=*/3, false, 7 };
+    FmLfo lfo_delay;
+    fm_lfo_init(lfo_delay);
+    fm_lfo_trigger(lfo_delay, false);
+    float first_pc, first_aa;
+    fm_lfo_step_block(lfo_delay, p_delay, FM_BLOCK, 1.0f, first_pc, first_aa);
+    bool delay_ramp_ok = std::fabs(first_pc) < 5.0f;  // negligible this early into a ~2.66s ramp (undelayed would be ~1190c immediately)
+
+    // (7) AM integration: fm_voice_step_envelopes() actually reduces gain
+    // for an operator with real am_sensitivity, and leaves one with
+    // am_sensitivity=0 untouched, at the SAME amp_atten input.
+    FmPatch patch = FM_TEST_PATCH;
+    patch.op[5].am_sensitivity = 3;  // carrier: max AMS
+    patch.op[4].am_sensitivity = 0;  // modulator: no AMS -- must be unaffected
+    FmOp ops_a[FM_NUM_OPS], ops_b[FM_NUM_OPS];
+    uint32_t inc = fm_phase_inc(220.0f);
+    fm_voice_note_on(ops_a, patch, inc, 32767, 57);
+    fm_voice_note_on(ops_b, patch, inc, 32767, 57);
+    // Run both to a real, settled nonzero gain first (rate-99's attack is
+    // fast but not literally one FM_BLOCK=16-sample/0.36ms step, per
+    // run_eg_shape_check()'s own 1ms checkpoint) before comparing --
+    // otherwise both would still read exactly 0 and "b < a" would trivially
+    // fail without AM being the reason.
+    uint32_t settle = 0;
+    while (settle < (uint32_t)(0.005f * SAMPLE_RATE)) {
+        fm_voice_step_envelopes(ops_a, patch, FM_BLOCK, 0.0f);
+        fm_voice_step_envelopes(ops_b, patch, FM_BLOCK, 0.0f);
+        settle += FM_BLOCK;
+    }
+    fm_voice_step_envelopes(ops_a, patch, FM_BLOCK, /*amp_atten=*/0.0f);
+    fm_voice_step_envelopes(ops_b, patch, FM_BLOCK, /*amp_atten=*/0.8f);
+    bool am_reduces_ok = ops_b[5].gain < ops_a[5].gain;
+    bool am_unaffected_ok = ops_b[4].gain == ops_a[4].gain;
+
+    bool pass = waveforms_ok && rate_ok && delay_ok && oscillates_ok && amp_swings_ok
+              && wheel_zero_ok && delay_ramp_ok && am_reduces_ok && am_unaffected_ok;
+    printf("%s: LFO -- waveforms(tri/sawdn/sawup/sq/sine)=%d/%d/%d/%d/%d, rate(0/99)=%.4f/%.2f Hz, "
+           "delay(0/99)=%.2f/%.2fs, pitch swing=[%.1f,%.1f]c, amp_atten max=%.3f, "
+           "wheel=0 silences=%d, delay ramp small at t=0 (%.2fc)=%d, "
+           "AM reduces sensitive op=%d, leaves insensitive op alone=%d\n",
+           pass ? "PASS" : "FAIL", tri_ok, sawdown_ok, sawup_ok, square_ok, sine_ok, hz0, hz99,
+           delay0, delay99, min_cents, max_cents, max_atten, wheel_zero_ok, first_pc, delay_ramp_ok,
+           am_reduces_ok, am_unaffected_ok);
+    if (!waveforms_ok) printf("  FAIL: one or more waveform shapes wrong\n");
+    if (!rate_ok) printf("  FAIL: rate table out of expected real-Hz range\n");
+    if (!delay_ok) printf("  FAIL: delay table out of expected real-seconds range\n");
+    if (!oscillates_ok) printf("  FAIL: pitch mod didn't swing through both signs near the calibrated max\n");
+    if (!amp_swings_ok) printf("  FAIL: amp mod attenuation didn't reach a real depth\n");
+    if (!wheel_zero_ok) printf("  FAIL: mod_wheel=0 didn't silence the LFO\n");
+    if (!delay_ramp_ok) printf("  FAIL: LFO delay didn't fade in -- full depth immediately\n");
+    if (!am_reduces_ok) printf("  FAIL: AM sensitivity didn't reduce a sensitive operator's gain\n");
+    if (!am_unaffected_ok) printf("  FAIL: AM affected an operator with am_sensitivity=0\n");
+    return pass;
+}
+
 #ifdef T00T_FM_HAS_PATCHES
 // #47's acceptance criterion: "render_fm renders a fixed set of notes per
 // patch to WAV on the host, so #53 has something to diff against Dexed."
@@ -654,7 +874,9 @@ int main() {
     bool ok5 = run_eg_shape_check();
     bool ok6 = run_release_check();
     bool ok8 = run_key_rate_scaling_check();
-    bool ok = ok1 && ok2 && ok3 && ok4 && ok5 && ok6 && ok8;
+    bool ok9 = run_pitch_eg_check();
+    bool ok10 = run_lfo_check();
+    bool ok = ok1 && ok2 && ok3 && ok4 && ok5 && ok6 && ok8 && ok9 && ok10;
 #ifdef T00T_FM_HAS_PATCHES
     bool ok7 = run_patch_bank_render();
     ok = ok && ok7;

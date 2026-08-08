@@ -66,11 +66,57 @@ struct FmOpParams {
     // note-on into a qrate delta applied at every stage transition
     // (env_dx_step_block).
     uint8_t rate_scaling;
+    // #49: amplitude modulation sensitivity -- how much this operator's own
+    // gain dips under the voice's shared LFO tremolo (lfo.h's `amd`/
+    // waveform), 0-3 (DX7 AMS is a 2-bit field, unlike PMS's 0-7). 0 is "not
+    // affected" -- a real, common, and SAFE default (see patch.h's own
+    // FM_TEST_PATCH comment on why `pitch_eg`'s default is NOT similarly
+    // safe at zero).
+    uint8_t am_sensitivity;
+};
+
+// #49 (fm.md §5.5): one LFO per VOICE (not per operator) -- rate/delay/
+// waveform/depths/sensitivity are shared by all six operators, only each
+// operator's own `am_sensitivity` (FmOpParams, above) varies how much the
+// shared tremolo reaches it. Field values and ranges match DX7 exactly
+// (fm/lfo.h ports Dexed's own Lfo class, Source/msfa/lfo.cc, Apache-2.0) so
+// tools/syx2patch.py can copy them straight through, the same convention
+// #45/#47 already established for eg_rate/eg_level/output_level.
+struct FmLfoParams {
+    uint8_t rate;      // 0-99, DX7 LFO speed (lfo.h's dx7_lfo_rate_to_hz(): ~0.06 Hz at 0, ~51 Hz at 99)
+    uint8_t delay;      // 0-99, DX7 LFO delay (fade-in after note-on, ~0-2.6s)
+    uint8_t pmd;        // 0-99, pitch mod depth
+    uint8_t amd;        // 0-99, amp mod depth
+    uint8_t waveform;    // 0=triangle, 1=saw down, 2=saw up, 3=square, 4=sine, 5=sample & hold (DX7 numbering)
+    bool    key_sync;    // true: this voice's LFO phase resets at every note-on
+    uint8_t pms;         // 0-7, pitch mod sensitivity (voice-wide; separate from each op's own am_sensitivity)
+};
+
+// #49 (fm.md §5.4): one 4-stage (rate, level) pitch envelope per VOICE, same
+// shape as EnvDX (env_dx.h) but in a cents domain and shared by all six
+// operators (pitch_eg.h scales every non-fixed-frequency operator's `inc`
+// by the same ratio each control block). **level 50 is "no deviation" (DX7
+// hardware center), NOT level 0** -- unlike every other 0-99 DX7 field in
+// this file, a zero-initialized `FmPitchEgParams` is a real, audible ~4-
+// octave pitch DROP on every stage, not a safe "off" default (see
+// pitch_eg.h's own comment; the same "zero-init is not idle" pitfall
+// env_dx.h's own EnvDX already warns about, just for patch DATA here
+// instead of runtime state). Every hand-written FmPatch literal in this
+// codebase (FM_TEST_PATCH below, and anything copy-constructed from it)
+// MUST set `level` to {50,50,50,50} explicitly to mean "no pitch EG effect"
+// -- tools/syx2patch.py never hits this pitfall since it always copies a
+// real patch's real level bytes straight through, verbatim, the same as
+// every other DX7 field.
+struct FmPitchEgParams {
+    uint8_t rate[4];   // R1-R4, 0-99
+    uint8_t level[4];  // L1-L4, 0-99 -- 50 = center/no deviation, NOT 0
 };
 
 struct FmPatch {
     const char *name;
     FmOpParams  op[FM_NUM_OPS];
+    FmLfoParams      lfo;       // #49 -- voice-wide, shared by all six operators
+    FmPitchEgParams  pitch_eg;  // #49 -- voice-wide, shared by all six operators
 };
 
 // Note-on-time routing decisions (fm.md §5.6): everything the per-sample
@@ -264,5 +310,14 @@ inline constexpr FmPatch FM_TEST_PATCH = {
                      99, 6, {99, 60, 20, 50}, {99, 20, 15, 0} },
         /* op5 */ { 1.0f, 0.0f, false, 0.0f, 1 << 21, FM_TARGET_OUT, false,
                      99, 5, {99, 40, 20, 40}, {99, 70, 60, 0} },
-    }
+    },
+    // #49: lfo.pmd/amd = 0 leaves this patch's sound identical to every
+    // pre-#49 render (0 depth means the LFO is stepped but contributes
+    // exactly 0 cents/0 attenuation regardless of rate/waveform/delay, so
+    // those three are left at a plausible "moderate vibrato, if it were
+    // ever turned on" setting rather than needing to be zero too). pitch_eg
+    // MUST set level to {50,50,50,50} explicitly -- see FmPitchEgParams'
+    // own comment; zero would be a real ~4-octave pitch drop, not "off".
+    /* lfo       */ { 35, 0, 0, 0, /*waveform=*/4, /*key_sync=*/true, /*pms=*/0 },
+    /* pitch_eg  */ { {50, 50, 50, 50}, {50, 50, 50, 50} },
 };

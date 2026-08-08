@@ -113,6 +113,8 @@ static FmRouting voice_routing[MAX_VOICES];
 static uint8_t  voice_last_trigger[MAX_VOICES];
 static bool     voice_routing_valid[MAX_VOICES];
 static bool     voice_gated[MAX_VOICES];  // Core 1's own gate-edge tracking, for the release transition
+static FmPitchEg voice_peg[MAX_VOICES];   // #49: one pitch EG per voice (not per operator -- pitch_eg.h)
+static FmLfo    voice_lfo[MAX_VOICES];    // #49: one LFO per voice (not per operator -- lfo.h)
 
 // Shared bus scratch (fm.md §4.3: "one shared scratch for the whole engine,
 // not per-voice" -- reused across every voice, sequentially, within a pass).
@@ -139,6 +141,8 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
         // EG_IDLE) -- every voice's EGs need an explicit env_dx_init() so
         // fm_voice_active() doesn't report a never-triggered voice as active.
         for (uint32_t i = 0; i < FM_NUM_OPS; i++) env_dx_init(voice_ops[v][i].eg);
+        fm_pitch_eg_init(voice_peg[v]);  // #49
+        fm_lfo_init(voice_lfo[v]);       // #49
     }
 
     FmVoiceBuses bus{ { bus_mod0, bus_mod1, bus_mod2, bus_mod3, bus_mod4, bus_mod5 }, bus_out };
@@ -169,7 +173,8 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
             if (p.trigger != voice_last_trigger[v]) {
                 voice_routing_valid[v] = fm_resolve_routing(*p.patch, voice_routing[v]);
                 if (voice_routing_valid[v]) {
-                    fm_voice_note_on(voice_ops[v], *p.patch, p.phase_inc, p.amplitude, p.note);
+                    fm_voice_note_on(voice_ops[v], *p.patch, p.phase_inc, p.amplitude, p.note,
+                                      &voice_peg[v], &voice_lfo[v]);
                 }
                 voice_last_trigger[v] = p.trigger;
                 voice_gated[v] = p.gate;
@@ -177,7 +182,7 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
                 // Gate-off edge: release through the EG (#45) instead of
                 // #44's hard cutoff -- mirrors the subtractive engine's
                 // "Detect gate-off edge" (Trigger/Gate Signaling, engine.md).
-                if (voice_routing_valid[v]) fm_voice_note_off(voice_ops[v]);
+                if (voice_routing_valid[v]) fm_voice_note_off(voice_ops[v], &voice_peg[v]);
                 voice_gated[v] = false;
             } else {
                 voice_gated[v] = p.gate;
@@ -192,11 +197,12 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
             // avoiding the tracker's #21 "key-off never frees a voice" bug).
             if (!p.gate && !fm_voice_active(voice_ops[v], voice_routing[v])) continue;
 
-            // Live pitch bend: re-derive every operator's `inc` from the
-            // note's current base increment every buffer, without touching
-            // note-on-only state (routing, each EG's stage).
-            fm_voice_update_pitch(voice_ops[v], *p.patch, p.phase_inc);
-            fm_render_voice(voice_ops[v], *p.patch, voice_routing[v], bus, p.pan, dry_l, dry_r, SAMPLES_PER_BUFFER);
+            // #49: pitch bend, pitch EG, and LFO increment recompute all
+            // happen inside fm_render_voice() now, once per control block
+            // (finer-grained than #44's old once-per-buffer
+            // fm_voice_update_pitch() call).
+            fm_render_voice(voice_ops[v], *p.patch, voice_routing[v], bus, p.pan, dry_l, dry_r, SAMPLES_PER_BUFFER,
+                             &voice_peg[v], &voice_lfo[v], p.phase_inc, p.mod_wheel);
             active_mask |= (1u << v);
         }
 

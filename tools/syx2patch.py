@@ -50,9 +50,17 @@ frequency mode is wired via `op_fixed_hz()` (a closed-form Hz formula
 derived from Dexed's own `osc_freq()`) -- patches using it are no longer
 skipped.
 
-Still deliberately NOT wired up: pitch EG, LFO, transpose -- this engine
-has no `pitch_eg.h`/`lfo.h` at all yet (fm.md §5.4/§5.5), so there's nothing
-for the converter to bake data for.
+v3 scope (#49, fm.md P4): the voice-wide pitch EG (4 rate/level bytes each,
+bulk offset 102-109) and LFO (speed/delay/PMD/AMD/waveform/key-sync/PMS,
+bulk offset 112-116) blocks -- both copied straight through as raw DX7
+bytes, same "no host-side DSP math needed, env_dx.h/pitch_eg.h/lfo.h
+already do the log-domain/table conversion at note-on or block-rate"
+reasoning that's applied to every other field here. DX7's own LFO waveform
+numbering (0=triangle, 1=saw down, 2=saw up, 3=square, 4=sine, 5=sample &
+hold) matches lfo.h's `FmLfoParams::waveform` exactly, so no remapping is
+needed either. Transpose remains deliberately unwired -- it affects what
+MIDI note maps to what pitch, a Core 0/MIDI-controller-layer concern this
+patch-data-only converter has no way to apply.
 
 `level` (FmOpParams' reference-gain ceiling) is NOT DX7 data -- patch.h's
 own comment on FmOpParams.level and FM_TEST_PATCH's hand-tuned constants
@@ -353,6 +361,16 @@ class DX7Voice:
     algorithm: int          # 0-31 (raw sysex byte; human/Dexed display is +1)
     feedback_level: int     # 0-7
     name: str
+    # #49: voice-wide pitch EG + LFO (bulk offset 102-109, 112-116).
+    pitch_eg_rate: List[int]   # R1-4, 0-99
+    pitch_eg_level: List[int]  # L1-4, 0-99
+    lfo_speed: int    # 0-99
+    lfo_delay: int    # 0-99
+    lfo_pmd: int      # 0-99
+    lfo_amd: int      # 0-99
+    lfo_key_sync: int  # 0-1
+    lfo_waveform: int  # 0-5
+    lfo_pms: int       # 0-7
     # Parsed, range-checked, not yet consumed (deferred, see module docstring).
     osc_key_sync: int
     transpose: int
@@ -399,16 +417,39 @@ def unpack_voice(bulk: bytes, voice_idx: int) -> DX7Voice:
             detune=det, amp_mod_sens=ams,
         ))
 
+    # #49: voice-wide pitch EG (bulk 102-109) + LFO (bulk 112-116) --
+    # offsets and bit layout cross-checked against Dexed's own
+    # Cartridge::unpackProgram (Source/PluginData.cpp, Apache-2.0): bytes
+    # 102-105 = PEG rates 1-4, 106-109 = PEG levels 1-4 (both plain 0-99,
+    # same as every operator's own eg_rate/eg_level); byte 116 packs LKS
+    # (bit0), LFW (bits1-3), LPMS (bits4-6) -- matching Dexed's own
+    # `lpms_lfw_lks & 1` / `(lpms_lfw_lks >> 1) & 7` / `lpms_lfw_lks >> 4`.
+    pitch_eg_rate = [_range_check(bulk[102 + i] & 0x7F, 0, 99, f"pitch_eg_rate{i + 1}", ctx) for i in range(4)]
+    pitch_eg_level = [_range_check(bulk[106 + i] & 0x7F, 0, 99, f"pitch_eg_level{i + 1}", ctx) for i in range(4)]
+
     algorithm = _range_check(bulk[110] & 0x1F, 0, 31, "algorithm", ctx)
     oks_fb = bulk[111] & 0x0F
     feedback_level = _range_check(oks_fb & 7, 0, 7, "feedback_level", ctx)
     osc_key_sync = (oks_fb >> 3) & 1
+
+    lfo_speed = _range_check(bulk[112] & 0x7F, 0, 99, "lfo_speed", ctx)
+    lfo_delay = _range_check(bulk[113] & 0x7F, 0, 99, "lfo_delay", ctx)
+    lfo_pmd = _range_check(bulk[114] & 0x7F, 0, 99, "lfo_pmd", ctx)
+    lfo_amd = _range_check(bulk[115] & 0x7F, 0, 99, "lfo_amd", ctx)
+    lpms_lfw_lks = bulk[116] & 0x7F
+    lfo_key_sync = lpms_lfw_lks & 1
+    lfo_waveform = _range_check((lpms_lfw_lks >> 1) & 7, 0, 5, "lfo_waveform", ctx)
+    lfo_pms = _range_check((lpms_lfw_lks >> 4) & 7, 0, 7, "lfo_pms", ctx)
+
     transpose = _range_check(bulk[117] & 0x7F, 0, 48, "transpose", ctx)
     name_bytes = bytes(bulk[118 + i] & 0x7F for i in range(10))
     name = name_bytes.decode("ascii", errors="replace").rstrip()
 
-    return DX7Voice(ops=ops, algorithm=algorithm, feedback_level=feedback_level,
-                     name=name, osc_key_sync=osc_key_sync, transpose=transpose)
+    return DX7Voice(ops=ops, algorithm=algorithm, feedback_level=feedback_level, name=name,
+                     pitch_eg_rate=pitch_eg_rate, pitch_eg_level=pitch_eg_level,
+                     lfo_speed=lfo_speed, lfo_delay=lfo_delay, lfo_pmd=lfo_pmd, lfo_amd=lfo_amd,
+                     lfo_key_sync=lfo_key_sync, lfo_waveform=lfo_waveform, lfo_pms=lfo_pms,
+                     osc_key_sync=osc_key_sync, transpose=transpose)
 
 
 # ---------------------------------------------------------------------------
@@ -472,10 +513,29 @@ class FmOpOut:
 
 
 @dataclass
+class FmLfoOut:
+    rate: int
+    delay: int
+    pmd: int
+    amd: int
+    waveform: int
+    key_sync: bool
+    pms: int
+
+
+@dataclass
+class FmPitchEgOut:
+    rate: List[int]   # length 4
+    level: List[int]  # length 4
+
+
+@dataclass
 class FmPatchOut:
     name: str
     ident: str
     ops: List[FmOpOut]  # length 6, this engine's own op index order
+    lfo: FmLfoOut          # #49 -- voice-wide
+    pitch_eg: FmPitchEgOut  # #49 -- voice-wide
     needs_interleaved: bool
     algorithm_display: int  # 1-32, for log messages
 
@@ -551,8 +611,13 @@ def convert_voice(idx: int, voice: DX7Voice, warnings: List[str]) -> Optional[Fm
             f"operator only; the secondary loop is dropped, explicitly, not silently"
         )
 
+    lfo = FmLfoOut(rate=voice.lfo_speed, delay=voice.lfo_delay, pmd=voice.lfo_pmd, amd=voice.lfo_amd,
+                   waveform=voice.lfo_waveform, key_sync=bool(voice.lfo_key_sync), pms=voice.lfo_pms)
+    pitch_eg = FmPitchEgOut(rate=list(voice.pitch_eg_rate), level=list(voice.pitch_eg_level))
+
     ident_base = _sanitize_ident(voice.name)
     return FmPatchOut(name=voice.name, ident=ident_base, ops=[o for o in ops_out if o is not None],
+                       lfo=lfo, pitch_eg=pitch_eg,
                        needs_interleaved=decode.needs_interleaved, algorithm_display=voice.algorithm + 1)
 
 
@@ -585,8 +650,10 @@ def render_header(patches: List[FmPatchOut], syx_path: str) -> str:
         "// per-patch comment below where it applies). v2 (#48): key level scaling,",
         "// rate scaling, detune (approximated, see op_detune_cents()), and",
         "// fixed-frequency mode (real Hz, no patches skipped anymore) are now wired",
-        "// through too. Pitch EG, LFO, and transpose remain deliberately unwired --",
-        "// this engine has no pitch_eg.h/lfo.h yet at all (fm.md §5.4/§5.5).",
+        "// through too. v3 (#49): the voice-wide pitch EG and LFO (rate/delay/PMD/AMD/",
+        "// waveform/key-sync/PMS) are copied straight through as raw DX7 bytes, same",
+        "// as every other field here -- pitch_eg.h/lfo.h do the real conversion at",
+        "// note-on/block-rate. Transpose remains deliberately unwired.",
         "//",
         "// `level` (the reference-gain ceiling) is NOT DX7 data -- see patch.h's own",
         "// FmOpParams comment. Every carrier here uses FM_CARRIER_LEVEL_REF, every",
@@ -622,7 +689,14 @@ def render_header(patches: List[FmPatchOut], syx_path: str) -> str:
                 f"{op.scale_breakpoint}, {op.scale_left_depth}, {op.scale_right_depth}, "
                 f"{op.scale_left_curve}, {op.scale_right_curve}, {op.rate_scaling} }},"
             )
-        lines.append("    } },")
+        peg_r = ", ".join(str(v) for v in p.pitch_eg.rate)
+        peg_l = ", ".join(str(v) for v in p.pitch_eg.level)
+        lfo_ks = "true" if p.lfo.key_sync else "false"
+        lines.append(
+            f"    }},"
+            f" {{ {p.lfo.rate}, {p.lfo.delay}, {p.lfo.pmd}, {p.lfo.amd}, {p.lfo.waveform}, {lfo_ks}, {p.lfo.pms} }},"
+            f" {{ {{ {peg_r} }}, {{ {peg_l} }} }} }},"
+        )
     lines.append("};")
     lines.append("")
     lines.append("inline constexpr const char *FM_PATCH_NAMES[FM_PATCH_COUNT] = {")
@@ -636,14 +710,19 @@ def render_header(patches: List[FmPatchOut], syx_path: str) -> str:
 # sizeof(FmPatch) estimate for the printed flash-cost summary: FmOpParams is
 # 3 floats (12) + bool (1, padded) + int32_t level (4) + mod_target (1) +
 # feedback bool (1) + output_level (1) + vel_sensitivity (1) + eg_rate[4]
-# (4) + eg_level[4] (4) + #48's 6 new uint8_t fields (scale_breakpoint/
-# left_depth/right_depth/left_curve/right_curve/rate_scaling, 6) -- rounds
-# to 36 bytes/op under normal 4-byte struct alignment (was 32 pre-#48); plus
-# one 4-byte name pointer per patch. Not a compiled sizeof() (no device
-# toolchain invoked here), just a documented estimate -- fm.md §8's ~200 B/
-# patch budget should be revisited against the real number once available.
-_BYTES_PER_OP_ESTIMATE = 36
-_BYTES_PER_PATCH_ESTIMATE = 4 + FM_NUM_OPS * _BYTES_PER_OP_ESTIMATE
+# (4) + eg_level[4] (4) + #48's 6 uint8_t fields (scale_breakpoint/
+# left_depth/right_depth/left_curve/right_curve/rate_scaling, 6) + #49's
+# am_sensitivity (1) -- rounds to ~37 bytes/op under normal 4-byte struct
+# alignment (was 36 pre-#49, 32 pre-#48). #49 also adds two voice-wide
+# (not per-op) structs: FmLfoParams (7 uint8_t/bool fields, ~8 with
+# padding) and FmPitchEgParams (rate[4]+level[4], 8 bytes exactly) -- once
+# per patch, not once per operator. Plus one 4-byte name pointer per patch.
+# Not a compiled sizeof() (no device toolchain invoked here), just a
+# documented estimate -- fm.md §8's flash budget should be revisited
+# against the real number once available.
+_BYTES_PER_OP_ESTIMATE = 37
+_BYTES_PER_VOICE_LFO_PEG_ESTIMATE = 16
+_BYTES_PER_PATCH_ESTIMATE = 4 + FM_NUM_OPS * _BYTES_PER_OP_ESTIMATE + _BYTES_PER_VOICE_LFO_PEG_ESTIMATE
 
 
 def _convert_all(syx_path: str) -> tuple[List[FmPatchOut], List[str], int]:
