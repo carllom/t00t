@@ -208,7 +208,14 @@ static void render_patch_note(const FmPatch &patch, float note_hz, const FmRouti
                                uint32_t total = SAMPLE_RATE) {
     FmOp ops[FM_NUM_OPS];
     uint32_t inc = fm_phase_inc(note_hz);
-    fm_voice_note_on(ops, patch, inc, /*amplitude=*/32767);
+    // #48: fm_voice_note_on() now needs the raw MIDI note (key level/rate
+    // scaling), not just the Hz-derived phase increment -- inverting
+    // midi_controller.cpp's own note-to-Hz formula (A4=69=440Hz) rather
+    // than adding a second, separate "midinote" parameter every caller
+    // here would have to also track alongside note_hz.
+    int note_round = (int)lroundf(69.0f + 12.0f * log2f(note_hz / 440.0f));
+    uint8_t midinote = (uint8_t)std::clamp(note_round, 0, 127);
+    fm_voice_note_on(ops, patch, inc, /*amplitude=*/32767, midinote);
 
     std::vector<int32_t> dl(total, 0), dr(total, 0);
     uint32_t done = 0;
@@ -340,7 +347,7 @@ static bool run_eg_shape_check() {
 
     FmOp ops[FM_NUM_OPS];
     uint32_t inc = fm_phase_inc(220.0f);
-    fm_voice_note_on(ops, FM_TEST_PATCH, inc, /*amplitude=*/32767);
+    fm_voice_note_on(ops, FM_TEST_PATCH, inc, /*amplitude=*/32767, /*midinote=*/57);  // A3, matches 220Hz
 
     // Step in FM_BLOCK-sized increments (same granularity the device
     // uses), recording each operator's gain at a handful of checkpoints.
@@ -424,7 +431,7 @@ static bool run_release_check() {
 
     FmOp ops[FM_NUM_OPS];
     uint32_t inc = fm_phase_inc(220.0f);
-    fm_voice_note_on(ops, FM_TEST_PATCH, inc, /*amplitude=*/32767);
+    fm_voice_note_on(ops, FM_TEST_PATCH, inc, /*amplitude=*/32767, /*midinote=*/57);  // A3, matches 220Hz
 
     // Let the note settle into its held (stage-3) shape before releasing --
     // 300ms is comfortably past every operator's stage-1/2 transition at
@@ -465,6 +472,78 @@ static bool run_release_check() {
     if (!active_immediately_after) printf("  FAIL: note-off silenced the voice instantly -- that's #44's hard cutoff, not a release\n");
     if (!became_idle) printf("  FAIL: voice never went idle within 5s of release -- this IS the tracker's #21 bug\n");
     if (became_idle && !carrier_zero) printf("  FAIL: idle but carrier gain isn't exactly 0\n");
+    return pass;
+}
+
+// #48's acceptance criteria: key level scaling and rate scaling are real,
+// audible, note-dependent effects. FM_TEST_PATCH has zero scaling on every
+// operator (the new fields all default-zero, #48's own behavior-neutrality
+// requirement), so nothing else in this file exercises `dx7_scale_level`/
+// `dx7_scale_rate` at all -- this builds a small patch that deliberately
+// does, and checks both the resolved note-on-time values and the resulting
+// per-sample effect, not just that the code compiles and runs.
+static bool run_key_rate_scaling_check() {
+    fm_init_sine_tab();
+    env_dx_init_tables();
+
+    FmPatch patch = FM_TEST_PATCH;
+    FmOpParams &carrier = patch.op[5];
+    carrier.output_level = 50;       // mid-range, so a boost or cut is measurable either direction
+    carrier.scale_breakpoint = 60;   // ~middle C-ish
+    carrier.scale_left_depth = 0;
+    carrier.scale_right_depth = 99;  // strong effect above the breakpoint
+    carrier.scale_left_curve = 0;
+    carrier.scale_right_curve = 3;   // +LIN: notes above breakpoint get LOUDER
+    carrier.rate_scaling = 7;        // max: notes further from the reference get a real speed boost
+    carrier.eg_rate[1] = 40;         // a deliberately moderate (not 99) stage-2 rate, so scaling has room to matter
+
+    FmOp low[FM_NUM_OPS], high[FM_NUM_OPS];
+    uint32_t inc_low = fm_phase_inc(110.0f), inc_high = fm_phase_inc(880.0f);
+    fm_voice_note_on(low, patch, inc_low, 32767, /*midinote=*/30);
+    fm_voice_note_on(high, patch, inc_high, 32767, /*midinote=*/96);
+
+    // (1) Key level scaling: resolved once at note-on into static_log2 --
+    // the high (above-breakpoint, +LIN) note must resolve louder than the
+    // low (below-breakpoint, 0 depth -> no effect) note.
+    bool level_scaling_ok = high[5].static_log2 > low[5].static_log2;
+
+    // (2) Rate scaling: resolved once at note-on into rate_scale_qrate --
+    // dx7_scale_rate() is monotonic in distance from its low reference note,
+    // so midinote=96 must resolve a larger (faster) delta than midinote=30.
+    bool rate_scale_resolved_ok = high[5].rate_scale_qrate > low[5].rate_scale_qrate
+                                 && low[5].rate_scale_qrate >= 0;
+
+    // (3) The actual per-sample effect: step both into stage 2 (past the
+    // instant R1=99 attack) and compare how far each has moved after a
+    // FIXED number of samples -- the high note, with a real rate_scale_qrate
+    // boost on top of the same base rate 40, must move further/faster.
+    auto step_into_stage2 = [&](FmOp ops[FM_NUM_OPS], const FmPatch &p) {
+        uint32_t done = 0;
+        while (ops[5].eg.stage != EG_STAGE_2 && done < SAMPLE_RATE) {
+            fm_voice_step_envelopes(ops, p, FM_BLOCK);
+            done += FM_BLOCK;
+        }
+    };
+    step_into_stage2(low, patch);
+    step_into_stage2(high, patch);
+    int32_t low_stage2_start = low[5].gain, high_stage2_start = high[5].gain;
+    for (int i = 0; i < 20; i++) {
+        fm_voice_step_envelopes(low, patch, FM_BLOCK);
+        fm_voice_step_envelopes(high, patch, FM_BLOCK);
+    }
+    int32_t low_moved = std::abs(low[5].gain - low_stage2_start);
+    int32_t high_moved = std::abs(high[5].gain - high_stage2_start);
+    bool rate_effect_ok = high_moved > low_moved;
+
+    bool pass = level_scaling_ok && rate_scale_resolved_ok && rate_effect_ok;
+    printf("%s: key/rate scaling -- static_log2(low/high)=%d/%d (level_scaling=%d), "
+           "rate_scale_qrate(low/high)=%d/%d (resolved=%d), stage-2 movement(low/high)=%d/%d (effect=%d)\n",
+           pass ? "PASS" : "FAIL", low[5].static_log2, high[5].static_log2, level_scaling_ok,
+           low[5].rate_scale_qrate, high[5].rate_scale_qrate, rate_scale_resolved_ok,
+           low_moved, high_moved, rate_effect_ok);
+    if (!level_scaling_ok) printf("  FAIL: key level scaling didn't make the above-breakpoint note louder\n");
+    if (!rate_scale_resolved_ok) printf("  FAIL: rate scaling didn't resolve a larger delta for the higher note\n");
+    if (!rate_effect_ok) printf("  FAIL: rate scaling's note-on delta didn't produce a real per-sample speed difference\n");
     return pass;
 }
 
@@ -574,7 +653,8 @@ int main() {
     bool ok4 = run_patch_spectrum_check();
     bool ok5 = run_eg_shape_check();
     bool ok6 = run_release_check();
-    bool ok = ok1 && ok2 && ok3 && ok4 && ok5 && ok6;
+    bool ok8 = run_key_rate_scaling_check();
+    bool ok = ok1 && ok2 && ok3 && ok4 && ok5 && ok6 && ok8;
 #ifdef T00T_FM_HAS_PATCHES
     bool ok7 = run_patch_bank_render();
     ok = ok && ok7;

@@ -55,7 +55,8 @@ struct FmOp {
     int32_t *out;           // modulation bus, or the shared voice output bus
     int32_t  fb1, fb2;      // op_render_fb only: last two raw table outputs
     EnvDX    eg;            // #45: this operator's own 4-stage envelope
-    int32_t  static_log2;   // #45: output level + velocity sensitivity, resolved once at note-on
+    int32_t  static_log2;   // #45/#48: output level + velocity sensitivity + key level scaling, resolved once at note-on
+    int32_t  rate_scale_qrate; // #48: key rate scaling, resolved once at note-on, added to every stage's qrate (env_dx.h's env_dx_step_block)
 };
 
 // Read-only all-zero bus, shared by every operator nothing modulates.
@@ -264,15 +265,18 @@ inline uint32_t fm_op_inc(const FmOpParams &p, uint32_t note_inc) {
 // Note-on: resolves every operator's phase/inc from the patch and the
 // note's base increment (already pitch-bent by Core 0), triggers its EG
 // (env_dx.h's env_dx_trigger() -- stage 1 from silence), and resolves
-// `static_log2`: output level (TL) + velocity sensitivity, the two
-// note-on-time-only pieces of #45's level chain (fm.md §5.6: both are
-// "resolved once per note-on and never touched again"). `gain`/`gain_step`
-// are deliberately NOT set here -- fm_voice_step_envelopes() sets them
-// every block, starting from EG_LOG2_FLOOR (silence) on the very first
-// block of this note, so there is no separate "initial gain" to get right
-// here.
+// `static_log2`: output level (TL) + velocity sensitivity + #48's key
+// level scaling, and `rate_scale_qrate` (#48's key rate scaling) -- the
+// note-on-time-only pieces of #45/#48's level/rate chain (fm.md §5.6: all
+// of it is "resolved once per note-on and never touched again"). `midinote`
+// (raw MIDI 0-127) is the one piece those two DX7 features need that
+// `note_inc` alone can't give back -- see engine.h's VoiceParams::note.
+// `gain`/`gain_step` are deliberately NOT set here -- fm_voice_step_envelopes()
+// sets them every block, starting from EG_LOG2_FLOOR (silence) on the very
+// first block of this note, so there is no separate "initial gain" to get
+// right here.
 inline void fm_voice_note_on(FmOp ops[FM_NUM_OPS], const FmPatch &patch,
-                              uint32_t note_inc, int16_t amplitude) {
+                              uint32_t note_inc, int16_t amplitude, uint8_t midinote) {
     for (uint8_t i = 0; i < FM_NUM_OPS; i++) {
         const FmOpParams &p = patch.op[i];
         FmOp &op = ops[i];
@@ -285,7 +289,24 @@ inline void fm_voice_note_on(FmOp ops[FM_NUM_OPS], const FmPatch &patch,
         op.in = fm_zero_bus;
         op.out = nullptr;  // assigned per sub-block by fm_voice_render_block()
         env_dx_trigger(op.eg);
-        op.static_log2 = DX7_LEVEL_TO_LOG2[p.output_level] + eg_vel_sensitivity_log2(p.vel_sensitivity, amplitude);
+        // Key level scaling combines with TL *before* converting to log2,
+        // clamped to [0,127] exactly like Dexed's own `outlevel =
+        // min(127, outlevel)` (dx7note.cc) -- not added as a separate,
+        // unclamped log2 offset. A boosting curve (DX7 curve 2/3, "+EXP"/
+        // "+LIN") at high depth and an extreme note can otherwise push the
+        // combined value well past what a single operator's reference
+        // `level` was ever meant to represent, and eg_to_linear()'s shift
+        // has no defined behavior for a large positive log2 offset -- this
+        // clamp is what keeps it in the range that function already
+        // guarantees is safe (DX7_LEVEL_TO_LOG2[]'s own [-16,0]-octave-ish
+        // span), the same way Dexed's own hardware-matching clamp does.
+        int32_t combined_level = dx7_scaleoutlevel(p.output_level)
+                                + dx7_scale_level(midinote, p.scale_breakpoint, p.scale_left_depth,
+                                                   p.scale_right_depth, p.scale_left_curve, p.scale_right_curve);
+        combined_level = combined_level < 0 ? 0 : (combined_level > 127 ? 127 : combined_level);
+        int32_t output_and_key_log2 = (combined_level - dx7_scaleoutlevel(99)) * 32;
+        op.static_log2 = output_and_key_log2 + eg_vel_sensitivity_log2(p.vel_sensitivity, amplitude);
+        op.rate_scale_qrate = dx7_scale_rate(midinote, p.rate_scaling);
     }
 }
 
@@ -341,7 +362,7 @@ inline void fm_voice_step_envelopes(FmOp ops[FM_NUM_OPS], const FmPatch &patch, 
         const FmOpParams &p = patch.op[i];
         FmOp &op = ops[i];
         int32_t log2_start, log2_end;
-        env_dx_step_block(op.eg, p, n, log2_start, log2_end);
+        env_dx_step_block(op.eg, p, n, log2_start, log2_end, op.rate_scale_qrate);
         int32_t gain_start = eg_to_linear(p.level, op.static_log2 + log2_start);
         int32_t gain_end = eg_to_linear(p.level, op.static_log2 + log2_end);
         op.gain = gain_start;

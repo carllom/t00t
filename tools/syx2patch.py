@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""syx2patch.py -- DX7 32-voice .syx bulk dump -> patches.h (#47, fm.md P3 v1).
+"""syx2patch.py -- DX7 32-voice .syx bulk dump -> patches.h (#47/#48, fm.md P3).
 
     syx2patch.py convert <in.syx> <out.h>
         Parse a 4104-byte DX7 32-voice bulk dump (F0 43 0n 09 20 00 + 4096
@@ -31,17 +31,28 @@ FM_TEST_PATCH. This converter's real job is almost entirely structural:
 unpack the bit-packed sysex format correctly, and turn one of 32 DX7
 algorithm numbers into this engine's mod_target-per-operator shape.
 
-v1 scope (see fm.md P3 / issue #47's acceptance criteria): algorithm
-routing, EG rates/levels, output level, velocity sensitivity, coarse/fine
-ratio, feedback on/off, and interleaved-feedback (algorithm 4/6) detection.
-Deliberately NOT wired up, though parsed and validated: key level scaling,
-rate scaling, detune, fixed-frequency mode, pitch EG, LFO, transpose --
-these land in #48 (v2, calibrated against Dexed), the same v1/v2 split
-speechgen.py used (#32 / #35). A patch using fixed-frequency mode on any
-operator is skipped outright (not approximated) since v1 has no way to
-represent it without silently changing the patch's character; a nonzero
-detune is silently ignored (0 assumed) since it's a minor, continuously-
-graded fidelity loss, not a change to the patch's fundamental character.
+v1 scope (#47, fm.md P3): algorithm routing, EG rates/levels, output level,
+velocity sensitivity, coarse/fine ratio, feedback on/off, and interleaved-
+feedback (algorithm 4/6) detection.
+
+v2 scope (#48, added same session as #57/#58/#59's kernel/curve fixes, all
+ported from Dexed's real code the same way): key level scaling
+(`dx7_scale_level`/`dx7_scale_curve`, env_dx.h, applied at note-on) and rate
+scaling (`dx7_scale_rate`, applied per stage transition) -- both need the
+played MIDI note, which patch.h data alone never has, so these are baked as
+per-operator *parameters* (breakpoint/depths/curves, RS) rather than
+resolved numbers, exactly like output_level/eg_rate already were. Detune is
+wired via `op_detune_cents()` below, a fixed +-7-cents approximation (real
+DX7 detune scales with the note's own absolute frequency -- replicating
+that exactly needs the full pitch pipeline this note-independent converter
+doesn't have; small enough that "audible as beating" still holds). Fixed-
+frequency mode is wired via `op_fixed_hz()` (a closed-form Hz formula
+derived from Dexed's own `osc_freq()`) -- patches using it are no longer
+skipped.
+
+Still deliberately NOT wired up: pitch EG, LFO, transpose -- this engine
+has no `pitch_eg.h`/`lfo.h` at all yet (fm.md §5.4/§5.5), so there's nothing
+for the converter to bake data for.
 
 `level` (FmOpParams' reference-gain ceiling) is NOT DX7 data -- patch.h's
 own comment on FmOpParams.level and FM_TEST_PATCH's hand-tuned constants
@@ -415,9 +426,36 @@ def op_ratio(op: DX7Op) -> float:
     return coarse_ratio(op.freq_coarse) * (1.0 + 0.01 * op.freq_fine)
 
 
+def op_fixed_hz(op: DX7Op) -> float:
+    # DX7 fixed-frequency mode: verified against Dexed's osc_freq() mode!=0
+    # branch (Source/msfa/dx7note.cc) -- `logfreq = (4458616 * ((coarse&3)*
+    # 100+fine)) >> 3`, and 4458616 = (2^24 * log2(10) * 0.01) << 3, so this
+    # reduces to Hz = 10^(((coarse&3)*100+fine)/100) directly -- no need to
+    # replicate Dexed's own Q24-log-frequency/Freqlut machinery. Range
+    # ~1 Hz (coarse=0,fine=0) to ~9772 Hz (coarse=3,fine=99). Fixed-mode
+    # detune (Dexed: a small, asymmetric-only-sharpens adjustment) is out of
+    # scope here, same as ratio-mode detune's own approximation below.
+    return 10.0 ** (((op.freq_coarse & 3) * 100 + op.freq_fine) / 100.0)
+
+
+def op_detune_cents(op: DX7Op) -> float:
+    # Real DX7 detune (Dexed's osc_freq() ratio-mode branch) scales with the
+    # note's own absolute frequency, not a fixed cents-per-unit -- exactly
+    # replicating that needs the full pitch pipeline's absolute logfreq
+    # value, which this converter (a note-independent, note-on-time-only
+    # baking step) doesn't have. Approximated instead as a fixed +-7 cents
+    # at the detune extremes (0-14, offset -7) -- small enough that "audible
+    # as beating between two operators at the same ratio" (this engine's own
+    # acceptance bar) holds regardless of the exact curve shape.
+    return float(op.detune - 7)
+
+
 @dataclass
 class FmOpOut:
     ratio: float
+    fixed_hz: float
+    fixed_freq: bool
+    detune_cents: float
     level: int
     mod_target: int  # 0-5, or FM_TARGET_OUT
     feedback: bool
@@ -425,6 +463,12 @@ class FmOpOut:
     vel_sensitivity: int
     eg_rate: List[int]
     eg_level: List[int]
+    scale_breakpoint: int
+    scale_left_depth: int
+    scale_right_depth: int
+    scale_left_curve: int
+    scale_right_curve: int
+    rate_scaling: int
 
 
 @dataclass
@@ -437,13 +481,6 @@ class FmPatchOut:
 
 
 def convert_voice(idx: int, voice: DX7Voice, warnings: List[str]) -> Optional[FmPatchOut]:
-    if any(op.osc_mode == 1 for op in voice.ops):
-        warnings.append(
-            f"voice {idx} ({voice.name!r}): uses fixed-frequency mode on at least one "
-            f"operator -- deferred to #48, skipped"
-        )
-        return None
-
     decode = ALGORITHM_CACHE[voice.algorithm]
     # Algorithms 19-32 sum 3-6 carriers into the same voice output (see
     # DX7_ALGORITHMS' decode table); FM_CARRIER_LEVEL_REF was tuned against
@@ -492,10 +529,18 @@ def convert_voice(idx: int, voice: DX7Voice, warnings: List[str]) -> Optional[Fm
             eg_level[3] = 0
 
         mod_target = FM_TARGET_OUT if r.target == "OUT" else (5 - r.target)
+        fixed_freq = (op.osc_mode == 1)
         ops_out[engine_idx] = FmOpOut(
-            ratio=op_ratio(op), level=level, mod_target=mod_target, feedback=feedback,
+            ratio=1.0 if fixed_freq else op_ratio(op),
+            fixed_hz=op_fixed_hz(op) if fixed_freq else 0.0,
+            fixed_freq=fixed_freq,
+            detune_cents=0.0 if fixed_freq else op_detune_cents(op),
+            level=level, mod_target=mod_target, feedback=feedback,
             output_level=op.output_level, vel_sensitivity=op.key_vel_sens,
             eg_rate=op.eg_rate, eg_level=eg_level,
+            scale_breakpoint=op.break_point, scale_left_depth=op.scale_left_depth,
+            scale_right_depth=op.scale_right_depth, scale_left_curve=op.scale_left_curve,
+            scale_right_curve=op.scale_right_curve, rate_scaling=op.rate_scale,
         )
 
     if decode.needs_interleaved:
@@ -537,10 +582,11 @@ def render_header(patches: List[FmPatchOut], syx_path: str) -> str:
         "// v1 (#47, fm.md P3): algorithm routing, EG rates/levels, output level,",
         "// velocity sensitivity, coarse/fine ratio, feedback on/off, algorithm 4/6",
         "// interleaved-feedback detection (collapsed to single self-feedback, see the",
-        "// per-patch comment below where it applies). Key level scaling, rate",
-        "// scaling, detune, fixed-frequency mode, pitch EG, LFO, and transpose are",
-        "// parsed from the source .syx but deliberately not wired into this engine",
-        "// yet -- deferred to #48 (v2, calibrated against Dexed).",
+        "// per-patch comment below where it applies). v2 (#48): key level scaling,",
+        "// rate scaling, detune (approximated, see op_detune_cents()), and",
+        "// fixed-frequency mode (real Hz, no patches skipped anymore) are now wired",
+        "// through too. Pitch EG, LFO, and transpose remain deliberately unwired --",
+        "// this engine has no pitch_eg.h/lfo.h yet at all (fm.md §5.4/§5.5).",
         "//",
         "// `level` (the reference-gain ceiling) is NOT DX7 data -- see patch.h's own",
         "// FmOpParams comment. Every carrier here uses FM_CARRIER_LEVEL_REF, every",
@@ -568,9 +614,13 @@ def render_header(patches: List[FmPatchOut], syx_path: str) -> str:
             eg_l = ", ".join(str(v) for v in op.eg_level)
             mod_target = "FM_TARGET_OUT" if op.mod_target == FM_TARGET_OUT else str(op.mod_target)
             fb = "true" if op.feedback else "false"
+            fixed = "true" if op.fixed_freq else "false"
             lines.append(
-                f"        {{ {op.ratio:.6f}f, 0.0f, false, 0.0f, {op.level}, {mod_target}, {fb}, "
-                f"{op.output_level}, {op.vel_sensitivity}, {{ {eg_r} }}, {{ {eg_l} }} }},"
+                f"        {{ {op.ratio:.6f}f, {op.fixed_hz:.6f}f, {fixed}, {op.detune_cents:.3f}f, "
+                f"{op.level}, {mod_target}, {fb}, "
+                f"{op.output_level}, {op.vel_sensitivity}, {{ {eg_r} }}, {{ {eg_l} }}, "
+                f"{op.scale_breakpoint}, {op.scale_left_depth}, {op.scale_right_depth}, "
+                f"{op.scale_left_curve}, {op.scale_right_curve}, {op.rate_scaling} }},"
             )
         lines.append("    } },")
     lines.append("};")
@@ -586,11 +636,13 @@ def render_header(patches: List[FmPatchOut], syx_path: str) -> str:
 # sizeof(FmPatch) estimate for the printed flash-cost summary: FmOpParams is
 # 3 floats (12) + bool (1, padded) + int32_t level (4) + mod_target (1) +
 # feedback bool (1) + output_level (1) + vel_sensitivity (1) + eg_rate[4]
-# (4) + eg_level[4] (4) -- rounds to 32 bytes/op under normal 4-byte
-# struct alignment; plus one 4-byte name pointer per patch. Matches fm.md
-# §8's ~200 B/patch budget (6*32 + 4 = 196); not a compiled sizeof() (no
-# device toolchain invoked here), just a documented estimate.
-_BYTES_PER_OP_ESTIMATE = 32
+# (4) + eg_level[4] (4) + #48's 6 new uint8_t fields (scale_breakpoint/
+# left_depth/right_depth/left_curve/right_curve/rate_scaling, 6) -- rounds
+# to 36 bytes/op under normal 4-byte struct alignment (was 32 pre-#48); plus
+# one 4-byte name pointer per patch. Not a compiled sizeof() (no device
+# toolchain invoked here), just a documented estimate -- fm.md §8's ~200 B/
+# patch budget should be revisited against the real number once available.
+_BYTES_PER_OP_ESTIMATE = 36
 _BYTES_PER_PATCH_ESTIMATE = 4 + FM_NUM_OPS * _BYTES_PER_OP_ESTIMATE
 
 

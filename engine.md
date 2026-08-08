@@ -1601,14 +1601,102 @@ synthetic voice, checksum/header rejection paths) always run; corpus-
 dependent checks run against whatever `.syx` files are in `../syx/`
 (gitignored, same as `xm/`) and skip cleanly if empty. Verified against
 ROM1A and ROM1B (2026-08-08): 28/32 and 31/32 voices converted respectively
-(skips: fixed-frequency-mode patches — ROM1A's "TUB BELLS"/"STEEL
-DRUM"/"REFS WHISL"/"TRAIN", ROM1B's "PIPES 2" — all deferred to #48); ROM1B
-exercises the algorithm 4/6 fallback for real ("CLAV 2"/"CLAV 3"/"PIPES 4").
-`render_fm`'s patch-bank render (host-only, `T00T_FM_HAS_PATCHES`-gated)
-renders a 3-second A3 note per converted patch to `fm_patches/*.wav` and
-checks every one is bounded and non-silent — all 28 of ROM1A's pass, 5488 B
-total flash cost (196 B/patch, matching fm.md §8's ~200 B/patch estimate).
-`make ENGINE=fm` builds clean both with and without `patches.h` present.
+at #47's v1 (skips: fixed-frequency-mode patches — ROM1A's "TUB BELLS"/
+"STEEL DRUM"/"REFS WHISL"/"TRAIN", ROM1B's "PIPES 2"); ROM1B exercises the
+algorithm 4/6 fallback for real ("CLAV 2"/"CLAV 3"/"PIPES 4"). **Updated,
+#48: all previously-skipped patches now convert too** (fixed-frequency
+mode is wired up) — see "FM P3v2" below. `render_fm`'s patch-bank render
+(host-only, `T00T_FM_HAS_PATCHES`-gated) renders a 3-second A3 note per
+converted patch to `fm_patches/*.wav` and checks every one is bounded and
+non-silent. `make ENGINE=fm` builds clean both with and without
+`patches.h` present.
+
+## FM P3v2 — Key/Rate Scaling, Detune, Fixed Frequency (#48)
+
+Picked up immediately after #59's rate-curve fix, per Carl's own call on
+whether to keep chasing Dexed-comparison fidelity work or move on to
+completing the remaining signal-path features first and compare again
+after: "I think it is best to continue implementing the remaining signal
+path functionality and do comparisons after." All four ported directly
+from Dexed's real code (`dx7note.cc`'s `ScaleRate`/`ScaleLevel`/
+`ScaleCurve`, `osc_freq()`'s fixed-frequency branch), continuing the same
+method #57/#58/#59 established.
+
+### Key level scaling and rate scaling — new runtime plumbing
+
+Both need the actual played MIDI note, which `VoiceParams` never carried
+before (`phase_inc` is already bend-scaled into a frequency, not invertible
+back to a clean note number) — added `VoiceParams::note` (raw MIDI 0-127),
+set in `midi_controller.cpp`'s `midi_voice_on()`, threaded through
+`audio_engine.cpp` into a new `midinote` parameter on `fm_voice_note_on()`.
+
+`FmOpParams` gained six new fields: `scale_breakpoint`/`scale_left_depth`/
+`scale_right_depth`/`scale_left_curve`/`scale_right_curve` (key level
+scaling) and `rate_scaling` (RS, 0-7). `FmOp` gained `rate_scale_qrate`,
+resolved once at note-on (`dx7_scale_rate()`, env_dx.h) and added directly
+to each stage's own qrate at every transition (`env_dx_step_block()`,
+extended with an optional `rate_qrate_delta` parameter, default 0) —
+matching Dexed's own `qrate += rate_scaling_` order exactly, not a post-hoc
+scale on the already-converted octaves/second value. Zero-delta takes the
+exact same table-lookup fast path #59 already verified, so this is
+behavior-neutral for every patch that doesn't use rate scaling (including
+`FM_TEST_PATCH`, whose six new fields all default-zero).
+
+Key level scaling (`dx7_scale_level()`/`dx7_scale_curve()`, direct ports of
+Dexed's `ScaleLevel`/`ScaleCurve`) resolves into `static_log2` at note-on —
+but combined with TL *before* the log2 conversion and clamped to [0,127],
+exactly like Dexed's own `outlevel = min(127, outlevel)`, not added as a
+separate unclamped log2 offset. This mattered: a boosting curve (DX7 curve
+2/3, "+EXP"/"+LIN") at high depth on an extreme note can produce a raw
+combined value equivalent to *tens* of octaves of boost, and
+`eg_to_linear()`'s shift computation has no defined behavior for a large
+positive log2 offset (`shift = 15 - oct` goes negative, an unsigned
+right-shift by a negative amount) — caught by reasoning through the
+arithmetic before it ever ran, not by a crash.
+
+### Detune and fixed-frequency mode — already-existing runtime, newly wired
+
+Both `FmOpParams::detune_cents` and `fixed_hz`/`fixed_freq` have existed
+since #44 and were already fully handled by `fm_op_inc()` — #47 just never
+populated them, and skipped every fixed-frequency patch outright rather
+than approximate it. `tools/syx2patch.py` now populates both:
+
+- **Detune**: `op_detune_cents()` approximates DX7's real (note-frequency-
+  dependent) detune formula as a fixed ±7 cents at the 0-14 (offset -7)
+  extremes — replicating the real formula needs the full pitch pipeline's
+  absolute log-frequency value, which this note-independent, note-on-
+  baking converter doesn't have. Small enough that "audible as beating
+  between two operators at the same ratio" holds regardless of curve shape.
+- **Fixed-frequency mode**: `op_fixed_hz()` reduces Dexed's `osc_freq()`
+  fixed-mode branch to a closed form: `Hz = 10^(((coarse&3)*100+fine)/100)`
+  — Dexed's own magic constant `4458616` is exactly `(2^24 * log2(10) *
+  0.01) << 3`, so this needs no `Freqlut`/Q24-log-frequency machinery at
+  all, just a direct power. All 32/32 of ROM1A now convert (was 28/32) —
+  the 4 previously-skipped patches ("TUB BELLS"/"STEEL DRUM"/"REFS
+  WHISL"/"TRAIN") all use a fixed-frequency operator for an inharmonic
+  bell/percussion partial, exactly the real DX7 use case this unblocks.
+  ROM1B's "PIPES 2" (previously skipped for the same reason) now converts
+  too.
+
+### Verification
+
+A dedicated host check, `render_fm`'s `run_key_rate_scaling_check()` —
+nothing else in the suite would exercise `dx7_scale_level`/`dx7_scale_rate`
+at all, since `FM_TEST_PATCH`'s own scaling fields are all zero. Builds a
+patch with deliberately strong scaling (breakpoint 60, +LIN right curve at
+depth 99, RS=7) and checks three things at two notes (30 and 96): the
+resolved `static_log2` is higher for the above-breakpoint note, the
+resolved `rate_scale_qrate` is a larger positive delta for the higher note,
+and — the one that actually matters — stepping both through 20 blocks past
+their stage-2 transition, the higher note's gain moves measurably further
+(60096 vs. 7116 raw units in the host run, ~8.4x) — a real per-sample
+effect, not just a resolved-but-unused number. `test_syx2patch.py` gained
+four new tests (`op_fixed_hz()`/`op_detune_cents()` formula checks, a
+fixed-frequency conversion check replacing the old skip-check, a scaling-
+fields pass-through check) — 19/19 passing. Kernel disassembly unaffected
+(still 48 `smlawb` instances) — everything here is note-on/block-rate work,
+never inside the per-sample loop. `make ENGINE=fm` builds clean with and
+without `patches.h`.
 
 ## FM Kernel — Modulation-Depth Ceiling Fix (#57)
 
