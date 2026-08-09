@@ -240,7 +240,7 @@ Eight issues, each with a machine-checkable gate. The ordering principle is the 
 | Phase | Deliverable | Gate |
 |---|---|---|
 | **F0** | Reference rigs. Build `dexed_render`, `render_fm_patch`, `fm_compare.py`, bank fetch script. **No engine changes.** Plus the §3.2 interpolation A/B. | **Met, §5.** Scorecard runs end-to-end on ROM1A #11 (E.PIANO 1) C3, Dexed vs the **current `fm` branch**. That baseline number is the thing everything after is measured against — and it retroactively quantifies how far off the current build is, which no amount of listening ever did. |
-| **F1** | Control-plane conformance harness (`fm_ctl_diff`). | It runs, and **fails loudly** on the current `env_dx.h` — i.e. it independently rediscovers §1.1(b) and (d) without being told. If it passes, the harness is wrong. |
+| **F1** | Control-plane conformance harness (`fm_ctl_diff`). | **Met, §5.4.** It runs, and **fails loudly** on the current `env_dx.h` — i.e. it independently rediscovers §1.1(b) and (d) without being told. If it passes, the harness is wrong. |
 | **F2** | **Fixed-point contract.** Delete `level`, `FM_OUT_SHIFT_CARRIER`, `FM_OUT_SHIFT_MODULATOR`, `FM_MOD_INPUT_SHIFT`, and both `*_LEVEL_REF`s. Re-derive `op.h` + `patch.h` + `syx2patch.py`'s emit half around *unity gain = one full cycle of phase deviation*. Carriers and modulators share one scale; the carrier attenuation happens once, at the voice mix. | F1's frequency/level tests pass. F0 scorecard: spectral-centroid error drops materially on the bright patches. No int32 overflow at max level on any ROM1A patch (assert it in the host build). |
 | **F3** | **`EnvDX` rewrite.** Exponential-approach rising stage with the 1716 jump target, linear falling, `advance()`'s real rate derivation, `staticcount` handling for slow rates, and remove the `step<1→1` clamp. | F1 EG trajectory diff within tolerance for all 100 rates × representative level sets. F0 envelope metrics (time-to-peak, T60) within 10% on E.PIANO 1 and TUB BELLS. |
 | **F4** | Feedback `>>(fb_shift+1)` fix; exact conformance test of all 32 algorithms against Dexed's table. Decide algorithms 4 and 6 (two-op loops, old X1/#54): implement the interleaved kernel, or document the approximation and its measured cost. | F1 routing table exact. Scorecard green on the feedback-heavy patches. |
@@ -255,7 +255,7 @@ by any of this and can proceed independently at any point.
 
 ---
 
-## 5. F0 results (measured)
+## 5. F0 and F1 results (measured)
 
 The rig is built and the gate is met: `tools/fm_ref/` (see its README for setup),
 `tools/fm_compare.py`, `tools/host_render/render_fm_patch.cpp`. Baseline scorecard
@@ -340,6 +340,78 @@ costs ~+45 c/f/operator on #43's measured 100 c/f/voice kernel, which with #45's
 measured EG overhead puts a voice at ~182–199 c/f against 2607 available — i.e.
 **16 voices without interpolation, or 13 with**. Revisit at F7 only if bright
 patches audibly grit; do not spend three voices on it speculatively.
+
+### 5.4 F1 — control-plane conformance
+
+`tools/fm_ref/dexed_dump`, `tools/host_render/t00t_ctl_dump`, `tools/fm_ctl_diff.py`.
+**Gate met: 12/24 pass, and every failure traces to a specific engine defect** — the
+harness independently rediscovered §1.1(b) and (d) without being told what to look for.
+
+**What passes** — and this is as valuable as what fails, because it bounds the work:
+
+| | |
+|---|---|
+| `table/scaleoutlevel` | 100 rows identical — #58's port was correct |
+| `table/scale-rate`, `table/scale-level` | 1024 / 55040 rows identical — #48's ports were correct |
+| `table/algorithms` | all 192 (algorithm, operator) entries identical to `FmCore::algorithms`. Confirms §2's Tier-1 assumption that the routing table and `syx2patch.py`'s decode are sound |
+| `pitcheg/*` | all three within 0.6 cents mean |
+| `lfo/rate` | all 34 sampled rate values within 5% |
+| `lfo/shape-w1`, `w2` | sawtooth up and down, 0.014 mean error |
+| `lfo/sample-hold` | correct step rate and range |
+
+**What fails**
+
+**The EG, all six cases.** The sharpest single number in this whole document:
+
+| rates 99,99,99,99 / levels 99,99,99,99 | time to reach −1 dB |
+|---|---|
+| Dexed | **0.0 ms** (first control block) |
+| t00t | **16.3 ms** |
+
+That is §1.1(b) measured. `env_dx_trigger()` starts at `EG_LOG2_FLOOR` (−40 octaves) and
+`env_dx_step_block()` ramps *linearly in the log domain*, so an "instant" attack has to
+traverse 40 octaves of inaudibility first — about 16 ms at rate 99. Dexed never traverses
+it: its rising branch jumps straight to `jumptarget = 1716` and then uses an exponential
+approach. The 1716 jump **is** the DX7's instant attack. This also accounts for most of the
+20 ms time-to-peak measured in §5.2.
+
+The other EG cases: `eg/very-slow-decay` 54 dB mean error (§1.1(d)'s `step<1` clamp),
+`eg/slow-attack` 62 dB with its worst point at the 2 s release boundary, `eg/low-outlevel`
+5.3 dB (the TL composition — Dexed folds output level into the EG's own target via
+`(scaleoutlevel(L)>>1)<<6 + outlevel_ − 4256` with a min-16 clamp; t00t adds it separately
+as `static_log2` with no bias term and no clamp).
+
+**Velocity sensitivity is ~3× too shallow.** At sensitivity 7, velocity 0: Dexed −3344
+units (−78.6 dB), t00t −1024 (−24.0 dB). `eg_vel_sensitivity_log2()`'s hand-rolled
+`EG_VEL_SENS_MAX_OCTAVES = 4.0` linear-in-velocity model is not the DX7 curve. 894/1024
+rows differ.
+
+**Three LFO waveforms are half a cycle out of phase.** Triangle, square and sine each score
+0.50–0.98 mean error as-is but **0.015 when rolled half a cycle** — i.e. they are exactly
+inverted. The sawtooths are correct, which is what proves this is not a global phase-origin
+error (a roll would break those instead): Dexed's own saw formulas carry a `^ (1<<31)` that
+t00t's plain `t` / `1−t` omit, and that omission is what cancels for the saws and doubles
+for the rest. `lfo.h`'s comments say each waveform was "reasoned through against Dexed's
+real per-waveform bit tricks" — they were reasoned, not measured, and three of six came out
+inverted. That is the whole thesis of this document in miniature.
+
+**The LFO delay ramp is wrong** (`lfo/delay-60` 0.14, `lfo/delay-99` 0.42 mean error);
+`dx7_lfo_delay_seconds()` collapses Dexed's two-stage accumulator into one, which its own
+comment flags as a deliberate simplification. Now measurable.
+
+### 5.5 What F1 changes about the plan
+
+Nothing structural, but it sharpens the scope. `pitch_eg.h` is **correct** and needs no F6
+work beyond keeping the test green — F6 shrinks to the LFO. The algorithm table is
+confirmed, so F4 reduces to the feedback fix plus the algorithms 4/6 decision. And the three
+integer tables #48/#58 ported are all exact, which is worth stating plainly: those two
+issues did real, correct work, and the reason the engine still sounded wrong is entirely in
+the pieces around them.
+
+Deferred from F1 to F5 as planned: operator frequency conformance (ratio, detune, fixed
+mode). Dexed's `osc_freq()` is a private method with no public accessor, so that test needs
+an isolated single-operator render measured spectrally in cents rather than a table diff —
+it belongs with the phase that actually changes those parameters.
 
 ---
 

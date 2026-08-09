@@ -18,12 +18,17 @@ ifneq ($(wildcard $(PATCHES)),)
 CXXFLAGS += -DT00T_FM_HAS_PATCHES=1
 endif
 
-all: render_fm_patch
+all: render_fm_patch t00t_ctl_dump
 
 render_fm_patch: render_fm_patch.cpp ../../src/osc/sine.cpp $(wildcard $(PATCHES))
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -o $@ render_fm_patch.cpp ../../src/osc/sine.cpp -lm
 
 clean:
-	rm -f render_fm_patch
+	rm -f render_fm_patch t00t_ctl_dump
 
 .PHONY: all clean
+
+# F1 control-plane dump. Needs no patches.h -- it drives env_dx.h/lfo.h/
+# pitch_eg.h directly with synthetic parameters.
+t00t_ctl_dump: t00t_ctl_dump.cpp ../../src/osc/sine.cpp
+	$(CXX) -O2 -std=c++17 -Wall $(INCLUDES) -o $@ t00t_ctl_dump.cpp ../../src/osc/sine.cpp -lm

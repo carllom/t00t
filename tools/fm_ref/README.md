@@ -48,6 +48,21 @@ Whole-bank sweep, which is what the phase gates actually use:
     --note 48 --gate 2 --quiet --json out/scorecard.json
 ```
 
+### Control-plane conformance (F1)
+
+No audio, no spectra — just numbers, compared exactly:
+
+```bash
+make dexed_dump
+make -C ../host_render -f Makefile.fm t00t_ctl_dump
+.venv/bin/python ../fm_ctl_diff.py             # all tests
+.venv/bin/python ../fm_ctl_diff.py --only eg --verbose
+```
+
+Every test defines a shared domain both engines are converted into — see
+`dexed_dump.cpp`'s header comment, which is the authority on those definitions.
+Change one and you must change both sides together.
+
 Add `--pcm16 PATH` to either renderer for a peak-normalised listenable file.
 Never analyse those — the per-file normalisation destroys the level information
 `fm_compare.py` reports as its own metric.
@@ -73,5 +88,8 @@ Never analyse those — the per-file normalisation destroys the level informatio
 | `dexed_render.cpp` | the reference renderer. |
 | `wav32.h` | float32 (analysis) and normalised PCM16 (listening) WAV writers, shared with the t00t side. |
 | `sine_table_ab.py` | the §3.2 interpolation check — what the non-interpolated table costs across a modulation-index sweep. |
-| `../fm_compare.py` | the scorecard. |
+| `dexed_dump.cpp` | control-plane trajectories as CSV (F1): EG, pitch EG, LFO, the integer tables, the algorithm table. |
+| `../fm_compare.py` | the signal-plane scorecard. |
+| `../fm_ctl_diff.py` | the control-plane conformance suite (F1). |
+| `../host_render/t00t_ctl_dump.cpp` | the t00t side of the control-plane dump. |
 | `../host_render/render_fm_patch.cpp` | the t00t side, same CLI. |
