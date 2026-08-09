@@ -30,6 +30,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -37,14 +38,18 @@
 #include "../../src/engines/fm/patches.h"
 #endif
 
-// t00t's carriers are scaled to land in int16 range (op.h's
-// FM_OUT_SHIFT_CARRIER), so 32768 is this engine's "1.0". Note this is a
-// *different* absolute reference from dexed_render's 2^24 unit -- the two
-// engines have no shared level anchor yet, which is precisely what fm2.md
-// §1.1(a) says is broken and what F2 exists to fix. fm_compare.py therefore
-// normalises before its spectral metrics and reports the raw level gap as its
-// own separate number, rather than letting it contaminate everything else.
-static constexpr double T00T_UNIT = 32768.0;
+// Since F2 the two engines share a level anchor, so this is no longer an
+// arbitrary constant: op.h's FM_CYCLE is one full cycle of phase deviation,
+// dexed_render's DEXED_UNIT (2^24) is the same thing on Dexed's side, and a
+// max-level operator peaks at 2.0 in these units on both. That makes
+// fm_compare.py's `level gap` a real measurement of the engine rather than a
+// readout of two unrelated scale choices.
+//
+// The int16 conversion (op.h's FM_VOICE_OUT_SHIFT) is deliberately undone
+// here rather than skipped: the point is to measure what the device path
+// produces, including its output scaling, not a parallel float path that
+// could drift from it.
+static constexpr double T00T_UNIT = (double)FM_CYCLE / (double)(1 << FM_VOICE_OUT_SHIFT);
 
 // fm_render_voice() pans into a stereo pair; at centre pan both gains are
 // 0.7071 (pan.h's equal-power law). Dividing it back out recovers the mono
@@ -61,6 +66,7 @@ struct Args {
     std::string out      = "t00t.wav";
     std::string pcm16;
     bool        list     = false;
+    bool        check    = false;
 };
 
 static void usage() {
@@ -75,7 +81,8 @@ static void usage() {
         "  --tail SEC        seconds to render after key-up (default 1.5)\n"
         "  --out PATH        float32 WAV, for analysis (default t00t.wav)\n"
         "  --pcm16 PATH      also write a peak-normalised PCM16 WAV, for ears\n"
-        "  --list            print the converted patch names and exit\n");
+        "  --list            print the converted patch names and exit\n"
+        "  --check           prove no bus overflows int32 on any patch, and exit\n");
 }
 
 int main(int argc, char **argv) {
@@ -104,12 +111,54 @@ int main(int argc, char **argv) {
         else if (k == "--out")   a.out = next();
         else if (k == "--pcm16") a.pcm16 = next();
         else if (k == "--list")  a.list = true;
+        else if (k == "--check") a.check = true;
         else if (k == "-h" || k == "--help") { usage(); return 0; }
         else { fprintf(stderr, "error: unknown argument %s\n", k.c_str()); usage(); return 2; }
     }
 
     if (a.list) {
         for (int v = 0; v < FM_PATCH_COUNT; v++) printf("%2d  %s\n", v, FM_PATCH_NAMES[v]);
+        return 0;
+    }
+
+    if (a.check) {
+        // F2's gate: prove no bus can overflow int32 on any patch in the bank.
+        //
+        // This is a bound, not a sample. Every operator's contribution is
+        // bounded exactly: fm_mul_gain() is (gain * sample) >> 16 with |sample|
+        // <= 2^15 and gain <= FM_GAIN_MAX, so |contribution| <= 2 * FM_CYCLE,
+        // and env_dx.h's eg_to_linear() cannot return more than FM_GAIN_MAX
+        // because a log2 offset of 0 is its maximum (output level and EG level
+        // both cap at 99, and fm_voice_note_on() clamps the key-scaling sum the
+        // same way Dexed does). So a bus's worst case is simply its number of
+        // writers times that -- countable from the resolved routing, with no
+        // dependence on what any particular note does.
+        fm_init_sine_tab();
+        env_dx_init_tables();
+        int64_t worst = 0;
+        const char *worst_patch = "";
+        int worst_writers = 0;
+        for (int v = 0; v < FM_PATCH_COUNT; v++) {
+            FmRouting r;
+            if (!fm_resolve_routing(FM_PATCHES[v], r)) {
+                printf("FAIL: patch %d (%s) is unroutable\n", v, FM_PATCH_NAMES[v]);
+                return 1;
+            }
+            int writers[FM_TARGET_OUT + 1] = {0};
+            for (uint32_t i = 0; i < FM_NUM_OPS; i++) writers[r.out_bus[i]]++;
+            for (int b = 0; b <= FM_TARGET_OUT; b++) {
+                int64_t peak = (int64_t)writers[b] * 2 * (int64_t)FM_CYCLE;
+                if (peak > worst) { worst = peak; worst_patch = FM_PATCH_NAMES[v]; worst_writers = writers[b]; }
+            }
+        }
+        double headroom_bits = 31.0 - log2((double)worst);
+        printf("bus overflow check: %d patches\n", FM_PATCH_COUNT);
+        printf("  worst case %lld (2^%.2f) -- %d writers on one bus, in \"%s\"\n",
+               (long long)worst, log2((double)worst), worst_writers, worst_patch);
+        printf("  int32 headroom %.2f bits  [FM_CYCLE=2^%u, max op output 2^%u]\n",
+               headroom_bits, FM_CYCLE_BITS, FM_CYCLE_BITS + 1);
+        if (worst >= INT32_MAX) { printf("FAIL: bus can overflow int32\n"); return 1; }
+        printf("PASS\n");
         return 0;
     }
     if (a.voice < 0 || a.voice >= FM_PATCH_COUNT) {

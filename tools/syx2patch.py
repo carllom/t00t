@@ -62,18 +62,16 @@ needed either. Transpose remains deliberately unwired -- it affects what
 MIDI note maps to what pitch, a Core 0/MIDI-controller-layer concern this
 patch-data-only converter has no way to apply.
 
-`level` (FmOpParams' reference-gain ceiling) is NOT DX7 data -- patch.h's
-own comment on FmOpParams.level and FM_TEST_PATCH's hand-tuned constants
-already established this: it's an artifact of this engine's fixed-point
-kernel (unity ~= 1<<22, but a real hard ceiling of ~0.03-0.05 rad max
-modulation depth even at gain=INT32_MAX, fm.md §3.4/§5.2/patch.h's own
-extensive comment). Every carrier in every converted patch gets the same
-flat FM_CARRIER_LEVEL_REF; every modulator gets the same flat
-FM_MODULATOR_LEVEL_REF (both taken directly from FM_TEST_PATCH's own
-already-hardware-verified precedent, its carrier op5 and its most-driven
-modulator op4). The REAL per-patch, per-operator balance a DX7 patch
-actually encodes is carried entirely by `output_level`/the EG, exactly as
-it would be on real hardware -- `level` only sets what 100% means.
+This converter emits no gain/level constants at all (F2, fm2.md §2). It
+used to fill in an `FmOpParams::level` per operator from one of two
+hand-tuned references -- FM_CARRIER_LEVEL_REF / FM_MODULATOR_LEVEL_REF --
+divided by the carrier count or the modulator fan-in. All of that is gone.
+op.h now defines a single engine-wide ceiling (FM_GAIN_MAX) against which a
+max-level operator produces exactly two full cycles of phase deviation, the
+same as real DX7 hardware, so the per-patch, per-operator balance is carried
+entirely by `output_level` and the EG -- which is where a DX7 patch encodes
+it in the first place. The converter's job is now purely translation: DX7
+bytes in, DX7 parameters out, with no opinion about absolute level anywhere.
 """
 
 from __future__ import annotations
@@ -87,13 +85,6 @@ from typing import Dict, List, Optional
 FM_NUM_OPS = 6
 FM_TARGET_OUT = FM_NUM_OPS  # 6 -- patch.h's carrier/OUT sentinel
 
-# FM_TEST_PATCH's own hand-tuned, hardware-verified reference constants
-# (src/engines/fm/patch.h): op5 (carrier) = 1<<21, op4 (its most-driven
-# modulator) = 1400000000. Reused here as the flat per-role ceiling for
-# every converted patch -- see this file's header comment for why a flat
-# constant is the right choice, not a shortcut.
-FM_CARRIER_LEVEL_REF = 1 << 21
-FM_MODULATOR_LEVEL_REF = 1400000000
 
 # DX7 algorithm topology (Dexed, Source/msfa/fm_core.cc, Apache License 2.0,
 # Copyright 2012 Google Inc. -- https://github.com/asb2m10/dexed). One row
@@ -497,7 +488,6 @@ class FmOpOut:
     fixed_hz: float
     fixed_freq: bool
     detune_cents: float
-    level: int
     mod_target: int  # 0-5, or FM_TARGET_OUT
     feedback_level: int  # 0-7, real DX7 depth on the algorithm's primary feedback op, else 0
     output_level: int
@@ -542,27 +532,15 @@ class FmPatchOut:
 
 def convert_voice(idx: int, voice: DX7Voice, warnings: List[str]) -> Optional[FmPatchOut]:
     decode = ALGORITHM_CACHE[voice.algorithm]
-    # Algorithms 19-32 sum 3-6 carriers into the same voice output (see
-    # DX7_ALGORITHMS' decode table); FM_CARRIER_LEVEL_REF was tuned against
-    # FM_TEST_PATCH's single carrier, so N summed carriers each at that same
-    # reference would sum to N times the intended full-scale peak -- a real,
-    # measured int16 overflow on e.g. BRASS 1 (4 carriers) and E.ORGAN 1 (6
-    # carriers) during #47's own host-render pass, not a hypothetical. Each
-    # carrier gets 1/carrier_count of the reference so N summed carriers at
-    # output_level=99 land back at the same envelope one carrier alone would.
-    carrier_count = sum(1 for r in decode.routing if r.target == "OUT")
-    # #57 raised the modulator headroom ceiling ~64x (FM_OUT_SHIFT_MODULATOR),
-    # which makes the same overflow risk real on the *modulator* side too:
-    # several real algorithms (7, 8, 10, 12, 13 -- all present in ROM1A/B)
-    # sum 2-3 modulators into one shared bus. Each gets 1/fan_in of the
-    # reference, same reasoning as carrier_count above -- N summed
-    # modulators at output_level=99 land back at one modulator's intended
-    # ceiling, not N times it (risking int32 wraparound on the shared bus).
-    fan_in: Dict[object, int] = {}
-    for r in decode.routing:
-        if r.target != "OUT":
-            fan_in[r.target] = fan_in.get(r.target, 0) + 1
-
+    # No carrier-count or fan-in division any more (F2). Those existed to stop
+    # N summed carriers (or modulators) from overflowing, back when each
+    # operator carried its own hand-tuned reference gain and "full scale"
+    # meant something different in every patch. op.h's FM_CYCLE now leaves 5
+    # bits of headroom above a single operator's maximum precisely so that
+    # summing several is safe, and dividing by the fan-in here would be an
+    # attenuation real DX7 hardware does not apply -- it would quietly make
+    # every multi-carrier algorithm quieter than the patch asks for, which is
+    # the class of error F2 exists to remove.
     ops_out: List[Optional[FmOpOut]] = [None] * FM_NUM_OPS
     for j in range(6):
         r = decode.routing[j]
@@ -570,10 +548,6 @@ def convert_voice(idx: int, voice: DX7Voice, warnings: List[str]) -> Optional[Fm
         engine_idx = 5 - j  # bus order (OP6..OP1) -> this engine's op index
 
         is_carrier = (r.target == "OUT")
-        if is_carrier:
-            level = FM_CARRIER_LEVEL_REF // carrier_count
-        else:
-            level = FM_MODULATOR_LEVEL_REF // fan_in[r.target]
         # The real 0-7 depth, not collapsed to a bool -- op.h's op_render_fb
         # (fixed alongside this) now reproduces DX7's actual 64x depth range
         # across levels 1-7 instead of a single fixed "on" strength. Feedback
@@ -598,7 +572,7 @@ def convert_voice(idx: int, voice: DX7Voice, warnings: List[str]) -> Optional[Fm
             fixed_hz=op_fixed_hz(op) if fixed_freq else 0.0,
             fixed_freq=fixed_freq,
             detune_cents=0.0 if fixed_freq else op_detune_cents(op),
-            level=level, mod_target=mod_target, feedback_level=feedback_level,
+            mod_target=mod_target, feedback_level=feedback_level,
             output_level=op.output_level, vel_sensitivity=op.key_vel_sens,
             eg_rate=op.eg_rate, eg_level=eg_level,
             scale_breakpoint=op.break_point, scale_left_depth=op.scale_left_depth,
@@ -658,12 +632,10 @@ def render_header(patches: List[FmPatchOut], syx_path: str) -> str:
         "// as every other field here -- pitch_eg.h/lfo.h do the real conversion at",
         "// note-on/block-rate. Transpose remains deliberately unwired.",
         "//",
-        "// `level` (the reference-gain ceiling) is NOT DX7 data -- see patch.h's own",
-        "// FmOpParams comment. Every carrier here uses FM_CARRIER_LEVEL_REF, every",
-        "// modulator FM_MODULATOR_LEVEL_REF (both taken from FM_TEST_PATCH's already",
-        "// hardware-verified constants, tools/syx2patch.py); the real per-patch,",
-        "// per-operator balance comes entirely from output_level/the EG, same as on",
-        "// real DX7 hardware.",
+        "// Every number below is DX7 patch data. There is no gain or level constant",
+        "// here: op.h defines one engine-wide ceiling (FM_GAIN_MAX) and the whole",
+        "// per-operator balance comes from output_level and the EG, exactly as it",
+        "// does on real hardware (F2, fm2.md \u00a72).",
         "#pragma once",
         "",
         '#include "patch.h"',
@@ -686,7 +658,7 @@ def render_header(patches: List[FmPatchOut], syx_path: str) -> str:
             fixed = "true" if op.fixed_freq else "false"
             lines.append(
                 f"        {{ {op.ratio:.6f}f, {op.fixed_hz:.6f}f, {fixed}, {op.detune_cents:.3f}f, "
-                f"{op.level}, {mod_target}, {op.feedback_level}, "
+                f"{mod_target}, {op.feedback_level}, "
                 f"{op.output_level}, {op.vel_sensitivity}, {{ {eg_r} }}, {{ {eg_l} }}, "
                 f"{op.scale_breakpoint}, {op.scale_left_depth}, {op.scale_right_depth}, "
                 f"{op.scale_left_curve}, {op.scale_right_curve}, {op.rate_scaling} }},"

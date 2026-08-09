@@ -27,25 +27,30 @@ static constexpr uint8_t FM_NUM_OPS = 6;
 static constexpr uint8_t FM_TARGET_OUT = FM_NUM_OPS;      // 6
 static constexpr uint8_t FM_BUS_ZERO   = FM_NUM_OPS + 1;  // 7
 
-// One operator's patch data -- the shape tools/syx2patch.py (P3) will emit
-// per DX7 operator (fm.md §7's table): ratio/detune/fixed-frequency mode
-// resolve to the Q32 increment (§5.6), `level` is the operator's reference
-// gain -- what op_render's `gain` is at 100% output level, 100% EG level,
-// and velocity-sensitivity-neutral (op.h's fm_mul_gain/FM_OUT_SHIFT scale,
-// unity ≈ 1<<22) -- and `mod_target`/`feedback_level` together are the
-// entire routing input: which operator (or FM_TARGET_OUT) this op's output
-// feeds, and how strongly (0-7, DX7 units) its own last two outputs
+// One operator's patch data -- what tools/syx2patch.py emits per DX7
+// operator (fm.md §7's table): ratio/detune/fixed-frequency mode resolve to
+// the Q32 increment (§5.6), and `mod_target`/`feedback_level` together are
+// the entire routing input: which operator (or FM_TARGET_OUT) this op's
+// output feeds, and how strongly (0-7, DX7 units) its own last two outputs
 // additionally self-modulate its phase. `output_level`/`vel_sensitivity`/
-// `eg_rate`/`eg_level` (#45,
-// env_dx.h) are the note-on/block-rate-resolved pieces that turn `level`
-// into the actual, time-varying `gain` op_render sees -- see env_dx.h for
-// how they combine.
+// `eg_rate`/`eg_level` plus the key-scaling fields (env_dx.h) are the
+// note-on/block-rate-resolved pieces that produce the actual, time-varying
+// `gain` op_render sees.
+//
+// F2 removed this struct's `level` field (fm2.md §2). It was a per-operator
+// "reference gain" that syx2patch.py filled in with one of two hand-tuned
+// constants depending on whether the operator happened to be a carrier, and
+// it is exactly the thing that gave every patch its own private idea of what
+// full scale meant. There is now one engine-wide ceiling (op.h's
+// FM_GAIN_MAX) and everything below it is DX7 parameters -- output level, EG
+// level, key scaling, velocity -- attenuating in the log domain, same as
+// real hardware. Nothing outside op.h is allowed an opinion about absolute
+// level any more, and that is the point.
 struct FmOpParams {
     float   ratio;         // coarse.fine frequency ratio against the note (ignored if fixed_freq)
     float   fixed_hz;      // absolute frequency in Hz, used only when fixed_freq is true
     bool    fixed_freq;
     float   detune_cents;  // fine detune in cents, applied on top of ratio (0 for fixed_freq)
-    int32_t level;         // reference gain (env_dx.h's "0 dB" point) -- op.h's fm_mul_gain/FM_OUT_SHIFT scale
     uint8_t mod_target;    // 0..FM_NUM_OPS-1 (another operator), or FM_TARGET_OUT (carrier)
     // Self-modulation depth, DX7 units (0-7; 0 = off). Was a bool (fm.md
     // §5.2's original "no-op-or-full" self-feedback) until real Dexed source
@@ -272,38 +277,21 @@ inline bool fm_resolve_routing(const FmPatch &patch, FmRouting &r) {
 // integer (or 0.5), so the spectrum is a predictable harmonic/sideband set,
 // not an inharmonic bell.
 //
-// Levels: NOT rig.h's MOD_GAIN/CARRIER_GAIN (1<<15/1<<16) -- those were
-// deliberately scaled down for a 24-voice non-clipping bench check (rig.h's
-// own comment), never meant to produce audible modulation depth. `in[i]` is
-// added directly to a 32-bit phase accumulator indexed by its top 12 bits,
-// so 1 radian of deviation needs raw magnitude ≈ 2^32/2π ≈ 6.8e8. Op.h's
-// kernel used to cap this around 2^24 even at gain=INT32_MAX -- roughly
-// 0.03-0.05 rad max, since the same int32 `gain` field and shift served
-// carriers at their own, much smaller, ±32767 int16-audio scale too --
-// fixed in two parts by #57. Part 1 (`FM_OUT_SHIFT_MODULATOR`, op.h) gave
-// modulators their own shift, extracting the max magnitude a 32-bit
-// `gain*sample` product can yield at all (~64x more headroom, ~1.57 rad
-// ceiling). Part 2 (`FM_MOD_INPUT_SHIFT`, op.h) closed the actual gap that
-// remained -- comparing against Dexed's real kernel found this engine's
-// phase representation needs 2^32 units per cycle where Dexed's only needs
-// 2^24, taxing every modulator ~256x for no real reason -- by pre-scaling
-// incoming modulation left by 4 bits at the point it's added to phase.
-// `level` here is still the reference ceiling -- env_dx.h's output level/
-// EG/velocity-sensitivity offsets only ever attenuate *below* it -- but
-// three of these levels (op1/op2/op3, all summed into op4's bus) are
-// divided by 3 rather than left equal: at real headroom, 3 modulators
-// summed on one bus gets uncomfortably close to int32 range, the same
-// overflow risk #57 found and fixed in tools/syx2patch.py's carrier/
-// modulator fan-in scaling. All five modulator levels here were re-tuned
-// down again after part 2 landed -- the pre-#57 constants (pushed toward
-// int32 max, when max still meant "barely audible") badly over-drove at
-// the new combined headroom, and on op3 specifically (R1=90, slightly
-// slower than the other operators' R1=99) that was severe enough to
-// underflow `eg_to_linear()` to an exact zero mid-attack -- a real bug,
-// caught before hardware. Carrier (op5) stays at a conservative fraction
-// of its own ±32767 unity point, leaving headroom for multiple summed
-// voices plus the FX chain -- unaffected by #57 (FM_OUT_SHIFT_CARRIER is
-// unchanged from #44/#45).
+// Levels (rewritten by F2): this patch used to carry a hand-tuned `level`
+// per operator -- 100000000, 83000000, 350000000, 1<<21 -- alongside a
+// uniform output_level of 99, so all six operators claimed "full output"
+// while six magic numbers actually decided how loud each one was. Those
+// numbers were re-tuned by ear at least twice (#57's two parts), and the
+// last round of tuning was itself chasing a scaling bug rather than a sound.
+//
+// There is no `level` field any more. Loudness is `output_level` alone, in
+// real DX7 units, against op.h's single engine-wide ceiling: a modulator at
+// output_level 99 with its EG open produces two full cycles of phase
+// deviation on its target, exactly as a max-level DX7 operator does. So the
+// values below are now ordinary DX7 voicing -- carrier at 99, modulators in
+// the 75-88 range real patches use -- and they can be reasoned about,
+// compared against a DX7 patch sheet, and changed without touching the
+// engine.
 //
 // EG shapes (#45): every operator gets a distinct 4-stage envelope so all
 // six are audibly independent (an explicit acceptance criterion), and every
@@ -321,17 +309,17 @@ inline bool fm_resolve_routing(const FmPatch &patch, FmRouting &r) {
 inline constexpr FmPatch FM_TEST_PATCH = {
     "P1 Test Stack",
     {
-        /* op0 */ { 0.5f, 0.0f, false, 0.0f, 100000000, 2, false,
-                     99, 2, {99, 50, 20, 60}, {90, 50, 40, 0} },
-        /* op1 */ { 2.0f, 0.0f, false, 0.0f, 83000000, 4, false,
-                     99, 3, {99, 70, 30, 50}, {99, 60, 55, 0} },
-        /* op2 */ { 3.0f, 0.0f, false, 0.0f, 83000000, 4, false,
-                     99, 4, {95, 55, 25, 45}, {95, 45, 35, 0} },
-        /* op3 */ { 1.0f, 0.0f, false, 0.0f, 83000000, 4, 7,
-                     99, 3, {90, 65, 35, 55}, {99, 55, 50, 0} },
-        /* op4 */ { 1.0f, 0.0f, false, 0.0f, 350000000, 5, false,
-                     99, 6, {99, 60, 20, 50}, {99, 20, 15, 0} },
-        /* op5 */ { 1.0f, 0.0f, false, 0.0f, 1 << 21, FM_TARGET_OUT, false,
+        /* op0 */ { 0.5f, 0.0f, false, 0.0f, 2, false,
+                     75, 2, {99, 50, 20, 60}, {90, 50, 40, 0} },
+        /* op1 */ { 2.0f, 0.0f, false, 0.0f, 4, false,
+                     80, 3, {99, 70, 30, 50}, {99, 60, 55, 0} },
+        /* op2 */ { 3.0f, 0.0f, false, 0.0f, 4, false,
+                     78, 4, {95, 55, 25, 45}, {95, 45, 35, 0} },
+        /* op3 */ { 1.0f, 0.0f, false, 0.0f, 4, 7,
+                     82, 3, {90, 65, 35, 55}, {99, 55, 50, 0} },
+        /* op4 */ { 1.0f, 0.0f, false, 0.0f, 5, false,
+                     88, 6, {99, 60, 20, 50}, {99, 20, 15, 0} },
+        /* op5 */ { 1.0f, 0.0f, false, 0.0f, FM_TARGET_OUT, false,
                      99, 5, {99, 40, 20, 40}, {99, 70, 60, 0} },
     },
     // #49: lfo.pmd/amd = 0 leaves this patch's sound identical to every
