@@ -1,0 +1,10 @@
+# Third-party sources and data, fetched not vendored (see fetch_*.sh for why).
+msfa/
+banks/
+
+# Build products and renders.
+dexed_render
+out/
+
+# numpy venv (requirements.txt is committed).
+.venv/
