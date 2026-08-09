@@ -16,14 +16,14 @@ MSFA_SRC = msfa/dx7note.cc msfa/env.cc msfa/exp2.cc msfa/fm_core.cc \
            msfa/fm_op_kernel.cc msfa/freqlut.cc msfa/lfo.cc msfa/pitchenv.cc \
            msfa/porta.cpp msfa/sin.cc
 
-all: dexed_render
+all: dexed_render dexed_dump
 
 dexed_render: dexed_render.cpp $(MSFA_SRC) shim/tuning.h shim/libMTSClient.h wav32.h
 	@test -f msfa/synth.h || { echo "msfa/ missing -- run ./fetch_dexed.sh first"; exit 1; }
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -o $@ dexed_render.cpp $(MSFA_SRC)
 
 clean:
-	rm -f dexed_render
+	rm -f dexed_render dexed_dump
 
 # Removes fetched third-party sources too. `make clean` deliberately does not,
 # so a rebuild doesn't need the network.
@@ -31,3 +31,7 @@ distclean: clean
 	rm -rf msfa banks
 
 .PHONY: all clean distclean
+
+dexed_dump: dexed_dump.cpp $(MSFA_SRC) shim/tuning.h shim/libMTSClient.h
+	@test -f msfa/synth.h || { echo "msfa/ missing -- run ./fetch_dexed.sh first"; exit 1; }
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -o $@ dexed_dump.cpp $(MSFA_SRC)

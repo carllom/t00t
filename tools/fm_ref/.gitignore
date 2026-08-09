@@ -4,6 +4,8 @@ banks/
 
 # Build products and renders.
 dexed_render
+dexed_dump
+t00t_ctl_dump
 out/
 
 # numpy venv (requirements.txt is committed).
