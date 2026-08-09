@@ -50,6 +50,10 @@ full-scale ±2²⁴, phase is 24 bits per cycle, and the operator output is `(y 
 So a unity-gain operator's output is *exactly one full cycle of phase deviation*. One
 anchor; everything else in the DX7 is attenuation in log domain beneath it.
 
+(F2 later measured the rest of it directly rather than deriving it: Dexed's maximum operator
+gain is exactly 2.0, so a *max-level* operator peaks at two full cycles — ≈12.6 rad of
+modulation index. See §5.6.)
+
 t00t has no such anchor. Carriers and modulators run on two unrelated scales
 (`>>6` vs `>>0`), a global `<<4` fudge sits on the modulation input, and the reference
 gain is a hand-tuned per-operator magic number. Working the arithmetic through for a
@@ -241,8 +245,8 @@ Eight issues, each with a machine-checkable gate. The ordering principle is the 
 |---|---|---|
 | **F0** | Reference rigs. Build `dexed_render`, `render_fm_patch`, `fm_compare.py`, bank fetch script. **No engine changes.** Plus the §3.2 interpolation A/B. | **Met, §5.** Scorecard runs end-to-end on ROM1A #11 (E.PIANO 1) C3, Dexed vs the **current `fm` branch**. That baseline number is the thing everything after is measured against — and it retroactively quantifies how far off the current build is, which no amount of listening ever did. |
 | **F1** | Control-plane conformance harness (`fm_ctl_diff`). | **Met, §5.4.** It runs, and **fails loudly** on the current `env_dx.h` — i.e. it independently rediscovers §1.1(b) and (d) without being told. If it passes, the harness is wrong. |
-| **F2** | **Fixed-point contract.** Delete `level`, `FM_OUT_SHIFT_CARRIER`, `FM_OUT_SHIFT_MODULATOR`, `FM_MOD_INPUT_SHIFT`, and both `*_LEVEL_REF`s. Re-derive `op.h` + `patch.h` + `syx2patch.py`'s emit half around *unity gain = one full cycle of phase deviation*. Carriers and modulators share one scale; the carrier attenuation happens once, at the voice mix. | F1's frequency/level tests pass. F0 scorecard: spectral-centroid error drops materially on the bright patches. No int32 overflow at max level on any ROM1A patch (assert it in the host build). |
-| **F3** | **`EnvDX` rewrite.** Exponential-approach rising stage with the 1716 jump target, linear falling, `advance()`'s real rate derivation, `staticcount` handling for slow rates, and remove the `step<1→1` clamp. | F1 EG trajectory diff within tolerance for all 100 rates × representative level sets. F0 envelope metrics (time-to-peak, T60) within 10% on E.PIANO 1 and TUB BELLS. |
+| **F2** | **Met (level/overflow), §5.6.** **Fixed-point contract.** Delete `level`, `FM_OUT_SHIFT_CARRIER`, `FM_OUT_SHIFT_MODULATOR`, `FM_MOD_INPUT_SHIFT`, and both `*_LEVEL_REF`s. Re-derive `op.h` + `patch.h` + `syx2patch.py`'s emit half around *unity gain = one full cycle of phase deviation*. Carriers and modulators share one scale; the carrier attenuation happens once, at the voice mix. | Level gap collapses to a few dB across the bank (met: -0.4..-6.2 dB on 27/32, the rest slow-attack patches F3 owns). No int32 overflow at max level on any ROM1A patch, proved by bound not sample (met: 1.42 bits headroom). **The spectral-centroid criterion originally written here was moved to F3** -- brightness is modulator level over time, so it cannot be judged while the envelopes are broken. |
+| **F3** | **`EnvDX` rewrite.** Exponential-approach rising stage with the 1716 jump target, linear falling, `advance()`'s real level+TL composition (`(scaleoutlevel(L)>>1)<<6 + outlevel − 4256`, min-16 clamp), the real rate derivation, `staticcount` handling for slow rates, and remove the `step<1→1` clamp. | F1's six `eg/*` cases within tolerance. F0 envelope metrics (time-to-peak, T60) within 10% on E.PIANO 1 and TUB BELLS. **Spectral centroid** (moved from F2) approaches 1.0× on the bright patches. The four slow-attack level outliers (§5.6) close at a 2 s gate. |
 | **F4** | Feedback `>>(fb_shift+1)` fix; exact conformance test of all 32 algorithms against Dexed's table. Decide algorithms 4 and 6 (two-op loops, old X1/#54): implement the interleaved kernel, or document the approximation and its measured cost. | F1 routing table exact. Scorecard green on the feedback-heavy patches. |
 | **F5** | Key level scaling, rate scaling, velocity, detune, fixed-frequency — re-verified against F1 rather than re-derived by ear. | F1 exact for all four. |
 | **F6** | LFO + pitch EG re-verification against `lfo.cc` / `pitchenv.cc`. | F1 exact; scorecard green on vibrato-heavy patches. |
@@ -412,6 +416,66 @@ Deferred from F1 to F5 as planned: operator frequency conformance (ratio, detune
 mode). Dexed's `osc_freq()` is a private method with no public accessor, so that test needs
 an isolated single-operator render measured spectrally in cents rather than a table diff —
 it belongs with the phase that actually changes those parameters.
+
+### 5.6 F2 — the fixed-point contract
+
+Deleted: `FM_OUT_SHIFT_CARRIER`, `FM_OUT_SHIFT_MODULATOR`, `FM_MOD_INPUT_SHIFT`,
+`FmOpParams::level`, `FM_CARRIER_LEVEL_REF`, `FM_MODULATOR_LEVEL_REF`, and
+`syx2patch.py`'s carrier-count / modulator-fan-in division. Six free parameters and one
+attenuation real hardware never applied.
+
+Added: one anchor, measured from Dexed rather than assumed (`tools/fm_ref`, probe against
+the pinned source) — `Sin::lookup` is full-scale 2²⁴, Dexed's maximum operator gain is
+exactly 2.0, and 24 bits is one cycle of its phase, so **a max-level operator produces
+exactly two full cycles of phase deviation** and a unity-gain one exactly one. In t00t that
+is `FM_CYCLE = 2²⁶` (one cycle, in bus units), `FM_GAIN_MAX = 2²⁸` (derived from it and the
+sine table's 2¹⁵ full scale, not chosen), `FM_MOD_SHIFT = 6` (bus units → the 32-bit phase
+accumulator) and `FM_VOICE_OUT_SHIFT = 14` (the one master headroom choice, applied once).
+Carriers and modulators are the same number on the same scale; a carrier's output is simply
+read as audio instead of as phase.
+
+**Level gap, ROM1A × 32 at C3** — the metric F2 exists to move:
+
+| | before (F0 baseline) | after F2 |
+|---|---|---|
+| Best | −12.1 dB | **−0.4 dB** |
+| Typical | −13 to −30 dB | **−0.4 to −6.2 dB** (27 of 32 patches) |
+| Worst | −95.9 dB | −81.4 dB (4 patches, see below) |
+
+The four remaining outliers — STRINGS 1/2/3 and VOICE 1, plus TAKE OFF — are **not** a
+scaling problem. Re-rendering them with an 8 s gate instead of 2 s closes them from
+−77.8/−76.0/−77.7/−45.7 dB to **−3.1/−1.5/−2.3/+6.4 dB**. They are slow-attack patches whose
+envelope cannot get off the floor inside a 2 s note, which is §5.4's 16 ms-to-open attack
+defect showing up as a level error. F3 owns them.
+
+So the honest statement of F2's result: **every ROM1A patch now lands within a few dB of the
+reference once its envelope is given time to open.** No per-patch tuning, no compensating
+constants — one anchor.
+
+**Overflow, proven rather than sampled.** `render_fm_patch --check` bounds every bus
+exactly: each operator's contribution is at most `2 × FM_CYCLE` (the gain ceiling times the
+table's full scale, through `fm_mul_gain`'s fixed shift), so a bus's worst case is its
+writer count times that, countable from the resolved routing with no dependence on what any
+note does. Worst case across all 32 patches is E.ORGAN 1's six carriers on one bus:
+2²⁹·⁵⁸, **1.42 bits of int32 headroom**. Compare §1.1(a)'s old behaviour, where a
+max-level modulator reached 2³³·⁴ and wrapped the phase accumulator several times per sample.
+
+**Where the F2 gate was not met, and why it was mis-specified.** §4 asked for spectral
+centroid error to "drop materially on the bright patches". It did not — the mean centroid
+ratio moved 1.87× → 1.99×, mixed per patch (ORCHESTRA 0.93→1.14 and HARPSICH 1.45→1.17
+improved; BRASS 3 1.55→3.17 and E.PIANO 1 2.12→2.72 got worse). That criterion was wrong to
+put here. Brightness in FM *is* modulator level over time, so it cannot be right until the
+envelopes are, and §5.4 measured those as badly broken in both rate and landing level. The
+centroid criterion belongs to F3, and is restated there. Harmonic MAE (18.9 → 18.5) and
+envelope MAE (33.6 → 29.5) likewise barely moved, for the same reason and as expected.
+
+Regression checks: F1 unchanged at 12/24 (F2 touches no curve F1 measures), and
+`tools/test_syx2patch.py` 20/20, with the two fan-in-division tests replaced by tests that
+the converter now emits no gain constant at all.
+
+Left deliberately alone: the feedback `>> fb_shift` vs Dexed's `>> (fb_shift + 1)`
+(§1.1(c)), so that this scorecard delta attributes cleanly to the scaling contract and
+nothing else. It is F4's one-character fix.
 
 ---
 

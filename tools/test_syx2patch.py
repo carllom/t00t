@@ -253,23 +253,42 @@ def test_feedback_level_nonzero_passes_through() -> None:
     assert all(out.ops[i].feedback_level == 0 for i in range(5))
 
 
-def test_multi_carrier_level_scaled_down() -> None:
-    # Algorithm 32 (index 31): all six operators are carriers.
+def test_converter_emits_no_gain_constant() -> None:
+    # F2 (fm2.md §2): the converter has no opinion about absolute level. It
+    # used to emit an FmOpParams::level per operator from one of two hand-tuned
+    # references; op.h now owns the single engine-wide ceiling and this side is
+    # pure translation. Asserted structurally so a reintroduced level field, or
+    # a reintroduced module constant, fails here rather than quietly at the
+    # far end of a listening test.
+    assert not hasattr(sp.FmOpOut, "level")
+    assert "level" not in getattr(sp.FmOpOut, "__annotations__", {})
+    assert not hasattr(sp, "FM_CARRIER_LEVEL_REF")
+    assert not hasattr(sp, "FM_MODULATOR_LEVEL_REF")
+
+
+def test_multi_carrier_output_level_passes_through() -> None:
+    # Algorithm 32 (index 31): all six operators are carriers. Each used to be
+    # attenuated by 1/carrier_count to stop the sum overflowing. That division
+    # is gone -- real DX7 hardware does not apply it, so applying it made every
+    # multi-carrier algorithm quieter than its patch asked for. op.h's
+    # FM_CYCLE headroom is what makes the sum safe now (proved exhaustively by
+    # `render_fm_patch --check`).
     ops = [_flat_op() for _ in range(6)]
     voice = sp.DX7Voice(ops=ops, algorithm=31, feedback_level=0, name="ALLCARRIERS",
                          **_VOICE_LFO_PEG_DEFAULTS, osc_key_sync=0, transpose=24)
     warnings: list = []
     out = sp.convert_voice(0, voice, warnings)
     assert out is not None
-    for op in out.ops:
+    for engine_idx, op in enumerate(out.ops):
         assert op.mod_target == sp.FM_TARGET_OUT
-        assert op.level == sp.FM_CARRIER_LEVEL_REF // 6
+        # Straight through from the DX7 byte, untouched by carrier count.
+        assert op.output_level == ops[5 - engine_idx].output_level
 
 
-def test_multi_modulator_level_scaled_down() -> None:
+def test_multi_modulator_output_level_passes_through() -> None:
     # Algorithm 12 (index 11): OP6/OP5/OP4 all target OP3 (3-way modulator
-    # fan-in) -- #57 raised the modulator headroom ceiling ~64x, which makes
-    # this the same overflow risk multi-carrier summing already was.
+    # fan-in). Same story as the carrier case above -- the 1/fan_in division is
+    # gone, and the routing itself is what this still needs to get right.
     decode = sp.decode_algorithm(sp.DX7_ALGORITHMS[11])
     fan_in_target = decode.routing[0].target  # OP6's target -- the shared bus
     assert decode.routing[1].target == fan_in_target  # OP5
@@ -285,12 +304,7 @@ def test_multi_modulator_level_scaled_down() -> None:
     fed = [op for op in out.ops if op.mod_target == engine_target]
     assert len(fed) == 3
     for op in fed:
-        assert op.level == sp.FM_MODULATOR_LEVEL_REF // 3
-
-    # Worst-case overflow sanity: N modulators each holding 1/N of the
-    # reference must still sum back to (approximately) one modulator's own
-    # ceiling, comfortably under int32 range, not N times it.
-    assert sum(op.level for op in fed) <= sp.FM_MODULATOR_LEVEL_REF
+        assert op.output_level == _flat_op().output_level
 
 
 # --- Bit-packing / sysex parsing (synthetic fixtures) -----------------------
@@ -489,8 +503,9 @@ def main() -> None:
     run("carrier L4 forced to 0 for voice-lifetime correctness", test_carrier_l4_forced_to_zero)
     run("feedback_level=0 disables feedback exactly", test_feedback_level_zero_disables_feedback)
     run("feedback_level nonzero passes through exactly", test_feedback_level_nonzero_passes_through)
-    run("multi-carrier level scaled down by carrier count", test_multi_carrier_level_scaled_down)
-    run("multi-modulator level scaled down by fan-in count", test_multi_modulator_level_scaled_down)
+    run("converter emits no gain/level constant (F2)", test_converter_emits_no_gain_constant)
+    run("multi-carrier output_level passes through unattenuated", test_multi_carrier_output_level_passes_through)
+    run("multi-modulator output_level passes through unattenuated", test_multi_modulator_output_level_passes_through)
     run("unpack_voice: bit-packing round-trip", test_unpack_voice_roundtrip)
     run("parse_syx_bulk: checksum validation", test_bulk_parse_and_checksum)
     run("parse_syx_bulk: header/length rejection", test_bulk_parse_rejects_bad_header)
