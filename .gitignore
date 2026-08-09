@@ -9,3 +9,5 @@ __pycache__/
 assets/
 syx/
 src/engines/fm/patches.h
+# FM reference rig (tools/fm_ref, fm2.md) -- host-only build products
+tools/host_render/render_fm_patch

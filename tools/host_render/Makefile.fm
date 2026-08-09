@@ -1,0 +1,29 @@
+# Host build of render_fm_patch (fm2.md §3.1, F0-b). Plain g++, deliberately
+# separate from CMakeLists.txt: this machine has no cmake, and the F0 rig has no
+# reason to need one. The cmake targets in this directory are untouched.
+#
+#   python3 ../syx2patch.py convert ../fm_ref/banks/rom1a.syx ../../src/engines/fm/patches.h
+#   make -f Makefile.fm
+#
+# patches.h is generated and gitignored, so the T00T_FM_HAS_PATCHES gate below
+# mirrors the one in CMakeLists.txt: without it the binary still builds, and
+# says what to run.
+
+CXX      ?= g++
+CXXFLAGS ?= -O2 -std=c++17 -Wall
+INCLUDES  = -I. -I../../src
+
+PATCHES = ../../src/engines/fm/patches.h
+ifneq ($(wildcard $(PATCHES)),)
+CXXFLAGS += -DT00T_FM_HAS_PATCHES=1
+endif
+
+all: render_fm_patch
+
+render_fm_patch: render_fm_patch.cpp ../../src/osc/sine.cpp $(wildcard $(PATCHES))
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -o $@ render_fm_patch.cpp ../../src/osc/sine.cpp -lm
+
+clean:
+	rm -f render_fm_patch
+
+.PHONY: all clean
