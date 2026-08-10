@@ -49,8 +49,12 @@ endif()
 # fixed, per tracker.md's "Deviation From the Existing Layer Model" — so
 # voice_alloc.cpp is left out of that build entirely (#13). main.cpp's calls
 # into it are compiled out via HAS_VOICE_ALLOC below.
+# The chip module's F0 measurement build (sid.md P0) is the same case: the rig
+# is self-cycling and drives its voices directly, so there is nothing to
+# allocate. P1 brings the allocator back -- sid.md §8 reuses voice_alloc.* as
+# is, and only at P4 does it become dynamic.
 set(ENGINE_VOICE_ALLOC src/voice_alloc.cpp)
-if(T00T_ENGINE STREQUAL "tracker")
+if(T00T_ENGINE STREQUAL "tracker" OR T00T_ENGINE STREQUAL "chip")
     set(ENGINE_VOICE_ALLOC "")
 endif()
 
@@ -85,6 +89,17 @@ add_executable(t00t
 # (and its preset/kit headers) resolve to that engine's copy.
 target_include_directories(t00t PRIVATE src src/midi src/wslcd src/engines/${T00T_ENGINE})
 
+# Chip-module F0 rig levers (src/engines/chip/rig.h). Each is a separate build
+# because the value being measured is cycles per frame and a runtime switch
+# would put a branch inside the loop under test. Passed through from the
+# Makefile every configure, so nothing gets stuck in the CMake cache.
+foreach(_rig CHIP_RIG_VOICES CHIP_RIG_BUSES CHIP_RIG_FILTERED CHIP_RIG_OVERSAMPLE
+             CHIP_RIG_SAT CHIP_RIG_SUBBLOCK CHIP_RIG_MOD CHIP_WAVE_DAC)
+    if(DEFINED ${_rig} AND NOT ${_rig} STREQUAL "default")
+        target_compile_definitions(t00t PRIVATE ${_rig}=${${_rig}})
+    endif()
+endforeach()
+
 # Optional MIDI transport overrides. Each may be 0, 1, or unset/"default"
 # (board header decides). Passed through from the Makefile every configure,
 # so values never get stuck in the CMake cache.
@@ -107,8 +122,10 @@ endif()
 
 # See ENGINE_VOICE_ALLOC above — tells main.cpp to skip the voice_alloc calls
 # it would otherwise fail to link against on the tracker build.
-if(T00T_ENGINE STREQUAL "tracker")
+if(T00T_ENGINE STREQUAL "tracker" OR T00T_ENGINE STREQUAL "chip")
     target_compile_definitions(t00t PRIVATE HAS_VOICE_ALLOC=0)
+endif()
+if(T00T_ENGINE STREQUAL "tracker")
     # See ENGINE_TRACKER_PLAYER above — tells main.cpp to call into
     # player_task.cpp's Core 0 song load / ring / transport hooks.
     target_compile_definitions(t00t PRIVATE HAS_TRACKER_PLAYER=1)
