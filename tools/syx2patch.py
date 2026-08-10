@@ -564,15 +564,26 @@ def convert_voice(idx: int, voice: DX7Voice, warnings: List[str]) -> Optional[Fm
         # approximation, so no warning needed for this branch.
         feedback_level = voice.feedback_level if r.feedback_capable else 0
 
+        # F6 (fm2.md §5.16) removed a rule that used to force a carrier's L4 to
+        # 0 here. Its stated reason was that "a nonzero carrier L4 never reaches
+        # env_dx.h's EG_IDLE, so the voice could never be reclaimed by the
+        # allocator (the tracker's #21 bug shape)". That reason does not hold:
+        # voice_alloc.cpp's allocate() reclaims such a voice at priority 2
+        # ("active on Core 1 but not gated -- in release phase"), which is
+        # reached the instant the key lifts. Only priority 1, the *inaudible*
+        # steal, is unavailable to it. So the voice is never stuck and
+        # allocation can never fail; the cost is that stealing it is quiet
+        # rather than silent.
+        #
+        # What the rule did cost was real: a nonzero carrier L4 is a patch that
+        # deliberately keeps sounding after key-off, and zeroing it deletes that
+        # design. ROM1A #30 TRAIN is one -- a train whistle whose whole point is
+        # that it carries on -- and the override was worth 16.5 dB of envelope
+        # error against the reference, by far the largest single defect left on
+        # the bank at F6 (it drops to 0.15 dB with the patch data intact).
+        # It is also rare enough to have been invisible: 3 voices in all 256
+        # across the four ROM banks.
         eg_level = list(op.eg_level)
-        if is_carrier and eg_level[3] != 0:
-            warnings.append(
-                f"voice {idx} ({voice.name!r}): OP{6 - j} (carrier) release level "
-                f"L4={eg_level[3]} forced to 0 -- a nonzero carrier L4 never reaches "
-                f"env_dx.h's EG_IDLE, so the voice could never be reclaimed by the "
-                f"allocator (the tracker's #21 bug shape); see env_dx.h's own L4=0 note"
-            )
-            eg_level[3] = 0
 
         mod_target = FM_TARGET_OUT if r.target == "OUT" else (5 - r.target)
         fixed_freq = (op.osc_mode == 1)

@@ -314,6 +314,15 @@ EG_CASES = [
     ("eg/very-slow-decay", "99,5,5,30",   "99,60,50,0",  99),   # tests §1.1(d)'s step<1 clamp
     ("eg/percussive",      "99,70,60,80", "99,50,0,0",   99),   # decay to silence while gated
     ("eg/low-outlevel",    "99,60,40,60", "99,85,75,0",  70),   # tests the TL composition
+    # F6 (fm2.md §5.15) added the last two. The six above all have L2 != L1 and
+    # all have L4 == 0, so between them they never once enter Env's
+    # `targetlevel_ == level_` branch -- the ACCURATE_ENVELOPE `staticcount`
+    # hold, which is the whole reason the statics[77] table exists -- and never
+    # release UPWARDS. Both paths are ported in env_dx.h and neither was under
+    # test; both are exercised by ROM1A #30 TRAIN, whose two remaining outlier
+    # operators are precisely one of each.
+    ("eg/static-hold",     "42,17,25,53", "99,99,99,0",  83),   # TRAIN op4: L1=L2=L3 -> two staticcount holds
+    ("eg/rising-release",  "49,17,25,53", "99,99,99,98", 99),   # TRAIN op5: L4 > sustain -> release rises
 ]
 
 

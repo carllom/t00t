@@ -12,3 +12,9 @@ src/engines/fm/patches.h
 # FM reference rig (tools/fm_ref, fm2.md) -- host-only build products
 tools/host_render/render_fm_patch
 tools/host_render/t00t_ctl_dump
+# F6: render_fm became a real Makefile.fm target, so its binary and the WAVs
+# its --check run writes are build products like the two above.
+tools/host_render/render_fm
+tools/host_render/fm_test_tone.wav
+tools/host_render/fm_patch_test.wav
+tools/host_render/fm_patches/

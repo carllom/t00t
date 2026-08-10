@@ -558,10 +558,19 @@ static bool run_lfo_check() {
     env_dx_init_tables();
 
     // (1) Waveform shapes, sampled at phase 0 / quarter / half / three-quarter.
+    // F6: the two sawtooths now carry Dexed's own half-cycle rotation (see
+    // lfo.h), so their phase-0 value is the MIDDLE of the ramp, not an end of
+    // it -- and their ends land at Q2 instead. The tent/square/sine cases are
+    // unchanged. Checked against the rotation rather than around it, so this
+    // still fails if the rotation is dropped again.
     constexpr uint32_t Q0 = 0, Q1 = 0x40000000u, Q2 = 0x80000000u, Q3 = 0xC0000000u;
     bool tri_ok = fm_lfo_waveform_unipolar(Q0, 0) < 0.05f && fm_lfo_waveform_unipolar(Q2, 0) > 0.95f;
-    bool sawdown_ok = fm_lfo_waveform_unipolar(Q0, 1) > 0.95f && fm_lfo_waveform_unipolar(Q3, 1) < 0.3f;
-    bool sawup_ok = fm_lfo_waveform_unipolar(Q0, 2) < 0.05f && fm_lfo_waveform_unipolar(Q3, 2) > 0.7f;
+    bool sawdown_ok = std::fabs(fm_lfo_waveform_unipolar(Q0, 1) - 0.5f) < 0.05f
+                   && fm_lfo_waveform_unipolar(Q2, 1) > 0.95f
+                   && fm_lfo_waveform_unipolar(Q1, 1) < 0.3f;
+    bool sawup_ok = std::fabs(fm_lfo_waveform_unipolar(Q0, 2) - 0.5f) < 0.05f
+                 && fm_lfo_waveform_unipolar(Q2, 2) < 0.05f
+                 && fm_lfo_waveform_unipolar(Q1, 2) > 0.7f;
     bool square_ok = fm_lfo_waveform_unipolar(Q1, 3) > 0.95f && fm_lfo_waveform_unipolar(Q3, 3) < 0.05f;
     bool sine_ok = fm_lfo_waveform_unipolar(Q1, 4) > 0.95f && fm_lfo_waveform_unipolar(Q3, 4) < 0.05f
                 && std::fabs(fm_lfo_waveform_unipolar(Q0, 4) - 0.5f) < 0.05f;
@@ -573,9 +582,30 @@ static bool run_lfo_check() {
     float hz0 = dx7_lfo_rate_to_hz(0), hz99 = dx7_lfo_rate_to_hz(99);
     bool rate_ok = hz0 > 0.05f && hz0 < 0.08f && hz99 > 45.0f && hz99 < 55.0f;
 
-    // (3) Delay: instant at 0, ~2.66s at 99 (same calibration method).
-    float delay0 = dx7_lfo_delay_seconds(0), delay99 = dx7_lfo_delay_seconds(99);
-    bool delay_ok = delay0 == 0.0f && delay99 > 2.0f && delay99 < 3.5f;
+    // (3) Delay: instant at 0; at 99 the accumulator must sit fully CLOSED for
+    // ~2.66s and only then ramp. F6 replaced the old single seconds-to-open
+    // number with Dexed's real two-stage accumulator, so this checks the shape
+    // (closed / opening / open) rather than one duration -- the old version
+    // could not have distinguished a ramp from a delay at all.
+    uint32_t d0a, d0b, d99a, d99b;
+    dx7_lfo_delay_incs(0, d0a, d0b);
+    dx7_lfo_delay_incs(99, d99a, d99b);
+    bool delay_ok = d0a == ~0u && d0b == ~0u && d99a > 0 && d99b > d99a;
+    {
+        FmLfoParams pd{ 40, 99, 99, 99, /*waveform=*/0, false, 7 };
+        FmLfo l;
+        fm_lfo_init(l);
+        fm_lfo_trigger(l, false);
+        float at_2s = 0.0f, at_2s5 = 0.0f, at_end = 0.0f;
+        for (uint32_t s = 0; s < (uint32_t)(4.0f * SAMPLE_RATE); s += FM_BLOCK) {
+            float v = fm_lfo_delay_step(l, pd, FM_BLOCK);
+            float t = (float)s / SAMPLE_RATE;
+            if (t < 2.0f) at_2s = v;
+            if (t < 2.9f) at_2s5 = v;
+            at_end = v;
+        }
+        delay_ok = delay_ok && at_2s == 0.0f && at_2s5 > 0.0f && at_2s5 < 1.0f && at_end == 1.0f;
+    }
 
     // (4) Full block-rate integration: fast LFO (rate 99, ~51 Hz), max
     // depth/sensitivity, sine, delay=0, mod_wheel at max -- over 0.5s
@@ -599,30 +629,55 @@ static bool run_lfo_check() {
     bool oscillates_ok = min_cents < -900.0f && max_cents > 900.0f;  // FM_LFO_PMD_MAX_CENTS is ~1190.6
     bool amp_swings_ok = max_atten > 0.7f;
 
-    // (5) mod_wheel=0 must silence both outputs regardless of depth.
+    // (5) F6 inverted this check. It used to assert that mod_wheel=0 SILENCES
+    // both outputs regardless of patch depth -- #49's "wheel is a multiplier"
+    // convention. That is now the defect, not the contract: a factory patch's
+    // configured vibrato must play with the wheel at rest, and the wheel is a
+    // separate source combined by max() (lfo.h). So the assertion is that a
+    // full-depth patch at wheel 0 still modulates, and that raising the wheel
+    // never REDUCES it. Inverted rather than deleted so the old behaviour
+    // cannot come back unnoticed.
     FmLfo lfo_wheel0;
     fm_lfo_init(lfo_wheel0);
     fm_lfo_trigger(lfo_wheel0, false);
-    bool wheel_zero_ok = true;
+    float w0_min = 1e9f, w0_max = -1e9f, w0_max_amp = 0.0f;
     done = 0;
-    while (done < (uint32_t)(0.1f * SAMPLE_RATE)) {
+    while (done < (uint32_t)(0.5f * SAMPLE_RATE)) {
         float pc, aa;
         fm_lfo_step_block(lfo_wheel0, p, FM_BLOCK, /*mod_wheel_frac=*/0.0f, pc, aa);
-        if (pc != 0.0f || aa != 0.0f) wheel_zero_ok = false;
+        w0_min = std::min(w0_min, pc);
+        w0_max = std::max(w0_max, pc);
+        w0_max_amp = std::max(w0_max_amp, aa);
         done += FM_BLOCK;
     }
+    bool wheel_zero_ok = w0_min < -900.0f && w0_max > 900.0f && w0_max_amp > 0.7f
+                      && w0_max <= max_cents + 1.0f;  // wheel never subtracts from patch depth
 
     // (6) Delay: with a slow delay (99, ~2.66s) and a waveform whose very
     // first sample is already at a bipolar extreme (square, unlike sine's
     // own zero-crossing start), the very first block after trigger must be
     // far smaller than that extreme -- the fade-in is real, not a no-op.
+    // F6: driven at mod_wheel=0, because the delay gates the PATCH's own depth
+    // only. Dexed's wheel term (`pmod_2`) carries no `lfo_delay` factor at all,
+    // so a player who pushes the wheel during the delay period gets vibrato
+    // immediately -- correct, and the reason this check used to read as a pass
+    // only by accident (it drove the wheel at full and the old multiplicative
+    // convention then re-applied the delay on top). Both directions are
+    // asserted now: suppressed at wheel 0, immediate at wheel 1.
     FmLfoParams p_delay{ 99, 99, 99, 99, /*waveform=*/3, false, 7 };
     FmLfo lfo_delay;
     fm_lfo_init(lfo_delay);
     fm_lfo_trigger(lfo_delay, false);
     float first_pc, first_aa;
-    fm_lfo_step_block(lfo_delay, p_delay, FM_BLOCK, 1.0f, first_pc, first_aa);
-    bool delay_ramp_ok = std::fabs(first_pc) < 5.0f;  // negligible this early into a ~2.66s ramp (undelayed would be ~1190c immediately)
+    fm_lfo_step_block(lfo_delay, p_delay, FM_BLOCK, /*mod_wheel_frac=*/0.0f, first_pc, first_aa);
+    FmLfo lfo_delay_wheel;
+    fm_lfo_init(lfo_delay_wheel);
+    fm_lfo_trigger(lfo_delay_wheel, false);
+    float first_pc_wheel, first_aa_wheel;
+    fm_lfo_step_block(lfo_delay_wheel, p_delay, FM_BLOCK, /*mod_wheel_frac=*/1.0f,
+                      first_pc_wheel, first_aa_wheel);
+    bool delay_ramp_ok = std::fabs(first_pc) < 5.0f              // patch depth: still closed
+                      && std::fabs(first_pc_wheel) > 900.0f;     // wheel: bypasses the delay
 
     // (7) AM integration: fm_voice_step_envelopes() actually reduces gain
     // for an operator with real am_sensitivity, and leaves one with
@@ -654,18 +709,18 @@ static bool run_lfo_check() {
     bool pass = waveforms_ok && rate_ok && delay_ok && oscillates_ok && amp_swings_ok
               && wheel_zero_ok && delay_ramp_ok && am_reduces_ok && am_unaffected_ok;
     printf("%s: LFO -- waveforms(tri/sawdn/sawup/sq/sine)=%d/%d/%d/%d/%d, rate(0/99)=%.4f/%.2f Hz, "
-           "delay(0/99)=%.2f/%.2fs, pitch swing=[%.1f,%.1f]c, amp_atten max=%.3f, "
-           "wheel=0 silences=%d, delay ramp small at t=0 (%.2fc)=%d, "
+           "delay shape(closed->ramp->open)=%d, pitch swing=[%.1f,%.1f]c, amp mod max=%.3f, "
+           "patch depth plays at wheel=0 (%d), delay ramp small at t=0 (%.2fc)=%d, "
            "AM reduces sensitive op=%d, leaves insensitive op alone=%d\n",
            pass ? "PASS" : "FAIL", tri_ok, sawdown_ok, sawup_ok, square_ok, sine_ok, hz0, hz99,
-           delay0, delay99, min_cents, max_cents, max_atten, wheel_zero_ok, first_pc, delay_ramp_ok,
+           delay_ok, min_cents, max_cents, max_atten, wheel_zero_ok, first_pc, delay_ramp_ok,
            am_reduces_ok, am_unaffected_ok);
     if (!waveforms_ok) printf("  FAIL: one or more waveform shapes wrong\n");
     if (!rate_ok) printf("  FAIL: rate table out of expected real-Hz range\n");
-    if (!delay_ok) printf("  FAIL: delay table out of expected real-seconds range\n");
+    if (!delay_ok) printf("  FAIL: delay is not closed-then-ramping (Dexed's two-stage accumulator)\n");
     if (!oscillates_ok) printf("  FAIL: pitch mod didn't swing through both signs near the calibrated max\n");
     if (!amp_swings_ok) printf("  FAIL: amp mod attenuation didn't reach a real depth\n");
-    if (!wheel_zero_ok) printf("  FAIL: mod_wheel=0 didn't silence the LFO\n");
+    if (!wheel_zero_ok) printf("  FAIL: patch LFO depth did not play at mod_wheel=0 (or the wheel subtracted from it)\n");
     if (!delay_ramp_ok) printf("  FAIL: LFO delay didn't fade in -- full depth immediately\n");
     if (!am_reduces_ok) printf("  FAIL: AM sensitivity didn't reduce a sensitive operator's gain\n");
     if (!am_unaffected_ok) printf("  FAIL: AM affected an operator with am_sensitivity=0\n");
