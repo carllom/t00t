@@ -127,7 +127,7 @@ int main(int argc, char **argv) {
         // This is a bound, not a sample. Every operator's contribution is
         // bounded exactly: fm_mul_gain() is (gain * sample) >> 16 with |sample|
         // <= 2^15 and gain <= FM_GAIN_MAX, so |contribution| <= 2 * FM_CYCLE,
-        // and env_dx.h's eg_to_linear() cannot return more than FM_GAIN_MAX
+        // and env_dx.h's eg_to_gain() cannot return more than FM_GAIN_MAX
         // because a log2 offset of 0 is its maximum (output level and EG level
         // both cap at 99, and fm_voice_note_on() clamps the key-scaling sum the
         // same way Dexed does). So a bus's worst case is simply its number of
@@ -185,7 +185,7 @@ int main(int argc, char **argv) {
     FmOp     ops[FM_NUM_OPS];
     FmPitchEg peg;
     FmLfo     lfo;
-    for (uint32_t i = 0; i < FM_NUM_OPS; i++) env_dx_init(ops[i].eg);
+    for (uint32_t i = 0; i < FM_NUM_OPS; i++) env_dx_reset(ops[i].eg);
     fm_pitch_eg_init(peg);
     fm_lfo_init(lfo);
 

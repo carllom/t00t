@@ -60,14 +60,14 @@ struct FmOpParams {
     // feedback patches (brass, EP, plucked) are voiced around. See op.h's
     // op_render_fb for how this resolves into FmRouting::fb_shift at note-on.
     uint8_t feedback_level;
-    uint8_t output_level;    // DX7 TL, 0-99, through env_dx.h's DX7_LEVEL_TO_LOG2 (#45)
-    uint8_t vel_sensitivity; // 0-7, env_dx.h's eg_vel_sensitivity_log2 (#45)
+    uint8_t output_level;    // DX7 TL, 0-99 -- folded into the EG's own stage targets (env_dx.h)
+    uint8_t vel_sensitivity; // 0-7, env_dx.h's dx7_scale_velocity()
     uint8_t eg_rate[4];      // R1-R4, 0-99 (#45)
     uint8_t eg_level[4];     // L1-L4, 0-99 (#45) -- L4 = 0 lets this operator actually reach silence on release
     // #48: key level scaling -- an output-level offset that depends on the
     // played note vs. `scale_breakpoint`, resolved once at note-on
     // (env_dx.h's dx7_scale_level(), a direct Dexed port) and folded into
-    // `static_log2` alongside output_level/vel_sensitivity. curve values
+    // the EG's `outlevel` alongside output_level/vel_sensitivity. curve values
     // match DX7: 0=-LIN, 1=-EXP, 2=+EXP, 3=+LIN (env_dx.h's dx7_scale_curve()).
     uint8_t scale_breakpoint;  // MIDI note, DX7 units (C3 = 0x27 = 39)
     uint8_t scale_left_depth;  // 0-99
@@ -156,7 +156,7 @@ struct FmRouting {
     // as everything else in this struct. Only meaningful where kernel[i] ==
     // FM_KERNEL_FEEDBACK. `8 - feedback_level` anchors level 7 (max) to
     // >>1 -- exactly this engine's old, already-hardware-tuned "always full"
-    // behavior (FM_TEST_PATCH's op3 was safe against eg_to_linear()
+    // behavior (FM_TEST_PATCH's op3 was safe against eg_to_gain()
     // underflow at that depth, #57) -- and steps one octave per level below
     // that, matching Dexed's own per-level spacing (dx7note.cc's
     // `fb_shift_ = 8 - feedback`) even though the absolute magnitude scale

@@ -18,7 +18,7 @@
 // Rate and level tables ported verbatim from Dexed's own PitchEnv
 // (Source/msfa/pitchenv.{h,cc}, Apache-2.0) -- same "port real hardware-
 // calibrated data, don't re-derive a formula guess" rigor #58/#59 already
-// established for env_dx.h's own DX7_LEVEL_TO_LOG2/DX7_RATE_TO_STEP tables.
+// established for env_dx.h's own DX7 parameter tables.
 // The combination formula around those tables (below) is NOT a bit-exact
 // port, though -- Dexed's own PitchEnv works in a Q24-octave/N-sample-block
 // fixed-point domain tuned to Dexed's own internal block size and unit

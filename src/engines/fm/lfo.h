@@ -46,7 +46,7 @@
 // own FmOp::phase) in plain float, since this all runs at control rate
 // (~2756 Hz at BLOCK=16, not per audio sample) where float cost is
 // negligible and every other block-rate/note-on computation in this engine
-// (fm_op_inc, eg_vel_sensitivity_log2) already uses float freely.
+// (fm_op_inc) already uses float freely.
 //
 // Rate table (`lfoSource`) IS ported verbatim (real hardware-calibrated
 // data, same "port the table, don't re-derive" rule pitch_eg.h's own tables

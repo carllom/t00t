@@ -31,19 +31,17 @@
 
 static constexpr double DB_PER_OCTAVE = 6.020599913;
 
-// env_dx.h works in Q8 octaves (EG_LOG2_ONE = 256 units per octave). Dexed's
-// `outlevel` microsteps are the same size -- one unit of Env::advance()'s
+// Dexed's `outlevel` microsteps are 1/256 octave -- one unit of Env::advance()'s
 // `actuallevel` is 1/256 octave, since `targetlevel_ = actuallevel << 16` lands
-// in a Q24-per-octave field. So the two sides' integer level units are already
-// 1:1 and need no rescaling; only the *anchor* has to be made common, which is
-// what reference_log2() does.
+// in a Q24-per-octave field.
 //
-// t00t's anchor: output level 99, EG level 99, no key scaling, no velocity
-// sensitivity. env_dx_init_level_table() defines DX7_LEVEL_TO_LOG2[99] == 0 and
-// fm_voice_note_on()'s static_log2 is 0 for that config, so the reference is
-// simply 0 -- stated explicitly rather than assumed, so the two sides' anchor
-// definitions sit side by side and can be checked against each other.
-static constexpr int32_t reference_log2() { return 0; }
+// Since F3 this side works in Dexed's own Q24-octave level domain (env_dx.h is
+// a direct port), so the conversion is now the identical expression on both
+// sides: (level - reference) / 2^24 * dB-per-octave. The shared anchor -- all
+// rates and levels 99, output level 99, no key scaling, no velocity -- is
+// EG_LEVEL_MAX, the 15-octave ceiling env_dx_advance() produces for exactly
+// that config.
+static constexpr int32_t reference_level() { return EG_LEVEL_MAX; }
 
 static void parse4(const char *s, uint8_t out[4]) {
     int v[4];
@@ -114,17 +112,13 @@ int main(int argc, char **argv) {
                 printf("%d,%d,%d\n", n, s, dx7_scale_rate(n, s));
 
     } else if (what == "velocity") {
-        // Dexed's ScaleVelocity returns an outlevel delta in microsteps;
-        // env_dx.h's eg_vel_sensitivity_log2() returns Q8 octaves. Those units
-        // are identical (see reference_log2()'s comment), so the values compare
-        // directly. Velocity 0-127 maps to the Q15 amplitude VoiceParams
-        // carries, the same way midi_controller.cpp/render_fm_patch.cpp do.
+        // F3 replaced the hand-rolled velocity model with a port of Dexed's
+        // own ScaleVelocity, so this is now a like-for-like table diff in the
+        // same microstep units rather than a comparison across two models.
         printf("velocity,sensitivity,outlevel_delta\n");
-        for (int v = 0; v < 128; v++) {
-            int16_t amp = (int16_t)((v / 127.0f) * 32767.0f);
+        for (int v = 0; v < 128; v++)
             for (int s = 0; s < 8; s++)
-                printf("%d,%d,%d\n", v, s, eg_vel_sensitivity_log2((uint8_t)s, amp));
-        }
+                printf("%d,%d,%d\n", v, s, dx7_scale_velocity(v, s));
 
     } else if (what == "scalelevel") {
         printf("midinote,breakpoint,ldepth,rdepth,lcurve,rcurve,level_delta\n");
@@ -141,14 +135,12 @@ int main(int argc, char **argv) {
         for (int i = 0; i < 4; i++) { p.eg_rate[i] = rates[i]; p.eg_level[i] = levels[i]; }
         p.output_level = (uint8_t)outlevel;
 
+        // Output level enters through the envelope's own `outlevel`, exactly
+        // as dexed_dump does it (`Env::scaleoutlevel(outlevel) << 5`). This
+        // test isolates the envelope, so no key scaling and no velocity.
         EnvDX eg;
-        env_dx_init(eg);
-        env_dx_trigger(eg);
-
-        // fm_voice_note_on()'s own static_log2, for the no-key-scaling,
-        // no-velocity-sensitivity case this test isolates.
-        const int32_t static_log2 =
-            (dx7_scaleoutlevel(outlevel) - dx7_scaleoutlevel(99)) * 32;
+        env_dx_reset(eg);
+        env_dx_init(eg, rates, levels, dx7_scaleoutlevel(outlevel) << 5, ratescale);
 
         printf("time_s,db\n");
         bool released = false;
@@ -156,14 +148,12 @@ int main(int argc, char **argv) {
         for (uint32_t s = 0; s < total; s += FM_BLOCK) {
             double t = (double)s / SAMPLE_RATE;
             if (!released && t >= gate) { env_dx_release(eg); released = true; }
-            int32_t start, end;
-            env_dx_step_block(eg, p, FM_BLOCK, start, end, ratescale);
-            // `end`, not `start`: Dexed's Env::getsample() returns the level
-            // *after* advancing its block, and fm_core.cc uses that value as
-            // the block's `gain2` (its end-of-block gain). Emitting `start`
-            // here would report t00t one control block behind Dexed and show up
-            // as a spurious ~100 dB spike at t=0 on every EG case.
-            double db = ((double)(static_log2 + end - reference_log2()) / 256.0) * DB_PER_OCTAVE;
+            // The return value is the level *after* advancing the block, which
+            // is the same point Dexed's Env::getsample() returns and what
+            // fm_core.cc consumes as that block's `gain2`.
+            int32_t level = env_dx_step_block(eg, FM_BLOCK);
+            double db = ((double)(level - reference_level())
+                         / (double)EG_LEVEL_ONE_OCTAVE) * DB_PER_OCTAVE;
             printf("%.6f,%.4f\n", t, db);
         }
 

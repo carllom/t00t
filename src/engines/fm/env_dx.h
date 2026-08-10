@@ -1,239 +1,70 @@
 #pragma once
 
 #include "audio_common.h"
+#include "fm_scale.h"
 #include "patch.h"
 #include <cmath>
 #include <cstdint>
 
-// EnvDX -- the DX7 envelope (#45, fm.md §5.3): 4 x (rate, level) pairs per
-// operator, log-domain, stepped once per control block. Deliberately NOT
-// envelope.h's ADSR (fm.md §5.3: "Do not reuse envelope.* ... An ADSR bent
-// into that shape would be both slower and less accurate") -- DX7 stages
-// are direction-agnostic (any stage can ramp up OR down to any target,
-// unlike ADSR's fixed attack-up/decay-down/release-down shape) and the
-// hardware itself is an adder in log domain plus one exponential lookup,
-// not a per-sample multiply.
+// EnvDX -- the DX7 envelope, rewritten by F3 (fm2.md §2/§5.7) as a direct
+// port of Dexed's `Env` (Source/msfa/env.cc, Apache-2.0) rather than a
+// re-derivation of its shape.
 //
-// Everything below works in a single fixed-point "log2 offset from
-// reference" domain: 0 = the operator's full reference level (patch.h's
-// FmOpParams::level, i.e. what op_render's `gain` would be at 100% output
-// level, 100% EG level, and velocity-sensitivity-neutral), more negative =
-// quieter. Three independent 0-99 DX7 parameters -- operator output level
-// (TL), each EG stage's target level, and velocity sensitivity's effect --
-// all resolve to offsets in this SAME domain and simply ADD (fm.md §5.6:
-// "none of it belongs in the render loop" -- all of this runs at note-on or
-// block-rate, never per sample). The per-sample kernel (op.h's
-// op_render/op_render_first/op_render_fb) is completely unchanged by this
-// file: it still just does `gain += gain_step` -- this file only decides
-// what `gain`/`gain_step` are handed at each block boundary.
-
-// One octave = EG_LOG2_ONE fixed-point units (Q iiii.8: 8 fractional bits,
-// chosen to match the 256-entry exp2 table 1:1 -- no interpolation needed
-// for the fractional lookup).
-static constexpr int32_t EG_LOG2_FRAC_BITS = 8;
-static constexpr int32_t EG_LOG2_ONE = 1 << EG_LOG2_FRAC_BITS;  // 256
-
-// Level-parameter (0-99) dynamic range, applied to BOTH the operator output
-// level (TL) and each EG stage's target level -- real DX7 hardware shares
-// one curve between the two (fm.md §7: "Operator output level (0-99) ->
-// Log-domain attenuation, via the DX7's nonlinear level table").
-// ~96 dB across levels 1-99, genuinely nonlinear -- not
-// `gain = reference * level/99`, which is what "a linear approximation" in
-// the acceptance criteria means and rejects.
+// The previous version was an honest reconstruction: 4 (rate, level) pairs
+// stepped linearly in a log domain, with the operator's output level added
+// separately as a static offset. F1's conformance harness measured what that
+// cost, and the numbers are why this file was replaced rather than adjusted
+// (fm2.md §5.4):
 //
-// History: #45's first cut used a uniform ~1 dB/unit, which put a typical
-// "sustain" value like 60-70 about 30-38 dB below the attack peak -- heard
-// on real hardware as a loud attack decaying to near-nothing, not a held
-// tone ("more like a marimba. Very weak sustain."). #45 then tried a
-// hand-fit quadratic-in-dB curve (flatter near 99, steeper near 0), which
-// fixed that complaint but was still considerably flatter than the real
-// DX7 curve across most of the range (#58 measured -0.8 dB at level 90 here
-// vs the genuine -6.8 dB, by porting and running Dexed's actual Env/Exp2
-// pipeline rather than re-deriving from a formula guess) -- real enough to
-// let #57's newly-unlocked modulation depth run hot on anything short of a
-// near-maxed operator, surfacing as "sometimes overdriven." #58 replaced
-// the hand-fit curve with `dx7_scaleoutlevel()` (below), a direct port of
-// Dexed's own `Env::scaleoutlevel()`, closing that gap for real instead of
-// re-fitting another approximation.
-static constexpr float EG_LEVEL_DB_RANGE = 96.0f;
-static constexpr float EG_DB_PER_OCTAVE = 6.0206f;  // 20*log10(2)
-
-// Level 0 is a dedicated, much deeper floor than level 1's ~-95 dB --
-// real DX7 hardware treats level 0 as "off", not merely "very quiet".
-// Deep enough that eg_to_linear() underflows to an exact int32 zero for
-// ANY valid reference (references are always < 2^31; 2^31 * 2^-40 < 1),
-// which is what makes "voice reports itself free" a real guarantee instead
-// of an epsilon guess -- the tracker's #21 bug ("key-off never frees a
-// voice") was exactly a missing version of this guarantee.
-static constexpr int32_t EG_FLOOR_OCTAVES = -40;
-static constexpr int32_t EG_LOG2_FLOOR = EG_FLOOR_OCTAVES * EG_LOG2_ONE;
-
-// eg_to_linear()'s fast-path threshold: comfortably below EG_FLOOR_OCTAVES
-// so the EG's own level-0 target always takes the fast (exact zero) path,
-// but shallow enough that it also catches "EG floor plus a few octaves of
-// velocity-sensitivity offset" without needing every caller to reason about
-// the combination. Below this, the shift-based conversion would underflow
-// to 0 anyway (see eg_to_linear's comment) -- this is purely a clarity/
-// cheap-exit optimization, not a separate correctness mechanism.
-static constexpr int32_t EG_SILENCE_THRESHOLD_OCTAVES = -32;
-static constexpr int32_t EG_LOG2_SILENT = EG_SILENCE_THRESHOLD_OCTAVES * EG_LOG2_ONE;
-
-// Velocity sensitivity (0-7, fm.md §5.6): unlike output level/EG level,
-// this only ever ATTENUATES (max velocity = 0 offset regardless of
-// sensitivity; softer hits are progressively quieter, scaled by
-// sensitivity) -- never boosts past the operator's configured reference,
-// so it composes with the level offsets above via plain addition without
-// ever needing to reason about exceeding 0 dB. Sensitivity 0 is exactly
-// "no velocity effect" (#44's pre-#45 behavior, now the correct DX7
-// default rather than a placeholder). ~24 dB (4 octaves) of range at
-// sensitivity 7 hitting velocity 0 -- audible, in a plausible DX7-ish
-// range; not a claim of exact hardware fidelity (see the level-table
-// comment above).
-static constexpr float EG_VEL_SENS_MAX_OCTAVES = 4.0f;
-
-// Rate-parameter (0-99) dynamic range: fixed-point OCTAVES PER SECOND,
-// independent of block size (BLOCK only decides how finely that per-second
-// rate gets sampled -- see op.h's FM_BLOCK / T00T_FM_BLOCK and this issue's
-// BLOCK-confirmation acceptance criterion).
+//   * an "instant" attack (rate 99) took 16.3 ms to reach -1 dB, against
+//     Dexed's 0.0 ms -- because a linear ramp in the log domain has to
+//     traverse the entire 40-octave floor before it becomes audible. Real DX7
+//     rising stages do not traverse it: they JUMP to a fixed floor
+//     (`jumptarget`, 1716) and then approach the target exponentially. That
+//     jump *is* the DX7's instant attack, and no rate table can substitute
+//     for it.
+//   * rising and falling stages are different curve families on real
+//     hardware -- exponential approach up, linear down. The old file used one
+//     symmetric ramp for both.
+//   * output level (TL) belongs INSIDE the envelope's own target
+//     computation, not added to it afterwards. Dexed folds it in with a bias
+//     and a floor clamp (`advance()` below); adding it separately put every
+//     sustain stage in the wrong place, measured at ~60 dB low on E.PIANO 1.
+//   * the slowest rates were capped at ~6 s by a `step < 1` clamp that this
+//     formulation does not need at all.
 //
-// History: originally a smooth single exponential across 0-99 (rate 0 ~20s,
-// rate 99 ~6ms for a full EG_FLOOR_OCTAVES sweep) -- an "approximate" guess,
-// like #45's original level curve. #59 found it badly wrong by the same
-// method #58 used for the level curve: porting and running Dexed's actual
-// `Env::advance()`/`getsample()` rate-to-speed formula (Source/msfa/env.cc)
-// rather than re-deriving from a shape guess. Real DX7 rate isn't a smooth
-// exponential -- it's piecewise, built from a `qrate` value and a
-// `(4+(qrate&3)) << (2+6+(qrate>>2))` bit-shift step -- and it accelerates
-// far more steeply toward the high end than any single smooth exponential
-// can: 1.35x faster than this curve at rate 0, growing to ~23x faster at
-// rate 99. That gap is a direct, well-evidenced explanation for "envelopes
-// feel sluggish" / "noticeable delay from note-on until audible" (Carl,
-// after #58) -- R1=99 (an extremely common "instant attack" choice in real
-// patches, including FM_TEST_PATCH) was landing roughly 20x slower than
-// real hardware. `dx7_rate_to_octaves_per_sec()` below replaces the
-// exponential fit with the real formula; `EG_RATE_SWEEP_OCTAVES` stays as
-// this file's own floor-to-unity range definition (unrelated to the fix).
-static constexpr float EG_RATE_SWEEP_OCTAVES = -(float)EG_FLOOR_OCTAVES;  // 40
+// Everything below therefore follows Dexed's arithmetic exactly, in Dexed's
+// own units, with exactly two documented deviations:
+//
+//   1. Control-block size. Dexed advances its envelope once per N=64 samples;
+//      this engine advances once per FM_BLOCK (16 by default, op.h). `inc_`
+//      is stored in Dexed's own per-64-sample units and scaled by the actual
+//      block length at each step, so a 64-sample block reproduces Dexed
+//      exactly and a shorter one samples the same curve more finely.
+//   2. Output gain scale. Dexed's `Exp2::lookup(level_ - (14 << 24))` yields a
+//      Q24 gain peaking at 2.0; this yields a linear gain peaking at op.h's
+//      FM_GAIN_MAX. Same curve, anchored to this engine's own fixed-point
+//      contract (F2). See eg_to_gain().
 
-static constexpr uint32_t DX7_LEVEL_COUNT = 100;
-inline int32_t DX7_LEVEL_TO_LOG2[DX7_LEVEL_COUNT];   // fixed-point octave offset, <= 0, index 99 == 0
+// ---------------------------------------------------------------------------
+// DX7 parameter tables. All four of these were verified byte-identical to
+// Dexed's by F1's conformance suite (fm2.md §5.4) and are unchanged by F3 --
+// they were the parts of the old file that were already right.
+// ---------------------------------------------------------------------------
 
-static constexpr uint32_t DX7_RATE_COUNT = 100;
-inline int32_t DX7_RATE_TO_STEP[DX7_RATE_COUNT];     // fixed-point octaves/second, index r >= index r-1
-
-static constexpr uint32_t EG_EXP2_BITS = EG_LOG2_FRAC_BITS;
-static constexpr uint32_t EG_EXP2_SIZE = 1u << EG_EXP2_BITS;  // 256
-inline uint16_t eg_exp2_table[EG_EXP2_SIZE];  // Q15: 2^(i/256), range [32768, 65280]
-
-// Dexed's own `Env::scaleoutlevel()` (Source/msfa/env.cc, Apache-2.0) --
-// ported verbatim, not re-derived, since #58 found the earlier "honest
-// approximation" (quadratic-in-dB, above) was still considerably flatter
-// than the real curve across most of the 0-99 range (e.g. -0.8 dB at
-// level 90 here vs the real -6.8 dB; -8.2 dB at level 70 here vs -21.9 dB
-// real), letting anything short of a near-maxed operator run noticeably
-// hotter than authentic DX7 behavior -- the actual root cause behind #57's
-// "sometimes overdriven" report, not modulation depth itself. Levels 0-19
-// are a measured, non-formulaic table on real hardware; 20-99 is `28 + level`.
+// Dexed's `Env::scaleoutlevel()`. Levels 0-19 are a measured, non-formulaic
+// table on real hardware; 20-99 is `28 + level`.
 inline int dx7_scaleoutlevel(int level) {
     static constexpr int levellut[20] = {0, 5, 9, 13, 17, 20, 23, 25, 27, 29,
                                           31, 33, 35, 37, 39, 41, 42, 43, 45, 46};
     return level >= 20 ? 28 + level : levellut[level];
 }
 
-// #58: replaces the #45 quadratic-in-dB approximation with Dexed's actual
-// curve, ported exactly rather than re-fit. Verified by direct port-and-run
-// against Dexed's real Exp2/Env pipeline (not hand-derived): one unit of
-// `dx7_scaleoutlevel(level) * 32` is exactly 1/256 octave in Dexed's own
-// fixed-point convention -- the same Q iiii.8 scale this file already uses
-// (EG_LOG2_ONE), so the conversion is a direct subtraction, no rescaling.
-// Real DX7 hardware shares this exact curve between operator output level
-// (TL) and each EG stage's target level (fm.md §7) -- Dexed's own formula
-// for the two differs only by an integer-truncation rounding difference
-// this table doesn't distinguish (both go through the same
-// scaleoutlevel()*32 shape), matching the "one shared curve" convention
-// this file already documents above.
-inline void env_dx_init_level_table() {
-    DX7_LEVEL_TO_LOG2[0] = EG_LOG2_FLOOR;  // deliberately deeper than real hardware's ~-96 dB -- see this constant's own comment (exact-zero voice-free guarantee, not a fidelity claim)
-    const int32_t reference = dx7_scaleoutlevel(99) * 32;  // = 4064
-    for (uint32_t level = 1; level < DX7_LEVEL_COUNT; level++) {
-        DX7_LEVEL_TO_LOG2[level] = (dx7_scaleoutlevel((int)level) * 32) - reference;
-    }
-}
-
-// Dexed's own `Env::advance()` rate derivation (Source/msfa/env.cc,
-// Apache-2.0), ported verbatim (#59), split into its two halves so #48's
-// rate scaling can add a qrate delta between them (real DX7 hardware adds
-// keyboard rate scaling directly to qrate, once per stage transition, not
-// as a separate offset applied after the octaves/second conversion --
-// `Env::advance()`'s own `qrate += rate_scaling_`).
-//
-// A second real bug, found by building Dexed's actual env.cc/exp2.cc/
-// fm_op_kernel.cc standalone (not re-derived) and A/B-rendering a real
-// ROM1A patch (E.PIANO 1) against this engine: `inc_` is NOT a Q24
-// octaves/SAMPLE delta, despite what this comment used to say -- it's a Q24
-// octaves-per-*Dexed-render-call* delta, and one Dexed render call
-// (`Dx7Note::compute()`, via `FmCore::render()`) always advances exactly
-// `N = 1 << LG_N = 64` samples (synth.h). `Env::getsample()` -- the only
-// thing that ever applies `inc_` to `level_` -- is called exactly once per
-// that 64-sample call, not once per sample (confirmed by reading
-// `Dx7Note::compute()`'s op loop: one `env_[op].getsample()` per call, and
-// each call is handed a fixed N=64-sample output buffer to fill). The old
-// conversion (`* SAMPLE_RATE >> 16`) implicitly assumed a per-sample delta
-// (block size 1), so it came out exactly `N` = 64x too fast: every stage of
-// every envelope -- attacks, decays, releases -- ran two orders of
-// magnitude quicker than real DX7 hardware. Measured effect, not
-// theoretical: the buggy formula puts a real rate-25 stage (E.PIANO 1's own
-// carrier decay, ROM1A) at a 372ms full-floor sweep; the standalone Dexed
-// build of the *same patch* is still clearly sounding, mid-decay, past
-// 2000ms held. A rate-99 attack goes from an implausible ~0.1ms (under 5
-// samples -- not even one control block) to ~6.6ms, which matches commonly
-// cited real DX7 "instant attack" timing. This is almost certainly why
-// patches kept sounding "thin and dull" after #57/#58/#59's other fixes:
-// with every envelope stage compressed 64x, a patch's bright attack
-// transient collapses into a fraction of a control block (often literally
-// unresolvable at BLOCK=16) and whatever should have been a multi-second
-// natural decay/evolution (this E.PIANO's own long, mellowing decay being
-// the textbook case) instead reaches near-silence almost immediately --
-// modulation depth and level curve were never the problem for those
-// patches, timing was.
-//
-// Fixed by adding the missing `>> LG_N` (LG_N=6, Dexed's own per-block
-// exponent, already baked into `inc`'s own shift above and named
-// explicitly here so the two `6`s are visibly the same constant): converts
-// "Q24 octaves per Dexed-internal 64-sample block" into "Q24 octaves per
-// second" by dividing by that block's real-time duration
-// (SAMPLE_RATE/N seconds⁻¹), before the existing Q24->Q iiii.8
-// (EG_LOG2_ONE) rescale. t00t's own BLOCK (FM_BLOCK/T00T_FM_BLOCK, op.h) is
-// a separate, independent choice (16, not 64) for *this* engine's own
-// control-rate stepping granularity -- LG_N here is Dexed's internal
-// constant being ported, not a reference to that.
-inline int dx7_rate_to_qrate(int rate) {
-    int qrate = (rate * 41) >> 6;
-    return qrate > 63 ? 63 : qrate;
-}
-
-inline int32_t dx7_qrate_to_octaves_per_sec_q8(int qrate) {
-    if (qrate < 0) qrate = 0;
-    if (qrate > 63) qrate = 63;
-    constexpr int32_t DEXED_LG_N = 6;  // Dexed's own per-block sample count, 1<<6 = 64 (synth.h's LG_N)
-    int64_t inc = (int64_t)(4 + (qrate & 3)) << (2 + DEXED_LG_N + (qrate >> 2));
-    return (int32_t)((inc * (int64_t)SAMPLE_RATE) >> (16 + DEXED_LG_N));
-}
-
-inline int32_t dx7_rate_to_octaves_per_sec_q8(int rate) {
-    return dx7_qrate_to_octaves_per_sec_q8(dx7_rate_to_qrate(rate));
-}
-
-// Dexed's `ScaleRate()` (dx7note.cc, Apache-2.0), ported verbatim (#48): a
-// qrate DELTA from how far above a low reference note the played note is
-// (`x`, clamped 0-31 -- roughly the octave-and-a-bit starting around A1),
-// scaled by the operator's own rate scaling (RS, 0-7). Real DX7: higher
-// notes get faster envelopes -- why bells/plucked patches tighten up
-// correctly across the keyboard instead of the same shape at every pitch.
-// Resolved once at note-on (op.h's fm_voice_note_on) into `FmOp`'s own
-// `rate_scale_qrate`, then added to `dx7_rate_to_qrate(rate)` at every
-// stage transition (env_dx_step_block) -- matching Dexed's own "added to
-// qrate, not to the final speed" order exactly.
+// Dexed's `ScaleRate()` (dx7note.cc): a qrate DELTA from how far above a low
+// reference note the played note is, scaled by the operator's own rate
+// scaling (RS, 0-7). Higher notes get faster envelopes -- why plucked and
+// bell patches tighten up correctly across the keyboard. Added to qrate at
+// each stage transition, never to the converted speed.
 inline int32_t dx7_scale_rate(int midinote, int sensitivity) {
     int x = midinote / 3 - 7;
     if (x < 0) x = 0;
@@ -241,13 +72,8 @@ inline int32_t dx7_scale_rate(int midinote, int sensitivity) {
     return (sensitivity * x) >> 3;
 }
 
-// Dexed's `ScaleCurve()`/`ScaleLevel()` (dx7note.cc, Apache-2.0), ported
-// verbatim (#48). Same raw-unit scale as `dx7_scaleoutlevel()` above (both
-// feed the identical pre-`<<5` "outlevel" pipeline on real hardware) --
-// `fm_voice_note_on()` multiplies the result by 32 to fold it into this
-// file's octave (`EG_LOG2_ONE`) convention, same as
-// `env_dx_init_level_table()` does for TL. Curve values match DX7: 0=-LIN,
-// 1=-EXP, 2=+EXP, 3=+LIN.
+// Dexed's `ScaleCurve()`/`ScaleLevel()` (dx7note.cc). Curve values match DX7:
+// 0=-LIN, 1=-EXP, 2=+EXP, 3=+LIN. Same raw unit scale as dx7_scaleoutlevel().
 inline int dx7_scale_curve(int group, int depth, int curve) {
     static constexpr uint8_t exp_scale_data[33] = {
         0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 14, 16, 19, 23, 27, 33, 39, 47, 56, 66,
@@ -270,146 +96,275 @@ inline int32_t dx7_scale_level(int midinote, int break_pt, int left_depth, int r
     return dx7_scale_curve(-(offset - 1) / 3, left_depth, left_curve);
 }
 
-inline void env_dx_init_rate_table() {
-    for (uint32_t rate = 0; rate < DX7_RATE_COUNT; rate++) {
-        DX7_RATE_TO_STEP[rate] = dx7_rate_to_octaves_per_sec_q8((int)rate);
-    }
+// Dexed's `ScaleVelocity()` (dx7note.cc), ported by F3. Returns a delta in
+// the same "microstep" units as `outlevel` (1/32 of a scaleoutlevel unit,
+// i.e. 1/256 octave), to be added AFTER outlevel is shifted left by 5.
+//
+// Replaces the old `eg_vel_sensitivity_log2()`, a hand-rolled model that was
+// linear in velocity with a 4-octave span. F1 measured that at roughly a
+// third of the real curve's depth -- at sensitivity 7 and velocity 0, Dexed
+// attenuates by 3344 microsteps (-78.6 dB) where the old model gave 1024
+// (-24.0 dB) -- and 894 of 1024 (velocity, sensitivity) pairs differed.
+inline int32_t dx7_scale_velocity(int velocity, int sensitivity) {
+    static constexpr uint8_t velocity_data[64] = {
+        0, 70, 86, 97, 106, 114, 121, 126, 132, 138, 142, 148, 152, 156, 160, 163,
+        166, 170, 173, 174, 178, 181, 184, 186, 189, 190, 194, 196, 198, 200, 202,
+        205, 206, 209, 211, 214, 216, 218, 220, 222, 224, 225, 227, 229, 230, 232,
+        233, 235, 237, 238, 240, 241, 242, 243, 244, 246, 246, 248, 249, 250, 251,
+        252, 253, 254
+    };
+    int clamped = velocity < 0 ? 0 : (velocity > 127 ? 127 : velocity);
+    int vel_value = (int)velocity_data[clamped >> 1] - 239;
+    return ((sensitivity * vel_value + 7) >> 3) << 4;
 }
 
-inline void env_dx_init_exp2_table() {
-    for (uint32_t i = 0; i < EG_EXP2_SIZE; i++) {
-        float frac = (float)i / (float)EG_EXP2_SIZE;
-        eg_exp2_table[i] = (uint16_t)(exp2f(frac) * 32768.0f);
-    }
-}
+// ---------------------------------------------------------------------------
+// Level domain and gain conversion.
+// ---------------------------------------------------------------------------
+
+// Dexed's `level_` unit: 2^24 == one octave (one doubling). The usable range
+// is 0 .. EG_LEVEL_MAX, i.e. 15 octaves, which `advance()`'s composition
+// below produces at output level 99 / EG level 99.
+static constexpr int32_t EG_LEVEL_ONE_OCTAVE = 1 << 24;
+static constexpr int32_t EG_LEVEL_MAX = 15 * EG_LEVEL_ONE_OCTAVE;
+
+// Q15 exp2 fraction table, 2^(i/256). The 8 fractional bits it resolves are
+// bits 16-23 of `level_`, so no interpolation is needed.
+static constexpr uint32_t EG_EXP2_BITS = 8;
+static constexpr uint32_t EG_EXP2_SIZE = 1u << EG_EXP2_BITS;
+inline uint16_t eg_exp2_table[EG_EXP2_SIZE];
 
 inline void env_dx_init_tables() {
-    env_dx_init_level_table();
-    env_dx_init_rate_table();
-    env_dx_init_exp2_table();
+    for (uint32_t i = 0; i < EG_EXP2_SIZE; i++) {
+        eg_exp2_table[i] = (uint16_t)(exp2f((float)i / (float)EG_EXP2_SIZE) * 32768.0f);
+    }
 }
 
-// Converts a fixed-point log2 offset (<= 0, in EG_LOG2_ONE units) plus a
-// raw linear `reference` (patch.h's FmOpParams::level) into the same linear
-// gain scale op.h's kernels consume. Below EG_SILENCE_THRESHOLD_OCTAVES,
-// returns an exact 0 -- see that constant's comment for why this is a real
-// guarantee, not an approximation, for any valid int32 reference.
-inline int32_t eg_to_linear(int32_t reference, int32_t log2_fp) {
-    if (log2_fp <= EG_LOG2_SILENT) return 0;
-    int32_t oct = log2_fp >> EG_LOG2_FRAC_BITS;             // floor (arithmetic shift, two's complement)
-    uint32_t frac = (uint32_t)log2_fp & (uint32_t)(EG_LOG2_ONE - 1);
-    uint32_t mult_q15 = eg_exp2_table[frac];
-    int64_t g = (int64_t)reference * (int64_t)mult_q15;
-    int32_t shift = (EG_LOG2_FRAC_BITS + 7) - oct;  // 15 - oct; oct <= 0 here, so shift >= 15
-    if (shift >= 63) return 0;
-    return (int32_t)(g >> shift);
+// `level_` (Q24 octaves) -> the linear gain op.h's kernels multiply by.
+//
+// Dexed computes `gain = Exp2::lookup(level_ - (14 << 24))`, a Q24 value
+// peaking at 2.0 (= 2^25 raw) when level_ is at its 15-octave maximum. This
+// engine's contract (op.h, F2) instead wants FM_GAIN_MAX = 2^28 at that same
+// point, so the exponent is offset by 13 octaves rather than 14:
+//
+//     gain = 2^(level_/2^24 + 13)     ->  2^28 at level_ = 15 octaves
+//
+// Identical curve, identical dynamic range, anchored to this engine's own
+// full scale. The clamp is defensive only: `advance()` cannot produce a
+// level_ above EG_LEVEL_MAX, and F2's overflow bound (proved by
+// `render_fm_patch --check`) depends on that ceiling holding.
+// Below this, an operator contributes nothing and is treated as exactly
+// silent. This is Dexed's `kLevelThresh` (fm_core.cc, 1120 in its Q24 gain
+// units, scaled by 8 into this engine's), and it is load-bearing rather than
+// an optimisation: `advance()` floors every stage target at 16 microsteps, so
+// a DX7 envelope never actually reaches zero -- it bottoms out around -90 dB
+// and stays there. Dexed reaches real silence by skipping any operator under
+// this threshold entirely; clamping the gain to zero here is numerically the
+// same thing for every writer (a carrier adds 0, a first-writer stores 0),
+// without restructuring the render loop. It is what makes "this voice is
+// finished" a true statement about the audio and not just about the
+// envelope's stage counter.
+static constexpr int32_t EG_LEVEL_THRESH = 1120 * 8;
+
+inline int32_t eg_to_gain(int32_t level) {
+    if (level < 0) level = 0;
+    if (level > EG_LEVEL_MAX) level = EG_LEVEL_MAX;
+    int32_t octaves = level >> 24;                       // 0..15
+    uint32_t frac = ((uint32_t)level >> 16) & 0xFF;      // 8 bits, matches the table
+    int32_t m = (int32_t)eg_exp2_table[frac];            // Q15, [2^15, 2^16)
+    int32_t shift = octaves - 2;                         // (octaves + 13) - 15
+    int32_t gain = shift >= 0 ? (m << shift) : (m >> -shift);
+    if (gain < EG_LEVEL_THRESH) return 0;
+    return gain > FM_GAIN_MAX ? FM_GAIN_MAX : gain;
 }
 
-// Velocity sensitivity -> log2 offset (see EG_VEL_SENS_MAX_OCTAVES's
-// comment): 0 at sensitivity 0 (regardless of velocity) or at max velocity
-// (regardless of sensitivity), increasingly negative for softer hits on a
-// more sensitive operator. `amplitude` is VoiceParams' existing Q15
-// velocity (0-32767).
-inline int32_t eg_vel_sensitivity_log2(uint8_t sensitivity, int16_t amplitude) {
-    if (sensitivity == 0) return 0;
-    float vel_frac = (float)amplitude / 32767.0f;
-    float octaves = -((float)sensitivity / 7.0f) * EG_VEL_SENS_MAX_OCTAVES * (1.0f - vel_frac);
-    return (int32_t)(octaves * (float)EG_LOG2_ONE);
-}
+// ---------------------------------------------------------------------------
+// The envelope itself -- Dexed's Env, field for field.
+// ---------------------------------------------------------------------------
 
-// EG_STAGE_1..4 index directly into FmOpParams::eg_rate/eg_level (0-3).
-// EG_IDLE is the terminal state, reached only by completing stage 4 (i.e.
-// only after an explicit note-off) -- envelope.h's Envelope::active()
-// equivalent, and the only thing fm_voice_active() (op.h) trusts to decide
-// whether a voice may be reported free.
-enum EgStage : uint8_t { EG_STAGE_1, EG_STAGE_2, EG_STAGE_3, EG_STAGE_4, EG_IDLE };
+// Dexed's own per-block sample count (synth.h's `N = 1 << LG_N`). `inc_` and
+// the staticcount table are both expressed against it; deviation 1 above is
+// implemented by scaling to the real block length at each step.
+static constexpr int32_t EG_DEXED_LG_N = 6;
+static constexpr int32_t EG_DEXED_N = 1 << EG_DEXED_LG_N;
 
 struct EnvDX {
-    int32_t current_log2;  // this operator's own dynamic offset, <= 0
-    uint8_t stage;
+    uint8_t rates[4];
+    uint8_t levels[4];
+    int32_t outlevel;        // microsteps, already scaled by key level + velocity
+    int32_t rate_scaling;    // qrate delta from dx7_scale_rate()
+    int32_t level;           // Q24 octaves (Dexed's level_)
+    int32_t targetlevel;
+    int32_t inc;             // per EG_DEXED_N samples
+    int32_t staticcount;     // samples remaining in a "hold" stage, 0 when not holding
+    uint8_t ix;              // stage 0-3, or 4 == finished
+    bool    rising;
+    bool    down;            // key held
 
-    bool active() const { return stage != EG_IDLE; }
+    // Dexed's `Env::isActive()`. A stage-4 (release) level of 0 is what makes
+    // this a real terminal state rather than an epsilon guess -- and
+    // tools/syx2patch.py forces exactly that on every carrier, so the voice
+    // allocator's "this voice is free" decision stays sound (op.h's
+    // fm_voice_active()).
+    bool active() const { return ix < 4 || levels[3] > 0; }
 };
 
-// Matches envelope.h's Envelope::init(): the power-on/never-triggered
-// state. Zero-initializing an EnvDX (e.g. a fresh static array) is NOT
-// equivalent to this -- stage 0 is EG_STAGE_1, not EG_IDLE, since stages
-// 1-4 need to double as direct eg_rate[]/eg_level[] indices (0-3). Every
-// voice slot's EGs must call this explicitly at boot, same as
-// envelope[v].init() in the subtractive engine.
-inline void env_dx_init(EnvDX &eg) {
-    eg.current_log2 = EG_LOG2_FLOOR;
-    eg.stage = EG_IDLE;
-}
+// Dexed's `Env::advance()`. Recomputes the stage target, direction, rate and
+// hold count. Called on init, on key-up, and whenever a stage completes.
+inline void env_dx_advance(EnvDX &eg, int newix) {
+    eg.ix = (uint8_t)newix;
+    if (eg.ix >= 4) return;
 
-// Start stage 1 from silence -- matches envelope.h's Envelope::trigger()
-// convention (a fresh note-on always restarts from zero, even mid-release).
-inline void env_dx_trigger(EnvDX &eg) {
-    eg.current_log2 = EG_LOG2_FLOOR;
-    eg.stage = EG_STAGE_1;
-}
+    int newlevel = eg.levels[eg.ix];
 
-// Jump directly to the release stage from wherever the EG currently is --
-// matches envelope.h's Envelope::release() ("transitions to RELEASE using
-// the current level as the starting point"). A no-op if already idle.
-inline void env_dx_release(EnvDX &eg) {
-    if (eg.stage != EG_IDLE) eg.stage = EG_STAGE_4;
-}
+    // The level composition F1 found missing (fm2.md §5.4). Output level is
+    // folded into the stage target here, with a bias of 4256 and a floor of
+    // 16 -- NOT added separately afterwards. The floor is what stops a
+    // "silent" stage from being infinitely quiet: 16 microsteps is about
+    // -90 dB below full scale, which is where Dexed's own envelopes bottom
+    // out and what F1 measures as its resting level.
+    int actuallevel = dx7_scaleoutlevel(newlevel) >> 1;
+    actuallevel = (actuallevel << 6) + eg.outlevel - 4256;
+    if (actuallevel < 16) actuallevel = 16;
+    eg.targetlevel = actuallevel << 16;
+    eg.rising = eg.targetlevel > eg.level;
 
-// Advances `eg` by one control block of `n` samples, returning the log2
-// offset at the start and end of the block (the caller converts both to
-// linear via eg_to_linear() and interpolates gain_step across the block --
-// op.h's fm_voice_step_envelopes()). A stage transition that would land
-// mid-block is deferred to the next block boundary (clamped exactly at the
-// target for this block instead) -- same "bounded by one block, inaudible"
-// convention as envelope.h's advance_block(). `rate_qrate_delta` is #48's
-// key rate scaling, resolved once at note-on (FmOp::rate_scale_qrate) and
-// added directly to this stage's own qrate every time a stage starts --
-// matching Dexed's `qrate += rate_scaling_` exactly, rather than scaling
-// the already-converted octaves/second value (a different, less faithful
-// order of operations). 0 for every existing caller/patch until #48 wires
-// real DX7 data through -- identical to #59's own DX7_RATE_TO_STEP[] table
-// lookup in that case (dx7_rate_to_octaves_per_sec_q8() IS
-// dx7_qrate_to_octaves_per_sec_q8(dx7_rate_to_qrate(rate) + 0)), so this
-// change is behavior-neutral for every patch that doesn't use rate scaling.
-inline void env_dx_step_block(EnvDX &eg, const FmOpParams &op, uint32_t n,
-                               int32_t &log2_start, int32_t &log2_end,
-                               int32_t rate_qrate_delta = 0) {
-    log2_start = eg.current_log2;
-    if (eg.stage == EG_IDLE) {
-        log2_end = log2_start;
-        return;
-    }
+    int qrate = (eg.rates[eg.ix] * 41) >> 6;
+    qrate += eg.rate_scaling;
+    if (qrate > 63) qrate = 63;
+    if (qrate < 0) qrate = 0;
 
-    int32_t target = DX7_LEVEL_TO_LOG2[op.eg_level[eg.stage]];
-    int32_t rate_per_sec = rate_qrate_delta == 0
-        ? DX7_RATE_TO_STEP[op.eg_rate[eg.stage]]
-        : dx7_qrate_to_octaves_per_sec_q8(dx7_rate_to_qrate(op.eg_rate[eg.stage]) + rate_qrate_delta);
-    int32_t step = (int32_t)(((int64_t)rate_per_sec * n) / SAMPLE_RATE);
-    if (step < 1) step = 1;  // guarantee forward progress every block, even at rate 0 with a short final sub-block
-
-    int32_t new_log2;
-    bool reached;
-    if (target > log2_start) {
-        new_log2 = log2_start + step;
-        reached = new_log2 >= target;
-    } else if (target < log2_start) {
-        new_log2 = log2_start - step;
-        reached = new_log2 <= target;
+    // A stage that has nowhere to go still takes real time on hardware --
+    // Dexed's ACCURATE_ENVELOPE path, an empirically measured dwell table.
+    // Without it a same-level stage completes instantly and the envelope runs
+    // through its whole shape early.
+    if (eg.targetlevel == eg.level || (eg.ix == 0 && newlevel == 0)) {
+        static constexpr int statics[77] = {
+            1764000, 1764000, 1411200, 1411200, 1190700, 1014300, 992250,
+            882000, 705600, 705600, 584325, 507150, 502740, 441000, 418950,
+            352800, 308700, 286650, 253575, 220500, 220500, 176400, 145530,
+            145530, 125685, 110250, 110250, 88200, 88200, 74970, 61740,
+            61740, 55125, 48510, 44100, 37485, 31311, 30870, 27562, 27562,
+            22050, 18522, 17640, 15435, 14112, 13230, 11025, 9261, 9261, 7717,
+            6615, 6615, 5512, 5512, 4410, 3969, 3969, 3439, 2866, 2690, 2249,
+            1984, 1896, 1808, 1411, 1367, 1234, 1146, 926, 837, 837, 705,
+            573, 573, 529, 441, 441
+        };
+        int staticrate = eg.rates[eg.ix] + eg.rate_scaling;
+        if (staticrate > 99) staticrate = 99;
+        if (staticrate < 0) staticrate = 0;
+        eg.staticcount = staticrate < 77 ? statics[staticrate] : 20 * (99 - staticrate);
+        if (staticrate < 77 && eg.ix == 0 && newlevel == 0) {
+            eg.staticcount /= 20;  // attack is scaled faster
+        }
+        // Dexed rescales by sr_multiplier here; this engine is fixed at
+        // SAMPLE_RATE, and the table is already in samples at 44100.
+        eg.staticcount = (int32_t)(((int64_t)eg.staticcount * 44100) / SAMPLE_RATE);
     } else {
-        new_log2 = log2_start;
-        reached = true;
+        eg.staticcount = 0;
     }
 
-    if (reached) {
-        new_log2 = target;
-        if (eg.stage == EG_STAGE_4) {
-            eg.stage = EG_IDLE;          // release complete -- the only way to reach EG_IDLE
-        } else if (eg.stage != EG_STAGE_3) {
-            eg.stage = (uint8_t)(eg.stage + 1);  // 1->2 or 2->3; stage 3 holds at its target until note-off
+    // Per EG_DEXED_N samples. Note there is no `step < 1` clamp anywhere in
+    // this file: the smallest possible inc (qrate 0) is 4 << 8 = 1024, which
+    // over the full 15-octave span works out to roughly six minutes -- the
+    // genuinely slow envelopes the old formulation could not express.
+    eg.inc = (4 + (qrate & 3)) << (2 + EG_DEXED_LG_N + (qrate >> 2));
+}
+
+// Power-on / never-triggered state. Distinct from a triggered envelope: `ix`
+// is past the end and `level` is at the floor, so active() is false.
+inline void env_dx_reset(EnvDX &eg) {
+    for (int i = 0; i < 4; i++) { eg.rates[i] = 0; eg.levels[i] = 0; }
+    eg.outlevel = 0;
+    eg.rate_scaling = 0;
+    eg.level = 0;
+    eg.targetlevel = 0;
+    eg.inc = 0;
+    eg.staticcount = 0;
+    eg.ix = 4;
+    eg.rising = false;
+    eg.down = false;
+}
+
+// Dexed's `Env::init()`. Note `level` restarts at 0 (silence) on every
+// note-on, matching both Dexed and the old file's trigger convention.
+inline void env_dx_init(EnvDX &eg, const uint8_t rates[4], const uint8_t levels[4],
+                        int32_t outlevel, int32_t rate_scaling) {
+    for (int i = 0; i < 4; i++) { eg.rates[i] = rates[i]; eg.levels[i] = levels[i]; }
+    eg.outlevel = outlevel;
+    eg.rate_scaling = rate_scaling;
+    eg.level = 0;
+    eg.down = true;
+    env_dx_advance(eg, 0);
+}
+
+// Dexed's `Env::keydown(false)`: jump to the release stage from wherever the
+// envelope currently is.
+inline void env_dx_release(EnvDX &eg) {
+    if (eg.down) {
+        eg.down = false;
+        env_dx_advance(eg, 3);
+    }
+}
+
+// Dexed's `Env::getsample()`, advanced by `n` samples instead of a fixed 64.
+// Returns the level at the END of the block -- the same point Dexed's own
+// return value represents, which fm_core.cc consumes as that block's `gain2`.
+//
+// The two branches are the heart of F3. Rising is an exponential approach
+// toward a fixed ceiling (17 octaves) with a hard jump to `jumptarget` first;
+// falling is a plain linear ramp in the same log domain. They are different
+// curve families, and the old file's single symmetric ramp is what made
+// "instant" attacks take 16 ms.
+inline int32_t env_dx_step_block(EnvDX &eg, uint32_t n) {
+    if (eg.staticcount) {
+        eg.staticcount -= (int32_t)n;
+        if (eg.staticcount <= 0) {
+            eg.staticcount = 0;
+            env_dx_advance(eg, eg.ix + 1);
         }
     }
 
-    eg.current_log2 = new_log2;
-    log2_end = new_log2;
+    if (eg.ix < 3 || (eg.ix < 4 && !eg.down)) {
+        if (eg.staticcount) {
+            // holding -- level does not move this block
+        } else {
+            // Deviation 1: Dexed's `inc` is per-64-samples; scale it to the
+            // real block length. n == 64 reproduces Dexed exactly.
+            int32_t inc_n = (int32_t)(((int64_t)eg.inc * (int64_t)n) >> EG_DEXED_LG_N);
+            if (eg.rising) {
+                const int32_t jumptarget = 1716;
+                if (eg.level < (jumptarget << 16)) eg.level = jumptarget << 16;
+                eg.level += (((17 << 24) - eg.level) >> 24) * inc_n;
+                if (eg.level >= eg.targetlevel) {
+                    eg.level = eg.targetlevel;
+                    env_dx_advance(eg, eg.ix + 1);
+                }
+            } else {
+                eg.level -= inc_n;
+                if (eg.level <= eg.targetlevel) {
+                    eg.level = eg.targetlevel;
+                    env_dx_advance(eg, eg.ix + 1);
+                }
+            }
+        }
+    }
+    return eg.level;
+}
+
+// Note-on `outlevel`, in microsteps -- Dexed's `Dx7Note::init()` composition,
+// in its exact order: scaled output level, plus key level scaling, clamped to
+// 127, shifted into microsteps, plus velocity, floored at 0. The clamp before
+// the shift is load-bearing: a boosting key-scaling curve (+EXP/+LIN) at high
+// depth can otherwise push an operator past the full-scale reference that
+// op.h's FM_GAIN_MAX and F2's overflow bound both assume.
+inline int32_t dx7_note_outlevel(const FmOpParams &p, int midinote, int velocity) {
+    int outlevel = dx7_scaleoutlevel(p.output_level);
+    outlevel += dx7_scale_level(midinote, p.scale_breakpoint, p.scale_left_depth,
+                                 p.scale_right_depth, p.scale_left_curve, p.scale_right_curve);
+    if (outlevel > 127) outlevel = 127;
+    if (outlevel < 0) outlevel = 0;
+    outlevel <<= 5;
+    outlevel += dx7_scale_velocity(velocity, p.vel_sensitivity);
+    return outlevel < 0 ? 0 : outlevel;
 }
