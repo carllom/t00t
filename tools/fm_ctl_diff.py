@@ -305,6 +305,65 @@ def cmp_algorithms(dexed_csv, verbose):
     return False, f"{len(bad)}/{len(rows)} entries differ", detail
 
 
+def cmp_routing(dexed_csv, verbose):
+    """The modulation GRAPH each algorithm decodes to, not the bytes it decodes
+    from.
+
+    `cmp_algorithms` above compares the raw bus-flag bytes and has passed
+    192/192 since F1 -- while `decode_algorithm()` was silently dropping two
+    thirds of the modulation edges in algorithm 22. Identical inputs to a lossy
+    decoder still produce identical inputs. F7 (fm2.md §5.20) found that the
+    expensive way, so the decoder's *output* is now checked too.
+
+    The reference side is Dexed's `FmCore::render` bus behaviour, re-derived
+    here from the same flag bytes: a bus keeps its contents until an operator
+    writes it WITHOUT the add flag, so every operator that reads it in the
+    meantime is modulated by every operator currently in it. That is the one
+    rule the old decoder got wrong (it emptied the bus on first read).
+    """
+    spec = importlib.util.spec_from_file_location("syx2patch", REPO / "tools" / "syx2patch.py")
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["syx2patch"] = mod
+    spec.loader.exec_module(mod)
+
+    def reference_edges(flags):
+        contents = {0: [], 1: [], 2: []}
+        has = {0: True, 1: False, 2: False}
+        edges = set()
+        for op in range(6):
+            f = flags[op]
+            add = bool(f & 0x04)
+            in_bus, out_bus = (f >> 4) & 3, f & 3
+            if in_bus != 0 and has[in_bus]:
+                for src in contents[in_bus]:
+                    edges.add((src, op))
+            if not (add and has[out_bus]):
+                contents[out_bus] = []
+            contents[out_bus].append(op)
+            has[out_bus] = True
+        return edges
+
+    bad = []
+    for alg in range(32):
+        flags = mod.DX7_ALGORITHMS[alg]
+        want = reference_edges(flags)
+        decode = mod.decode_algorithm(flags)
+        got = set()
+        for j, r in enumerate(decode.routing):
+            if r.target != "OUT":
+                got.add((j, r.target))
+            for t in r.extra_targets:
+                got.add((j, t))
+        if got != want:
+            missing = sorted(want - got)
+            extra = sorted(got - want)
+            bad.append((alg + 1, missing, extra))
+    if not bad:
+        return True, "32 algorithms decode to Dexed's exact modulation graph", []
+    detail = [f"alg {a}: missing edges {m}, spurious {e}" for a, m, e in bad[:8]]
+    return False, f"{len(bad)}/32 algorithms decode to the wrong graph", detail
+
+
 # Representative EG configs. Chosen to exercise the shapes real patches use and
 # the ones fm2.md §1.1 predicts are broken, not to be exhaustive.
 EG_CASES = [
@@ -359,6 +418,8 @@ def main():
                                        run(T00T_DUMP, ["--what", what]), args.verbose))
 
     # --- algorithm routing table: exact ---
+    if want("table/routing"):
+        record("table/routing", *cmp_routing(None, args.verbose))
     if want("table/algorithms"):
         record("table/algorithms", *cmp_algorithms(run(DEXED_DUMP, ["--what", "algo"]), args.verbose))
 

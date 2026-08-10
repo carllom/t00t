@@ -157,6 +157,9 @@ class Syx2PatchError(Exception):
 class OpRouting:
     target: object       # 'OUT', or an int 0-5 (bus-order index, DX7 OP6..OP1)
     feedback_capable: bool  # this op is the algorithm's *primary* feedback op
+    # F7: the operators this one ALSO modulates, beyond `target` -- bus-order
+    # indices, empty for all but algorithms 19-25. See decode_algorithm().
+    extra_targets: tuple = ()
 
 
 @dataclass
@@ -229,21 +232,31 @@ def decode_algorithm(flags: List[int]) -> AlgorithmDecode:
     primary_op = primaries[0]
     secondary = [j for j in range(n) if fb_out_bit[j] and not fb_full[j]]
 
-    pending: Dict[int, List[int]] = {1: [], 2: []}
+    # F7 (fm2.md §5.20): a bus is NOT emptied when it is read. Dexed's
+    # `FmCore::render` only ever replaces a bus's contents on a write without
+    # the add flag, so two or three consecutive operators can read the same
+    # modulator -- which is exactly how algorithms 19-25 drive several carriers
+    # from one modulator. Clearing on read (`pending[ib] = []`, what this used
+    # to do) silently kept only the first of those edges, on 25 of the 256
+    # factory ROM voices. The second and later readers become `extra_targets`.
+    contents: Dict[int, List[int]] = {1: [], 2: []}
     target: List[Optional[object]] = [None] * n
+    extra: List[List[int]] = [[] for _ in range(n)]
     for j in range(n):
         ib = inbus[j]
         if ib != 0:
-            for writer in pending[ib]:
-                target[writer] = j
-            pending[ib] = []
+            for writer in contents[ib]:
+                if target[writer] is None:
+                    target[writer] = j
+                else:
+                    extra[writer].append(j)
         ob = outbus[j]
         if ob == 0:
             target[j] = "OUT"
         elif add[j]:
-            pending[ob].append(j)
+            contents[ob].append(j)
         else:
-            pending[ob] = [j]
+            contents[ob] = [j]
 
     for j in range(n):
         if target[j] is None:
@@ -263,7 +276,8 @@ def decode_algorithm(flags: List[int]) -> AlgorithmDecode:
             adj[j].append(primary_op)
         needs_interleaved = _has_cycle(adj)
 
-    routing = [OpRouting(target=target[j], feedback_capable=(j == primary_op)) for j in range(n)]
+    routing = [OpRouting(target=target[j], feedback_capable=(j == primary_op),
+                         extra_targets=tuple(extra[j])) for j in range(n)]
     return AlgorithmDecode(routing=routing, primary_fb_op=primary_op,
                             secondary_fb_ops=secondary, needs_interleaved=needs_interleaved)
 
@@ -325,6 +339,30 @@ def _range_check(value: int, lo: int, hi: int, field_name: str, ctx: str) -> int
     return value
 
 
+# F7 (fm2.md §5.18): the EG rate/level fields are checked against the 7-bit
+# byte range, not the 0-99 range the DX7's front panel can enter.
+#
+# ROM3A voice 19 (TIMPANI) really does ship with OP2 L3 = 127, and the bank's
+# own checksum validates, so this is Yamaha's own data rather than a corrupt
+# read. Both engines consume these fields through functions that are total over
+# 0..127 and agree on the result -- `scaleoutlevel()` is `28 + level` above 19,
+# and rates go through `min(qrate, 63)` -- so 127 is a real, louder-than-panel
+# level, not undefined behaviour. Rejecting it lost a whole voice; clamping it
+# to 99 would have quietly changed the patch's sound (verified: it does).
+#
+# The fail-loud policy is unchanged for every other field. It is relaxed here
+# only where the reference itself is defined over the wider range, and a
+# warning still records that the patch is outside panel range.
+def _range_check_byte(value: int, field_name: str, ctx: str, warnings: List[str]) -> int:
+    _range_check(value, 0, 127, field_name, ctx)
+    if value > 99:
+        warnings.append(
+            f"{ctx}: {field_name}={value} is above the DX7 panel range (0-99) but within the "
+            f"7-bit byte range; passed through, since Dexed's own EG consumes it identically"
+        )
+    return value
+
+
 @dataclass
 class DX7Op:
     # Bus order: index into voice.ops, 0 = OP6 .. 5 = OP1 (see module docstring).
@@ -369,7 +407,7 @@ class DX7Voice:
     transpose: int
 
 
-def unpack_voice(bulk: bytes, voice_idx: int) -> DX7Voice:
+def unpack_voice(bulk: bytes, voice_idx: int, warnings: Optional[List[str]] = None) -> DX7Voice:
     """Bit-for-bit port of Dexed's Cartridge::unpackProgram (Source/
     PluginData.cpp, Apache-2.0) -- the packed-format bit layout it implements
     was cross-checked against the DX7 MIDI Data Format Sheet's own published
@@ -378,13 +416,15 @@ def unpack_voice(bulk: bytes, voice_idx: int) -> DX7Voice:
     to avoid crashing on already-loaded, possibly-corrupt patches), this
     raises Syx2PatchError instead -- fail loud, not silent, on this
     converter's own input path."""
+    if warnings is None:
+        warnings = []
     ctx = f"voice {voice_idx}"
     ops: List[DX7Op] = []
     for j in range(6):
         base = j * 17
         op_ctx = f"{ctx} OP{6 - j}"
-        eg_rate = [_range_check(bulk[base + i] & 0x7F, 0, 99, f"eg_rate{i + 1}", op_ctx) for i in range(4)]
-        eg_level = [_range_check(bulk[base + 4 + i] & 0x7F, 0, 99, f"eg_level{i + 1}", op_ctx) for i in range(4)]
+        eg_rate = [_range_check_byte(bulk[base + i] & 0x7F, f"eg_rate{i + 1}", op_ctx, warnings) for i in range(4)]
+        eg_level = [_range_check_byte(bulk[base + 4 + i] & 0x7F, f"eg_level{i + 1}", op_ctx, warnings) for i in range(4)]
         bp = _range_check(bulk[base + 8] & 0x7F, 0, 99, "break_point", op_ctx)
         ld = _range_check(bulk[base + 9] & 0x7F, 0, 99, "scale_left_depth", op_ctx)
         rd = _range_check(bulk[base + 10] & 0x7F, 0, 99, "scale_right_depth", op_ctx)
@@ -401,7 +441,13 @@ def unpack_voice(bulk: bytes, voice_idx: int) -> DX7Voice:
         fcoarse_mode = bulk[base + 15] & 0x3F
         mode = fcoarse_mode & 1
         fcoarse = _range_check((fcoarse_mode >> 1) & 0x1F, 0, 31, "freq_coarse", op_ctx)
-        ffine = _range_check(bulk[base + 16] & 0x7F, 0, 99, "freq_fine", op_ctx)
+        # F7: same 7-bit widening as the EG fields above. ROM3B voice 14
+        # ("60-S ORGAN") ships freq_fine = 100 on a coarse-0 operator, in a bank
+        # whose checksum validates, and both engines compute the ratio
+        # arithmetically (`coarse_ratio * (1 + fine/100)`, total over the whole
+        # byte range) rather than looking it up -- so 100 is simply "ratio 0.5
+        # doubled", i.e. 1.0.
+        ffine = _range_check_byte(bulk[base + 16] & 0x7F, "freq_fine", op_ctx, warnings)
         ops.append(DX7Op(
             eg_rate=eg_rate, eg_level=eg_level, output_level=ol, key_vel_sens=kvs,
             osc_mode=mode, freq_coarse=fcoarse, freq_fine=ffine,
@@ -497,6 +543,7 @@ class FmOpOut:
     fixed_freq: bool
     detune_offset: int
     mod_target: int  # 0-5, or FM_TARGET_OUT
+    extra_target_mask: int  # F7: bitmask of ADDITIONAL operators this one modulates
     feedback_level: int  # 0-7, real DX7 depth on the algorithm's primary feedback op, else 0
     output_level: int
     vel_sensitivity: int
@@ -586,13 +633,17 @@ def convert_voice(idx: int, voice: DX7Voice, warnings: List[str]) -> Optional[Fm
         eg_level = list(op.eg_level)
 
         mod_target = FM_TARGET_OUT if r.target == "OUT" else (5 - r.target)
+        extra_target_mask = 0
+        for t in r.extra_targets:
+            extra_target_mask |= 1 << (5 - t)
         fixed_freq = (op.osc_mode == 1)
         ops_out[engine_idx] = FmOpOut(
             ratio=1.0 if fixed_freq else op_ratio(op),
             fixed_hz=op_fixed_hz(op) if fixed_freq else 0.0,
             fixed_freq=fixed_freq,
             detune_offset=op_detune_offset(op),
-            mod_target=mod_target, feedback_level=feedback_level,
+            mod_target=mod_target, extra_target_mask=extra_target_mask,
+            feedback_level=feedback_level,
             output_level=op.output_level, vel_sensitivity=op.key_vel_sens,
             eg_rate=op.eg_rate, eg_level=eg_level,
             scale_breakpoint=op.break_point, scale_left_depth=op.scale_left_depth,
@@ -678,7 +729,7 @@ def render_header(patches: List[FmPatchOut], syx_path: str) -> str:
             fixed = "true" if op.fixed_freq else "false"
             lines.append(
                 f"        {{ {op.ratio:.6f}f, {op.fixed_hz:.6f}f, {fixed}, {op.detune_offset}, "
-                f"{mod_target}, {op.feedback_level}, "
+                f"{mod_target}, {op.extra_target_mask}, {op.feedback_level}, "
                 f"{op.output_level}, {op.vel_sensitivity}, {{ {eg_r} }}, {{ {eg_l} }}, "
                 f"{op.scale_breakpoint}, {op.scale_left_depth}, {op.scale_right_depth}, "
                 f"{op.scale_left_curve}, {op.scale_right_curve}, {op.rate_scaling}, "
@@ -730,7 +781,7 @@ def _convert_all(syx_path: str) -> tuple[List[FmPatchOut], List[str], int]:
     patches: List[FmPatchOut] = []
     skipped = 0
     for idx, raw in enumerate(voices_raw):
-        voice = unpack_voice(raw, idx)
+        voice = unpack_voice(raw, idx, warnings)
         out = convert_voice(idx, voice, warnings)
         if out is None:
             skipped += 1
