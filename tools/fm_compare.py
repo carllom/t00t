@@ -230,6 +230,19 @@ def compare(ref_path, test_path, note, gate_s, label=""):
     attack_harm_mae = float(np.abs(atk_r - atk_t).mean())
     active = coactive
 
+    # How much of the reference's spectrum the harmonic tracker actually sees.
+    #
+    # Every metric derived from H[k,t] assumes the sound's energy sits at
+    # integer multiples of f0. Plenty of real DX7 patches are inharmonic on
+    # purpose -- non-integer operator ratios (MARIMBA 4.52, TIMPANI 0.78) or
+    # fixed-frequency operators (STEEL DRUM at 398 Hz) -- and for those the
+    # tracked bins are mostly floor, so the centroid is computed over noise and
+    # swings wildly while the tracked content itself matches almost exactly.
+    # Reporting coverage is what stops that from reading as four broken
+    # patches: below ~0.3 the centroid should be ignored, and harmonic MAE is
+    # the number that still means something.
+    coverage = float(h_r[:, coactive].sum() / max(mag_r[coactive].sum(), 1e-30))
+
     # Spectral centroid over the tracked harmonics, in harmonic number -- a
     # scale-free "how bright" that maps directly onto "thin"/"sine-like".
     idx = np.arange(1, h_r.shape[0] + 1)[:, None]
@@ -261,6 +274,7 @@ def compare(ref_path, test_path, note, gate_s, label=""):
         centroid_ref=float(cent_r.mean()),
         centroid_test=float(cent_t.mean()),
         centroid_ratio=float(cent_t.mean() / max(cent_r.mean(), 1e-30)),
+        harmonic_coverage=coverage,
         lsd_db=lsd,
         env_mae_db=env_mae,
         ref_env=fr, test_env=ft,
@@ -278,8 +292,10 @@ def print_report(r, verbose=True):
     print(f"  harmonic MAE       {r['harmonic_mae_db']:.1f} dB   p95 {r['harmonic_p95_db']:.1f} dB"
           f"   (over {r['coactive_frac'] * 100:.0f}% of the reference's sounding frames)")
     print(f"  attack timbre MAE  {r['attack_harmonic_mae_db']:.1f} dB   (first 100 ms, envelope-independent)")
+    cov = r['harmonic_coverage']
     print(f"  spectral centroid  ref {r['centroid_ref']:.2f} -> test {r['centroid_test']:.2f} "
-          f"(x{r['centroid_ratio']:.2f}) harmonics")
+          f"(x{r['centroid_ratio']:.2f}) harmonics"
+          + ("" if cov >= 0.3 else f"   [IGNORE: only {cov * 100:.0f}% of the reference's energy is harmonic]"))
     print(f"  log-spectral dist  {r['lsd_db']:.1f} dB")
     print(f"  envelope MAE       {r['env_mae_db']:.1f} dB")
     a, b = r["ref_env"], r["test_env"]
@@ -352,14 +368,30 @@ def main():
 
     if len(results) > 1:
         print("\n=== summary ===")
-        print(f"{'patch':<16} {'harm MAE':>9} {'atkMAE':>7} {'env MAE':>8} {'cent x':>7} {'level':>8}")
+        print(f"{'patch':<16} {'harm MAE':>9} {'atkMAE':>7} {'env MAE':>8} {'cent x':>7} {'harm%':>6} {'level':>8}")
         for r in results:
+            cov = r["harmonic_coverage"]
+            # A trailing "*" marks a patch whose spectrum is mostly not at
+            # multiples of f0 (inharmonic ratios or fixed-frequency operators),
+            # where the centroid is computed over near-floor bins and means
+            # nothing. Read harm MAE on those rows instead.
+            centroid = f"{r['centroid_ratio']:.2f}" + ("" if cov >= 0.3 else "*")
             print(f"{r['label']:<16} {r['harmonic_mae_db']:>9.1f} {r['attack_harmonic_mae_db']:>7.1f} "
-                  f"{r['env_mae_db']:>8.1f} {r['centroid_ratio']:>7.2f} "
-                  f"{fmt(r['level_gap_db'], '+.1f'):>8}")
-        agg = lambda k: sum(r[k] for r in results) / len(results)
+                  f"{r['env_mae_db']:>8.1f} {centroid:>7} "
+                  f"{cov * 100:>5.0f}% {fmt(r['level_gap_db'], '+.1f'):>8}")
+
+        agg = lambda k, rs=results: sum(r[k] for r in rs) / len(rs)
         print(f"{'MEAN':<16} {agg('harmonic_mae_db'):>9.1f} {agg('attack_harmonic_mae_db'):>7.1f} "
-              f"{agg('env_mae_db'):>8.1f} {agg('centroid_ratio'):>7.2f}")
+              f"{agg('env_mae_db'):>8.1f}")
+        # The mean centroid is taken only over patches where it applies --
+        # averaging in a patch whose value is noise makes the aggregate noise too.
+        harmonic = [r for r in results if r["harmonic_coverage"] >= 0.3]
+        if harmonic:
+            print(f"{'MEAN (harmonic)':<16} {agg('harmonic_mae_db', harmonic):>9.1f} "
+                  f"{agg('attack_harmonic_mae_db', harmonic):>7.1f} "
+                  f"{agg('env_mae_db', harmonic):>8.1f} "
+                  f"{agg('centroid_ratio', harmonic):>7.2f}   "
+                  f"({len(harmonic)}/{len(results)} patches)")
 
     if args.json:
         Path(args.json).write_text(json.dumps(results, indent=2))
