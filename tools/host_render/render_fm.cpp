@@ -522,8 +522,11 @@ static bool run_pitch_eg_check() {
     FmLfo lfo2;
     uint32_t note_inc = fm_phase_inc(220.0f);
     fm_voice_note_on(ops, patch, note_inc, 32767, /*midinote=*/57, &peg2, &lfo2);
-    uint32_t base_inc_op1 = fm_op_inc(patch.op[1], note_inc);
-    uint32_t base_inc_op0 = fm_op_inc(patch.op[0], note_inc);
+    // F5: the operator's neutral-pitch increment is resolved at note-on into
+    // FmOp::base_inc, so read it from there rather than recomputing -- which
+    // also checks that note-on actually stored it.
+    uint32_t base_inc_op1 = ops[1].base_inc;
+    uint32_t base_inc_op0 = ops[0].base_inc;
     fm_voice_step_pitch_and_mod(ops, patch, peg2, lfo2, note_inc, FM_BLOCK, /*mod_wheel=*/32767);
     bool op1_moved_ok = ops[1].inc != base_inc_op1;
     bool op0_fixed_ok = ops[0].inc == base_inc_op0;

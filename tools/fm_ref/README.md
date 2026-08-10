@@ -59,7 +59,14 @@ make -C ../host_render -f Makefile.fm t00t_ctl_dump
 .venv/bin/python ../fm_ctl_diff.py --only eg --verbose
 ```
 
-Every test defines a shared domain both engines are converted into — see
+Operator frequency has its own suite, because it cannot be a table diff:
+
+```bash
+.venv/bin/python make_freq_bank.py       # once, or after changing the sweeps
+.venv/bin/python ../fm_freq_diff.py
+```
+
+Every table test defines a shared domain both engines are converted into — see
 `dexed_dump.cpp`'s header comment, which is the authority on those definitions.
 Change one and you must change both sides together.
 
@@ -87,9 +94,11 @@ Never analyse those — the per-file normalisation destroys the level informatio
 | `shim/libMTSClient.h` | no-op MTS-ESP client, so the microtuning branch is never taken. |
 | `dexed_render.cpp` | the reference renderer. |
 | `wav32.h` | float32 (analysis) and normalised PCM16 (listening) WAV writers, shared with the t00t side. |
+| `make_freq_bank.py` | synthetic banks sweeping coarse/fine/detune/fixed-frequency, for F5's frequency test. |
 | `sine_table_ab.py` | the §3.2 interpolation check — what the non-interpolated table costs across a modulation-index sweep. |
 | `dexed_dump.cpp` | control-plane trajectories as CSV (F1): EG, pitch EG, LFO, the integer tables, the algorithm table. |
 | `../fm_compare.py` | the signal-plane scorecard. |
 | `../fm_ctl_diff.py` | the control-plane conformance suite (F1). |
+| `../fm_freq_diff.py` | operator frequency conformance in cents (F5) -- the one test that must render, since Dexed's `osc_freq()` is private. |
 | `../host_render/t00t_ctl_dump.cpp` | the t00t side of the control-plane dump. |
 | `../host_render/render_fm_patch.cpp` | the t00t side, same CLI. |

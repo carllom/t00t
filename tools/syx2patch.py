@@ -42,8 +42,10 @@ scaling (`dx7_scale_rate`, applied per stage transition) -- both need the
 played MIDI note, which patch.h data alone never has, so these are baked as
 per-operator *parameters* (breakpoint/depths/curves, RS) rather than
 resolved numbers, exactly like output_level/eg_rate already were. Detune is
-wired via `op_detune_cents()` below, a fixed +-7-cents approximation (real
-DX7 detune scales with the note's own absolute frequency -- replicating
+wired via `op_detune_offset()` below, which passes the raw DX7 value through
+for op.h to resolve at note-on (real DX7 detune scales with the note's own
+absolute frequency in ratio mode, and is a separate sharpen-only rule in
+fixed mode -- replicating
 that exactly needs the full pitch pipeline this note-independent converter
 doesn't have; small enough that "audible as beating" still holds). Fixed-
 frequency mode is wired via `op_fixed_hz()` (a closed-form Hz formula
@@ -470,16 +472,22 @@ def op_fixed_hz(op: DX7Op) -> float:
     return 10.0 ** (((op.freq_coarse & 3) * 100 + op.freq_fine) / 100.0)
 
 
-def op_detune_cents(op: DX7Op) -> float:
-    # Real DX7 detune (Dexed's osc_freq() ratio-mode branch) scales with the
-    # note's own absolute frequency, not a fixed cents-per-unit -- exactly
-    # replicating that needs the full pitch pipeline's absolute logfreq
-    # value, which this converter (a note-independent, note-on-time-only
-    # baking step) doesn't have. Approximated instead as a fixed +-7 cents
-    # at the detune extremes (0-14, offset -7) -- small enough that "audible
-    # as beating between two operators at the same ratio" (this engine's own
-    # acceptance bar) holds regardless of the exact curve shape.
-    return float(op.detune - 7)
+def op_detune_offset(op: DX7Op) -> int:
+    """Raw DX7 detune, offset so 0 is neutral: byte 0-14 -> -7..+7.
+
+    Deliberately NOT converted to cents here. This converter is
+    note-independent by design, and real DX7 detune is not: in ratio mode it
+    scales with the note's own log frequency (2.46 cents/unit at C1, 0.68 at
+    C6 -- Dexed's `detuneRatio`), and in fixed mode it is a different,
+    sharpen-only rule. Both are applied at note-on by op.h's
+    fm_op_base_inc(), which is the only place that knows the note.
+
+    The previous flat +-7-cents approximation was measured (F5,
+    tools/fm_freq_diff.py) at up to 11.9 cents of error at C1 -- the wrong
+    beating rate between detuned operators, which is the entire point of the
+    parameter.
+    """
+    return op.detune - 7
 
 
 @dataclass
@@ -487,7 +495,7 @@ class FmOpOut:
     ratio: float
     fixed_hz: float
     fixed_freq: bool
-    detune_cents: float
+    detune_offset: int
     mod_target: int  # 0-5, or FM_TARGET_OUT
     feedback_level: int  # 0-7, real DX7 depth on the algorithm's primary feedback op, else 0
     output_level: int
@@ -500,6 +508,7 @@ class FmOpOut:
     scale_left_curve: int
     scale_right_curve: int
     rate_scaling: int
+    am_sensitivity: int
 
 
 @dataclass
@@ -571,13 +580,13 @@ def convert_voice(idx: int, voice: DX7Voice, warnings: List[str]) -> Optional[Fm
             ratio=1.0 if fixed_freq else op_ratio(op),
             fixed_hz=op_fixed_hz(op) if fixed_freq else 0.0,
             fixed_freq=fixed_freq,
-            detune_cents=0.0 if fixed_freq else op_detune_cents(op),
+            detune_offset=op_detune_offset(op),
             mod_target=mod_target, feedback_level=feedback_level,
             output_level=op.output_level, vel_sensitivity=op.key_vel_sens,
             eg_rate=op.eg_rate, eg_level=eg_level,
             scale_breakpoint=op.break_point, scale_left_depth=op.scale_left_depth,
             scale_right_depth=op.scale_right_depth, scale_left_curve=op.scale_left_curve,
-            scale_right_curve=op.scale_right_curve, rate_scaling=op.rate_scale,
+            scale_right_curve=op.scale_right_curve, rate_scaling=op.rate_scale, am_sensitivity=op.amp_mod_sens,
         )
 
     if decode.needs_interleaved:
@@ -625,7 +634,7 @@ def render_header(patches: List[FmPatchOut], syx_path: str) -> str:
         "// velocity sensitivity, coarse/fine ratio, feedback depth (0-7), algorithm 4/6",
         "// interleaved-feedback detection (collapsed to single self-feedback, see the",
         "// per-patch comment below where it applies). v2 (#48): key level scaling,",
-        "// rate scaling, detune (approximated, see op_detune_cents()), and",
+        "// rate scaling, detune (raw DX7 offset -- op.h resolves it per note), and",
         "// fixed-frequency mode (real Hz, no patches skipped anymore) are now wired",
         "// through too. v3 (#49): the voice-wide pitch EG and LFO (rate/delay/PMD/AMD/",
         "// waveform/key-sync/PMS) are copied straight through as raw DX7 bytes, same",
@@ -657,11 +666,12 @@ def render_header(patches: List[FmPatchOut], syx_path: str) -> str:
             mod_target = "FM_TARGET_OUT" if op.mod_target == FM_TARGET_OUT else str(op.mod_target)
             fixed = "true" if op.fixed_freq else "false"
             lines.append(
-                f"        {{ {op.ratio:.6f}f, {op.fixed_hz:.6f}f, {fixed}, {op.detune_cents:.3f}f, "
+                f"        {{ {op.ratio:.6f}f, {op.fixed_hz:.6f}f, {fixed}, {op.detune_offset}, "
                 f"{mod_target}, {op.feedback_level}, "
                 f"{op.output_level}, {op.vel_sensitivity}, {{ {eg_r} }}, {{ {eg_l} }}, "
                 f"{op.scale_breakpoint}, {op.scale_left_depth}, {op.scale_right_depth}, "
-                f"{op.scale_left_curve}, {op.scale_right_curve}, {op.rate_scaling} }},"
+                f"{op.scale_left_curve}, {op.scale_right_curve}, {op.rate_scaling}, "
+                f"{op.am_sensitivity} }},"
             )
         peg_r = ", ".join(str(v) for v in p.pitch_eg.rate)
         peg_l = ", ".join(str(v) for v in p.pitch_eg.level)

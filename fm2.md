@@ -203,7 +203,7 @@ low. Without this split the F0 baseline's spectral numbers were pure envelope ar
 
 Output a per-patch scorecard across a whole bank, plus an aggregate.
 
-**F1 · `tools/fm_ctl_diff/`** — the exact control-plane tests. Dexed dumps CSV
+**F1 · `tools/fm_ctl_diff.py`** — the exact control-plane tests. Dexed dumps CSV
 trajectories; t00t dumps its equivalents; diff with explicit tolerances (exact where t00t
 ports verbatim, ≤1 LSB where a Q-format conversion is involved). Coverage: EG level
 trajectory for all 100 rates × representative level sets; `scaleoutlevel`; `ScaleRate` /
@@ -248,7 +248,7 @@ Eight issues, each with a machine-checkable gate. The ordering principle is the 
 | **F2** | **Met (level/overflow), §5.6.** **Fixed-point contract.** Delete `level`, `FM_OUT_SHIFT_CARRIER`, `FM_OUT_SHIFT_MODULATOR`, `FM_MOD_INPUT_SHIFT`, and both `*_LEVEL_REF`s. Re-derive `op.h` + `patch.h` + `syx2patch.py`'s emit half around *unity gain = one full cycle of phase deviation*. Carriers and modulators share one scale; the carrier attenuation happens once, at the voice mix. | Level gap collapses to a few dB across the bank (met: -0.4..-6.2 dB on 27/32, the rest slow-attack patches F3 owns). No int32 overflow at max level on any ROM1A patch, proved by bound not sample (met: 1.42 bits headroom). **The spectral-centroid criterion originally written here was moved to F3** -- brightness is modulator level over time, so it cannot be judged while the envelopes are broken. |
 | **F3** | **Met, §5.7-5.8.** **`EnvDX` rewrite.** Exponential-approach rising stage with the 1716 jump target, linear falling, `advance()`'s real level+TL composition (`(scaleoutlevel(L)>>1)<<6 + outlevel − 4256`, min-16 clamp), the real rate derivation, `staticcount` handling for slow rates, and remove the `step<1→1` clamp. | F1's six `eg/*` cases within tolerance. F0 envelope metrics (time-to-peak, T60) within 10% on E.PIANO 1 and TUB BELLS. **Spectral centroid** (moved from F2) approaches 1.0× on the bright patches. The four slow-attack level outliers (§5.6) close at a 2 s gate. |
 | **F4** | **Met, §5.9-5.10.** Feedback `>>(fb_shift+1)` fix; exact conformance test of all 32 algorithms against Dexed's table. Decide algorithms 4 and 6 (old X1/#54). | F1 routing table exact (met since F1: 192/192). Scorecard green on the feedback-heavy patches (met: SYN-LEAD 1 24.3 → 0.6 dB, ORCH-CHIME 18.2 → 1.3 dB). Algorithms 4/6 resolved as **not needed** — Dexed does not implement the second loop either. |
-| **F5** | Key level scaling, rate scaling, velocity, detune, fixed-frequency — re-verified against F1 rather than re-derived by ear. | F1 exact for all four. |
+| **F5** | **Met, §5.11-5.13.** Key level scaling, rate scaling, velocity, detune, fixed-frequency. | F1 exact for key/rate/velocity (already met). New `tools/fm_freq_diff.py` covers detune + fixed-frequency, which cannot be table-diffed: **6/6, worst 0.18 cents** (was 11.90). Key scaling verified across five octaves. |
 | **F6** | LFO + pitch EG re-verification against `lfo.cc` / `pitchenv.cc`. | F1 exact; scorecard green on vibrato-heavy patches. |
 | **F7** | **Full-bank regression + first hardware checkpoint.** All four ROM banks × several notes and velocities through the scorecard. Commit the resulting thresholds as a checked-in file. *Then* flash and listen — once. | Aggregate score under threshold; your listening test; re-measure c/f/voice (F3 changes the control-rate cost materially). |
 | **F8** | Performance retune → final `MAX_VOICES`. | Measured, per `engine.md` convention. |
@@ -636,6 +636,109 @@ Also found while sweeping the banks: `syx2patch.py` refuses ROM3A voice 19 with
 deliberate fail-loud policy meeting a genuinely out-of-spec byte in the published dump
 (Dexed's own `normparm` clamps instead). Worth a decision before F7's full-bank regression:
 clamp with a warning, or skip the voice.
+
+### 5.11 F5 — frequency, key scaling, and two dropped fields
+
+Key level scaling, rate scaling and velocity already passed F1 as exact table
+diffs (55040 / 1024 / 1024 rows), so F5's real work was the piece deferred out of
+F1: **detune and fixed-frequency**, which cannot be table-diffed because Dexed's
+`Dx7Note::osc_freq()` is private.
+
+**The test.** `tools/fm_ref/make_freq_bank.py` emits synthetic 32-voice banks whose
+every voice is a single audible carrier on algorithm 32 — a bare sine whose frequency
+*is* the thing under test. `tools/fm_freq_diff.py` renders both engines and compares
+the spectral peak in cents. Both sides consume the bank the same way a factory ROM is
+consumed, so this covers `syx2patch.py`'s conversion as much as the engine. The
+standard stays exact; only the method differs from F1's table diffs.
+
+Run before touching anything, it found what §1's reading of `osc_freq()` predicted:
+
+| test | before | after |
+|---|---|---|
+| `freq/coarse@n48` | 0.08 cents worst | 0.08 |
+| `freq/fine@n48` | 0.04 | 0.04 |
+| `freq/detune@n24` | **11.90** | **0.18** |
+| `freq/detune@n48` | 3.93 | 0.03 |
+| `freq/detune@n84` | 2.26 | 0.01 |
+| `freq/fixed@n48` | **6.68** | **0.10** |
+
+Coarse and fine were already exact (`coarsemul[]` is precisely the 0.5-or-coarse
+ratio in log form — checked against the table). The two failures were both detune:
+
+- **Ratio-mode detune is note-dependent and was being baked flat.** Dexed's
+  `detuneRatio = 0.0209 * exp(-0.396 * log2(f_note)) / 7` makes one unit of detune
+  worth 2.46 cents at C1 falling to 0.68 at C6; `syx2patch.py` baked a flat 1.0
+  cents/unit at conversion time, which is 11.9 cents out at C1. Detune exists to set
+  the *beating rate* between operators sharing a ratio, so getting it wrong by a
+  quarter-semitone changes exactly the thing the parameter is for.
+- **Fixed-mode detune was dropped entirely.** Fixed operators use a different,
+  sharpen-only rule (`detune > 7 ? 13457 * (detune - 7) : 0`, 0.962 cents/unit),
+  worth up to 6.7 cents. The converter forced it to zero.
+
+**The fix is structural, not a constant.** `FmOpParams::detune_cents` (float, baked)
+became `detune_offset` (int8, the raw DX7 value minus 7), because a note-independent
+converter *cannot* resolve a note-dependent parameter — that was the actual defect.
+op.h's new `fm_op_base_inc()` applies both rules at note-on. While there, the
+operator's whole neutral-pitch increment (ratio × detune, or the fixed frequency) is
+now resolved once at note-on into `FmOp::base_inc`, so the per-block path is a single
+multiply by the pitch bend/EG/LFO ratio instead of re-deriving ratio and detune every
+block — slightly *cheaper* than before, not more expensive.
+
+### 5.12 Key scaling, verified across the keyboard
+
+Key level scaling and rate scaling only manifest *across notes*, and every scorecard
+so far had been run at C3 alone. ROM1A × 32, means over the patches where the
+harmonic metric applies:
+
+| note | harmonic MAE | attack timbre | envelope MAE | centroid |
+|---|---|---|---|---|
+| 24 (C1) | 1.2 dB | 1.6 dB | 1.1 dB | 1.07× |
+| 36 (C2) | 1.0 | 1.8 | 0.6 | 1.10× |
+| 48 (C3) | 0.8 | 1.9 | 0.6 | 1.16× |
+| 60 (C4) | 0.7 | 1.6 | 0.5 | 1.22× |
+| 72 (C5) | 0.9 | 1.8 | 0.5 | 1.30× |
+
+Flat across five octaves, which is the statement key scaling needed.
+
+The detune fix also cleared most of what F4 left open. I wrote then that VIBE 1 and
+the two CLAVs "should not be assumed to fall out of F5" — they largely did, and the
+reason is obvious in hindsight: those are detuned-pair patches, and wrong detune is
+wrong beating, which shows up in both the spectrum and the envelope. VIBE 1's envelope
+MAE went 10.3 → 4.0 dB, CLAV 1's harmonic error 4.5 → 0.4 dB, PIANO 3 2.7 → 0.1 dB.
+Bank-wide at C3: harmonic MAE 1.9 → 1.4 dB, envelope MAE 1.9 → 1.1 dB.
+
+### 5.13 Two fields that were never emitted
+
+Chasing TRAIN — F4's worst patch and its nominated fixed-frequency canary — turned up
+something unrelated to frequency. TRAIN is driven by LFO tremolo (`amd` 99, AMS 3),
+and rendering it with the mod wheel at 0 and at 127 produced **bit-identical output**.
+
+`amp_mod_sens` was parsed from the sysex and present in `FmOpParams`, but had never
+been carried into `syx2patch.py`'s output struct or its emitter — since #49. A C++
+aggregate initialiser with one too few members simply zero-fills the rest, silently,
+so **AMS was 0 for every converted patch and LFO amplitude modulation was dead
+engine-wide.** Fixed; verified live (mod wheel now changes TRAIN's output by 0.5 full
+scale).
+
+The durable part is the guard: `test_every_op_field_is_emitted` renders a header and
+counts the emitted values per operator against `FmOpOut`'s field count. Verified to
+fail correctly — dropping `am_sensitivity` again reports *"16 values emitted per
+operator but FmOpOut has 17 fields"*. This is the one bug class the whole
+Dexed-comparison approach is blind to: a parameter that never reaches the engine looks
+identical to a parameter the engine handles badly, and no amount of spectral scoring
+distinguishes them.
+
+**TRAIN itself is still 14.7 dB / 16.1 dB and is now firmly F6's.** With AMS live, its
+tremolo runs on LFO waveform 0 (triangle) — which F1 measured as exactly half a cycle
+out of phase, i.e. inverted. Inverted tremolo at `amd` 99 is precisely a large envelope
+error. BRASS 1 and BRASS 2 (centroid 0.71× and 0.79×) use LFO pitch mod on waveform 4
+(sine), inverted the same way. F6 should move all three; if it does not, they need
+their own investigation.
+
+Regressions: F1 19/24 unchanged, frequency 6/6, overflow bound holds, converter tests
+21/21, legacy host suite ALL PASS (it needed a one-line update for the `fm_op_inc` →
+`base_inc` rename). Device build clean, 48 `smlawb`, flash **54,492 bytes — 720 fewer
+than F4**, since resolving ratio/detune at note-on removed work from the block path.
 
 ---
 

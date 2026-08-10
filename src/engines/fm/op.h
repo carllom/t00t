@@ -50,6 +50,11 @@ static constexpr uint32_t FM_BLOCK = T00T_FM_BLOCK;
 struct FmOp {
     uint32_t phase;
     uint32_t inc;
+    // F5: the operator's increment at neutral pitch, resolved once at note-on
+    // (fm_op_base_inc). Ratio, detune and fixed-frequency all fold into it
+    // there, so the per-block path is a single multiply by the pitch
+    // bend/EG/LFO ratio instead of re-deriving them every block.
+    uint32_t base_inc;
     int32_t  gain;
     int32_t  gain_step;    // per-sample delta for this block, from EnvDX (#45, env_dx.h)
     const int32_t *in;     // modulation bus, or fm_zero_bus for an unmodulated operator
@@ -244,13 +249,53 @@ inline void fm_voice_render_block(FmOp ops[FM_NUM_OPS], const FmRouting &r,
     }
 }
 
-// Q32 phase increment for one operator (fm.md §5.6: "Coarse/fine ratio,
-// detune ... fixed-frequency mode -> the Q32 increment"), from the note's
-// own (already bend-scaled) increment. `exp2f` only runs for a nonzero
-// detune -- the common case (0 cents) skips it.
-inline uint32_t fm_op_inc(const FmOpParams &p, uint32_t note_inc) {
-    if (p.fixed_freq) return fm_phase_inc(p.fixed_hz);
-    float detune_ratio = (p.detune_cents != 0.0f) ? exp2f(p.detune_cents / 1200.0f) : 1.0f;
+// How many cents one unit of DX7 detune is worth on a given note, in ratio
+// mode -- Dexed's `Dx7Note::osc_freq()`:
+//
+//     detuneRatio = 0.0209 * exp(-0.396 * log2(f_note)) / 7
+//     logfreq    += detuneRatio * logfreq * (detune - 7)
+//
+// which, since `logfreq` is Q24 log2 of the note's frequency, is a cents
+// offset of `detuneRatio * log2(f_note) * 1200` per unit.
+//
+// The load-bearing word is *note*. Real DX7 detune is not a fixed cents
+// offset: it falls off as the note rises, from 2.46 cents/unit at C1 to
+// 0.68 at C6. F5 measured what assuming otherwise cost -- tools/fm_freq_diff.py
+// found up to 11.9 cents of error at C1 against a flat 1.0 cents/unit, which
+// is a quarter of the way to a semitone and audible as the wrong beating rate
+// between two operators sharing a ratio (the entire point of detune).
+//
+// Depends only on the note, so it is computed once per note-on and shared by
+// all six operators.
+inline float dx7_detune_cents_per_unit(uint8_t midinote) {
+    // Q24 log2(frequency), same base as shim/tuning.h's standard tuning:
+    // 50857777 / 2^24 is log2 of MIDI note 0 (8.1758 Hz).
+    const float log2_f = (float)midinote / 12.0f + (50857777.0f / 16777216.0f);
+    const float detune_ratio = 0.0209f * expf(-0.396f * log2_f) / 7.0f;
+    return detune_ratio * log2_f * 1200.0f;
+}
+
+// Fixed-frequency mode uses a different, much simpler detune rule that only
+// ever sharpens (Dexed: `logfreq += detune > 7 ? 13457 * (detune - 7) : 0`).
+// 13457 / 2^24 * 1200 = 0.9624 cents per unit, note-independent. t00t used to
+// drop fixed-mode detune entirely, worth up to 6.7 cents (measured, F5).
+static constexpr float DX7_FIXED_DETUNE_CENTS_PER_UNIT = 0.96244f;
+
+// The operator's Q32 phase increment at neutral pitch -- no bend, no pitch EG,
+// no LFO. Resolved once at note-on into FmOp::base_inc; the per-block path
+// only scales it (fm_voice_step_pitch_and_mod), so the `exp2f`/`expf` here
+// never runs in the render loop.
+inline uint32_t fm_op_base_inc(const FmOpParams &p, uint32_t note_inc,
+                                float detune_cents_per_unit) {
+    if (p.fixed_freq) {
+        float cents = (p.detune_offset > 0)
+            ? (float)p.detune_offset * DX7_FIXED_DETUNE_CENTS_PER_UNIT
+            : 0.0f;
+        float hz = (cents != 0.0f) ? p.fixed_hz * exp2f(cents / 1200.0f) : p.fixed_hz;
+        return fm_phase_inc(hz);
+    }
+    float cents = (float)p.detune_offset * detune_cents_per_unit;
+    float detune_ratio = (cents != 0.0f) ? exp2f(cents / 1200.0f) : 1.0f;
     return (uint32_t)((float)note_inc * p.ratio * detune_ratio);
 }
 
@@ -269,11 +314,13 @@ inline uint32_t fm_op_inc(const FmOpParams &p, uint32_t note_inc) {
 inline void fm_voice_note_on(FmOp ops[FM_NUM_OPS], const FmPatch &patch,
                               uint32_t note_inc, int16_t amplitude, uint8_t midinote,
                               FmPitchEg *peg = nullptr, FmLfo *lfo = nullptr) {
+    const float detune_scale = dx7_detune_cents_per_unit(midinote);
     for (uint8_t i = 0; i < FM_NUM_OPS; i++) {
         const FmOpParams &p = patch.op[i];
         FmOp &op = ops[i];
         op.phase = 0;
-        op.inc = fm_op_inc(p, note_inc);
+        op.base_inc = fm_op_base_inc(p, note_inc, detune_scale);
+        op.inc = op.base_inc;
         op.gain = 0;
         op.gain_step = 0;
         op.fb1 = 0;
@@ -361,9 +408,13 @@ inline float fm_voice_step_pitch_and_mod(FmOp ops[FM_NUM_OPS], const FmPatch &pa
     float total_cents = peg_cents + lfo_pitch_cents;
     float pitch_ratio = (total_cents != 0.0f) ? exp2f(total_cents * (1.0f / 1200.0f)) : 1.0f;
     for (uint8_t i = 0; i < FM_NUM_OPS; i++) {
-        const FmOpParams &p = patch.op[i];
-        uint32_t base_inc = fm_op_inc(p, note_inc);
-        ops[i].inc = p.fixed_freq ? base_inc : (uint32_t)((float)base_inc * pitch_ratio);
+        // Fixed-frequency operators ignore the pitch EG and LFO entirely --
+        // matching Dexed's own osc_freq() fixed branch, which never receives
+        // pitch_mod. A bell partial pinned to an absolute frequency does not
+        // wobble with the rest of the voice's vibrato on real hardware.
+        ops[i].inc = patch.op[i].fixed_freq
+            ? ops[i].base_inc
+            : (uint32_t)((float)ops[i].base_inc * pitch_ratio);
     }
     return lfo_amp_atten;
 }
