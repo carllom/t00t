@@ -429,17 +429,39 @@ inline float fm_voice_step_pitch_and_mod(FmOp ops[FM_NUM_OPS], const FmPatch &pa
 // fixed gain, a hand-set ramp, or an EG, and it wouldn't know the
 // difference (fm.md §4.1's routing claim, restated for the EG).
 //
-// #49: `amp_atten` (0..1, lfo.h's own tremolo-attenuation output, default 0
-// so every pre-#49 caller is behavior-neutral) is weighted by each
-// operator's own `am_sensitivity` (0-3, DX7 AMS) and multiplied straight
-// into the already-computed linear gain -- fm.md's own "amplitude mod folds
-// into each operator's gain/gain_step computation according to its AM
-// sensitivity", applied AFTER eg_to_gain() rather than as another level
-// offset, since a multiplicative tremolo on top of the EG's own linear gain
-// is the natural place for it (no interaction with EnvDX's own state at
-// all).
+// #49 took `amp_atten` (0..1) and multiplied it into the already-computed
+// LINEAR gain, reasoning that "a multiplicative tremolo on top of the EG's
+// own linear gain is the natural place for it (no interaction with EnvDX's
+// own state at all)". F6 (fm2.md §5.14) moved it: Dexed subtracts amp mod
+// from the operator's LOG-domain level, BEFORE the exp lookup that turns it
+// into a gain. That is not the same curve rescaled -- a fixed linear factor
+// is a fixed dB attenuation, whereas Dexed's is proportional to the current
+// level, so the two disagree by more the further the envelope has decayed.
+// See dx7_am_level_factor() (lfo.h) for the curve and for why it is ported
+// despite the reference calling it "TODO: mehhh".
+//
+// The guard is `am_sensitivity != 0` alone, matching Dexed, NOT
+// `amp_mod > 0`: the curve is deliberately non-zero at zero mod (~1 dB), so
+// an operator with AMS > 0 is slightly attenuated even on a patch with
+// AMD = 0. Skipping that when the LFO happens to be at rest would put a
+// step discontinuity into a patch's level the moment the wheel moved.
 inline void fm_voice_step_envelopes(FmOp ops[FM_NUM_OPS], const FmPatch &patch, uint32_t n,
-                                     float amp_atten = 0.0f) {
+                                     float amp_mod = 0.0f) {
+    // At most three distinct factors are possible (AMS 1-3), so this is
+    // hoisted out of the per-operator loop rather than computed six times.
+    // Only worth the branch when some operator actually has AMS > 0, which on
+    // the ROM banks is a minority of patches.
+    float am_factor[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    bool am_any = false;
+    for (uint8_t i = 0; i < FM_NUM_OPS; i++) {
+        if (patch.op[i].am_sensitivity & 3) { am_any = true; break; }
+    }
+    if (am_any) {
+        for (uint8_t s = 1; s < 4; s++) {
+            am_factor[s] = dx7_am_level_factor(amp_mod * DX7_AMP_MOD_SENS[s]);
+        }
+    }
+
     for (uint8_t i = 0; i < FM_NUM_OPS; i++) {
         const FmOpParams &p = patch.op[i];
         FmOp &op = ops[i];
@@ -451,15 +473,19 @@ inline void fm_voice_step_envelopes(FmOp ops[FM_NUM_OPS], const FmPatch &patch, 
         // as before, so the per-sample kernel is untouched by any of this.
         int32_t level_start = op.eg.level;
         int32_t level_end = env_dx_step_block(op.eg, n);
+
+        // Amp mod lands here, in the log domain, between the envelope and
+        // eg_to_gain() -- exactly where Dexed puts it (`level -= ldiff` just
+        // before `params_[op].level_in = level`). eg_to_gain() clamps a level
+        // driven negative by a full tremolo dip to silence, so no clamp here.
+        uint8_t ams = p.am_sensitivity & 3;
+        if (ams) {
+            level_start -= (int32_t)((float)level_start * am_factor[ams]);
+            level_end   -= (int32_t)((float)level_end * am_factor[ams]);
+        }
+
         int32_t gain_start = eg_to_gain(level_start);
         int32_t gain_end = eg_to_gain(level_end);
-
-        if (amp_atten > 0.0f && p.am_sensitivity > 0) {
-            float mult = 1.0f - amp_atten * (DX7_AMP_MOD_SENS[p.am_sensitivity & 3]);
-            if (mult < 0.0f) mult = 0.0f;
-            gain_start = (int32_t)((float)gain_start * mult);
-            gain_end = (int32_t)((float)gain_end * mult);
-        }
         op.gain = gain_start;
         op.gain_step = (gain_end - gain_start) / (int32_t)n;
     }

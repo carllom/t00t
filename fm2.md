@@ -249,7 +249,7 @@ Eight issues, each with a machine-checkable gate. The ordering principle is the 
 | **F3** | **Met, §5.7-5.8.** **`EnvDX` rewrite.** Exponential-approach rising stage with the 1716 jump target, linear falling, `advance()`'s real level+TL composition (`(scaleoutlevel(L)>>1)<<6 + outlevel − 4256`, min-16 clamp), the real rate derivation, `staticcount` handling for slow rates, and remove the `step<1→1` clamp. | F1's six `eg/*` cases within tolerance. F0 envelope metrics (time-to-peak, T60) within 10% on E.PIANO 1 and TUB BELLS. **Spectral centroid** (moved from F2) approaches 1.0× on the bright patches. The four slow-attack level outliers (§5.6) close at a 2 s gate. |
 | **F4** | **Met, §5.9-5.10.** Feedback `>>(fb_shift+1)` fix; exact conformance test of all 32 algorithms against Dexed's table. Decide algorithms 4 and 6 (old X1/#54). | F1 routing table exact (met since F1: 192/192). Scorecard green on the feedback-heavy patches (met: SYN-LEAD 1 24.3 → 0.6 dB, ORCH-CHIME 18.2 → 1.3 dB). Algorithms 4/6 resolved as **not needed** — Dexed does not implement the second loop either. |
 | **F5** | **Met, §5.11-5.13.** Key level scaling, rate scaling, velocity, detune, fixed-frequency. | F1 exact for key/rate/velocity (already met). New `tools/fm_freq_diff.py` covers detune + fixed-frequency, which cannot be table-diffed: **6/6, worst 0.18 cents** (was 11.90). Key scaling verified across five octaves. |
-| **F6** | LFO + pitch EG re-verification against `lfo.cc` / `pitchenv.cc`. | F1 exact; scorecard green on vibrato-heavy patches. |
+| **F6** | **Met, §5.14-5.17.** LFO re-verification against `lfo.cc` (F3 had already settled `pitchenv.cc`). | **F1 exact — 24/24, the first time it has been.** Sync phase + saw rotation, the two-stage delay accumulator, amp mod moved to the log domain, and #49's mod-wheel convention reversed to Dexed's `max()` rule. Scorecard green on the vibrato/tremolo patches (TRAIN harmonic 14.7 → 3.4). Two EG paths that no test reached are now covered (§5.15), and the largest single remaining defect turned out to be a converter override, not DSP (§5.16). |
 | **F7** | **Full-bank regression + first hardware checkpoint.** All four ROM banks × several notes and velocities through the scorecard. Commit the resulting thresholds as a checked-in file. *Then* flash and listen — once. | Aggregate score under threshold; your listening test; re-measure c/f/voice (F3 changes the control-rate cost materially). |
 | **F8** | Performance retune → final `MAX_VOICES`. | Measured, per `engine.md` convention. |
 
@@ -739,6 +739,143 @@ Regressions: F1 19/24 unchanged, frequency 6/6, overflow bound holds, converter 
 21/21, legacy host suite ALL PASS (it needed a one-line update for the `fm_op_inc` →
 `base_inc` rename). Device build clean, 48 `smlawb`, flash **54,492 bytes — 720 fewer
 than F4**, since resolving ratio/detune at note-on removed work from the block path.
+
+### 5.14 F6 — the LFO, and one wrong constant that looked like three broken waveforms
+
+F6 was scoped as "LFO + pitch EG re-verification". F3 had already established `pitch_eg.h`
+was correct, so it shrank to the LFO. All five of F1's remaining failures closed, and F1 is
+now **exact for the first time: 24/24** (26/26 including the two cases §5.15 adds).
+
+**The three "broken waveforms" were one wrong constant.** F1 reported triangle, square and
+sine each exactly half a cycle out while both sawtooths passed. That combination is the
+whole diagnosis, because it cannot be a global phase-origin error — a global error would
+break the sawtooths too. Dexed's `keydown()` syncs to `phase_ = (1<<31) - 1`, the *middle*
+of the cycle, and its two sawtooth cases carry a compensating `^ (1U << 31)`. #49 dropped
+both halves of that pair: it synced to phase 0 and wrote the sawtooths unrotated. The two
+errors cancel exactly for the sawtooths and for nothing else. Restoring both (one line in
+`fm_lfo_trigger()`, one rotation in each saw case) took all three waveforms to 0.015 MAE.
+
+Worth noting how the harness earned this. F1's shape test reports "matches when rolled half
+a cycle" as an explicit diagnostic, which is why three separate-looking failures arrived
+pre-correlated instead of as three shape mismatches to chase individually.
+
+**The delay ramp was wrong in shape, not in constants.** `dx7_lfo_delay_seconds()` returned
+one duration and the caller ramped linearly across it, documented as "a deliberate
+simplification... the two-stage accumulator only exists to serve Dexed's own per-block Q32
+arithmetic". It does not. Dexed's first stage is not a slow ramp — `getdelay()` returns
+*exactly 0* for all of it. The real curve is **silence, then a ramp**, and the old code
+turned it into one ramp spanning only the silent stage: it began opening while the reference
+was still fully closed, and was fully open at the moment the reference starts to open. The
+old comment also had the two stages backwards; `a &= 0xff80` looks like it can only shrink
+`a`, but the `max(0x80, ...)` floor makes stage two *faster* wherever they differ (delay 99:
+2.66 s closed, then 0.67 s opening). Ported as the real integer accumulator — the shape *is*
+the arithmetic, so a seconds-domain re-derivation would only be this with extra steps. Both
+delay cases now read **0.00 MAE, exactly**.
+
+**#49's mod-wheel decision is reversed.** #49 made the wheel a 0..1 multiplier on the
+patch's PMD/AMD and flagged the consequence honestly: "a patch with real vibrato/tremolo
+configured will sound completely flat until the mod wheel is actually moved — expected, not
+a bug." Measured, it is a bug: every factory patch with configured vibrato played with no
+vibrato at the wheel's resting position. It now follows Dexed's real `max(pmod_1, pmod_2)` /
+`max(amod_1, amod_2)` rule — patch depth always plays, the wheel is a separate source that
+takes over above it. #49's acceptance criterion ("mod wheel scales LFO depth") still holds,
+so this is a strict superset of the old behaviour.
+
+This one deserves emphasis as a *method* failure, not just a defect. It was invisible to
+every scorecard run before F6 because the renderer defaults to wheel 0, so both sides looked
+quiet and agreed. That is the same shape as §5.13's dropped `am_sensitivity`: **a parameter
+that never reaches the engine is indistinguishable from a parameter the engine handles
+correctly, whenever the test happens to drive it to zero.** Two instances in two phases is a
+pattern, and the guard for it is the same both times — assert the parameter *does* something,
+not merely that both sides match.
+
+**Amplitude mod moved from linear gain to the log domain.** #49 multiplied the tremolo into
+the already-computed linear gain, "the natural place for it". Dexed subtracts it from the
+operator's log-domain level *before* the exp lookup, and the two are not the same curve
+rescaled: a fixed linear factor is a fixed dB attenuation, whereas Dexed's is proportional to
+the current envelope level, so they diverge further the more the envelope has decayed. Ported
+as-is, including two odd properties: the curve is non-zero at zero mod (~1 dB, which is why
+Dexed guards on `ampmodsens != 0` rather than on the mod amount), and it scales with level.
+**This is the one place where the reference is self-admittedly approximate** — Dexed's own
+comment on this block is `// TODO: mehhh.. this needs some real tuning.` It is ported anyway,
+because it is what we are measuring against, but it is flagged here as the first thing to
+revisit if a hardware listen disagrees.
+
+### 5.15 Two EG paths that no test reached
+
+Chasing ROM1A #30 TRAIN's envelope error turned up a coverage gap rather than a defect. The
+six EG cases from F1 all have `L2 != L1` and all have `L4 == 0`, so between them they never
+enter `Env`'s `targetlevel_ == level_` branch — the `ACCURATE_ENVELOPE` `staticcount` hold,
+which is the entire reason the `statics[77]` table exists — and never release *upwards*. Both
+paths are ported in `env_dx.h`; neither was under test. TRAIN's two outlier operators happen
+to be one of each, so `eg/static-hold` and `eg/rising-release` are taken directly from it.
+Both pass (0.01 and 0.02 dB MAE), so the port was right — but it was right unverified for
+three phases.
+
+One process note from the same investigation: my first pass compared the two dumps by *row
+index*. They run at different block rates (Dexed N=64, t00t FM_BLOCK=16), so row *i* is a
+different time on each side, and the comparison manufactured a 27 dB "attack defect" that
+does not exist. `fm_ctl_diff.py` resamples onto a common grid precisely to avoid this; the
+lesson is to use the harness rather than reach past it.
+
+### 5.16 The largest remaining defect was in the converter, not the engine
+
+TRAIN's real problem: `syx2patch.py` forced any **carrier** with `L4 != 0` to `L4 = 0`, on
+the stated grounds that "a nonzero carrier L4 never reaches `env_dx.h`'s `EG_IDLE`, so the
+voice could never be reclaimed by the allocator (the tracker's #21 bug shape)".
+
+That reason does not hold. `voice_alloc.cpp`'s `allocate()` has three tiers, and tier 2 is
+"released voice (active on Core 1 but not gated — in release phase)", reached the instant the
+key lifts. Such a voice is never stuck and can never make allocation fail; the only thing it
+loses is eligibility for tier 1, the *inaudible* steal. The cost of the rule, meanwhile, was
+real: a nonzero carrier L4 *is* a patch designed to keep sounding after key-off, and zeroing
+it deletes that design. TRAIN is a train whistle whose entire point is that it carries on.
+
+Removing the override takes TRAIN from **16.5 → 0.15 dB** envelope MAE — by far the largest
+single defect left on the bank, and it was never in the DSP at all. It is also rare enough to
+have hidden easily: **3 voices out of all 256** across the four ROM banks.
+
+The general lesson is worth more than the fix. The converter is allowed to refuse data
+(§5.11's fail-loud policy is good, and ROM3A voice 19 still trips it pending an F7 decision),
+but *silently rewriting* data to protect a downstream invariant hides the trade in the last
+place anyone looks for a timbre bug. The old behaviour's unit test is inverted rather than
+deleted, so it cannot quietly return.
+
+### 5.17 Scorecard after F6
+
+ROM1A × 32 at C3, mean over the bank:
+
+| Metric | F0 | F3 | F4 | F5 | **F6** |
+|---|---|---|---|---|---|
+| Harmonic MAE | 18.9 dB | 5.5 | 1.9 | 1.4 | **1.0** |
+| Attack timbre MAE | 26.8 dB | 6.3 | 2.3 | 1.9 | **2.0** |
+| Envelope MAE | 33.6 dB | 2.0 | 1.9 | 1.1 | **0.6** |
+| Centroid (harmonic patches) | 1.87× | 1.43 | 1.27 | 1.16 | **1.16** |
+
+Cross-bank, against the F4 baselines: ROM1B harmonic 1.05 → **0.33**, envelope 0.77 → 0.37;
+ROM2A harmonic 1.29 → **0.76**, envelope 1.29 → 0.53. No patch regressed by more than 0.5 dB
+on either bank.
+
+Device build clean: **53,804 bytes flash — 688 fewer than F5**, because the integer delay
+accumulator replaced a float divide per block. bss +64 bytes (16 voices × the new
+`delay_state`). 48 `smlawb`, unchanged since F2 — the per-sample kernel is still untouched.
+
+**What F6 did not fix, and a prediction that was wrong.** §5.13 predicted BRASS 1 and BRASS 2
+would move with the LFO fix, since both use pitch mod on the inverted sine. They did not, and
+the prediction was poorly reasoned: at PMD 5 / PMS 3 their vibrato is under 5 cents, nowhere
+near enough to explain a 10 dB attack-timbre error. Their actual signature is much more
+specific and points elsewhere — the fundamental is *up* ~3.5 dB while **every harmonic above
+the second is down by a near-constant 4.5 dB** (BRASS 2: 3.0 dB). A flat, time-independent
+deficit across the whole upper spectrum is a static modulation-index shortfall, not an
+envelope or LFO shape error. `dx7_note_outlevel()` was checked against Dexed's composition
+and matches, so this needs its own investigation in F7. PIPES 1 and GUITAR 2 have unrelated,
+sparse per-harmonic errors and should be looked at separately.
+
+**Harness hardening.** `render_fm` had no target in `Makefile.fm`, so `make -f Makefile.fm
+render_fm` fell through to make's *implicit* rule — which drops `$(INCLUDES)` and cannot
+compile at all, while a stale binary from an earlier manual build sat there passing. Same
+failure that cost F4 a phase and nearly cost F5 one. It is a listed target now, with the same
+`ENGINE_HEADERS` dependency as everything else.
 
 ---
 

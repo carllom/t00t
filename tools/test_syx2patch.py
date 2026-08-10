@@ -223,7 +223,15 @@ def test_lfo_and_pitch_eg_pass_through() -> None:
     assert out.lfo.pms == 6
 
 
-def test_carrier_l4_forced_to_zero() -> None:
+def test_carrier_l4_is_preserved() -> None:
+    """A carrier's nonzero L4 survives conversion (F6, fm2.md §5.16).
+
+    This test used to assert the opposite -- that the converter forced it to 0
+    so the voice could always reach EG_IDLE. voice_alloc.cpp reclaims a
+    released-but-sounding voice at priority 2, so that was never necessary, and
+    it silently deleted the design of every patch that sustains past key-off.
+    Inverted rather than deleted, so the old behaviour cannot quietly return.
+    """
     # Algorithm 1 (index 0): bus-order op3 (OP3) and op5 (OP1) are carriers.
     ops = [_flat_op() for _ in range(6)]
     ops[3] = _flat_op(eg_level=[99, 70, 60, 40])  # OP3, carrier, nonzero L4
@@ -234,8 +242,8 @@ def test_carrier_l4_forced_to_zero() -> None:
     assert out is not None
     carrier_op = out.ops[2]  # engine index 5-3=2 -> OP3
     assert carrier_op.mod_target == sp.FM_TARGET_OUT
-    assert carrier_op.eg_level[3] == 0
-    assert any("forced to 0" in w for w in warnings)
+    assert carrier_op.eg_level[3] == 40
+    assert not any("forced to 0" in w for w in warnings)
 
 
 def test_feedback_level_zero_disables_feedback() -> None:
@@ -548,7 +556,7 @@ def main() -> None:
     run("fixed-frequency mode converts with real Hz", test_fixed_freq_converts_with_real_hz)
     run("key level/rate scaling pass through", test_key_level_and_rate_scaling_pass_through)
     run("LFO/pitch EG pass through", test_lfo_and_pitch_eg_pass_through)
-    run("carrier L4 forced to 0 for voice-lifetime correctness", test_carrier_l4_forced_to_zero)
+    run("carrier L4 preserved (F6: allocator priority 2 makes zeroing unnecessary)", test_carrier_l4_is_preserved)
     run("feedback_level=0 disables feedback exactly", test_feedback_level_zero_disables_feedback)
     run("feedback_level nonzero passes through exactly", test_feedback_level_nonzero_passes_through)
     run("every FmOpOut field reaches the output (F5)", test_every_op_field_is_emitted)
