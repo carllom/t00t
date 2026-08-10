@@ -50,7 +50,12 @@ struct FmOpParams {
     float   ratio;         // coarse.fine frequency ratio against the note (ignored if fixed_freq)
     float   fixed_hz;      // absolute frequency in Hz, used only when fixed_freq is true
     bool    fixed_freq;
-    float   detune_cents;  // fine detune in cents, applied on top of ratio (0 for fixed_freq)
+    // Raw DX7 detune, offset so 0 == neutral (DX7 byte 0-14 minus 7, so
+    // -7..+7). F5 changed this from a baked cents value: real DX7 detune is
+    // note-dependent in ratio mode and a different, sharpen-only rule in fixed
+    // mode, so it cannot be resolved by a note-independent converter. op.h's
+    // fm_op_base_inc() applies both rules at note-on.
+    int8_t  detune_offset;
     uint8_t mod_target;    // 0..FM_NUM_OPS-1 (another operator), or FM_TARGET_OUT (carrier)
     // Self-modulation depth, DX7 units (0-7; 0 = off). Was a bool (fm.md
     // §5.2's original "no-op-or-full" self-feedback) until real Dexed source
@@ -309,17 +314,17 @@ inline bool fm_resolve_routing(const FmPatch &patch, FmRouting &r) {
 inline constexpr FmPatch FM_TEST_PATCH = {
     "P1 Test Stack",
     {
-        /* op0 */ { 0.5f, 0.0f, false, 0.0f, 2, false,
+        /* op0 */ { 0.5f, 0.0f, false,  0, 2, false,
                      75, 2, {99, 50, 20, 60}, {90, 50, 40, 0} },
-        /* op1 */ { 2.0f, 0.0f, false, 0.0f, 4, false,
+        /* op1 */ { 2.0f, 0.0f, false,  0, 4, false,
                      80, 3, {99, 70, 30, 50}, {99, 60, 55, 0} },
-        /* op2 */ { 3.0f, 0.0f, false, 0.0f, 4, false,
+        /* op2 */ { 3.0f, 0.0f, false,  0, 4, false,
                      78, 4, {95, 55, 25, 45}, {95, 45, 35, 0} },
-        /* op3 */ { 1.0f, 0.0f, false, 0.0f, 4, 7,
+        /* op3 */ { 1.0f, 0.0f, false,  0, 4, 7,
                      82, 3, {90, 65, 35, 55}, {99, 55, 50, 0} },
-        /* op4 */ { 1.0f, 0.0f, false, 0.0f, 5, false,
+        /* op4 */ { 1.0f, 0.0f, false,  0, 5, false,
                      88, 6, {99, 60, 20, 50}, {99, 20, 15, 0} },
-        /* op5 */ { 1.0f, 0.0f, false, 0.0f, FM_TARGET_OUT, false,
+        /* op5 */ { 1.0f, 0.0f, false,  0, FM_TARGET_OUT, false,
                      99, 5, {99, 40, 20, 40}, {99, 70, 60, 0} },
     },
     // #49: lfo.pmd/amd = 0 leaves this patch's sound identical to every

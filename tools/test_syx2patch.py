@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import glob
 import os
+import re
 import struct
 import sys
 import traceback
@@ -138,16 +139,27 @@ def test_op_fixed_hz_formula() -> None:
     assert abs(sp.op_fixed_hz(op) - 10.0 ** 3.99) < 1e-3
 
 
-def test_op_detune_cents_formula() -> None:
-    assert sp.op_detune_cents(_flat_op(detune=7)) == 0.0
-    assert sp.op_detune_cents(_flat_op(detune=0)) == -7.0
-    assert sp.op_detune_cents(_flat_op(detune=14)) == 7.0
+def test_op_detune_offset_passthrough() -> None:
+    # F5: the converter no longer bakes detune into cents. Real DX7 detune is
+    # note-dependent in ratio mode and a separate sharpen-only rule in fixed
+    # mode, neither of which a note-independent converter can resolve, so the
+    # raw offset goes through and op.h applies both rules at note-on.
+    assert sp.op_detune_offset(_flat_op(detune=7)) == 0
+    assert sp.op_detune_offset(_flat_op(detune=0)) == -7
+    assert sp.op_detune_offset(_flat_op(detune=14)) == 7
+    assert not hasattr(sp, "op_detune_cents")
+
+    # Fixed-frequency operators keep their detune too -- it used to be forced
+    # to zero, which silently dropped up to 6.7 cents (measured, F5).
+    fixed = _flat_op(osc_mode=1, freq_coarse=2, freq_fine=0, detune=14)
+    assert sp.op_detune_offset(fixed) == 7
 
 
 def test_fixed_freq_converts_with_real_hz() -> None:
     # #48: fixed-frequency operators used to be skipped outright (v1); now
-    # they convert with a real Hz value and detune_cents forced to 0 (no
-    # ratio-mode detune formula applies to a fixed-frequency operator).
+    # they convert with a real Hz value, and (F5) keep their raw detune offset
+    # rather than having it forced to zero -- fixed mode has its own
+    # sharpen-only detune rule, applied by op.h at note-on.
     voice = sp.DX7Voice(ops=[_flat_op(osc_mode=1, freq_coarse=1, freq_fine=0)] + [_flat_op() for _ in range(5)],
                          algorithm=0, feedback_level=0, name="FIXEDTEST",
                          **_VOICE_LFO_PEG_DEFAULTS, osc_key_sync=0, transpose=24)
@@ -157,7 +169,7 @@ def test_fixed_freq_converts_with_real_hz() -> None:
     fixed_op = out.ops[5]  # bus-order j=0 (OP6) -> engine index 5-0=5
     assert fixed_op.fixed_freq is True
     assert abs(fixed_op.fixed_hz - 10.0) < 1e-6
-    assert fixed_op.detune_cents == 0.0
+    assert fixed_op.detune_offset == 0  # this fixture's detune byte is 7 (neutral)
     assert not any("fixed-frequency" in w for w in warnings)
 
 
@@ -251,6 +263,42 @@ def test_feedback_level_nonzero_passes_through() -> None:
     # Every non-feedback-capable operator stays at 0 regardless of the
     # voice's feedback_level -- only the algorithm's primary op carries it.
     assert all(out.ops[i].feedback_level == 0 for i in range(5))
+
+
+def test_every_op_field_is_emitted() -> None:
+    """Every FmOpOut field must reach the generated C++ initialiser.
+
+    F5 found `am_sensitivity` had lived in FmOpParams and in the sysex parser
+    since #49 but was never carried into FmOpOut or emitted, so LFO amplitude
+    modulation was silently dead in every converted patch. A C++ aggregate
+    initialiser with one too few members just zero-fills the rest -- no
+    warning, no error, and the only symptom is a patch that does not wobble.
+    Counting emitted values against the dataclass is what makes the next
+    dropped field loud instead of silent.
+    """
+    import dataclasses
+
+    voice = sp.DX7Voice(ops=[_flat_op(amp_mod_sens=3) for _ in range(6)],
+                        algorithm=0, feedback_level=0, name="AMSTEST",
+                        **_VOICE_LFO_PEG_DEFAULTS, osc_key_sync=0, transpose=24)
+    out = sp.convert_voice(0, voice, [])
+    assert out is not None
+    assert out.ops[0].am_sensitivity == 3, "amp_mod_sens dropped between parse and output"
+
+    text = sp.render_header([out], "synthetic")
+
+    # The first operator initialiser line inside FM_PATCHES.
+    op_line = next(l.strip() for l in text.splitlines()
+                   if l.strip().startswith("{ ") and "f, " in l and l.rstrip().endswith("},"))
+    body = op_line.strip().rstrip(",").strip()[1:-1]      # drop the outer braces
+    # Collapse each { ... } group (eg_rate, eg_level) to a single token so the
+    # split below counts struct members, not array elements.
+    flat = re.sub(r"\{[^}]*\}", "GROUP", body)
+    emitted = len([v for v in flat.split(",") if v.strip()])
+    expected = len(dataclasses.fields(sp.FmOpOut))
+    assert emitted == expected, (
+        f"{emitted} values emitted per operator but FmOpOut has {expected} fields -- "
+        f"a field was added without updating the emitter")
 
 
 def test_converter_emits_no_gain_constant() -> None:
@@ -496,13 +544,14 @@ def main() -> None:
     run("algorithm decode: algorithms 4/6 interleaved fallback", test_algorithm_4_and_6_interleaved)
     run("coarse/fine ratio formula", test_coarse_ratio)
     run("op_fixed_hz() formula", test_op_fixed_hz_formula)
-    run("op_detune_cents() formula", test_op_detune_cents_formula)
+    run("op_detune_offset() raw passthrough (F5)", test_op_detune_offset_passthrough)
     run("fixed-frequency mode converts with real Hz", test_fixed_freq_converts_with_real_hz)
     run("key level/rate scaling pass through", test_key_level_and_rate_scaling_pass_through)
     run("LFO/pitch EG pass through", test_lfo_and_pitch_eg_pass_through)
     run("carrier L4 forced to 0 for voice-lifetime correctness", test_carrier_l4_forced_to_zero)
     run("feedback_level=0 disables feedback exactly", test_feedback_level_zero_disables_feedback)
     run("feedback_level nonzero passes through exactly", test_feedback_level_nonzero_passes_through)
+    run("every FmOpOut field reaches the output (F5)", test_every_op_field_is_emitted)
     run("converter emits no gain/level constant (F2)", test_converter_emits_no_gain_constant)
     run("multi-carrier output_level passes through unattenuated", test_multi_carrier_output_level_passes_through)
     run("multi-modulator output_level passes through unattenuated", test_multi_modulator_output_level_passes_through)

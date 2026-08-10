@@ -67,6 +67,7 @@ struct Args {
     std::string pcm16;
     bool        list     = false;
     bool        check    = false;
+    int         mod_wheel = 0;   // CC1, 0-127
 };
 
 static void usage() {
@@ -82,7 +83,8 @@ static void usage() {
         "  --out PATH        float32 WAV, for analysis (default t00t.wav)\n"
         "  --pcm16 PATH      also write a peak-normalised PCM16 WAV, for ears\n"
         "  --list            print the converted patch names and exit\n"
-        "  --check           prove no bus overflows int32 on any patch, and exit\n");
+        "  --check           prove no bus overflows int32 on any patch, and exit\n"
+        "  --mod-wheel N     CC1 value 0-127 (default 0)\n");
 }
 
 int main(int argc, char **argv) {
@@ -112,6 +114,7 @@ int main(int argc, char **argv) {
         else if (k == "--pcm16") a.pcm16 = next();
         else if (k == "--list")  a.list = true;
         else if (k == "--check") a.check = true;
+        else if (k == "--mod-wheel") a.mod_wheel = atoi(next());
         else if (k == "-h" || k == "--help") { usage(); return 0; }
         else { fprintf(stderr, "error: unknown argument %s\n", k.c_str()); usage(); return 2; }
     }
@@ -228,7 +231,7 @@ int main(int argc, char **argv) {
         std::fill(dry_l.begin(), dry_l.begin() + n, 0);
         std::fill(dry_r.begin(), dry_r.begin() + n, 0);
         fm_render_voice(ops, patch, routing, bus, /*pan=*/0, dry_l.data(), dry_r.data(), n,
-                        &peg, &lfo, note_inc, /*mod_wheel=*/0);
+                        &peg, &lfo, note_inc, (int16_t)((a.mod_wheel / 127.0f) * 32767.0f));
 
         if (!freed_at && released && !fm_voice_active(ops, routing)) freed_at = done;
 
