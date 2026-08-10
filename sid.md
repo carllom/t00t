@@ -8,10 +8,11 @@ It is **not** a SID player and **not** a `.sid` file emulator. It is a synth who
 voices sound like SID voices and whose instruments are expressive in the way SID
 instruments were expressive — via a per-frame table VM, not via LFOs.
 
-Status: **design draft.** No code written yet. All CPU numbers are static
-estimates derived from the measured figures in `engine.md`; see §9 for the
-explicit caveat and §1 for the P0 gate that must clear before any of it is
-trusted.
+Status: **P0 in progress — host side complete, hardware measurement pending.**
+The primitives, the reSID reference rig and both diff harnesses are built and
+green (§14a); the CPU budget is still nothing but static estimates, because
+cycles per frame cannot be measured on a host. See §9 for the caveat, §1 for the
+gate, and §14a for what F0 measured and what it found wrong in this document.
 
 ---
 
@@ -19,7 +20,7 @@ trusted.
 
 | Phase | Deliverable |
 |-------|-------------|
-| **P0** | **Measurement gate.** Primitives built standalone + host harness; measure per-voice cost, filtered-voice cost *including bus round trip*, and sync at 1× vs 2× oversampling. No engine, no VM. |
+| **P0** | **Measurement gate.** Primitives built standalone + host harness; measure per-voice cost, filtered-voice cost *including bus round trip*, and sync at 1× vs 2× oversampling. No engine, no VM. *(Host side done — §14a. Hardware measurement outstanding; the gate is still closed.)* |
 | **P1** | Engine skeleton: `engines/chip/`, `VoiceType` dispatch, static MIDI-channel→voice map, register-stream playback path. Prove a SID voice sounds right against reSID. |
 | **P2** | Filter buses + 6581 model (cutoff LUT + saturation). Bus binding, degrade-to-unfiltered. |
 | **P3** | Frame table VM on Core 1: wave/pulse/filter tables, vibrato, arpeggio, hard restart, gate-off timer. This is where instruments become expressive. |
@@ -590,6 +591,231 @@ and other sample chips belong with the tracker; SP0256/TMS5220 belong with speec
 6. **P5 speaker stage** + LCD UI.
 7. **P6 polish** — 8580 table, combined-waveform LUTs.
 8. **Later** — AY, SN76489, NES, GB DMG as additional `VoiceType`s.
+
+---
+
+## 14a. F0 results (measured, host side)
+
+The host half of P0 is built and green. `tools/sid_ref/` (see its README for
+setup) holds the reSID rig; `src/chip/` holds the primitives;
+`tools/host_render/render_sid.cpp` is the `CHIP_STRICT` harness. Baseline
+scorecard committed at `tools/sid_ref/baseline_f0.json`, reSID `ef7873fc` vs
+`src/chip/` at this commit.
+
+**The hardware half has not run.** Per-voice cost, filtered-voice cost with the
+bus round trip, and sync at 1× vs 2× all need a device. `src/engines/chip/rig.h`
+plus `make ENGINE=chip` is that build, compile-verified but not flashed. §9's
+budget is still untrusted and `MAX_VOICES` / `FILTER_BUS_COUNT` are still
+provisional. **This is the P0 gate and it is still closed.**
+
+### 14a.1 Four documented errors in this file
+
+Building the reference rig first paid for itself before any audio was rendered.
+Each of these would have been implemented straight from the text, and each is
+the kind of thing only a numeric diff finds.
+
+| §  | This document says | The reference says | Cost of believing the doc |
+|----|---|---|---|
+| 4.2 | noise LFSR "taps 22/20/16/13/11/7/4/2" | feedback is `bit22 ^ bit17`; those eight positions are the *output scatter* (register bits 20,18,14,11,9,5,2,0 → output bits 11–4) | a different sequence with a different spectrum. Nothing but a listening test would catch it |
+| 4.1 | hard sync is "plain `uint32_t` wrap detection — carry out of bit 31" | sync fires on the accumulator MSB *rising* | right rate, wrong phase — off by half an accumulator cycle, which on a sync lead is the whole timbre |
+| 4.1 | `inc = freq_reg * 5805 (44.1 kHz, PAL)` | 5805 is a nominal 1 MHz clock; PAL is 985248 Hz → 5719 | 1.5% sharp, a quarter of a semitone |
+| — | the DACs are not mentioned at all | 6581 has an 8-bit envelope DAC and a 12-bit waveform DAC, both R-2R with 2R/R = 2.20 and no bit-0 termination; the waveform DAC's zero is **0x380, not 0x800**; and the 6581's ladder is **non-monotonic** (§14a.7) | §3's own test says signal-path, so keep. The asymmetric zero is why a 6581 clicks on gate and an 8580 does not |
+
+All four are fixed in `src/chip/`, each with the reference quoted at the site.
+The remaining sections of this document are unaltered — the errors were in the
+primitive-level detail, not in the architecture.
+
+### 14a.2 Control plane: exact, 4/4 domains pass
+
+`tools/sid_ctl_diff.py`. No spectra, no perceptual judgement.
+
+| Domain | Result |
+|---|---|
+| **wave** | triangle, sawtooth, pulse and ring's MSB substitution **bit-exact over all 4096 accumulator phases**, both ring states |
+| **lfsr** | **bit-exact over 100,000 shifts**; period verified as exactly 2²³−1 |
+| **dac** | both tables exact — and this is an *independent* derivation, not a copy (§14a.7) |
+| **env** | worst 169 samples absolute / 4.9% relative, **0 of 12,288 points exceeding both 3 samples and 0.5%** |
+
+The envelope gate takes both bounds because the two failure modes are different
+shapes: sample-grid quantisation is bounded in samples and does not grow, a
+wrong rate table entry is bounded in percent and does. Gating on either alone
+produces a false failure — the 24-second decay at rate 15 is 169 samples out and
+0.016% wrong; the third step of a fast attack is one sample out and 5% wrong.
+Neither is a defect.
+
+### 14a.3 Signal plane: the baseline scorecard
+
+Ten streams, `tools/sid_compare.py`. Level in dB, band/attack/envelope in dB
+MAE, centroid as a ratio.
+
+| stream | level | band | p95 | attack | centroid | env |
+|---|---|---|---|---|---|---|
+| saw_c3 | −0.39 | 0.85 | 3.46 | 1.06 | 1.109× | 0.19 |
+| pulse_sweep | −0.49 | 1.11 | 3.83 | 1.15 | 1.114× | 0.07 |
+| arpeggio | −0.46 | 1.66 | 6.09 | 1.71 | 1.130× | 0.12 |
+| filter_sweep | +0.86 | 2.54 | 8.74 | 2.16 | 0.904× | 2.98 |
+| sync_lead | −0.40 | 2.87 | 10.92 | 1.21 | 1.137× | 0.11 |
+| filter_resonance | +0.18 | 3.60 | 11.42 | 1.59 | 0.759× | 2.67 |
+| ring | −0.48 | 3.68 | 14.03 | 5.85 | 1.267× | 0.09 |
+| chord_filtered | −2.65 | 4.20 | 11.36 | 2.92 | 1.107× | 8.02 |
+| adsr | −0.38 | 5.14 | 20.82 | 5.10 | 1.099× | 1.37 |
+| waveforms | +1.50 | 9.72 | 29.66 | 3.61 | 1.803× | 16.88 |
+| **mean** | **−0.27** | **3.54** | **12.03** | **2.64** | **1.143×** | **3.25** |
+
+`coactive_frac` is 1.00 on every stream — the envelopes agree everywhere, which
+is the number the FM baseline could not produce and the reason its spectral
+figures were meaningless.
+
+**Level needed no tuning.** One scale factor exists in the whole chain
+(`SID_MIX_SHIFT`, a right shift), it was set from the arithmetic rather than
+fitted, and the mean level gap came out at −0.27 dB. That is the payoff of
+adopting the reference's own units as the fixed-point contract (§14a.5).
+
+### 14a.4 The three residuals, named
+
+The mean band MAE of 3.54 dB is not diffuse. It decomposes into three specific,
+understood causes, and only the first is a surprise.
+
+**1. Aliasing — not addressed anywhere in this document, and the largest term.**
+On a sustained C4 sawtooth the harmonics match reSID to within **0.4 dB up to
+6 kHz**. Above that, t00t's non-harmonic floor sits at **−48 dBc against reSID's
+−74 dBc** — 26 dB of aliasing. reSID clocks at 985 kHz and resamples through an
+FIR; t00t generates directly at 44.1 kHz with no band-limiting at all. §9's
+budget has no line for this and §4 does not mention it.
+
+The fix is oversampling, and the cost lands on the largest line — which is
+already §9's watch item, currently written as conditional on sync alone. It is
+not: it is the oscillator's general problem, and sync is one instance.
+`CHIP_RIG_OVERSAMPLE` measures it. The likely answer is to accept −48 dBc,
+matching the FM module's parallel call on its non-interpolated sine table
+(fm2.md §5.3: "−55 dBc under heavy modulation is acceptable on a platform whose
+stated remit is lo-fi") — but that should be a decision with a number behind it,
+which it now can be.
+
+**2. Combined waveforms — §13.5's deferral, now priced, and much worse than
+"roughly TinySID grade".** Against reSID's sampled tables, over all 4096 phases:
+
+| | mean \|err\| | max | level error in the corpus |
+|---|---|---|---|
+| saw+tri | 1012 / 4095 | 2720 | +15.7 dB |
+| pulse+tri | 1423 / 4095 | 3840 | +3.9 dB |
+| pulse+saw | 1971 / 4095 | 4080 | **+194.6 dB** |
+| pulse+saw+tri | 1020 / 4095 | 2720 | **+200.4 dB** |
+
+The pulse combinations are not approximations. reSID's tables are nonzero for
+only 178 of 4096 phases on pulse+saw, so the real chip renders near-silence
+where the AND renders a full-scale signal. §13.5's "AND gets to roughly TinySID
+grade and is one instruction" holds for the triangle combinations and is simply
+wrong for the pulse ones.
+
+This does not change the P6 ordering, but it changes what P6 is: not polish, a
+correctness fix. The 5 useful combinations × 4096 × 8 bit ≈ 20 KB flash estimate
+in §4.2 stands.
+
+**3. Filter mode — the cutoff LUT is fitted on lowpass only.** Per mode, on the
+`filter_resonance` stream: LP 5.21 dB, BP 3.39 dB, **HP 7.92 dB**, LP+HP 4.35 dB.
+Refitting per mode is a P2 item; the harness already has the BP and HP probe
+recordings.
+
+Two further consequences of the filter fit, both worth carrying into P2:
+
+- **The two-pass SVF cannot follow the 6581's top octave at 44.1 kHz.** The
+  fitted table saturates from `fc = 1440` upward — the top 30% of the cutoff
+  register is one value. The stability bound is not what limits it (spectral
+  radius stays under 1 to F ≈ 27000); the limit is that above F ≈ 22000 the
+  lowpass has no −3 dB corner below Nyquist. Visible as `filter_sweep`'s
+  0.904× and `filter_resonance`'s 0.759× centroid: t00t is duller than the
+  reference at the open end.
+- **Resonance moves the 6581's cutoff.** The joint fit measured F drifting
+  6933 → 7933 across res 0 → 15 at a fixed `fc`. The Q table is fitted jointly
+  so this is not charged to the damping curve, but a filter bus whose cutoff
+  is swept *and* resonant will track slightly differently from the reference.
+
+### 14a.5 The fixed-point contract, stated once
+
+`src/chip/sid_voice.h`:
+
+```
+voice output = (waveform_dac12(wave) - wave_zero) * envelope_dac8(env)
+```
+
+which is reSID's own `Voice::output()`. Adopting the reference's scale rather
+than inventing one is the direct application of fm2.md §1.1(a): attempt 1 of the
+FM module had no anchor, and ended with six constants whose only job was to
+cancel each other out. Here there is one scale and one output shift, so any
+level disagreement is a bug in a named curve rather than a tuning opportunity.
+
+### 14a.6 One real bug the harness caught
+
+The C64 board's output network (§10's "free bonus") is two one-poles three
+decades apart, and the high-pass coefficient is 75/32768. With the state held in
+output units, `(lp - hp) * 75 >> 15` truncates to zero for any difference below
+437 — the integrator stops and holds whatever DC it had charged to, forever.
+
+Measured on `saw_c3`, the simplest stream in the corpus: attack, decay and
+sustain tracked reSID within 0.4 dB, then the release tail settled onto a
+constant −51.5 dBFS floor instead of reaching silence. **188 dB of envelope
+error, from a filter that is not part of the chip.** Envelope MAE 10.26 → 0.19
+after holding the state in Q16. reSID hit the same wall and says so in
+`ExternalFilterCoefficients`: "at least 27 bits of accuracy. This is crucial
+since w0lp and w0hp are so far apart."
+
+### 14a.7 The DAC tables are derived, not copied
+
+`tools/fit_6581_filter.py` computes both R-2R tables by nodal analysis of the
+ladder, from its measured resistor ratio — 2R/R = 2.20 with the bit-0
+termination missing on the 6581, 2.00 with termination on the 8580. It does not
+dump them from reSID, for two reasons.
+
+**Licensing.** reSID is GPL-2 and this repo is not, which is why
+`fetch_resid.sh` fetches rather than vendors. Committing 4352 entries produced
+by reSID's own constructor would put back exactly the question that arrangement
+exists to keep out. What is taken instead is four numbers, and they are facts
+about the hardware rather than code.
+
+**The test had no teeth.** With the tables generated from `resid_dump`, the
+`dac` domain compared reSID's table against a copy of reSID's table; it reported
+0/256 and 0/4096 because nothing could make it report anything else. The
+derivation here uses a different algorithm from reSID's — direct nodal analysis
+and superposition, against dac.h's repeated parallel substitution and source
+transformation — so agreement is evidence. Perturbing the ratio by 2% now breaks
+**120/256 and 4044/4096** entries; before, it broke nothing. Both tables come
+out byte-identical to reSID's.
+
+Three attempts at a structural invariant for the solve were wrong, and each was
+wrong in a way worth keeping:
+
+- *"all-ones is full scale"* — true only **without** termination. The 8580's
+  ground leg draws current at that code, so its 8-bit table ends at 254.
+- *"a DAC table is monotonic"* — true only **with** termination. The 6581's
+  ladder has **19 descending steps at 8 bits and 347 at 12, worst −129**,
+  clustered on the major carries (15→16, 31→32, 63→64) where the 2.20 ratio and
+  the missing termination compound. `dac.h` says as much: "pronounced errors for
+  the lower 4–5 bits … resulting in DAC discontinuities."
+- The ladder *topology* itself was settled the same way. The 6581 matches with
+  or without a separate termination node (an unterminated ladder has none to
+  place); the 8580 matches only with its 2R going straight to ground at the LSB
+  node rather than through another rail resistor.
+
+The 6581 table looks broken and is not. Sorting or smoothing it would remove
+precisely what §3 says to keep — it is a large part of why a quiet 6581 note
+sounds dirty rather than merely quiet.
+
+### 14a.8 What the hardware checkpoint must measure
+
+`make ENGINE=chip` flashes the rig; PROFILE_PIN (GPIO 22) is high for exactly
+the render, and the build steps through 0/1/4/8/16/24 voices on a 4 s hold so one
+capture gives the slope. Each lever is a separate build (`src/engines/chip/rig.h`).
+
+| Measurement | How | §9's estimate |
+|---|---|---|
+| per-voice cost | slope across the voice sweep | 45–65 c/f |
+| filtered-voice cost, round trip included | `CHIP_RIG_FILTERED=12` vs `=0` | 40–50 c/f total |
+| filter bus cost | `CHIP_RIG_BUSES` | 50–75 c/f each |
+| sync at 1× vs 2× | `CHIP_RIG_MOD=1` with `CHIP_RIG_OVERSAMPLE=2` vs `=1` | not estimated |
+| **oscillator oversampling in general** | as above with `CHIP_RIG_MOD=0` | **not in §9 — see 14a.4** |
+| 12-bit waveform DAC | `CHIP_WAVE_DAC=0` vs `=1` | not in §9. Flash cost measured: **8200 bytes** |
+| saturation | `CHIP_RIG_SAT=0` vs `=1` | folded into the bus line |
 
 ---
 
