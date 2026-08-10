@@ -1,6 +1,7 @@
 #pragma once
 
 #include "env_dx.h"
+#include "fm_scale.h"
 #include "lfo.h"
 #include "pan.h"
 #include "patch.h"
@@ -54,9 +55,13 @@ struct FmOp {
     const int32_t *in;     // modulation bus, or fm_zero_bus for an unmodulated operator
     int32_t *out;           // modulation bus, or the shared voice output bus
     int32_t  fb1, fb2;      // op_render_fb only: last two post-gain outputs (see op_render_fb's own comment)
-    EnvDX    eg;            // #45: this operator's own 4-stage envelope
-    int32_t  static_log2;   // #45/#48: output level + velocity sensitivity + key level scaling, resolved once at note-on
-    int32_t  rate_scale_qrate; // #48: key rate scaling, resolved once at note-on, added to every stage's qrate (env_dx.h's env_dx_step_block)
+    EnvDX    eg;            // this operator's own 4-stage envelope
+    // F3: `static_log2` and `rate_scale_qrate` are gone. Output level, key
+    // level scaling and velocity now compose into the envelope's own
+    // `outlevel` (env_dx.h's dx7_note_outlevel), and key rate scaling into its
+    // `rate_scaling`, exactly as Dexed's Dx7Note::init does -- rather than
+    // being carried alongside and added afterwards, which is what put every
+    // sustain stage ~60 dB low (fm2.md §5.4).
 };
 
 // Read-only all-zero bus, shared by every operator nothing modulates.
@@ -80,68 +85,6 @@ inline int32_t fm_mul_gain(int32_t sample, int32_t gain) {
 #endif
 }
 
-// ===========================================================================
-// The fixed-point contract (F2, fm2.md §2/§5).
-//
-// ONE anchor, from which every other number here is derived:
-//
-//     an operator's output, in `out[]` units, is phase deviation --
-//     FM_CYCLE units == one full cycle (2*pi) on whatever it modulates.
-//
-// That is Dexed's own contract, measured rather than assumed (tools/fm_ref;
-// fm2.md §5.6): `Sin::lookup` is full-scale 2^24, its maximum operator gain
-// is exactly 2.0, and 24 bits is one cycle of its phase -- so a max-level
-// Dexed operator peaks at exactly TWO full cycles of deviation, and a
-// *unity*-gain one at exactly one. Carriers are not a special case there and
-// are not one here: a carrier's output is the same number, reinterpreted as
-// audio instead of as phase. Everything else the DX7 does -- output level,
-// EG level, key scaling, velocity -- is attenuation in the log domain
-// beneath this single ceiling.
-//
-// This replaces six mutually-cancelling constants (FM_OUT_SHIFT_CARRIER,
-// FM_OUT_SHIFT_MODULATOR, FM_MOD_INPUT_SHIFT, FmOpParams::level, and
-// syx2patch.py's FM_CARRIER_LEVEL_REF/FM_MODULATOR_LEVEL_REF), each of which
-// existed to compensate for another. fm2.md §5.1 measured what that cost:
-// per-patch level errors from -12 dB to -96 dB and brightness from 0.30x to
-// 6.31x on the same build, because with no shared anchor every patch landed
-// somewhere different.
-//
-// Do not "tune" anything in this block. If a patch is too loud or too dim,
-// the answer is in its output level, its EG, or its key scaling -- exactly as
-// it would be on real hardware. That discipline is the entire point.
-// ===========================================================================
-
-// One full cycle of phase deviation, in bus units. 2^26 leaves 5 bits of
-// headroom over the 2^27 maximum a single operator can emit (see
-// FM_GAIN_MAX), which covers both fan-in (several modulators summing onto one
-// bus) and several carriers summing into the output bus, without ever
-// approaching int32 overflow -- the failure mode fm2.md §1.1(a) found in the
-// old scaling, where a max-level modulator reached 2^33.4 and wrapped the
-// phase accumulator several times per sample.
-static constexpr uint32_t FM_CYCLE_BITS = 26;
-static constexpr int32_t  FM_CYCLE = 1 << FM_CYCLE_BITS;
-
-// Bus units -> the 32-bit phase accumulator (2^32 == one cycle). Unsigned
-// wraparound past a full cycle is correct by construction, not a lucky
-// accident: that is exactly what a phase accumulator is for.
-static constexpr uint32_t FM_MOD_SHIFT = 32 - FM_CYCLE_BITS;
-
-// The gain at log2 offset 0 -- i.e. output level 99, EG at level 99, no key
-// scaling, no velocity attenuation. Derived, not chosen: fm_mul_gain() does
-// (gain * sample) >> 16 with the sine table full-scale at 2^15, and the
-// contract says that product must be 2 * FM_CYCLE at maximum level (Dexed's
-// measured 2.0 gain ceiling), so FM_GAIN_MAX = 2^(1 + 26 + 16 - 15) = 2^28.
-// env_dx.h's eg_to_linear() returns exactly this for a log2 offset of 0.
-static constexpr int32_t FM_GAIN_MAX = 1 << 28;
-
-// Voice output bus -> int16 audio, applied once in fm_render_voice(). A
-// single max-level carrier lands at 2^14, i.e. half of int16 full scale, so
-// a two-carrier patch at full tilt reaches 0 dBFS and busier algorithms rely
-// on the mixer's existing saturation -- the same bargain the hardware makes.
-// This is the one master headroom choice in the engine; it is a property of
-// how loud a *voice* should be, not of any operator, and nothing else in the
-// signal path is allowed to have an opinion about level.
-static constexpr int32_t FM_VOICE_OUT_SHIFT = FM_CYCLE_BITS - 12;
 
 // Plain kernel: accumulates (+=) into `out`. fm.md §3.2's 13-instruction
 // listing (as measured by #43) is still this loop body -- F2 removed the
@@ -309,15 +252,14 @@ inline uint32_t fm_op_inc(const FmOpParams &p, uint32_t note_inc) {
 
 // Note-on: resolves every operator's phase/inc from the patch and the
 // note's base increment (already pitch-bent by Core 0), triggers its EG
-// (env_dx.h's env_dx_trigger() -- stage 1 from silence), and resolves
-// `static_log2`: output level (TL) + velocity sensitivity + #48's key
-// level scaling, and `rate_scale_qrate` (#48's key rate scaling) -- the
+// (env_dx.h's env_dx_init() -- stage 0 from silence), which also folds in
+// output level, key level scaling, velocity and key rate scaling -- the
 // note-on-time-only pieces of #45/#48's level/rate chain (fm.md §5.6: all
 // of it is "resolved once per note-on and never touched again"). `midinote`
 // (raw MIDI 0-127) is the one piece those two DX7 features need that
 // `note_inc` alone can't give back -- see engine.h's VoiceParams::note.
 // `gain`/`gain_step` are deliberately NOT set here -- fm_voice_step_envelopes()
-// sets them every block, starting from EG_LOG2_FLOOR (silence) on the very
+// sets them every block, starting from silence on the very
 // first block of this note, so there is no separate "initial gain" to get
 // right here.
 inline void fm_voice_note_on(FmOp ops[FM_NUM_OPS], const FmPatch &patch,
@@ -334,25 +276,20 @@ inline void fm_voice_note_on(FmOp ops[FM_NUM_OPS], const FmPatch &patch,
         op.fb2 = 0;
         op.in = fm_zero_bus;
         op.out = nullptr;  // assigned per sub-block by fm_voice_render_block()
-        env_dx_trigger(op.eg);
-        // Key level scaling combines with TL *before* converting to log2,
-        // clamped to [0,127] exactly like Dexed's own `outlevel =
-        // min(127, outlevel)` (dx7note.cc) -- not added as a separate,
-        // unclamped log2 offset. A boosting curve (DX7 curve 2/3, "+EXP"/
-        // "+LIN") at high depth and an extreme note can otherwise push the
-        // combined value well past what a single operator's reference
-        // `level` was ever meant to represent, and eg_to_linear()'s shift
-        // has no defined behavior for a large positive log2 offset -- this
-        // clamp is what keeps it in the range that function already
-        // guarantees is safe (DX7_LEVEL_TO_LOG2[]'s own [-16,0]-octave-ish
-        // span), the same way Dexed's own hardware-matching clamp does.
-        int32_t combined_level = dx7_scaleoutlevel(p.output_level)
-                                + dx7_scale_level(midinote, p.scale_breakpoint, p.scale_left_depth,
-                                                   p.scale_right_depth, p.scale_left_curve, p.scale_right_curve);
-        combined_level = combined_level < 0 ? 0 : (combined_level > 127 ? 127 : combined_level);
-        int32_t output_and_key_log2 = (combined_level - dx7_scaleoutlevel(99)) * 32;
-        op.static_log2 = output_and_key_log2 + eg_vel_sensitivity_log2(p.vel_sensitivity, amplitude);
-        op.rate_scale_qrate = dx7_scale_rate(midinote, p.rate_scaling);
+        // F3: one call, Dexed's own composition order. `outlevel` folds
+        // output level, key level scaling and velocity together (env_dx.h's
+        // dx7_note_outlevel), and the envelope itself folds THAT into each
+        // stage's target -- rather than the engine carrying a separate static
+        // offset and adding it afterwards.
+        //
+        // `amplitude` is VoiceParams' Q15 velocity; Dexed's ScaleVelocity
+        // wants the raw MIDI 0-127 it was derived from, so it is recovered
+        // here. The round trip is exact for every velocity, since Core 0
+        // built it as velocity/127 * 32767 (midi_controller.cpp).
+        int velocity = ((int)amplitude * 127 + 16383) / 32767;
+        env_dx_init(op.eg, p.eg_rate, p.eg_level,
+                    dx7_note_outlevel(p, midinote, velocity),
+                    dx7_scale_rate(midinote, p.rate_scaling));
     }
     // #49: pitch EG/LFO are per-VOICE (not per-operator), so their state
     // lives in the caller's own arrays (audio_engine.cpp), not FmOp --
@@ -442,7 +379,7 @@ inline float fm_voice_step_pitch_and_mod(FmOp ops[FM_NUM_OPS], const FmPatch &pa
 // operator's own `am_sensitivity` (0-3, DX7 AMS) and multiplied straight
 // into the already-computed linear gain -- fm.md's own "amplitude mod folds
 // into each operator's gain/gain_step computation according to its AM
-// sensitivity", applied AFTER eg_to_linear() rather than as another log2
+// sensitivity", applied AFTER eg_to_gain() rather than as another level
 // offset, since a multiplicative tremolo on top of the EG's own linear gain
 // is the natural place for it (no interaction with EnvDX's own state at
 // all).
@@ -451,14 +388,17 @@ inline void fm_voice_step_envelopes(FmOp ops[FM_NUM_OPS], const FmPatch &patch, 
     for (uint8_t i = 0; i < FM_NUM_OPS; i++) {
         const FmOpParams &p = patch.op[i];
         FmOp &op = ops[i];
-        int32_t log2_start, log2_end;
-        env_dx_step_block(op.eg, p, n, log2_start, log2_end, op.rate_scale_qrate);
-        // FM_GAIN_MAX, not a per-operator reference: F2's contract puts every
-        // operator on one scale, and what makes this one quieter than that one
-        // is its output level / EG / key scaling, all of which are already
-        // folded into the log2 offset being passed in here.
-        int32_t gain_start = eg_to_linear(FM_GAIN_MAX, op.static_log2 + log2_start);
-        int32_t gain_end = eg_to_linear(FM_GAIN_MAX, op.static_log2 + log2_end);
+
+        // F3: the envelope is now stepped once and read twice -- its level
+        // before and after this block -- rather than returning a pair of log2
+        // offsets to be composed with a separate static term. `gain` is the
+        // block's starting gain and `gain_step` the per-sample delta, exactly
+        // as before, so the per-sample kernel is untouched by any of this.
+        int32_t level_start = op.eg.level;
+        int32_t level_end = env_dx_step_block(op.eg, n);
+        int32_t gain_start = eg_to_gain(level_start);
+        int32_t gain_end = eg_to_gain(level_end);
+
         if (amp_atten > 0.0f && p.am_sensitivity > 0) {
             float mult = 1.0f - amp_atten * (DX7_AMP_MOD_SENS[p.am_sensitivity & 3]);
             if (mult < 0.0f) mult = 0.0f;

@@ -25,7 +25,7 @@ lives at runtime (env_dx.h, #45) -- so unlike xm2t00t's period tables or
 speechgen's formant math, THIS converter does not need to precompute any
 DSP curve itself. `eg_rate`/`eg_level`/`output_level`/`vel_sensitivity` are
 copied straight through as the same raw 0-99 (or 0-7) bytes DX7 hardware
-uses; env_dx.h's DX7_RATE_TO_STEP/DX7_LEVEL_TO_LOG2 tables convert them at
+uses; env_dx.h's own DX7 tables convert them at
 note-on/block-rate, exactly as they already do for patch.h's hand-authored
 FM_TEST_PATCH. This converter's real job is almost entirely structural:
 unpack the bit-packed sysex format correctly, and turn one of 32 DX7

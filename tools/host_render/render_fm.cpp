@@ -111,56 +111,12 @@ static bool run_routing_checks() {
     return pass;
 }
 
-// #45's acceptance criteria on env_dx.h directly: operator output level
-// goes through a real nonlinear (log/exp) curve rather than
-// `gain = reference * level/99`, and velocity sensitivity is a genuine
-// per-operator effect (0 at sensitivity=0, real and monotonic otherwise).
-static bool run_level_table_checks() {
-    env_dx_init_tables();
-
-    constexpr int32_t REFERENCE = 1 << 24;  // arbitrary, mid-range reference gain
-
-    // Level 99 = the reference exactly (0 dB offset); level 0 = an exact
-    // digital 0 (env_dx.h's EG_SILENCE_THRESHOLD guarantee); the table is
-    // monotonically non-decreasing across 0-99.
-    int32_t g99 = eg_to_linear(REFERENCE, DX7_LEVEL_TO_LOG2[99]);
-    int32_t g0 = eg_to_linear(REFERENCE, DX7_LEVEL_TO_LOG2[0]);
-    bool unity_ok = g99 == REFERENCE;
-    bool floor_ok = g0 == 0;
-    bool monotonic_ok = true;
-    for (uint32_t lvl = 1; lvl < 100; lvl++) {
-        if (DX7_LEVEL_TO_LOG2[lvl] < DX7_LEVEL_TO_LOG2[lvl - 1]) monotonic_ok = false;
-    }
-
-    // Nonlinear, not "a linear approximation": level 50's linear gain must
-    // NOT be anywhere near reference*50/99 (a straight-line curve) -- the
-    // log-domain table makes it much quieter than that, since half the
-    // level-parameter range is only a fraction of the dB range.
-    int32_t g50 = eg_to_linear(REFERENCE, DX7_LEVEL_TO_LOG2[50]);
-    float linear_guess = (float)REFERENCE * 50.0f / 99.0f;
-    bool nonlinear_ok = (float)g50 < linear_guess * 0.5f;
-
-    // Velocity sensitivity: 0 -> no effect regardless of velocity; nonzero
-    // -> real, monotonic (softer hits are strictly quieter than harder
-    // hits on the same sensitivity, and 0 velocity is strictly quieter at
-    // sensitivity 7 than at sensitivity 1).
-    int32_t sens0_soft = eg_vel_sensitivity_log2(0, 0);
-    int32_t sens0_hard = eg_vel_sensitivity_log2(0, 32767);
-    bool sens_zero_ok = sens0_soft == 0 && sens0_hard == 0;
-
-    int32_t sens7_soft = eg_vel_sensitivity_log2(7, 0);
-    int32_t sens7_hard = eg_vel_sensitivity_log2(7, 32767);
-    int32_t sens1_soft = eg_vel_sensitivity_log2(1, 0);
-    bool sens_effect_ok = sens7_hard == 0 && sens7_soft < 0 && sens7_soft < sens1_soft;
-
-    bool pass = unity_ok && floor_ok && monotonic_ok && nonlinear_ok && sens_zero_ok && sens_effect_ok;
-    printf("%s: level table -- L99=reference(%d)=%d, L0=exact-0(%d), monotonic=%d, "
-           "L50 nonlinear (got %d, linear guess %.0f)=%d, vel_sens=0 no-op=%d, "
-           "vel_sens=7 real+monotonic=%d\n",
-           pass ? "PASS" : "FAIL", (int)unity_ok, g99, (int)floor_ok, (int)monotonic_ok,
-           g50, linear_guess, (int)nonlinear_ok, (int)sens_zero_ok, (int)sens_effect_ok);
-    return pass;
-}
+// the old level model (eg_to_linear against DX7_LEVEL_TO_LOG2, unity at level
+// 99, monotonicity, "not a linear ramp"), none of which exist any more --
+// env_dx.h is now a direct port of Dexed's Env and folds output level into the
+// envelope's own targets. The coverage moved somewhere strictly stronger:
+// tools/fm_ctl_diff.py's table/scaleoutlevel and eg/* cases compare against
+// Dexed's actual numbers rather than against this engine's own assumptions.
 
 // Goertzel magnitude of a Hann-windowed segment at `freq` Hz. Same technique
 // render_speech.cpp uses for its formant/sideband checks.
@@ -499,77 +455,10 @@ static bool run_release_check() {
     return pass;
 }
 
-// #48's acceptance criteria: key level scaling and rate scaling are real,
-// audible, note-dependent effects. FM_TEST_PATCH has zero scaling on every
-// operator (the new fields all default-zero, #48's own behavior-neutrality
-// requirement), so nothing else in this file exercises `dx7_scale_level`/
-// `dx7_scale_rate` at all -- this builds a small patch that deliberately
-// does, and checks both the resolved note-on-time values and the resulting
-// per-sample effect, not just that the code compiles and runs.
-static bool run_key_rate_scaling_check() {
-    fm_init_sine_tab();
-    env_dx_init_tables();
-
-    FmPatch patch = FM_TEST_PATCH;
-    FmOpParams &carrier = patch.op[5];
-    carrier.output_level = 50;       // mid-range, so a boost or cut is measurable either direction
-    carrier.scale_breakpoint = 60;   // ~middle C-ish
-    carrier.scale_left_depth = 0;
-    carrier.scale_right_depth = 99;  // strong effect above the breakpoint
-    carrier.scale_left_curve = 0;
-    carrier.scale_right_curve = 3;   // +LIN: notes above breakpoint get LOUDER
-    carrier.rate_scaling = 7;        // max: notes further from the reference get a real speed boost
-    carrier.eg_rate[1] = 40;         // a deliberately moderate (not 99) stage-2 rate, so scaling has room to matter
-
-    FmOp low[FM_NUM_OPS], high[FM_NUM_OPS];
-    uint32_t inc_low = fm_phase_inc(110.0f), inc_high = fm_phase_inc(880.0f);
-    fm_voice_note_on(low, patch, inc_low, 32767, /*midinote=*/30);
-    fm_voice_note_on(high, patch, inc_high, 32767, /*midinote=*/96);
-
-    // (1) Key level scaling: resolved once at note-on into static_log2 --
-    // the high (above-breakpoint, +LIN) note must resolve louder than the
-    // low (below-breakpoint, 0 depth -> no effect) note.
-    bool level_scaling_ok = high[5].static_log2 > low[5].static_log2;
-
-    // (2) Rate scaling: resolved once at note-on into rate_scale_qrate --
-    // dx7_scale_rate() is monotonic in distance from its low reference note,
-    // so midinote=96 must resolve a larger (faster) delta than midinote=30.
-    bool rate_scale_resolved_ok = high[5].rate_scale_qrate > low[5].rate_scale_qrate
-                                 && low[5].rate_scale_qrate >= 0;
-
-    // (3) The actual per-sample effect: step both into stage 2 (past the
-    // instant R1=99 attack) and compare how far each has moved after a
-    // FIXED number of samples -- the high note, with a real rate_scale_qrate
-    // boost on top of the same base rate 40, must move further/faster.
-    auto step_into_stage2 = [&](FmOp ops[FM_NUM_OPS], const FmPatch &p) {
-        uint32_t done = 0;
-        while (ops[5].eg.stage != EG_STAGE_2 && done < SAMPLE_RATE) {
-            fm_voice_step_envelopes(ops, p, FM_BLOCK);
-            done += FM_BLOCK;
-        }
-    };
-    step_into_stage2(low, patch);
-    step_into_stage2(high, patch);
-    int32_t low_stage2_start = low[5].gain, high_stage2_start = high[5].gain;
-    for (int i = 0; i < 20; i++) {
-        fm_voice_step_envelopes(low, patch, FM_BLOCK);
-        fm_voice_step_envelopes(high, patch, FM_BLOCK);
-    }
-    int32_t low_moved = std::abs(low[5].gain - low_stage2_start);
-    int32_t high_moved = std::abs(high[5].gain - high_stage2_start);
-    bool rate_effect_ok = high_moved > low_moved;
-
-    bool pass = level_scaling_ok && rate_scale_resolved_ok && rate_effect_ok;
-    printf("%s: key/rate scaling -- static_log2(low/high)=%d/%d (level_scaling=%d), "
-           "rate_scale_qrate(low/high)=%d/%d (resolved=%d), stage-2 movement(low/high)=%d/%d (effect=%d)\n",
-           pass ? "PASS" : "FAIL", low[5].static_log2, high[5].static_log2, level_scaling_ok,
-           low[5].rate_scale_qrate, high[5].rate_scale_qrate, rate_scale_resolved_ok,
-           low_moved, high_moved, rate_effect_ok);
-    if (!level_scaling_ok) printf("  FAIL: key level scaling didn't make the above-breakpoint note louder\n");
-    if (!rate_scale_resolved_ok) printf("  FAIL: rate scaling didn't resolve a larger delta for the higher note\n");
-    if (!rate_effect_ok) printf("  FAIL: rate scaling's note-on delta didn't produce a real per-sample speed difference\n");
-    return pass;
-}
+// FmOp::static_log2 / FmOp::rate_scale_qrate, fields F3 deleted when key
+// scaling moved inside EnvDX. tools/fm_ctl_diff.py's table/scale-level (55040
+// rows) and table/scale-rate (1024 rows) now check exactly this, exactly,
+// against Dexed.
 
 // #49's pitch EG acceptance criterion: "applied by scaling all six operator
 // increments at block boundaries ... zero per-sample cost." Checked
@@ -882,14 +771,14 @@ static bool run_patch_bank_render() {
 int main() {
     bool ok1 = run_test_tone_check();
     bool ok2 = run_routing_checks();
-    bool ok3 = run_level_table_checks();
     bool ok4 = run_patch_spectrum_check();
     bool ok5 = run_eg_shape_check();
     bool ok6 = run_release_check();
-    bool ok8 = run_key_rate_scaling_check();
     bool ok9 = run_pitch_eg_check();
     bool ok10 = run_lfo_check();
-    bool ok = ok1 && ok2 && ok3 && ok4 && ok5 && ok6 && ok8 && ok9 && ok10;
+    // ok3 (level table) and ok8 (key/rate scaling) removed by F3 -- see the
+    // comments where those functions used to be.
+    bool ok = ok1 && ok2 && ok4 && ok5 && ok6 && ok9 && ok10;
 #ifdef T00T_FM_HAS_PATCHES
     bool ok7 = run_patch_bank_render();
     ok = ok && ok7;

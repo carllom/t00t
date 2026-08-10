@@ -94,7 +94,7 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
 // kernels. #45 supersedes #44's fixed-gain/hard-cutoff behavior: gate=false
 // now releases through each operator's EG instead of cutting the voice
 // immediately, and a voice keeps rendering (and keeps its active_mask bit)
-// until its carriers actually reach EG_IDLE (fm_voice_active()) --
+// until its carriers' envelopes actually finish (fm_voice_active()) --
 // mirroring the subtractive engine's trigger/gate/envelope-active idiom.
 
 // `fx_buf` is the mono send/return scratch for the post-mix effect (mono
@@ -130,17 +130,17 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
 
     fm_init_sine_tab();
     osc_init_sine();  // pan.h's pan_gains_q15() reuses the shared sine table for its quadrature gains
-    env_dx_init_tables();  // #45: level/rate/exp2 tables -- must run before any EG step
+    env_dx_init_tables();  // EG exp2 table -- must run before any EG step
     fx_delay.init();
     fx_reverb.init();
     for (uint32_t v = 0; v < MAX_VOICES; v++) {
         voice_last_trigger[v] = 0;  // matches VoiceParams' default trigger=0 -- a never-triggered voice must NOT look "changed"
         voice_routing_valid[v] = false;
         voice_gated[v] = false;
-        // A zero-initialized EnvDX is NOT idle (stage 0 == EG_STAGE_1, not
-        // EG_IDLE) -- every voice's EGs need an explicit env_dx_init() so
+        // A zero-initialized EnvDX is NOT idle (stage 0 is a real stage) --
+        // every voice's EGs need an explicit env_dx_reset() so
         // fm_voice_active() doesn't report a never-triggered voice as active.
-        for (uint32_t i = 0; i < FM_NUM_OPS; i++) env_dx_init(voice_ops[v][i].eg);
+        for (uint32_t i = 0; i < FM_NUM_OPS; i++) env_dx_reset(voice_ops[v][i].eg);
         fm_pitch_eg_init(voice_peg[v]);  // #49
         fm_lfo_init(voice_lfo[v]);       // #49
     }

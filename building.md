@@ -8,6 +8,15 @@
 sudo apt install cmake gcc-arm-none-eabi libnewlib-arm-none-eabi build-essential git
 ```
 
+### Toolchain (Arch/Manjaro)
+
+```bash
+sudo pacman -S cmake arm-none-eabi-gcc arm-none-eabi-newlib base-devel git
+```
+
+`arm-none-eabi-newlib` is separate from the compiler package here and is easy to
+miss: without it cmake configures fine and the build fails later at link time.
+
 ### Pico SDK and Extras
 
 The Pico SDK and pico-extras are not included in the repository. Clone them into the project root:

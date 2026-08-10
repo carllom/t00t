@@ -246,7 +246,7 @@ Eight issues, each with a machine-checkable gate. The ordering principle is the 
 | **F0** | Reference rigs. Build `dexed_render`, `render_fm_patch`, `fm_compare.py`, bank fetch script. **No engine changes.** Plus the §3.2 interpolation A/B. | **Met, §5.** Scorecard runs end-to-end on ROM1A #11 (E.PIANO 1) C3, Dexed vs the **current `fm` branch**. That baseline number is the thing everything after is measured against — and it retroactively quantifies how far off the current build is, which no amount of listening ever did. |
 | **F1** | Control-plane conformance harness (`fm_ctl_diff`). | **Met, §5.4.** It runs, and **fails loudly** on the current `env_dx.h` — i.e. it independently rediscovers §1.1(b) and (d) without being told. If it passes, the harness is wrong. |
 | **F2** | **Met (level/overflow), §5.6.** **Fixed-point contract.** Delete `level`, `FM_OUT_SHIFT_CARRIER`, `FM_OUT_SHIFT_MODULATOR`, `FM_MOD_INPUT_SHIFT`, and both `*_LEVEL_REF`s. Re-derive `op.h` + `patch.h` + `syx2patch.py`'s emit half around *unity gain = one full cycle of phase deviation*. Carriers and modulators share one scale; the carrier attenuation happens once, at the voice mix. | Level gap collapses to a few dB across the bank (met: -0.4..-6.2 dB on 27/32, the rest slow-attack patches F3 owns). No int32 overflow at max level on any ROM1A patch, proved by bound not sample (met: 1.42 bits headroom). **The spectral-centroid criterion originally written here was moved to F3** -- brightness is modulator level over time, so it cannot be judged while the envelopes are broken. |
-| **F3** | **`EnvDX` rewrite.** Exponential-approach rising stage with the 1716 jump target, linear falling, `advance()`'s real level+TL composition (`(scaleoutlevel(L)>>1)<<6 + outlevel − 4256`, min-16 clamp), the real rate derivation, `staticcount` handling for slow rates, and remove the `step<1→1` clamp. | F1's six `eg/*` cases within tolerance. F0 envelope metrics (time-to-peak, T60) within 10% on E.PIANO 1 and TUB BELLS. **Spectral centroid** (moved from F2) approaches 1.0× on the bright patches. The four slow-attack level outliers (§5.6) close at a 2 s gate. |
+| **F3** | **Met, §5.7-5.8.** **`EnvDX` rewrite.** Exponential-approach rising stage with the 1716 jump target, linear falling, `advance()`'s real level+TL composition (`(scaleoutlevel(L)>>1)<<6 + outlevel − 4256`, min-16 clamp), the real rate derivation, `staticcount` handling for slow rates, and remove the `step<1→1` clamp. | F1's six `eg/*` cases within tolerance. F0 envelope metrics (time-to-peak, T60) within 10% on E.PIANO 1 and TUB BELLS. **Spectral centroid** (moved from F2) approaches 1.0× on the bright patches. The four slow-attack level outliers (§5.6) close at a 2 s gate. |
 | **F4** | Feedback `>>(fb_shift+1)` fix; exact conformance test of all 32 algorithms against Dexed's table. Decide algorithms 4 and 6 (two-op loops, old X1/#54): implement the interleaved kernel, or document the approximation and its measured cost. | F1 routing table exact. Scorecard green on the feedback-heavy patches. |
 | **F5** | Key level scaling, rate scaling, velocity, detune, fixed-frequency — re-verified against F1 rather than re-derived by ear. | F1 exact for all four. |
 | **F6** | LFO + pitch EG re-verification against `lfo.cc` / `pitchenv.cc`. | F1 exact; scorecard green on vibrato-heavy patches. |
@@ -476,6 +476,74 @@ the converter now emits no gain constant at all.
 Left deliberately alone: the feedback `>> fb_shift` vs Dexed's `>> (fb_shift + 1)`
 (§1.1(c)), so that this scorecard delta attributes cleanly to the scaling contract and
 nothing else. It is F4's one-character fix.
+
+### 5.7 F3 — the envelope
+
+`env_dx.h` replaced wholesale with a direct port of Dexed's `Env` (`Source/msfa/env.cc`),
+in Dexed's own Q24-octave level domain, with two documented deviations: the control-block
+size (this engine steps every `FM_BLOCK`=16 samples, Dexed every 64 — `inc` is stored in
+Dexed's units and scaled to the real block length, so a 64-sample block reproduces Dexed
+exactly) and the output gain anchor (`eg_to_gain()` peaks at F2's `FM_GAIN_MAX` instead of
+Dexed's 2.0). Everything else is the same arithmetic.
+
+What that fixed, in order of size:
+
+- **The rising stage is a different curve family.** Dexed jumps to `jumptarget` (1716) and
+  then approaches the target exponentially; the old file ramped linearly in both directions
+  and had to cross a 40-octave floor first. Attack to −1 dB at rate 99: **16.3 ms → 0.0 ms**,
+  matching Dexed's first control block.
+- **Output level belongs inside the envelope.** `advance()` folds it into each stage target
+  (`(scaleoutlevel(L)>>1)<<6 + outlevel − 4256`, floored at 16); the old engine carried it
+  alongside as `static_log2` and added it afterwards, which is what put E.PIANO 1's sustain
+  ~60 dB low. `FmOp::static_log2` and `FmOp::rate_scale_qrate` are both gone.
+- **Velocity was a hand-rolled model.** Replaced by a port of `ScaleVelocity`. F1's
+  `table/velocity` went from 894/1024 rows differing to **1024/1024 identical**.
+- **`staticcount`** — Dexed's measured dwell table for stages with nowhere to go — was
+  missing entirely, so same-level stages completed instantly.
+- **The `step < 1` clamp is gone**, and the formulation no longer needs it: the smallest
+  possible `inc` spans the full 15-octave range in about six minutes.
+- **`EG_LEVEL_THRESH`** (Dexed's `kLevelThresh`) added. A DX7 envelope floors around −90 dB
+  and never reaches zero; Dexed reaches real silence by skipping operators under the
+  threshold. Without it "the voice is finished" would be true of the stage counter but not
+  of the audio.
+
+### 5.8 Where the numbers landed
+
+ROM1A × 32 at C3, means across the bank:
+
+| | F0 baseline | after F2 | after F3 |
+|---|---|---|---|
+| Harmonic MAE | 18.9 dB | 18.5 dB | **5.5 dB** |
+| Attack timbre MAE | 26.8 dB | 25.8 dB | **6.3 dB** |
+| Envelope MAE | 33.6 dB | 29.5 dB | **2.0 dB** |
+| Spectral centroid ratio | 1.87× | 1.99× | **1.43×** |
+| Level gap (range) | −95.9 … −12.1 dB | −81.4 … −0.4 dB | **−3.9 … +0.6 dB** |
+
+Gate, item by item:
+
+- **F1's six `eg/*` cases within tolerance** — met. All six pass at ≤0.02 dB mean error;
+  F1 overall went 12/24 → **19/24**, with every remaining failure in the LFO (F6).
+- **The four slow-attack level outliers close at a 2 s gate** — met. STRINGS 1/2/3 and
+  VOICE 1 went from −77.8/−76.0/−81.4/−77.7 dB to −0.4/−0.0/−0.6/−0.1 dB.
+- **Spectral centroid approaches 1.0×** (moved here from F2) — substantially met: 1.99× →
+  1.43× mean, and 20 of 32 patches now sit within 1.0–1.5×. Not clean: MARIMBA 3.31×,
+  TIMPANI 4.12×, SYN-LEAD 1 2.16× remain bright. Of the seven brightest, **five have
+  feedback level 7 and one has 6** — consistent with §1.1(c)'s 2× feedback error, which is
+  still deliberately in place. F4 should move these; if it does not, they need their own
+  investigation rather than another pass at the envelope.
+- **Envelope metrics within 10% on E.PIANO 1 and TUB BELLS** — met on attack, sustain and
+  release T60 (E.PIANO 1: attack 0.0/0.0 ms, sustain −7.4/−8.5 dB, T60 557/522 ms; TUB BELLS
+  within 3 dB on sustain), but **`peak_time_ms` reads 754 ms vs 41 ms on E.PIANO 1 and that
+  is a bad statistic, not a defect.** Both envelopes are flat to within a couple of dB
+  across the whole gate (dexed −1.5/−2.8/−0.3/−9.9 dB at 20/200/800/2000 ms; t00t
+  −0.0/−0.6/−1.7/−9.3), so "time of the maximum" is decided by a ~1 dB ripple and moves
+  freely. Envelope MAE of 1.9 dB on that patch is the number to trust. `peak_time_ms` should
+  be reported but not gated on.
+
+Regressions: `tools/test_syx2patch.py` 20/20, and `tools/host_render/render_fm.cpp` (the
+older cmake host suite) back to ALL PASS — its `run_level_table_checks` and
+`run_key_rate_scaling_check` were removed, since both asserted internals of the model F3
+deleted and `fm_ctl_diff.py` now covers exactly that ground against Dexed instead.
 
 ---
 

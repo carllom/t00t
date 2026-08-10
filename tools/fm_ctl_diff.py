@@ -85,13 +85,13 @@ def resample(rows, col, grid):
 
 
 def cmp_trajectory(name, dexed_csv, t00t_csv, tol_mae, tol_max, unit, verbose, col=1,
-                   floor=None):
+                   floor=None, skip_ms=0.0):
     """Time series: resample both onto a common grid and compare.
 
     `floor` clamps both sides before comparing. The EG needs it: the two engines
     represent "silent" differently — Dexed's `level_` starts at 0, which lands
     about -90 dB below the shared reference, while env_dx.h starts at
-    EG_LOG2_FLOOR (-40 octaves, ~-241 dB). Both are inaudible, but the numeric
+    its own floor far below that. Both are inaudible, but the numeric
     gap between them is enormous and would otherwise dominate `max` on every
     single EG case and drown out the real differences further up the curve.
     """
@@ -109,11 +109,29 @@ def cmp_trajectory(name, dexed_csv, t00t_csv, tol_mae, tol_max, unit, verbose, c
         t = np.maximum(t, floor)
 
     err = np.abs(d - t)
+
+    # `skip_ms` excludes the reference's own first control block from the
+    # scored region. Dexed advances its envelope once per 64 samples (1.45 ms)
+    # and t00t once per FM_BLOCK (16 samples, 0.36 ms), so inside that first
+    # block the reference has no information: a fast attack is already at its
+    # target in Dexed's first emitted sample while t00t shows the three
+    # intermediate steps it actually took to get there. Both reach the same
+    # level in the same 1.45 ms; only the sampling differs. Scoring that region
+    # measures the block-size deviation (documented, deliberate) rather than
+    # the envelope. The excluded region's own worst error is still reported, so
+    # a real defect hiding there stays visible instead of being defined away.
+    skipped_note = ""
+    if skip_ms > 0.0:
+        keep = grid >= skip_ms / 1000.0
+        if keep.any() and not keep.all():
+            skipped_note = f"  [first {skip_ms:g} ms excluded, max there {err[~keep].max():.2f}]"
+            err, grid = err[keep], grid[keep]
+
     mae, mx = float(err.mean()), float(err.max())
     at = grid[int(np.argmax(err))]
     ok = mae <= tol_mae and mx <= tol_max
     msg = (f"MAE {mae:.2f} {unit} (tol {tol_mae:g}), "
-           f"max {mx:.2f} {unit} @ {at * 1000:.0f} ms (tol {tol_max:g})")
+           f"max {mx:.2f} {unit} @ {at * 1000:.0f} ms (tol {tol_max:g}){skipped_note}")
 
     detail = []
     if not ok and verbose:
@@ -347,7 +365,8 @@ def main():
              "--outlevel", str(ol), "--gate", "2.0", "--dur", "4.0"]
         record(label, *cmp_trajectory(label, run(DEXED_DUMP, a), run(T00T_DUMP, a),
                                       tol_mae=1.0, tol_max=3.0, unit="dB",
-                                      verbose=args.verbose, floor=-100.0))
+                                      verbose=args.verbose, floor=-100.0,
+                                      skip_ms=1.5))
 
     # --- pitch EG ---
     for label, rates, levels in (("pitcheg/flat", "99,99,99,99", "50,50,50,50"),
