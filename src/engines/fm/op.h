@@ -166,11 +166,15 @@ inline void op_render_first(FmOp &op, uint32_t n) {
 // number and feedback strength cannot depend on whether this operator
 // happens to be a carrier in the current algorithm.
 //
-// STILL DIVERGENT, deliberately: Dexed's compute_fb uses
-// `(y0 + y) >> (fb_shift + 1)`; this is `>> fb_shift`, i.e. 2x too hot
-// (fm2.md §1.1(c)). Left alone by F2 so that the F0 scorecard delta
-// attributes cleanly to the scaling contract and nothing else -- it is F4's
-// one-character fix.
+// F4: the shift is `fb_shift + 1`, matching Dexed's compute_fb
+// (`scaled_fb = (y0 + y) >> (fb_shift + 1)`). It used to be `>> fb_shift`,
+// which -- now that F2 put both engines on the same cycle-relative scale --
+// is provably exactly 2x too much feedback at every level: at level 7 this
+// kernel produced two full cycles of self-modulation where real hardware
+// produces one, and the same factor of two holds all the way down to level 1.
+// Feedback is what a DX7 patch's "edge" is voiced around, so being an octave
+// deep on it reads as a general excess of brightness rather than as a
+// feedback problem, which is why ears never located it (fm2.md §1.1(c)).
 inline void op_render_fb(FmOp &op, uint32_t n, int32_t fb_shift) {
     uint32_t phase = op.phase;
     uint32_t inc = op.inc;
@@ -179,7 +183,7 @@ inline void op_render_fb(FmOp &op, uint32_t n, int32_t fb_shift) {
     int32_t *out = op.out;
     int32_t fb1 = op.fb1, fb2 = op.fb2;
     for (uint32_t i = 0; i < n; i++) {
-        int32_t fb_mod = (fb1 + fb2) >> fb_shift;
+        int32_t fb_mod = (fb1 + fb2) >> (fb_shift + 1);
         phase += inc;
         uint32_t idx = (phase + ((uint32_t)fb_mod << FM_MOD_SHIFT)) >> FM_PHASE_SHIFT;
         int32_t sample = fm_sine_table[idx];

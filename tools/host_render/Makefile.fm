@@ -1,6 +1,6 @@
-# Host build of render_fm_patch (fm2.md §3.1, F0-b). Plain g++, deliberately
-# separate from CMakeLists.txt: this machine has no cmake, and the F0 rig has no
-# reason to need one. The cmake targets in this directory are untouched.
+# Host build of render_fm_patch + t00t_ctl_dump (fm2.md §3.1). Plain g++,
+# deliberately separate from CMakeLists.txt. The cmake targets in this
+# directory are untouched.
 #
 #   python3 ../syx2patch.py convert ../fm_ref/banks/rom1a.syx ../../src/engines/fm/patches.h
 #   make -f Makefile.fm
@@ -18,17 +18,28 @@ ifneq ($(wildcard $(PATCHES)),)
 CXXFLAGS += -DT00T_FM_HAS_PATCHES=1
 endif
 
+# The engine is header-only, so without these both targets happily relink
+# nothing after an engine change and the harness silently measures a stale
+# binary. That is not hypothetical: F4's feedback fix first "landed" with a
+# scorecard byte-identical to F3's, because make saw no reason to rebuild.
+# A wildcard rather than a list, so a new header (fm_scale.h was one) cannot
+# be forgotten here.
+ENGINE_HEADERS = $(wildcard ../../src/engines/fm/*.h) \
+                 $(wildcard ../../src/osc/*.h) \
+                 ../../src/audio_common.h ../../src/pan.h
+SHARED_HEADERS = ../fm_ref/wav32.h
+
 all: render_fm_patch t00t_ctl_dump
 
-render_fm_patch: render_fm_patch.cpp ../../src/osc/sine.cpp $(wildcard $(PATCHES))
+render_fm_patch: render_fm_patch.cpp ../../src/osc/sine.cpp $(ENGINE_HEADERS) $(SHARED_HEADERS)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -o $@ render_fm_patch.cpp ../../src/osc/sine.cpp -lm
+
+# F1 control-plane dump. Needs no patches.h -- it drives env_dx.h/lfo.h/
+# pitch_eg.h directly with synthetic parameters.
+t00t_ctl_dump: t00t_ctl_dump.cpp ../../src/osc/sine.cpp $(ENGINE_HEADERS)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -o $@ t00t_ctl_dump.cpp ../../src/osc/sine.cpp -lm
 
 clean:
 	rm -f render_fm_patch t00t_ctl_dump
 
 .PHONY: all clean
-
-# F1 control-plane dump. Needs no patches.h -- it drives env_dx.h/lfo.h/
-# pitch_eg.h directly with synthetic parameters.
-t00t_ctl_dump: t00t_ctl_dump.cpp ../../src/osc/sine.cpp
-	$(CXX) -O2 -std=c++17 -Wall $(INCLUDES) -o $@ t00t_ctl_dump.cpp ../../src/osc/sine.cpp -lm

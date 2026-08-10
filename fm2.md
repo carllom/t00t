@@ -247,7 +247,7 @@ Eight issues, each with a machine-checkable gate. The ordering principle is the 
 | **F1** | Control-plane conformance harness (`fm_ctl_diff`). | **Met, §5.4.** It runs, and **fails loudly** on the current `env_dx.h` — i.e. it independently rediscovers §1.1(b) and (d) without being told. If it passes, the harness is wrong. |
 | **F2** | **Met (level/overflow), §5.6.** **Fixed-point contract.** Delete `level`, `FM_OUT_SHIFT_CARRIER`, `FM_OUT_SHIFT_MODULATOR`, `FM_MOD_INPUT_SHIFT`, and both `*_LEVEL_REF`s. Re-derive `op.h` + `patch.h` + `syx2patch.py`'s emit half around *unity gain = one full cycle of phase deviation*. Carriers and modulators share one scale; the carrier attenuation happens once, at the voice mix. | Level gap collapses to a few dB across the bank (met: -0.4..-6.2 dB on 27/32, the rest slow-attack patches F3 owns). No int32 overflow at max level on any ROM1A patch, proved by bound not sample (met: 1.42 bits headroom). **The spectral-centroid criterion originally written here was moved to F3** -- brightness is modulator level over time, so it cannot be judged while the envelopes are broken. |
 | **F3** | **Met, §5.7-5.8.** **`EnvDX` rewrite.** Exponential-approach rising stage with the 1716 jump target, linear falling, `advance()`'s real level+TL composition (`(scaleoutlevel(L)>>1)<<6 + outlevel − 4256`, min-16 clamp), the real rate derivation, `staticcount` handling for slow rates, and remove the `step<1→1` clamp. | F1's six `eg/*` cases within tolerance. F0 envelope metrics (time-to-peak, T60) within 10% on E.PIANO 1 and TUB BELLS. **Spectral centroid** (moved from F2) approaches 1.0× on the bright patches. The four slow-attack level outliers (§5.6) close at a 2 s gate. |
-| **F4** | Feedback `>>(fb_shift+1)` fix; exact conformance test of all 32 algorithms against Dexed's table. Decide algorithms 4 and 6 (two-op loops, old X1/#54): implement the interleaved kernel, or document the approximation and its measured cost. | F1 routing table exact. Scorecard green on the feedback-heavy patches. |
+| **F4** | **Met, §5.9-5.10.** Feedback `>>(fb_shift+1)` fix; exact conformance test of all 32 algorithms against Dexed's table. Decide algorithms 4 and 6 (old X1/#54). | F1 routing table exact (met since F1: 192/192). Scorecard green on the feedback-heavy patches (met: SYN-LEAD 1 24.3 → 0.6 dB, ORCH-CHIME 18.2 → 1.3 dB). Algorithms 4/6 resolved as **not needed** — Dexed does not implement the second loop either. |
 | **F5** | Key level scaling, rate scaling, velocity, detune, fixed-frequency — re-verified against F1 rather than re-derived by ear. | F1 exact for all four. |
 | **F6** | LFO + pitch EG re-verification against `lfo.cc` / `pitchenv.cc`. | F1 exact; scorecard green on vibrato-heavy patches. |
 | **F7** | **Full-bank regression + first hardware checkpoint.** All four ROM banks × several notes and velocities through the scorecard. Commit the resulting thresholds as a checked-in file. *Then* flash and listen — once. | Aggregate score under threshold; your listening test; re-measure c/f/voice (F3 changes the control-rate cost materially). |
@@ -544,6 +544,98 @@ Regressions: `tools/test_syx2patch.py` 20/20, and `tools/host_render/render_fm.c
 older cmake host suite) back to ALL PASS — its `run_level_table_checks` and
 `run_key_rate_scaling_check` were removed, since both asserted internals of the model F3
 deleted and `fm_ctl_diff.py` now covers exactly that ground against Dexed instead.
+
+### 5.9 F4 — feedback, and the algorithms 4/6 question
+
+**The feedback fix is one character**, and F2's shared scale is what made it provable rather
+than a judgement call. Dexed's `compute_fb` uses `(y0 + y) >> (fb_shift + 1)`; `op_render_fb`
+used `>> fb_shift`. Working both sides in cycles-of-phase-deviation:
+
+| feedback level | Dexed | t00t before | t00t after |
+|---|---|---|---|
+| 7 | 1.000 cycles | 2.000 | **1.000** |
+| 4 | 0.125 | 0.250 | **0.125** |
+| 1 | 0.016 | 0.031 | **0.016** |
+
+Exactly 2× at every level — an octave too much feedback everywhere. Feedback is what a DX7
+patch's edge is voiced around, so being 2× deep on it reads as a general excess of
+brightness rather than as a feedback problem, which is why ears never located it.
+
+F3 predicted this: of the seven brightest patches, five had feedback 7 and one had 6. All of
+them moved. SYN-LEAD 1 went from 24.3 dB harmonic error and 2.16× centroid to **0.6 dB and
+1.07×**; ORCH-CHIME 18.2 → 1.3 dB; E.PIANO 1's attack timbre 24.2 → 0.9 dB.
+
+**Algorithms 4 and 6 (old X1 / #54): nothing to implement.** The plan said "implement the
+interleaved kernel, or document the approximation and its measured cost". It turns out
+there is no approximation. Dumping Dexed's own algorithm table shows that in both
+algorithms the *secondary* feedback operator has `fb_out` set but **not** `fb_in`:
+
+```
+alg 4 op 0: in 0 out 1 fb_in 1 fb_out 1      <- primary, takes compute_fb
+alg 4 op 2: in 1 out 0 fb_in 0 fb_out 1      <- secondary, fb_in is 0
+alg 6 op 0: in 0 out 1 fb_in 1 fb_out 1
+alg 6 op 1: in 1 out 0 fb_in 0 fb_out 1
+```
+
+and `fm_core.cc` gates the feedback kernel on `(flags & 0xc0) == 0xc0` — both bits — with
+`// todo: more than one op in a feedback loop` on the line above it. **Dexed does not
+implement the second loop either.** t00t dropping it is matching the reference exactly, not
+approximating it.
+
+Measured, on the seven patches across all eight ROM banks that use these algorithms:
+
+| patch | bank | | harmonic MAE | centroid | level |
+|---|---|---|---|---|---|
+| CLAV 2 | rom1b | alg 4, fb 5 | 3.9 dB | 0.97× | +0.2 dB |
+| CLAV 3 | rom1b | alg 4, fb 0 | 3.9 dB | 1.00× | −0.2 dB |
+| PIPES 4 | rom1b | alg 6, fb 0 | 1.2 dB | 1.15× | −0.2 dB |
+| RECORDER | rom2a | alg 6, fb 5 | 1.0 dB | 1.02× | −0.3 dB |
+| CHIMES | rom2a | alg 6, fb 7 | 1.2 dB | 1.01× | +0.5 dB |
+| COW BELL | rom2a | alg 6, fb 0 | 0.1 dB | 2.01× | −0.4 dB |
+
+(rom1b bank mean 1.0 dB, rom2a 1.3 dB.) CHIMES at *maximum* feedback sits at the bank mean,
+and CLAV 3 at feedback 0 scores identically to CLAV 2 at feedback 5 — so whatever the
+3.9 dB on the CLAVs is, it is not the missing loop. **#54 should close as "not needed"
+rather than stay deferred.** The caveat worth stating: this makes t00t match Dexed, not
+necessarily real DX7 hardware. If the hardware does implement the second loop, both are
+wrong together — which is in scope, since this project's stated target is Dexed.
+
+### 5.10 Scorecard after F4
+
+ROM1A × 32 at C3:
+
+| | F0 | F2 | F3 | F4 |
+|---|---|---|---|---|
+| Harmonic MAE | 18.9 dB | 18.5 dB | 5.5 dB | **1.9 dB** |
+| Attack timbre MAE | 26.8 dB | 25.8 dB | 6.3 dB | **2.3 dB** |
+| Envelope MAE | 33.6 dB | 29.5 dB | 2.0 dB | **1.9 dB** |
+| Centroid ratio | 1.87× | 1.99× | 1.43× | **1.27×** (1.16× over the patches where it applies) |
+| Worst level gap | −95.9 dB | −81.4 dB | −3.9 dB | **−3.9 dB** |
+
+Two harness fixes landed with this phase, both of which would otherwise corrupt later
+measurements:
+
+- **`Makefile.fm` did not list the engine headers as dependencies.** The engine is
+  header-only, so `make` saw nothing to rebuild and F4's first scorecard came back
+  byte-identical to F3's. It now depends on a wildcard over `src/engines/fm/*.h` so a new
+  header cannot be forgotten. Every measurement in §5.6–5.8 was re-verified after the fix.
+- **`harmonic_coverage`** added to `fm_compare.py`. Several DX7 patches are deliberately
+  inharmonic — MARIMBA's 4.52 ratio, TIMPANI's 0.78, STEEL DRUM's fixed 398 Hz operator —
+  so the harmonic tracker samples mostly noise floor and the centroid swings wildly while
+  the tracked content matches almost exactly (TIMPANI: 3.80× centroid, **0.1 dB** harmonic
+  MAE). Coverage is now reported, the summary marks those rows with `*`, and the aggregate
+  centroid is taken only over the 18 of 32 patches where it means anything.
+
+Remaining outliers, for F5 to look at: **TRAIN** (14.6 dB harmonic, 16.1 dB envelope) has
+two fixed-frequency operators (977 Hz, 372 Hz), and fixed-frequency handling is exactly F5's
+subject — a good canary. **VIBE 1** (10.3 dB envelope) and the two CLAVs (3.9 dB) have no
+obvious explanation yet and should not be assumed to fall out of F5.
+
+Also found while sweeping the banks: `syx2patch.py` refuses ROM3A voice 19 with
+`eg_level3=127 out of range [0,99] -- corrupted sysex data`. That is the converter's
+deliberate fail-loud policy meeting a genuinely out-of-spec byte in the published dump
+(Dexed's own `normparm` clamps instead). Worth a decision before F7's full-bank regression:
+clamp with a warning, or skip the voice.
 
 ---
 
