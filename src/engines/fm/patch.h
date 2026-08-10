@@ -57,6 +57,28 @@ struct FmOpParams {
     // fm_op_base_inc() applies both rules at note-on.
     int8_t  detune_offset;
     uint8_t mod_target;    // 0..FM_NUM_OPS-1 (another operator), or FM_TARGET_OUT (carrier)
+    // F7 (fm2.md §5.20): the operators BESIDES mod_target that this operator
+    // also modulates, as a bitmask of operator indices. 0 for all but 7 of the
+    // 32 DX7 algorithms.
+    //
+    // `mod_target` alone cannot express DX7 algorithms 19-25, where one
+    // modulator drives two or three carriers at once: Dexed's OP6 writes a
+    // scratch bus and OP5, OP4 and OP3 each read it, without the bus being
+    // cleared in between. Deriving a single target from that dropped every
+    // path but the first -- silently, on 25 of the 256 factory ROM voices.
+    //
+    // Fan-out is kept as a mask on the SOURCE, rather than switching the bus
+    // convention from receiver-indexed to source-indexed, because fan-IN
+    // (algorithm 7 sums OP5 and OP4 into OP3's modulation, and up to three
+    // operators elsewhere) needs the receiver-indexed form to work at all --
+    // the additive second writer relies on `bus id == receiving operator`.
+    // The two shapes never collide: across all 32 algorithms, no operator that
+    // is the target of a fan-out ever has a second modulator (checked
+    // exhaustively by tools/fm_ctl_diff.py's `table/routing` case, which
+    // reconstructs Dexed's real bus semantics rather than comparing the raw
+    // flag bytes the way F1's `table/algorithms` does). So an extra target's
+    // `in_bus` can point straight at its single source's bus with no ambiguity.
+    uint8_t extra_target_mask;
     // Self-modulation depth, DX7 units (0-7; 0 = off). Was a bool (fm.md
     // §5.2's original "no-op-or-full" self-feedback) until real Dexed source
     // (dx7note.cc's `fb_shift_ = feedback ? 8-feedback : 16`, fm_op_kernel.cc's
@@ -188,6 +210,14 @@ inline bool fm_resolve_routing(const FmPatch &patch, FmRouting &r) {
     // exactly the block-length delay §4.2 rules out.
     for (uint8_t i = 0; i < FM_NUM_OPS; i++) {
         if (patch.op[i].mod_target == i) return false;
+        // Same rule for the fan-out mask: an operator may not name itself, and
+        // may not repeat its own primary target (which would double-count the
+        // edge in the topological sort and never reach zero in-degree).
+        if (patch.op[i].extra_target_mask & (1u << i)) return false;
+        if (patch.op[i].mod_target < FM_NUM_OPS &&
+            (patch.op[i].extra_target_mask & (1u << patch.op[i].mod_target))) return false;
+        // A carrier has no bus of its own for extra targets to read.
+        if (patch.op[i].extra_target_mask && patch.op[i].mod_target >= FM_NUM_OPS) return false;
     }
 
     // Kahn's algorithm over the "i must render before mod_target[i]" edges.
@@ -197,6 +227,11 @@ inline bool fm_resolve_routing(const FmPatch &patch, FmRouting &r) {
     for (uint8_t i = 0; i < FM_NUM_OPS; i++) {
         uint8_t t = patch.op[i].mod_target;
         if (t < FM_NUM_OPS) indeg[t]++;
+        // Extra fan-out targets are real edges too: they must render after
+        // their source, exactly like the primary target.
+        for (uint8_t j = 0; j < FM_NUM_OPS; j++) {
+            if (patch.op[i].extra_target_mask & (1u << j)) indeg[j]++;
+        }
     }
     bool done[FM_NUM_OPS] = {false, false, false, false, false, false};
     uint8_t count = 0;
@@ -210,6 +245,9 @@ inline bool fm_resolve_routing(const FmPatch &patch, FmRouting &r) {
         r.order[count++] = (uint8_t)pick;
         uint8_t t = patch.op[(uint8_t)pick].mod_target;
         if (t < FM_NUM_OPS) indeg[t]--;
+        for (uint8_t j = 0; j < FM_NUM_OPS; j++) {
+            if (patch.op[(uint8_t)pick].extra_target_mask & (1u << j)) indeg[j]--;
+        }
     }
 
     // in_bus: operator i reads bus i (by convention, bus id == receiving
@@ -221,6 +259,18 @@ inline bool fm_resolve_routing(const FmPatch &patch, FmRouting &r) {
     }
     for (uint8_t i = 0; i < FM_NUM_OPS; i++) {
         r.in_bus[i] = has_writer[i] ? i : FM_BUS_ZERO;
+    }
+    // F7: an extra fan-out target reads its SOURCE's bus rather than its own,
+    // since nothing writes a bus named after it. Safe precisely because such a
+    // target has no second modulator (see FmOpParams::extra_target_mask), so
+    // this can never overwrite a fan-in arrangement.
+    for (uint8_t i = 0; i < FM_NUM_OPS; i++) {
+        if (!patch.op[i].extra_target_mask) continue;
+        uint8_t src_bus = patch.op[i].mod_target;
+        if (src_bus > FM_NUM_OPS) continue;  // malformed; the checks above already reject it
+        for (uint8_t j = 0; j < FM_NUM_OPS; j++) {
+            if (patch.op[i].extra_target_mask & (1u << j)) r.in_bus[j] = src_bus;
+        }
     }
 
     // out_bus + kernel selection: walk the already-valid topological order,
@@ -314,17 +364,19 @@ inline bool fm_resolve_routing(const FmPatch &patch, FmRouting &r) {
 inline constexpr FmPatch FM_TEST_PATCH = {
     "P1 Test Stack",
     {
-        /* op0 */ { 0.5f, 0.0f, false,  0, 2, false,
+        // F7 added `extra_target_mask` after `mod_target`; it is 0 for every
+        // operator here, since this patch is a plain single-target chain.
+        /* op0 */ { 0.5f, 0.0f, false,  0, 2, 0, false,
                      75, 2, {99, 50, 20, 60}, {90, 50, 40, 0} },
-        /* op1 */ { 2.0f, 0.0f, false,  0, 4, false,
+        /* op1 */ { 2.0f, 0.0f, false,  0, 4, 0, false,
                      80, 3, {99, 70, 30, 50}, {99, 60, 55, 0} },
-        /* op2 */ { 3.0f, 0.0f, false,  0, 4, false,
+        /* op2 */ { 3.0f, 0.0f, false,  0, 4, 0, false,
                      78, 4, {95, 55, 25, 45}, {95, 45, 35, 0} },
-        /* op3 */ { 1.0f, 0.0f, false,  0, 4, 7,
+        /* op3 */ { 1.0f, 0.0f, false,  0, 4, 0, 7,
                      82, 3, {90, 65, 35, 55}, {99, 55, 50, 0} },
-        /* op4 */ { 1.0f, 0.0f, false,  0, 5, false,
+        /* op4 */ { 1.0f, 0.0f, false,  0, 5, 0, false,
                      88, 6, {99, 60, 20, 50}, {99, 20, 15, 0} },
-        /* op5 */ { 1.0f, 0.0f, false,  0, FM_TARGET_OUT, false,
+        /* op5 */ { 1.0f, 0.0f, false,  0, FM_TARGET_OUT, 0, false,
                      99, 5, {99, 40, 20, 40}, {99, 70, 60, 0} },
     },
     // #49: lfo.pmd/amd = 0 leaves this patch's sound identical to every

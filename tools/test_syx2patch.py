@@ -479,21 +479,48 @@ def test_bulk_parse_rejects_bad_header() -> None:
         assert "byte" in str(exc).lower()
 
 
-def test_out_of_range_byte_fails_loud() -> None:
+def _voice_with_corrupt_byte(index: int, value: int) -> bytes:
     op = _pack_op([9, 19, 29, 39], [98, 68, 58, 8], 27, 11, 12, 1, 2, 3, 4, 6, 2, 77, 0, 15, 33)
     corrupt = bytearray(op)
-    corrupt[0] = 0x7F  # 127 -- masked to 0x7F, still 127, out of 0-99 range
+    corrupt[index] = value
     buf = bytearray(128)
     buf[0:17] = bytes(corrupt)
     for j in range(1, 6):
         buf[j * 17:(j + 1) * 17] = op
     buf[110] = 0
     buf[118:128] = b"BAD       "[:10]
+    return bytes(buf)
+
+
+def test_out_of_range_byte_fails_loud() -> None:
+    """Fail-loud still holds for fields the reference does not define past 99.
+
+    This used to use eg_rate1 = 127. F7 (fm2.md §5.18) widened the EG rate and
+    level checks to the full 7-bit byte range, because ROM3A voice 19 really
+    ships with L3 = 127 in a bank whose checksum validates, and both engines
+    consume it identically. So the probe moved to break_point, which is still
+    bounded -- the point of the test is that the policy exists, not which byte
+    carries it.
+    """
     try:
-        sp.unpack_voice(bytes(buf), 0)
-        assert False, "expected an eg_rate range failure"
+        sp.unpack_voice(_voice_with_corrupt_byte(8, 0x7F), 0)   # break_point = 127
+        assert False, "expected a break_point range failure"
     except sp.Syx2PatchError as exc:
-        assert "eg_rate1" in str(exc)
+        assert "break_point" in str(exc)
+
+
+def test_eg_bytes_above_panel_range_pass_through() -> None:
+    """The other half of the same F7 decision: 100-127 in an EG field is kept.
+
+    Clamping it to 99 was measured, not assumed, to be wrong -- ROM3A #19
+    TIMPANI scores 1.5 dB harmonic MAE against Dexed with the byte passed
+    through and 3.4 dB with it clamped, and its spectral centroid drops to
+    0.75x, i.e. the clamp audibly darkens the patch.
+    """
+    warnings: list = []
+    voice = sp.unpack_voice(_voice_with_corrupt_byte(4, 127), 0, warnings)   # eg_level1 = 127
+    assert voice.ops[0].eg_level[0] == 127
+    assert any("above the DX7 panel range" in w for w in warnings)
 
 
 # --- Corpus-dependent checks (real .syx files, gitignored) ------------------
@@ -567,6 +594,7 @@ def main() -> None:
     run("parse_syx_bulk: checksum validation", test_bulk_parse_and_checksum)
     run("parse_syx_bulk: header/length rejection", test_bulk_parse_rejects_bad_header)
     run("unpack_voice: out-of-range byte fails loud", test_out_of_range_byte_fails_loud)
+    run("unpack_voice: EG byte above panel range passes through (F7)", test_eg_bytes_above_panel_range_pass_through)
 
     files = corpus_paths()
     if not files:

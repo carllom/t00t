@@ -250,7 +250,7 @@ Eight issues, each with a machine-checkable gate. The ordering principle is the 
 | **F4** | **Met, §5.9-5.10.** Feedback `>>(fb_shift+1)` fix; exact conformance test of all 32 algorithms against Dexed's table. Decide algorithms 4 and 6 (old X1/#54). | F1 routing table exact (met since F1: 192/192). Scorecard green on the feedback-heavy patches (met: SYN-LEAD 1 24.3 → 0.6 dB, ORCH-CHIME 18.2 → 1.3 dB). Algorithms 4/6 resolved as **not needed** — Dexed does not implement the second loop either. |
 | **F5** | **Met, §5.11-5.13.** Key level scaling, rate scaling, velocity, detune, fixed-frequency. | F1 exact for key/rate/velocity (already met). New `tools/fm_freq_diff.py` covers detune + fixed-frequency, which cannot be table-diffed: **6/6, worst 0.18 cents** (was 11.90). Key scaling verified across five octaves. |
 | **F6** | **Met, §5.14-5.17.** LFO re-verification against `lfo.cc` (F3 had already settled `pitchenv.cc`). | **F1 exact — 24/24, the first time it has been.** Sync phase + saw rotation, the two-stage delay accumulator, amp mod moved to the log domain, and #49's mod-wheel convention reversed to Dexed's `max()` rule. Scorecard green on the vibrato/tremolo patches (TRAIN harmonic 14.7 → 3.4). Two EG paths that no test reached are now covered (§5.15), and the largest single remaining defect turned out to be a converter override, not DSP (§5.16). |
-| **F7** | **Full-bank regression + first hardware checkpoint.** All four ROM banks × several notes and velocities through the scorecard. Commit the resulting thresholds as a checked-in file. *Then* flash and listen — once. | Aggregate score under threshold; your listening test; re-measure c/f/voice (F3 changes the control-rate cost materially). |
+| **F7** | **Host half met, §5.18-5.21.** Full-bank regression + committed thresholds. Hardware half (listen, c/f/voice) pending a board. | 1600 patch renders per run across all four ROM banks × 5 note/velocity configs, gated by `tools/fm_thresholds.json`: **harmonic 0.53 dB, attack 1.53 dB, envelope 0.34 dB** (from 18.9 / 26.8 / 33.6 at F0). Four out-of-range factory bytes resolved as pass-through, measured not assumed (§5.18). Feedback depth conformance added (§5.19). **Modulator fan-out for algorithms 19-25 fixed — 10% of factory voices had two thirds of their modulation silently dropped** (§5.20). |
 | **F8** | Performance retune → final `MAX_VOICES`. | Measured, per `engine.md` convention. |
 
 Open issues #50 (patch selection over MIDI), #52 (display panel), #51 (P5 operator-budget
@@ -876,6 +876,133 @@ render_fm` fell through to make's *implicit* rule — which drops `$(INCLUDES)` 
 compile at all, while a stale binary from an earlier manual build sat there passing. Same
 failure that cost F4 a phase and nearly cost F5 one. It is a listed target now, with the same
 `ENGINE_HEADERS` dependency as everything else.
+
+### 5.18 F7 — four bytes the converter refused, and why clamping was wrong
+
+The full-bank sweep could not start: `syx2patch.py` rejected ROM3A voice 19
+(`eg_level3=127`), and then ROM3B and ROM4A for the same class of reason. A scan
+of all 256 factory voices found **exactly four** out-of-range bytes — three EG
+fields and one `freq_fine` — and, decisively, **every one of those banks has a
+valid checksum**. This is Yamaha's own data, not a corrupt read.
+
+Three dispositions were possible and only one is right. *Skip* loses a voice.
+*Fail* blocks the bank, which is where we started. *Clamp to 99* is what Dexed's
+own `normparm` does — and it is wrong here, measurably: ROM3A #19 TIMPANI scores
+**1.5 dB** harmonic MAE with the byte passed through and **3.4 dB** clamped, with
+its spectral centroid dropping to 0.75×. The clamp audibly darkens the patch.
+
+Pass-through is correct because both engines consume these fields through
+functions that are *total* over 0..127 and agree on the result: `scaleoutlevel()`
+is `28 + level` above 19, rates go through `min(qrate, 63)`, and the frequency
+ratio is arithmetic (`coarse_ratio × (1 + fine/100)`) rather than a lookup. So
+127 is a real, louder-than-the-front-panel-can-enter level, not undefined
+behaviour. The fail-loud policy is unchanged everywhere else; it is relaxed only
+where the reference is defined over the wider range, and a warning still records
+that the patch is off-panel.
+
+### 5.19 The feedback loop is right, including where it cannot be compared
+
+BRASS 1's error (§5.17 handed it to F7) turned out to depend entirely on
+feedback: at feedback 7 it scored 4.5 dB, at levels 0–3 it scored 1.0, a clean
+monotonic ramp. Feedback *depth* had never been tested — F4 verified the
+32-algorithm table exactly, but "which operator has feedback" is all that table
+says. `tools/fm_ref/make_fb_bank.py` closes that: synthetic banks where one
+operator's self-feedback is the only thing sounding, swept across all 8 levels,
+at two output levels, both as a carrier and as a modulator.
+
+Result: **0.1–0.2 dB at every level except 7 at full output**, in both modes. So
+the loop arithmetic is right, and the remaining case needed explaining rather
+than fixing. Two measurements settled it. First, the waveforms: peak-identical
+(2.0000 against 2.0001) and agreeing to ~0.007 through the smooth stretches,
+diverging only in the wild ones — feedback 7 at full gain drives the loop
+**chaotic**, and no two implementations can track each other there. Second, the
+right instrument for a noise-like signal: averaged spectra agree to **0.82 dB**
+with RMS matched to 0.1%. The scorecard already flags this itself — harmonic
+coverage falls from 49% at feedback 0 to 9% at feedback 7.
+
+Two hypotheses died on the way, both worth recording because both were plausible
+and both were wrong. Sine-table interpolation was implemented and measured:
+**no change at all** (3.6 dB before and after), so it was reverted rather than
+kept on the theory that it ought to help — F0's §5.3 accounting still stands.
+And "BRASS 1 is chaotic too" was tested with a control — Dexed against Dexed with
+a one-cent detune nudge — which came back at **0.3 dB**. BRASS 1 was stable, so
+its error was real, and that ruled-out answer is what forced the next section.
+
+### 5.20 The largest defect in the engine: dropped modulator fan-out
+
+`FmOpParams::mod_target` names **one** operator. DX7 algorithms 19–25 have one
+modulator driving two or three carriers at once: in Dexed, OP6 writes a scratch
+bus and OP5, OP4 and OP3 each read it. `decode_algorithm()` modelled a bus as
+emptied by its first reader (`pending[ib] = []`), so it kept the first edge and
+**silently discarded the rest** — on **25 of the 256 factory voices (10%)**.
+
+The audible cost was large and exactly what "does not sound correct" sounds like:
+two of BRASS 1's three carriers were never modulated at all, leaving it **7.1 dB
+short across its whole upper spectrum** on an averaged-spectrum comparison.
+
+This is the most instructive bug of the whole rewrite, because F1's
+`table/algorithms` case has compared the algorithm bytes since F0 and passed
+**192/192 every single time**. It was comparing the *input* to a lossy decoder.
+Identical inputs, faithfully decoded wrongly, still compare identical. The fix is
+therefore as much a test as a patch: `table/routing` reconstructs Dexed's real
+bus semantics and compares the decoded **modulation graph**, and it was verified
+to fail correctly — re-inserting the clear-on-read line reports exactly
+`7/32 algorithms decode to the wrong graph` with the precise missing edges.
+
+The engine change is small because `fm_voice_render_block` was already general —
+`in_bus`/`out_bus` are independent per operator over six buses, so the renderer
+could always express fan-out; only the resolver could not. `FmOpParams` gains one
+byte, `extra_target_mask`. Fan-out is kept as a mask on the *source* rather than
+flipping the bus convention to source-indexed, because fan-**in** (algorithm 7
+sums OP5 and OP4 into OP3's modulation) needs the receiver-indexed form to work
+at all. That is safe because the two shapes provably never collide: across all 32
+algorithms, no operator that is the target of a fan-out ever has a second
+modulator — checked exhaustively, not assumed.
+
+Adding the field also broke `FM_TEST_PATCH`'s aggregate initialiser — which the
+compiler caught, unlike §5.13's dropped `am_sensitivity`, purely because the next
+field along is an array rather than another integer. Same latent trap, caught by
+luck; the emitted-field guard from F5 is what actually covers it.
+
+Effect on ROM1A: BRASS 1 **4.5 → 0.2 dB**, BRASS 2 2.9 → 0.2, PIPES 1 4.1 → 0.2.
+Bank mean harmonic 1.0 → 0.6, attack 2.0 → 1.1, envelope 0.6 → 0.4.
+
+### 5.21 The regression gate (§6, delivered)
+
+`tools/fm_regress.py` + `tools/fm_thresholds.json`: **10 banks × 5 note/velocity
+configs × 32 voices = 1600 patch renders per run**, scored against Dexed and
+compared to committed numbers. `--update` re-baselines; plain invocation fails on
+regression. Both the bank *mean* and the *worst single patch* are gated: a mean
+alone lets one patch fall apart while 31 improve, a worst-case alone fails
+whenever a single inharmonic patch's tracker wobbles.
+
+The thresholds are measurements with headroom (30% or 0.35 dB, whichever is
+larger), not aspirations — so the gate answers "did this change make something
+worse?", which a regression suite can actually answer, rather than "is this good
+enough?", which it cannot.
+
+Across all 256 factory voices at five note/velocity configurations:
+
+| Metric | F0 baseline (ROM1A, C3) | **F7 (all banks, all configs)** |
+|---|---|---|
+| Harmonic MAE | 18.9 dB | **0.53 dB** |
+| Attack timbre MAE | 26.8 dB | **1.53 dB** |
+| Envelope MAE | 33.6 dB | **0.34 dB** |
+
+Device build clean: 54,588 bytes flash (+784 over F6 — the fan-out mask across 32
+patches plus the resolver), bss unchanged at 211,984, 48 `smlawb`.
+
+**What is left.** The remaining outliers are concentrated in attack timbre on
+ROM2B and ROM4B (bank means 2.3 and 4.4 dB, worst single patches 25 and 53 dB at
+the top of the keyboard), and they grow with pitch — 4.4 dB at note 72 against
+2.2 at note 36 on ROM4B. That pitch dependence is a real lead and is where F8's
+attention belongs. Everything else is at or below 1 dB.
+
+**Not measured, and why.** `c/f/voice` is `(duty − idle) / voice_count` read from
+the running device (engine.md's convention), so unlike every other number in this
+document it cannot be produced on the host. It is deferred to the hardware
+session along with the listening test — which is the gate F7 was always going to
+stop at.
 
 ---
 
