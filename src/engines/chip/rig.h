@@ -69,6 +69,15 @@
 #ifndef CHIP_RIG_MOD
 #define CHIP_RIG_MOD 0
 #endif
+// ADSR: decay rate 7 (313 c/step) toward a mid sustain level. Not decay=0 --
+// decay=0 is the *fastest* rate period (9 cycles, same as attack), and
+// reaching sustain only stops the counter; EnvSid::tick()'s phase accumulator
+// keeps advancing at that rate regardless, so a decay=0 voice re-enters the
+// per-sample while-loop 2-3x/sample for the life of the note (measured: ~62
+// c/f/voice) instead of the ~0 times a slower, realistic decay rate needs
+// (see env_sid.h's tick() comment). This settles to sustain within well
+// under a second, so almost all of each 4s phase measures the steady-state
+// cost a real held note actually pays.
 
 static_assert(CHIP_RIG_FILTERED <= CHIP_RIG_VOICES,
               "cannot route more voices into buses than the rig renders");
@@ -107,7 +116,7 @@ struct ChipRig {
             // exercised; noise on every fourth voice for its extra LFSR work.
             voice[v].osc.waveform = (v % 4 == 3) ? SID_WAVE_NOISE
                                                  : (SID_WAVE_SAW | SID_WAVE_PULSE);
-            voice[v].env.set_adsr(0x00, 0xf0);   // straight to full sustain
+            voice[v].env.set_adsr(0x07, 0x80);   // decay 7 (313 c/step) to mid sustain
             voice[v].env.gate_on();
 
             mod[v].init();
