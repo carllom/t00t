@@ -121,6 +121,11 @@ if(DEFINED SPEECH_PROFILE AND NOT SPEECH_PROFILE STREQUAL "0")
     target_compile_definitions(t00t PRIVATE T00T_SPEECH_PROFILE=1)
 endif()
 
+# Chip P0 rig override (chip engine only, see src/engines/chip/audio_engine.cpp).
+if(DEFINED CHIP_PROFILE AND NOT CHIP_PROFILE STREQUAL "0")
+    target_compile_definitions(t00t PRIVATE T00T_CHIP_PROFILE=1)
+endif()
+
 # See ENGINE_VOICE_ALLOC above — tells main.cpp to skip the voice_alloc calls
 # it would otherwise fail to link against on the tracker build.
 if(T00T_ENGINE STREQUAL "tracker" OR T00T_ENGINE STREQUAL "chip")

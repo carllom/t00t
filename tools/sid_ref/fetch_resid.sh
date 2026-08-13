@@ -53,6 +53,16 @@ for f in "${FILES[@]}"; do
   curl -sSf -o "$DEST/$f" "$BASE/$f"
 done
 
+# dac.h's DAC<bits>() no-arg constructor (a "temporary workaround" per its own
+# FIXME) names the constructor with its own template-id repeating <bits> --
+# accepted as GCC/Clang leniency historically, a hard parse error ("expected
+# unqualified-id") on GCC 13 in C++20 mode. -Wno-template-id-cdtor (below) is
+# what used to suppress this as a *warning*; on GCC 13 it isn't one, so the
+# flag is a no-op and the build fails outright without this. Standard-
+# conformant fix: drop the redundant <bits>, which inside the class body
+# already refers to itself via the injected class name.
+sed -i 's/DAC<bits>()/DAC()/' "$DEST/dac.h"
+
 # siddefs.h is normally produced by `configure` substituting into
 # siddefs.h.in. Doing it here rather than requiring autotools keeps the rig to
 # "curl + make". The values match configure.ac's defaults for a modern g++:
