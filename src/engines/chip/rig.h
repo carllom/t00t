@@ -23,7 +23,7 @@
 // value being measured is cycles per frame, and a runtime switch would put a
 // branch inside the thing under test):
 //
-//   CHIP_RIG_VOICES      total voices rendered            (default 24, §9's target)
+//   CHIP_RIG_VOICES      total voices rendered            (default 20, §9's target)
 //   CHIP_RIG_BUSES       filter bus count                 (default 4,  §13.3)
 //   CHIP_RIG_FILTERED    voices routed into a bus         (default 12, §9)
 //   CHIP_RIG_OVERSAMPLE  oscillator oversampling, 1 or 2
@@ -31,6 +31,8 @@
 //   CHIP_RIG_SAT         6581 filter saturation on/off
 //   CHIP_RIG_SUBBLOCK    sub-block length                 (default 64, §7.2)
 //   CHIP_RIG_MOD         per-voice sub-oscillator mode: 0 off, 1 sync, 2 ring
+//   CHIP_RIG_FX          post-mix insert: 0 off, 1 delay, 2 reverb (§10, fx/)
+//   CHIP_RIG_SPEAKER     §10 speaker sim stage on/off, downstream of FX
 //
 // The four measurements sid.md §1 gates on, and how to take them:
 //
@@ -49,10 +51,10 @@
 // wants a number rather than an opinion.
 
 #ifndef CHIP_RIG_VOICES
-#define CHIP_RIG_VOICES 24
-#endif
-#ifndef CHIP_RIG_BUSES
-#define CHIP_RIG_BUSES 4
+#define CHIP_RIG_VOICES 20  // P0 decision, sid.md §9: 20v/4f over 22v/2f -- a
+#endif                      // bus (~80 c/f) is cheaper than a voice (~108 c/f),
+#ifndef CHIP_RIG_BUSES      // so 22v/2f's "bigger voice budget" nets *less*
+#define CHIP_RIG_BUSES 4    // headroom (89.0% measured) than 20v/4f (86.6%).
 #endif
 #ifndef CHIP_RIG_FILTERED
 #define CHIP_RIG_FILTERED 12
@@ -68,6 +70,12 @@
 #endif
 #ifndef CHIP_RIG_MOD
 #define CHIP_RIG_MOD 0
+#endif
+#ifndef CHIP_RIG_FX
+#define CHIP_RIG_FX 0
+#endif
+#ifndef CHIP_RIG_SPEAKER
+#define CHIP_RIG_SPEAKER 0
 #endif
 // ADSR: decay rate 7 (313 c/step) toward a mid sustain level. Not decay=0 --
 // decay=0 is the *fastest* rate period (9 cycles, same as attack), and

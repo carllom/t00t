@@ -28,10 +28,11 @@ SPEECH_PROFILE ?= 0
 # inside the loop whose cycle count is the thing being measured. "default"
 # leaves rig.h's own value in place.
 #
-#   make ENGINE=chip                                  # 24 voices, 12 filtered
+#   make ENGINE=chip                                  # 20 voices, 12 filtered (P0 decision, sid.md §9)
 #   make ENGINE=chip CHIP_RIG_FILTERED=0              # unfiltered, for the diff
 #   make ENGINE=chip CHIP_RIG_MOD=1 CHIP_RIG_OVERSAMPLE=2   # sync at 2x
 #   make ENGINE=chip CHIP_WAVE_DAC=0                  # without the 8 KB DAC LUT
+#   make ENGINE=chip CHIP_RIG_FX=2 CHIP_RIG_SPEAKER=1 # 20v/4-bus + reverb + speaker sim, worst case
 CHIP_RIG_VOICES     ?= default
 CHIP_RIG_BUSES      ?= default
 CHIP_RIG_FILTERED   ?= default
@@ -40,6 +41,8 @@ CHIP_RIG_SAT        ?= default
 CHIP_RIG_SUBBLOCK   ?= default
 CHIP_RIG_MOD        ?= default
 CHIP_WAVE_DAC       ?= default
+CHIP_RIG_FX         ?= default
+CHIP_RIG_SPEAKER    ?= default
 
 CMAKE_FLAGS = -DPICO_BOARD=$(BOARD) -DPICO_PLATFORM=rp2350 \
               -DMIDI_USB=$(MIDI_USB) -DMIDI_UART=$(MIDI_UART) \
@@ -49,7 +52,8 @@ CMAKE_FLAGS = -DPICO_BOARD=$(BOARD) -DPICO_PLATFORM=rp2350 \
               -DCHIP_RIG_FILTERED=$(CHIP_RIG_FILTERED) \
               -DCHIP_RIG_OVERSAMPLE=$(CHIP_RIG_OVERSAMPLE) \
               -DCHIP_RIG_SAT=$(CHIP_RIG_SAT) -DCHIP_RIG_SUBBLOCK=$(CHIP_RIG_SUBBLOCK) \
-              -DCHIP_RIG_MOD=$(CHIP_RIG_MOD) -DCHIP_WAVE_DAC=$(CHIP_WAVE_DAC)
+              -DCHIP_RIG_MOD=$(CHIP_RIG_MOD) -DCHIP_WAVE_DAC=$(CHIP_WAVE_DAC) \
+              -DCHIP_RIG_FX=$(CHIP_RIG_FX) -DCHIP_RIG_SPEAKER=$(CHIP_RIG_SPEAKER)
 
 HOST_BUILD_DIR = tools/host_render/build
 

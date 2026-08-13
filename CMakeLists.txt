@@ -94,7 +94,8 @@ target_include_directories(t00t PRIVATE src src/midi src/wslcd src/engines/${T00
 # would put a branch inside the loop under test. Passed through from the
 # Makefile every configure, so nothing gets stuck in the CMake cache.
 foreach(_rig CHIP_RIG_VOICES CHIP_RIG_BUSES CHIP_RIG_FILTERED CHIP_RIG_OVERSAMPLE
-             CHIP_RIG_SAT CHIP_RIG_SUBBLOCK CHIP_RIG_MOD CHIP_WAVE_DAC)
+             CHIP_RIG_SAT CHIP_RIG_SUBBLOCK CHIP_RIG_MOD CHIP_WAVE_DAC
+             CHIP_RIG_FX CHIP_RIG_SPEAKER)
     if(DEFINED ${_rig} AND NOT ${_rig} STREQUAL "default")
         target_compile_definitions(t00t PRIVATE ${_rig}=${${_rig}})
     endif()
