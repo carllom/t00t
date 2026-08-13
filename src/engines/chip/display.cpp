@@ -1,12 +1,12 @@
 #include "wslcd/display.h"
 
-// Chip module F0 measurement build (sid.md §1 P0): no display.
+// Chip module: no display yet (sid.md §1 P5 owns the LCD UI).
 //
-// The rig is a pin-only measurement (audio_engine.cpp) and a display task
-// would put SPI traffic and Core 0 work alongside the thing being measured.
-// The speech engine's #31 profiling build makes the same call for the same
-// reason. sid.md §5 of the LCD work is P5; §15 open question 3 (what VM state
-// the display wants) is not answerable until the frame VM exists at P3.
+// P1 through P4 have nothing worth putting on a screen yet -- §15 open
+// question 3 (how much VM state the display wants) isn't answerable until
+// the frame VM exists at P3, and HAS_LCD defaults to 0 on boards without one
+// anyway, so these stubs just keep main.cpp linking unchanged in the
+// meantime (same reasoning the P0 rig used, extended forward).
 void display_init() {}
 void display_task() {}
 void display_bringup_test() {}

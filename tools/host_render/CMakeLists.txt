@@ -53,3 +53,22 @@ target_include_directories(render_speech PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}
     ${CMAKE_CURRENT_LIST_DIR}/../../src
 )
+
+# CHIP_STRICT reference-diff harness (sid.md §11.1, P0/P1). Takes the same
+# CLI as tools/sid_ref/resid_render.cpp; tools/sid_compare.py runs both and
+# scores the difference. Header-only against src/chip/, no extra .cpp inputs.
+add_executable(render_sid render_sid.cpp)
+target_include_directories(render_sid PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}
+    ${CMAKE_CURRENT_LIST_DIR}/../../src
+    ${CMAKE_CURRENT_LIST_DIR}/../sid_ref
+)
+
+# Control-plane counterpart to render_sid, above (sid.md §11.1's other half):
+# exact CSV dumps of src/chip/'s primitives, diffed by tools/sid_ctl_diff.py
+# against tools/sid_ref/resid_dump.cpp's reference dumps. Header-only.
+add_executable(t00t_chip_dump t00t_chip_dump.cpp)
+target_include_directories(t00t_chip_dump PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}
+    ${CMAKE_CURRENT_LIST_DIR}/../../src
+)

@@ -8,11 +8,12 @@ It is **not** a SID player and **not** a `.sid` file emulator. It is a synth who
 voices sound like SID voices and whose instruments are expressive in the way SID
 instruments were expressive — via a per-frame table VM, not via LFOs.
 
-Status: **P0 closed.** Host side and hardware measurement both done. The CPU
-budget in §9 is now real breadboard_rp2350 numbers, not static estimates, and
-two real bugs were found and fixed along the way — see §14a for what F0
-measured, what it found wrong in this document, and what it found wrong in the
-rig itself. Target configuration settled at **20 voices, 4 filter buses**.
+Status: **P0 closed, P1 built.** P0's CPU budget in §9 is real breadboard_rp2350
+numbers, not static estimates (§14a); target configuration settled at **20
+voices, 4 filter buses**. P1's engine skeleton is in `engines/chip/`, and both
+halves of §11.1's validation (the `CHIP_STRICT` spectral harness and the exact
+control-plane diff, both missing until now despite §14a's earlier claim
+otherwise) are built and passing — see §14b.
 
 ---
 
@@ -21,7 +22,7 @@ rig itself. Target configuration settled at **20 voices, 4 filter buses**.
 | Phase | Deliverable |
 |-------|-------------|
 | **P0** | **Measurement gate.** Primitives built standalone + host harness; measure per-voice cost, filtered-voice cost *including bus round trip*, and sync at 1× vs 2× oversampling. No engine, no VM. *(Closed — §14a. Hardware measured on breadboard_rp2350; 20 voices / 4 buses confirmed at 86.6% worst-case load.)* |
-| **P1** | Engine skeleton: `engines/chip/`, `VoiceType` dispatch, static MIDI-channel→voice map, register-stream playback path. Prove a SID voice sounds right against reSID. |
+| **P1** | Engine skeleton: `engines/chip/`, `VoiceType` dispatch, static MIDI-channel→voice map, register-stream playback path. Prove a SID voice sounds right against reSID. *(Built — §14b. Device engine, `CHIP_STRICT` spectral harness, and the exact control-plane diff (`sid_ctl_diff.py`) all in and passing.)* |
 | **P2** | Filter buses + 6581 model (cutoff LUT + saturation). Bus binding, degrade-to-unfiltered. |
 | **P3** | Frame table VM on Core 1: wave/pulse/filter tables, vibrato, arpeggio, hard restart, gate-off timer. This is where instruments become expressive. |
 | **P4** | Instrument import: GoatTracker `.ins` host converter; hand-authored text format → header. Dynamic voice allocation. |
@@ -246,6 +247,18 @@ in real tunes ran unfiltered, because the filter was scarce.
 **Last-write-wins** when several notes share a bus and their filter tables
 disagree. That is what real drivers did and it is the trivial implementation; no
 bus-leadership tracking.
+
+**P2 TODO — skip idle buses individually.** §14a.9 measured a bound-but-silent
+filter bus at ~80 c/f/*sample*, not per note — real cost even when nothing
+feeds it. Since this binding policy already tracks which buses are free, that
+same bookkeeping (a per-bus bound-voice count, not one global flag) can gate
+§7.2's per-bus clear+tick so each of the 4 buses skips independently when its
+count is 0, rather than all-or-nothing. One gotcha: `SidFilter`'s `lp`/`bp`
+state must reset (`init()`) the moment a given bus's count goes 0→1, or a new
+voice binding to a just-woken bus inherits one sample of the *previous*
+voice's resonant tail. Doesn't lower the worst-case budget (86.6% already
+assumes all 4 buses bound) — it's average-case headroom, for whenever a
+performance isn't using all 4 at once.
 
 ---
 
@@ -881,6 +894,139 @@ a full voice/bus load:**
 24 voices was the number this whole document assumed going in; it does not
 survive contact with a real reverb load. 20v/4f is the settled replacement —
 see §9 for the full breakdown and the exchange-rate reasoning against 22v/2f.
+
+---
+
+## 14b. P1 results
+
+### 14b.1 Engine skeleton
+
+`engines/chip/` now has a real MIDI-driven render loop alongside the P0 rig,
+which is preserved rather than replaced -- same idiom as the speech engine's
+`SPEECH_PROFILE` flag (`make ENGINE=chip CHIP_PROFILE=1` still builds §9's
+exact measurement rig, unchanged, so its hardware-verified numbers stay
+re-measurable against later changes). Plain `make ENGINE=chip` now builds the
+engine instead.
+
+- `engine.h`: `VoiceType` (`VT_SILENT` / `VT_SID`, per §7.3) dispatched in the
+  render loop exactly like the groovebox's, the architectural template §2
+  names for this whole module. `MAX_VOICES = 32` (unchanged, the allocation
+  pool from §13.3) and `VoiceParams` now carries `type`.
+- `audio_engine.cpp`: one `SidVoice` per slot, dispatched by `type`. No
+  filter buses yet (P2: straight to the dry mix) and no frame table VM yet
+  (P3: a note is freq/pw/waveform/ADSR held static for its duration -- no
+  vibrato, arpeggio, or `mod_inc` sweep). Retrigger uses
+  `env.hard_restart()` (§4.3's instantaneous-reset default), not
+  `gate_on()`'s hardware-literal "only attacks if not already gated" --
+  deliberate, because a static channel map retriggers the same voice slot on
+  every repeated note regardless of whether the previous note's release has
+  finished. Delay/reverb are wired the same way every other engine does it
+  (CC74/73/72/75, `engine_base.h`'s `EffectParams`).
+- `midi_controller.cpp`: §8's "MIDI channel → voice, no allocator" --
+  channel N plays voice N, monophonic per channel (main.cpp's own existing
+  comment already named this convention). Channels 16-31 of the 32-voice
+  pool sit unreachable until P4's dynamic allocator. No instrument system
+  yet (P4 owns `.ins` import), so note-on uses one fixed default patch;
+  two live CCs (waveform select, pulse width) are enough to hear and compare
+  the primitives against reSID, which is what this phase is actually for.
+
+### 14b.2 The `CHIP_STRICT` harness was missing, not just unmeasured
+
+§14a's own text claimed "`tools/host_render/render_sid.cpp` is the
+`CHIP_STRICT` harness... built and green," and `tools/sid_ref/baseline_f0.json`
+is a real, populated scorecard. But the file did not exist on this branch --
+neither did `tools/host_render/wav32.h`, which `resid_render.cpp` has
+included since before P0. Whatever produced the committed baseline was never
+committed itself. Since P1's own phase line calls for exactly this ("register-
+stream playback path. Prove a SID voice sounds right against reSID"), both
+were rebuilt from `sidreg.h`'s spec and §11.1's topology description:
+
+- `tools/host_render/wav32.h` -- float32 WAV writer, ported from the FM
+  module's `tools/fm_ref/wav32.h` (same shape, same reasoning: absolute level
+  matters to `sid_compare.py`'s `level_gap_db`, so quantising to a shared
+  PCM16 range would bake in a guessed headroom constant).
+- `tools/host_render/render_sid.cpp` -- the strict topology itself: exactly 3
+  `SidVoice`s, 1 shared `SidFilter` bound by `$D417`'s per-voice routing bits,
+  `$D418` bit 7's voice-3-disconnect, a linear 4-bit volume DAC (not modelled
+  more precisely anywhere else in this document, so not here either), and
+  adjacency-wired sync/ring where voice v's source is voice `(v+2)%3` --
+  reSID's own wiring (V1←V3, V2←V1, V3←V2). `SidBoardFilter` runs after the
+  mix, matching `resid_render.cpp`'s `enable_external_filter(true)` (§10: "the
+  t00t side models it too, and taking it out of the reference would make the
+  comparison measure a stage neither engine is supposed to omit"). Output
+  scale reuses `SID_MIX_SHIFT` -- the same constant the device render path
+  already uses to bring a mixed signal into int16 range -- rather than
+  inventing a second calibration.
+- `CHIP_STRICT=1` is defined before including `chip/sid_voice.h`, per §11.1:
+  "velocity scaling must compile out under `CHIP_STRICT`."
+
+Also found and fixed in the process, unrelated to any of the above: reSID's
+pinned source doesn't compile on a modern GCC in C++20 mode at all --
+`dac.h`'s `DAC<bits>()` constructor spelling is a hard parse error on GCC 13,
+not the warning `-Wno-template-id-cdtor` used to suppress. `fetch_resid.sh`
+now patches it (one `sed`, standard-conformant fix: drop the redundant
+`<bits>`), so a fresh fetch builds without manual intervention.
+
+**Result:** `sid_compare.py --all` now runs end-to-end and reproduces the
+committed baseline to within noise --
+
+| metric | baseline | reproduced |
+|---|---|---|
+| level_gap_db | -0.271 | -0.271 |
+| band_mae_db | 3.537 | 3.557 |
+| band_p95_db | 12.033 | 12.115 |
+| attack_mae_db | 2.636 | 2.694 |
+| centroid_ratio | 1.143 | 1.143 |
+| envelope_mae_db | 3.25 | 3.249 |
+| coactive_frac | 1.0 | 1.0 |
+
+-- independent confirmation of both the rebuilt harness and the numbers
+already on record. The per-stream spread behind that mean is exactly what
+§4.2 and §5.1 already predict: `waveforms` (AND-combined waveforms, not yet
+the P6 LUT) and `filter_resonance`/`filter_sweep` (the fitted cutoff LUT) are
+the worst-scoring streams, both already-documented approximations rather than
+new findings.
+
+### 14b.3 The exact control-plane diff, now built
+
+`tools/sid_ctl_diff.py` (§11.1's other half -- envelope trajectories, the
+noise sequence, the waveform logic and the DAC tables compared *exactly*,
+where a spectral score could hide two errors cancelling) expects
+`tools/host_render/t00t_chip_dump`, mirroring `resid_dump.cpp`'s four domains
+(`env`, `lfsr`, `wave`, `dac`) -- missing for the same reason §14b.2's harness
+was: whatever built it before was never committed. Rebuilt directly against
+`resid_dump.cpp`'s own header comment, which names itself "the authority on
+the domains." Three of the four domains are direct dumps of primitives that
+already exist (`sid_lfsr_step`, `sid_combined_and`, the compiled DAC tables);
+only `env` needed real care, replicating the reference's "prime the fastest
+attack first, then measure" methodology sample-by-sample instead of
+cycle-by-cycle.
+
+One real bug surfaced immediately on the first run: all three *pure*
+waveforms (triangle, sawtooth, pulse) failed exact comparison, pulse by a
+suspicious constant 15 on every one of 4096 phases. Not a primitives bug --
+`resid_dump.cpp`'s own `dump_wave()` reads through `readOSC()`, the same
+8-high-bits-only OSC3 register its `lfsr` domain already documents using, so
+the reference's "12-bit" wave dump only has 8 bits of real resolution and the
+low nibble is always zero. `t00t_chip_dump.cpp` masked it for `lfsr` but not
+`wave`; fixed by masking there too (`& 0xff0`). Worth remembering elsewhere
+this OSC3 quantisation might matter and isn't obviously flagged.
+
+```
+[PASS] env    0 of 12288 points exceed 3 samples and 0.5% (both required)
+[PASS] lfsr   200000 shifts compared, 0 mismatches
+[PASS] wave   pure waveforms exact; AND-combined waveforms reported, not
+              gated (sid.md §13.5) -- mean |err| 1012/1423/1971/1020,
+              max 2720/3840/4080/2720, an exact match to §4.2's own
+              already-quoted numbers for saw+tri / pulse+tri / pulse+saw /
+              all-three
+[PASS] dac    8-bit and 12-bit tables both 0/N differ
+```
+
+4/4 domains pass. Independent confirmation twice over now: the spectral
+harness (§14b.2) reproduces the committed scorecard, and this exact harness
+reproduces the numbers §4.2 already quotes inline -- two different rebuilt
+tools landing on the same figures the original (lost) ones produced.
 
 ---
 

@@ -23,6 +23,14 @@ DMA_BUFFER_SIZE ?= default
 #   make ENGINE=speech SPEECH_PROFILE=1
 SPEECH_PROFILE ?= 0
 
+# Chip module P0 measurement rig (rig.h), preserved behind a flag once P1's
+# real MIDI-driven engine became the default (sid.md §1, §14a.9). Same idiom
+# as SPEECH_PROFILE above -- lets sid.md §9's hardware numbers stay
+# re-measurable against later changes without deleting the rig that produced
+# them. No effect on other engines.
+#   make ENGINE=chip CHIP_PROFILE=1
+CHIP_PROFILE ?= 0
+
 # Chip module F0 measurement rig levers (src/engines/chip/rig.h, sid.md P0).
 # Each measurement is its own build -- a runtime switch would put a branch
 # inside the loop whose cycle count is the thing being measured. "default"
@@ -47,7 +55,7 @@ CHIP_RIG_SPEAKER    ?= default
 CMAKE_FLAGS = -DPICO_BOARD=$(BOARD) -DPICO_PLATFORM=rp2350 \
               -DMIDI_USB=$(MIDI_USB) -DMIDI_UART=$(MIDI_UART) \
               -DT00T_ENGINE=$(ENGINE) -DDMA_BUFFER_SIZE=$(DMA_BUFFER_SIZE) \
-              -DSPEECH_PROFILE=$(SPEECH_PROFILE) \
+              -DSPEECH_PROFILE=$(SPEECH_PROFILE) -DCHIP_PROFILE=$(CHIP_PROFILE) \
               -DCHIP_RIG_VOICES=$(CHIP_RIG_VOICES) -DCHIP_RIG_BUSES=$(CHIP_RIG_BUSES) \
               -DCHIP_RIG_FILTERED=$(CHIP_RIG_FILTERED) \
               -DCHIP_RIG_OVERSAMPLE=$(CHIP_RIG_OVERSAMPLE) \
