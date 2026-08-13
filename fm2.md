@@ -1004,6 +1004,88 @@ document it cannot be produced on the host. It is deferred to the hardware
 session along with the listening test — which is the gate F7 was always going to
 stop at.
 
+### 5.22 F8 — hardware voice-count sweep (partial: no FX, 5/32 patches heard)
+
+First real hardware numbers for the F7 engine, `breadboard_rp2350`, held notes,
+no FX. Duty cycle converts to cycles/frame at 3401 c/f:
+
+| voices | duty | cycles/frame | c/f/voice above idle |
+|---|---|---|---|
+| 0 | 2.10% | 71.4 | — (idle) |
+| 1 | 7.8% | 265.3 | 193.9 |
+| 2 | 13.1% | 445.5 | 187.1 |
+| 4 | 23.8% | 809.4 | 184.5 |
+| 8 | 45% | 1530.5 | 182.4 |
+| 16 | 87.9% | 2989.5 | 182.4 |
+
+A clean line, `cycles ≈ 71.4 + 182.4 × N` — exact at N=8 and N=16, off by only
+~10 c/f at N=1/2/4 (plausibly duty-cycle read-out rounding at the low end, not a
+second effect). Single-voice, per-patch (idle-subtracted, patches 1–5 of
+ROM1A): **177–235 c/f**, patch-dependent (176.9/183.7/234.7/200.7/193.9 for
+patches 3/2/4/5/1) — expected now, since F7's real per-patch algorithm,
+feedback, and LFO content vary the actual per-block cost, unlike #43's uniform
+synthetic rig.
+
+Both numbers are well above what put `MAX_VOICES=16` on the table. #43's
+kernel-only baseline was 100.5 c/f/voice; #45's EnvDX-only checkpoint was
+137–154 c/f/voice. The complete F7 engine measures **1.2–1.7× #45** and
+**1.8–2.3× #43**, which is exactly what §3.4's own sensitivity tiers were
+written to catch: ≤130 c/f → 20+ voices, ~160 → 16 as planned, ≥200 → 12 with
+6-op as opt-in. The measured range straddles the last two tiers, and patch #4
+alone (234.7 c/f) clears into the ≥200 tier on its own.
+
+**Budget, redone with today's numbers.** 16 voices measures 87.9% duty with
+*no FX running*. §9's 85% ceiling was meant to leave room for reverb's own
+measured 268.7 c/f (7.9%) *inside* that 85%, so 87.9% dry is already past it
+before FX is added; with reverb it lands near 95.8% steady-state, and #45's own
+bursty-retrigger delta (+8 pp over steady-state at 16 voices) would put that at
+or past the 100% deadline — a real risk, not a thin margin. Re-solving the
+ceiling with the measured idle and the old reverb figure: `0.85 × 3401 − 71.4 −
+268.7 = 2550.75` c/f left for voices, which at 182–235 c/f/voice gives
+**~11–14 voices**, not 16, as the reverb-safe count.
+
+**Two things open before this can move #53's needle on `MAX_VOICES` itself:**
+idle jumped from #43's 15 c/f (0.44%) to 71.4 c/f (2.10%) here — 4.7×, worth
+confirming this is the same measurement convention (same idle condition, no
+stray Core 0 traffic) before trusting the budget re-solve above, since that gap
+alone is worth more than a third of the difference between 11 and 16 voices.
+And there is no FX-on reading yet — everything above about reverb is the old
+#43 figure carried forward, not measured against the current engine. `MAX_
+VOICES` stays at 16 pending both, plus the rest of the by-ear pass (5/32 ROM1A
+patches heard so far, reported as sounding "much more authentic" than attempt
+1) — per #53's own acceptance criteria, this is a HITL gate, not a number to
+set from a cycle count alone.
+
+**A separate signal from the same session, resolved.** Mild distortion was
+reported at 16 voices with no FX; §5.22 flagged two candidate mechanisms
+(Core 1 deadline overrun vs. mix-stage summing headroom) since 87.9% dry duty
+was close enough to saturated that a deadline miss was live, not a stretch.
+Carl's own follow-up settles it: on a sustained chord with LFO running, the
+distortion's intensity tracks *volume*, which a deadline overrun would not do
+(that would read as clicks/dropouts tied to retrigger timing, not a level-
+dependent grit) — mix-stage headroom, not CPU. `MAX_VOICES` stays at 16;
+carrier summing headroom is the thing to revisit in a later optimization pass,
+not voice count or the budget re-solve above.
+
+**Core 1 code placement, confirmed (fm.md §3.6 lever 2, open question 10).**
+Checked directly rather than assumed: no `PICO_COPY_TO_RAM`/`copy_to_ram`
+binary type anywhere in `CMakeLists.txt`, so the pico-sdk default (execute
+in place from flash, through the RP2350's shared XIP cache) applies to the
+whole firmware, Core 1's FM kernel included. `op.h`'s render loop is plain
+`inline`, not wrapped in `__not_in_flash_func` — the comment at its own top
+records *why*: #43 measured SRAM placement as +4.9 c/f/voice *worse*, not
+better, because a flash-resident caller reaching SRAM-placed code needs a
+linker veneer to cross the >256 MB gap outside a Thumb `BL`'s range, and nothing
+in that trade offsets the veneer cost once the loop is small enough to live in
+the XIP cache. (`rig.h`'s `__no_inline_not_in_flash_func` machinery is P0-rig-only,
+`FM_RIG_NOT_IN_FLASH=1`, gated behind `FM_PROFILE=1` — not part of a normal
+build.) Open question 10's own caveat still stands unresolved: #43's flash-vs-
+SRAM measurement was taken with Core 0 doing essentially no flash traffic of
+its own, and the 16 KB XIP cache is shared by both cores — real Core 0
+MIDI/LCD work could evict the FM kernel's cache lines in a way #43 never
+tested. `xip_cache_pin_range()` is the mitigation on record if that turns out
+to matter.
+
 ---
 
 ## 6. The recommendation that matters most
