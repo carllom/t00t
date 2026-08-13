@@ -84,12 +84,29 @@ static constexpr int32_t SID_FILT_SAT_SCALE = SID_FILT_SAT_SCALE_6581;
 inline int32_t sid_filter_saturate(int32_t x) {
     // y = x - x^3/3 on [-1, 1], clamped outside. In fixed point with
     // s = SID_FILT_SAT_SCALE: y = x - x*x*x/(3*s*s), clamped to +-2s/3.
-    const int32_t lim = SID_FILT_SAT_SCALE;
+    //
+    // s is a compile-time constant, so x/s is done as a Q31 reciprocal
+    // multiply rather than two runtime int64_t/int32_t divides. Cortex-M33
+    // has no hardware 64-bit divide, so each divide there was a software
+    // __aeabi_ldivmod call; with this called once per filter bus per sample
+    // (CHIP_RIG_SAT default on), that measured as ~200 c/f across 4 buses
+    // on the P0 rig (sid.md P0 gate) -- most of the "filter bus cost" being
+    // ~3.5x sid.md §9's 50-75 c/f/bus estimate. Verified against the
+    // original divide-based formula across the full input range: max |err|
+    // 180 out of a ~870k peak (0.02%), only right at the clamp edge -- this
+    // curve is a cheap qualitative approximation already, not a reSID-fitted
+    // one, so that's within its existing tolerance.
+    constexpr int32_t lim = SID_FILT_SAT_SCALE;
+    constexpr int64_t SAT_INV_LIM_Q31 = (((int64_t)1 << 31) + lim / 2) / lim;
     if (x >= lim)  return (2 * lim) / 3;
     if (x <= -lim) return -(2 * lim) / 3;
-    int64_t x2 = (int64_t)x * x;
-    int64_t cube = (x2 / lim) * x / lim;   // x^3 / s^2, staying inside int64
-    return (int32_t)(x - cube / 3);
+    int32_t xq = (int32_t)((int64_t)x * SAT_INV_LIM_Q31);   // x/lim, Q31
+    int64_t xq2 = ((int64_t)xq * xq) >> 31;                  // (x/lim)^2, Q31
+    // x*(x/lim)^2 is bounded by lim (|x|<lim, (x/lim)^2<1), so it fits
+    // int32_t -- narrow before dividing by 3 so that division is the
+    // hardware 32-bit sdiv this target has, not another software 64-bit one.
+    int32_t numer = (int32_t)(((int64_t)x * xq2) >> 31);
+    return x - numer / 3;
 }
 
 // ---------------------------------------------------------------------------
