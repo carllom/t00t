@@ -1,18 +1,21 @@
 #include "midi/midi_controller.h"
 #include "midi_parser.h"
-#include "chip/sid_osc.h"   // SID_CLOCK_PAL, sid_freq_to_inc's freq_reg convention
+#include "chip/sid_osc.h"      // SID_CLOCK_PAL, sid_freq_to_inc's freq_reg convention
+#include "chip/sid_filter.h"   // SID_FILT_LP/BP/HP mode-mask bits
 #include <cmath>
 
-// Chip module MIDI routing (Core 0), sid.md §1 P1 / §8: "static assignment.
-// MIDI channel -> voice, no allocator." MIDI channel N plays SID voice N,
-// monophonic per channel (matching main.cpp's own convention comment: "the
-// tracker engine assigns channel N to voice N directly"). Channels 16..31 of
-// the MAX_VOICES=32 pool sit unreachable until P4's dynamic allocator; P1's
-// job is proving a voice sounds right, not full polyphony management.
+// Chip module MIDI routing (Core 0), sid.md §1 P1/P2 / §8: "static
+// assignment. MIDI channel -> voice, no allocator." MIDI channel N plays SID
+// voice N, monophonic per channel (matching main.cpp's own convention
+// comment: "the tracker engine assigns channel N to voice N directly").
+// Channels 16..31 of the MAX_VOICES=32 pool sit unreachable until P4's
+// dynamic allocator; P1/P2's job is proving a voice (and now a filter bus)
+// sounds right, not full polyphony management.
 //
 // No instrument system yet (P4: .ins import) -- a fixed default patch plus
-// two live CCs (waveform, pulse width) are enough to hear and compare the
-// primitives against reSID, which is what this phase is actually for.
+// a handful of live CCs (waveform, pulse width, filter on/cutoff/resonance/
+// mode) are enough to hear and compare the primitives against reSID, which
+// is what this phase is actually for.
 
 // --- Live-patch CCs (BeatStep-Pro-friendly low CC numbers, matching
 // groovebox's convention -- see the BSP quirk note in project memory: its
@@ -20,6 +23,10 @@
 enum ChipCC : uint8_t {
     CC_WAVEFORM = 16,   // 0-31 saw, 32-63 pulse, 64-95 triangle, 96-127 noise
     CC_PULSE_WIDTH = 17,   // 0..127 -> 0..4095 (12-bit SID PW)
+    CC_FILTER_ON        = 18,   // global: >=64 request a bus for every held note, <64 release
+    CC_FILTER_CUTOFF    = 19,   // 0..127 -> 0..2047 (11-bit SID cutoff register)
+    CC_FILTER_RESONANCE = 20,   // 0..127 -> 0..15
+    CC_FILTER_MODE      = 21,   // 0-42 LP, 43-85 BP, 86-127 HP
     CC_FX_TYPE  = 74,   // effect select (engine_base.h EffectParams convention)
     CC_FX_MIX   = 73,
     CC_FX_P1    = 72,
@@ -46,6 +53,66 @@ static uint8_t chan_waveform = 0x2;   // SID_WAVE_SAW (sid_osc.h's SidWave bits)
 static uint16_t chan_pw = 0x800;      // 50% duty
 static float    bend_ratio = 1.0f;    // multiplies the frequency register
 
+// --- Filter bus binding (sid.md §5.2) --------------------------------------
+// One shared on/off + cutoff/resonance/mode preset (no per-instrument filter
+// settings until P4 gives buses something to be distinct per), applied to
+// every currently-held note -- same global-preset shape as CC_WAVEFORM/
+// CC_PULSE_WIDTH above, and for the same reason: a toggle scoped to
+// ev.channel only takes effect for whichever channel happens to be holding
+// a note *on that same channel*, which silently does nothing if a
+// knob-panel controller sends CCs on a fixed channel different from the one
+// playing notes -- the toggle looks like it has no effect until the next
+// note (on the CC's own channel) picks up the already-changed state.
+static bool    filter_on = false;
+static int8_t  chan_bus[16];                    // bus this channel owns, -1 = none
+static int8_t  bus_owner[FILTER_BUS_COUNT];      // channel owning this bus, -1 = free
+static uint16_t filter_cutoff = 1024;            // mid-range of the 11-bit register
+static uint16_t filter_resonance = 8;
+static uint8_t  filter_mode_mask = SID_FILT_LP;
+
+static void write_bus(VoiceParamBlock &shadow, int8_t b) {
+    if (b < 0) return;
+    shadow.bus[b] = { FB_6581, filter_mode_mask, filter_cutoff, filter_resonance };
+}
+
+// Refresh every currently-bound bus's params -- called when a live filter CC
+// changes, so it takes effect on whichever channels already hold a bus, not
+// just the next note-on.
+static void refresh_bound_buses(VoiceParamBlock &shadow) {
+    for (uint8_t b = 0; b < FILTER_BUS_COUNT; b++)
+        if (bus_owner[b] >= 0) write_bus(shadow, (int8_t)b);
+}
+
+static void release_bus(uint8_t ch) {
+    if (chan_bus[ch] >= 0) {
+        bus_owner[chan_bus[ch]] = -1;
+        chan_bus[ch] = -1;
+    }
+}
+
+// bind_filter(sid.md §5.2): 1. already owns a bus -> share/reuse it.
+// 2. any free bus -> bind it. 3. none free -> BUS_NONE, render unfiltered
+// (graceful degradation, and period-correct: "most voices in real tunes ran
+// unfiltered, because the filter was scarce").
+static void bind_filter(VoiceParamBlock &shadow, uint8_t ch) {
+    if (!filter_on) {
+        release_bus(ch);
+        shadow.voices[ch].filter_bus = BUS_NONE;
+        return;
+    }
+    if (chan_bus[ch] < 0) {
+        for (uint8_t b = 0; b < FILTER_BUS_COUNT; b++) {
+            if (bus_owner[b] < 0) { bus_owner[b] = (int8_t)ch; chan_bus[ch] = (int8_t)b; break; }
+        }
+    }
+    if (chan_bus[ch] >= 0) {
+        write_bus(shadow, chan_bus[ch]);
+        shadow.voices[ch].filter_bus = (uint8_t)chan_bus[ch];
+    } else {
+        shadow.voices[ch].filter_bus = BUS_NONE;
+    }
+}
+
 static float note_to_hz(uint8_t note) {
     return 440.0f * powf(2.0f, (float)(note - 69) / 12.0f);
 }
@@ -66,10 +133,18 @@ static void set_voice_freq(VoiceParamBlock &shadow, uint8_t voice, uint8_t note)
 
 void midi_controller_init() {
     midi_parser.init();
-    for (uint8_t c = 0; c < 16; c++) chan_note[c] = -1;
+    for (uint8_t c = 0; c < 16; c++) {
+        chan_note[c] = -1;
+        chan_bus[c] = -1;
+    }
+    for (uint8_t b = 0; b < FILTER_BUS_COUNT; b++) bus_owner[b] = -1;
+    filter_on = false;   // §5.2: "most voices ran unfiltered" -- unfiltered default
     chan_waveform = 0x2;
     chan_pw = 0x800;
     bend_ratio = 1.0f;
+    filter_cutoff = 1024;
+    filter_resonance = 8;
+    filter_mode_mask = SID_FILT_LP;
 
     ui_state.last_note = 0xFF;
     ui_state.last_velocity = 0;
@@ -108,6 +183,7 @@ void midi_controller_process(const uint8_t *data, uint32_t len, ParamExchange *p
                 vp.gate = true;
                 vp.trigger++;   // Core 1 hard-restarts the envelope on this edge
                 chan_note[ev.channel] = ev.data1;
+                bind_filter(shadow, ev.channel);   // §5.2: share/bind/degrade
 
                 ui_state.last_note = ev.data1;
                 ui_state.last_velocity = ev.data2;
@@ -139,6 +215,30 @@ void midi_controller_process(const uint8_t *data, uint32_t len, ParamExchange *p
                         chan_pw = (uint16_t)((uint32_t)ev.data2 * 4095u / 127u);
                         for (uint8_t c = 0; c < 16 && c < MAX_VOICES; c++)
                             if (chan_note[c] >= 0) shadow.voices[c].pw = chan_pw;
+                        changed = true;
+                        break;
+                    }
+                    case CC_FILTER_ON: {
+                        filter_on = ev.data2 >= 64;
+                        for (uint8_t c = 0; c < 16 && c < MAX_VOICES; c++)
+                            if (chan_note[c] >= 0) bind_filter(shadow, c);
+                        changed = true;
+                        break;
+                    }
+                    case CC_FILTER_CUTOFF:
+                        filter_cutoff = (uint16_t)((uint32_t)ev.data2 * 2047u / 127u);
+                        refresh_bound_buses(shadow);
+                        changed = true;
+                        break;
+                    case CC_FILTER_RESONANCE:
+                        filter_resonance = (uint16_t)((uint32_t)ev.data2 * 15u / 127u);
+                        refresh_bound_buses(shadow);
+                        changed = true;
+                        break;
+                    case CC_FILTER_MODE: {
+                        uint8_t band = (uint8_t)(ev.data2 / 43);   // 0-42 / 43-85 / 86-127
+                        filter_mode_mask = band == 0 ? SID_FILT_LP : band == 1 ? SID_FILT_BP : SID_FILT_HP;
+                        refresh_bound_buses(shadow);
                         changed = true;
                         break;
                     }

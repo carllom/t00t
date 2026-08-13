@@ -2,6 +2,7 @@
 #include "rig.h"
 #include "speaker_sim.h"
 #include "chip/sid_voice.h"
+#include "chip/sid_filter.h"
 #include "fx/delay.h"
 #include "fx/reverb.h"
 #include "hardware/gpio.h"
@@ -204,10 +205,31 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
 // map means the same voice slot retriggers on every repeated note on that
 // channel, and it must restart the attack even if the previous note's
 // release hasn't finished.
+//
+// P2 (sid.md §5, §7.2): filter buses. Rendering is sub-blocked -- not the
+// whole-buffer pass P1 used -- because §7.2's two-phase pass needs bus
+// accumulators sized FILTER_BUS_COUNT x sub-block, not FILTER_BUS_COUNT x
+// SAMPLES_PER_BUFFER, and because P3's frame VM will need a sub-block-sized
+// cut point for its own tick boundary anyway. CHIP_SUBBLOCK reuses P0's
+// proven value (rig.h's CHIP_RIG_SUBBLOCK default).
+//
+// Per-bus idle skip is sid.md §5.2's "P2 TODO": a bus with zero voices
+// routed to it this sub-block skips its filter tick entirely (the ~80 c/f
+// per sample §14a.9 measured for an idle-but-bound bus), derived directly
+// from the same per-voice scan the render loop already does -- no separate
+// bookkeeping needed from the Core 0 binding policy. bus_was_active tracks
+// the 0->nonzero wake transition so a just-woken bus's SidFilter state
+// resets instead of inheriting a stale resonant tail from whatever voice
+// last fed it.
+static constexpr uint32_t CHIP_SUBBLOCK = 64;
 
 static SidVoice voice[MAX_VOICES];
 static EnvSidRates rates;
 static uint8_t last_trigger[MAX_VOICES];
+
+static SidFilter bus_filter[FILTER_BUS_COUNT];
+static bool      bus_was_active[FILTER_BUS_COUNT];
+static int32_t   bus_acc[FILTER_BUS_COUNT][CHIP_SUBBLOCK];
 
 static int32_t dry[SAMPLES_PER_BUFFER];
 static int32_t fx_buf[SAMPLES_PER_BUFFER];
@@ -226,6 +248,10 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
         voice[v].init(SID_MODEL_6581);   // §13 item 6: 6581 first, 8580 is P6
         last_trigger[v] = 0;
     }
+    for (uint32_t b = 0; b < FILTER_BUS_COUNT; b++) {
+        bus_filter[b].init();
+        bus_was_active[b] = false;
+    }
     fx_delay.init();
     fx_reverb.init();
 
@@ -237,8 +263,11 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
 
         const VoiceParamBlock &vp = params->active();
 
-        for (uint32_t i = 0; i < SAMPLES_PER_BUFFER; i++) dry[i] = 0;
-
+        // Params applied once per buffer -- unchanged from P1. filter_bus
+        // now flows through too, read fresh from vp per sub-block below (a
+        // bus rebind mid-buffer, e.g. a new note stealing the last free
+        // bus, takes effect on the very next sub-block rather than waiting
+        // a whole buffer).
         uint32_t active_mask = 0;
         for (uint32_t v = 0; v < MAX_VOICES; v++) {
             const VoiceParams &p = vp.voices[v];
@@ -257,10 +286,43 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
             if (p.gate) voice[v].env.gate_on();
             else        voice[v].env.gate_off();
 
-            for (uint32_t i = 0; i < SAMPLES_PER_BUFFER; i++) {
-                dry[i] += voice[v].tick(rates, false, 0);
-            }
             active_mask |= (1u << v);
+        }
+
+        for (uint32_t i = 0; i < SAMPLES_PER_BUFFER; i++) dry[i] = 0;
+
+        for (uint32_t base = 0; base < SAMPLES_PER_BUFFER; base += CHIP_SUBBLOCK) {
+            uint32_t n = SAMPLES_PER_BUFFER - base;
+            if (n > CHIP_SUBBLOCK) n = CHIP_SUBBLOCK;
+
+            for (uint32_t b = 0; b < FILTER_BUS_COUNT; b++)
+                for (uint32_t i = 0; i < n; i++) bus_acc[b][i] = 0;
+
+            uint32_t bus_hits[FILTER_BUS_COUNT] = {0};
+            for (uint32_t v = 0; v < MAX_VOICES; v++) {
+                const VoiceParams &p = vp.voices[v];
+                if (p.type != VT_SID) continue;
+
+                uint8_t bus = p.filter_bus;
+                if (bus < FILTER_BUS_COUNT) {
+                    for (uint32_t i = 0; i < n; i++) bus_acc[bus][i] += voice[v].tick(rates, false, 0);
+                    bus_hits[bus]++;
+                } else {
+                    for (uint32_t i = 0; i < n; i++) dry[base + i] += voice[v].tick(rates, false, 0);
+                }
+            }
+
+            for (uint32_t b = 0; b < FILTER_BUS_COUNT; b++) {
+                if (bus_hits[b] == 0) { bus_was_active[b] = false; continue; }
+                if (!bus_was_active[b]) { bus_filter[b].init(); bus_was_active[b] = true; }
+
+                const FilterBusParams &fb = vp.bus[b];
+                uint8_t sid_model = (fb.model == FB_8580) ? SID_MODEL_8580 : SID_MODEL_6581;
+                int16_t f_half = sid_filter_f_half(sid_model, fb.cutoff);
+                int32_t q = sid_filter_q(sid_model, (uint8_t)fb.resonance);
+                for (uint32_t i = 0; i < n; i++)
+                    dry[base + i] += bus_filter[b].tick(bus_acc[b][i], f_half, q, fb.mode_mask, /*saturate=*/true);
+            }
         }
 
         // Post-mix effect (delay / reverb), selected by CC74 -- same shape as

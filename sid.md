@@ -8,12 +8,14 @@ It is **not** a SID player and **not** a `.sid` file emulator. It is a synth who
 voices sound like SID voices and whose instruments are expressive in the way SID
 instruments were expressive — via a per-frame table VM, not via LFOs.
 
-Status: **P0 closed, P1 built.** P0's CPU budget in §9 is real breadboard_rp2350
-numbers, not static estimates (§14a); target configuration settled at **20
-voices, 4 filter buses**. P1's engine skeleton is in `engines/chip/`, and both
-halves of §11.1's validation (the `CHIP_STRICT` spectral harness and the exact
-control-plane diff, both missing until now despite §14a's earlier claim
-otherwise) are built and passing — see §14b.
+Status: **P0 closed, P1 and P2 built.** P0's CPU budget in §9 is real
+breadboard_rp2350 numbers, not static estimates (§14a); target configuration
+settled at **20 voices, 4 filter buses**. P1's engine skeleton is in
+`engines/chip/`, and both halves of §11.1's validation (the `CHIP_STRICT`
+spectral harness and the exact control-plane diff, both missing until now
+despite §14a's earlier claim otherwise) are built and passing — see §14b. P2
+adds the filter buses themselves: binding (§5.2), degrade-to-unfiltered, and
+the per-bus idle skip §5.2 flagged as a P2 TODO — see §14c.
 
 ---
 
@@ -23,7 +25,7 @@ otherwise) are built and passing — see §14b.
 |-------|-------------|
 | **P0** | **Measurement gate.** Primitives built standalone + host harness; measure per-voice cost, filtered-voice cost *including bus round trip*, and sync at 1× vs 2× oversampling. No engine, no VM. *(Closed — §14a. Hardware measured on breadboard_rp2350; 20 voices / 4 buses confirmed at 86.6% worst-case load.)* |
 | **P1** | Engine skeleton: `engines/chip/`, `VoiceType` dispatch, static MIDI-channel→voice map, register-stream playback path. Prove a SID voice sounds right against reSID. *(Built — §14b. Device engine, `CHIP_STRICT` spectral harness, and the exact control-plane diff (`sid_ctl_diff.py`) all in and passing.)* |
-| **P2** | Filter buses + 6581 model (cutoff LUT + saturation). Bus binding, degrade-to-unfiltered. |
+| **P2** | Filter buses + 6581 model (cutoff LUT + saturation). Bus binding, degrade-to-unfiltered. *(Built — §14c.)* |
 | **P3** | Frame table VM on Core 1: wave/pulse/filter tables, vibrato, arpeggio, hard restart, gate-off timer. This is where instruments become expressive. |
 | **P4** | Instrument import: GoatTracker `.ins` host converter; hand-authored text format → header. Dynamic voice allocation. |
 | **P5** | Speaker simulation output stage (§10). LCD UI. |
@@ -248,17 +250,17 @@ in real tunes ran unfiltered, because the filter was scarce.
 disagree. That is what real drivers did and it is the trivial implementation; no
 bus-leadership tracking.
 
-**P2 TODO — skip idle buses individually.** §14a.9 measured a bound-but-silent
-filter bus at ~80 c/f/*sample*, not per note — real cost even when nothing
-feeds it. Since this binding policy already tracks which buses are free, that
-same bookkeeping (a per-bus bound-voice count, not one global flag) can gate
-§7.2's per-bus clear+tick so each of the 4 buses skips independently when its
-count is 0, rather than all-or-nothing. One gotcha: `SidFilter`'s `lp`/`bp`
-state must reset (`init()`) the moment a given bus's count goes 0→1, or a new
-voice binding to a just-woken bus inherits one sample of the *previous*
-voice's resonant tail. Doesn't lower the worst-case budget (86.6% already
-assumes all 4 buses bound) — it's average-case headroom, for whenever a
-performance isn't using all 4 at once.
+**Skip idle buses individually — done, §14c.** §14a.9 measured a bound-but-
+silent filter bus at ~80 c/f/*sample*, not per note — real cost even when
+nothing feeds it. `audio_engine.cpp`'s per-bus voice count (derived from the
+same per-sub-block voice scan the render loop already does, not a separate
+Core-0-side counter) gates §7.2's per-bus clear+tick so each of the 4 buses
+skips independently when its count is 0, rather than all-or-nothing.
+`SidFilter`'s `lp`/`bp` state resets (`init()`) the moment a given bus's
+count goes 0→nonzero, so a new voice binding to a just-woken bus doesn't
+inherit one sample of the *previous* voice's resonant tail. Doesn't lower the
+worst-case budget (86.6% already assumes all 4 buses bound) — it's
+average-case headroom, for whenever a performance isn't using all 4 at once.
 
 ---
 
@@ -1027,6 +1029,87 @@ this OSC3 quantisation might matter and isn't obviously flagged.
 harness (§14b.2) reproduces the committed scorecard, and this exact harness
 reproduces the numbers §4.2 already quotes inline -- two different rebuilt
 tools landing on the same figures the original (lost) ones produced.
+
+---
+
+## 14c. P2 results
+
+### 14c.1 `FilterBusParams` lands in `engine_base.h`
+
+`VoiceParamBlockT` gained `FilterBusParams bus[FILTER_BUS_COUNT]` exactly as
+§7.1 specced, and `FilterModel`/`FilterBusParams` themselves live in
+`engine_base.h` (not chip's own `engine.h`) since §7.1 calls this "a change
+to `engine_base.h` shared by all engines" and `FB_SVF` already anticipates a
+non-SID engine wanting the same bus mechanism. The four engines that don't
+use it (subtractive, groovebox, tracker, speech) each got one line --
+`static constexpr uint32_t FILTER_BUS_COUNT = 0;` before their own
+`#include "engine_base.h"`, the same requirement `MAX_VOICES` already
+imposes -- and are otherwise untouched; all four still build.
+
+**A real bug, caught before it reached hardware.** The first attempt
+defaulted `FILTER_BUS_COUNT` via `#ifndef FILTER_BUS_COUNT #define
+FILTER_BUS_COUNT 0 #endif` inside `engine_base.h` itself, to spare those four
+engines the extra line. It compiled everywhere -- including chip, silently
+wrong: chip's `engine.h` declares `FILTER_BUS_COUNT` as a `constexpr`, not a
+macro, so the preprocessor's `#ifndef` didn't see it as already defined,
+fired its own `#define FILTER_BUS_COUNT 0`, and every *later* use of the
+identifier in chip's own files -- `bus_filter[FILTER_BUS_COUNT]` in
+`audio_engine.cpp`, `bus_owner[FILTER_BUS_COUNT]` in `midi_controller.cpp` --
+got silently token-replaced with `0`. A zero-size array is a GCC extension,
+not an error, so this built clean and would have produced a firmware with no
+filter buses at all, discovered only by ear or by disassembly. Fixed by
+dropping the macro default entirely and requiring every engine to define the
+constant, matching `MAX_VOICES`'s existing (and correct) pattern -- confirmed
+post-fix by checking the actual compiled object: `bus_filter` is 32 bytes (4
+x `sizeof(SidFilter)`), `bus_acc` is exactly 1024 bytes, matching §7.2's
+"4 x 64 x 4 = 1 KB" arithmetic precisely.
+
+### 14c.2 Binding policy and the live filter CCs
+
+`midi_controller.cpp` implements §5.2's `bind_filter` exactly: a channel that
+already owns a bus reuses it, an unowned channel takes any free bus, and a
+channel that finds none free renders unfiltered (`BUS_NONE`) rather than
+stealing one -- graceful degradation, no voice-stealing logic needed. Bus
+ownership is per-channel and sticky (held for the channel's lifetime, not
+released at note-off) since P2 has no envelope-silence-triggered reallocation
+to hand it off to -- that is P4 territory once real instruments exist.
+
+No per-instrument filter settings yet either (same reason), so P2 uses one
+shared on/off + cutoff/resonance/mode preset (CC18/19/20/21) applied to
+every currently-held note -- same global-preset shape `CC_WAVEFORM`/
+`CC_PULSE_WIDTH` already used, not a per-channel toggle. `filter_on` defaults
+false: §5.2's "most voices in real tunes ran unfiltered, because the filter
+was scarce" is the period-correct default, not just the cheap one.
+
+**First attempt got this wrong, caught by ear on real hardware.** CC18 was
+originally scoped to `ev.channel` -- toggle *this channel's* filter request,
+matching the letter of "MIDI CCs are inherently per-channel messages." Real
+behaviour: playing repeated notes through a sweeping-cutoff bandpass filter,
+toggling the CC produced no audible or measured change until the *next*
+note. Cause: a controller whose filter knob sends CC18 on a different
+channel than the notes (normal for a knob-panel controller, and matching
+this project's own BeatStep Pro) updates a channel with no held note --
+nothing changes until that CC's own channel later plays a note and reads the
+now-toggled flag at note-on. Fixed by making CC18 global, applied to every
+held note immediately regardless of which channel it arrives on, consistent
+with how `CC_WAVEFORM`/`CC_PULSE_WIDTH` already worked -- the inconsistency
+was the bug, not the per-channel idea in isolation.
+
+### 14c.3 Render: two-phase, sub-blocked, idle buses skipped
+
+`audio_engine.cpp`'s real engine now sub-blocks (`CHIP_SUBBLOCK = 64`,
+reusing P0's proven value) where P1 rendered the whole buffer in one pass --
+required for §7.2's two-phase shape (clear bus accumulators, render each
+voice into its bus or the dry mix, filter each *bound* bus into the dry mix)
+and sized right where P3's frame VM will eventually need its own sub-block
+tick boundary. Per-bus idle skip (§5.2, this section's TODO closed) falls
+out of the same per-sub-block voice scan for free -- no separate bus-active
+bookkeeping crossing from Core 0.
+
+Not yet re-measured on hardware: P0's numbers were taken with the rig's
+compile-time-fixed routing, and this is the first time bus binding is
+dynamic. Worth a bench check before P3 builds further on top, the same
+"measure, don't assume" discipline §14a.9 and §14b's rebuilds both leaned on.
 
 ---
 
