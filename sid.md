@@ -8,11 +8,11 @@ It is **not** a SID player and **not** a `.sid` file emulator. It is a synth who
 voices sound like SID voices and whose instruments are expressive in the way SID
 instruments were expressive — via a per-frame table VM, not via LFOs.
 
-Status: **P0 in progress — host side complete, hardware measurement pending.**
-The primitives, the reSID reference rig and both diff harnesses are built and
-green (§14a); the CPU budget is still nothing but static estimates, because
-cycles per frame cannot be measured on a host. See §9 for the caveat, §1 for the
-gate, and §14a for what F0 measured and what it found wrong in this document.
+Status: **P0 closed.** Host side and hardware measurement both done. The CPU
+budget in §9 is now real breadboard_rp2350 numbers, not static estimates, and
+two real bugs were found and fixed along the way — see §14a for what F0
+measured, what it found wrong in this document, and what it found wrong in the
+rig itself. Target configuration settled at **20 voices, 4 filter buses**.
 
 ---
 
@@ -20,7 +20,7 @@ gate, and §14a for what F0 measured and what it found wrong in this document.
 
 | Phase | Deliverable |
 |-------|-------------|
-| **P0** | **Measurement gate.** Primitives built standalone + host harness; measure per-voice cost, filtered-voice cost *including bus round trip*, and sync at 1× vs 2× oversampling. No engine, no VM. *(Host side done — §14a. Hardware measurement outstanding; the gate is still closed.)* |
+| **P0** | **Measurement gate.** Primitives built standalone + host harness; measure per-voice cost, filtered-voice cost *including bus round trip*, and sync at 1× vs 2× oversampling. No engine, no VM. *(Closed — §14a. Hardware measured on breadboard_rp2350; 20 voices / 4 buses confirmed at 86.6% worst-case load.)* |
 | **P1** | Engine skeleton: `engines/chip/`, `VoiceType` dispatch, static MIDI-channel→voice map, register-stream playback path. Prove a SID voice sounds right against reSID. |
 | **P2** | Filter buses + 6581 model (cutoff LUT + saturation). Bus binding, degrade-to-unfiltered. |
 | **P3** | Frame table VM on Core 1: wave/pulse/filter tables, vibrato, arpeggio, hard restart, gate-off timer. This is where instruments become expressive. |
@@ -29,10 +29,13 @@ gate, and §14a for what F0 measured and what it found wrong in this document.
 | **P6** | 8580 model (table swap). Combined-waveform LUTs. |
 | **later** | Other chips (§12): AY/YM2149, SN76489, NES 2A03, GB DMG. |
 
-**P0 is a hard gate.** Nothing in §9's budget is trusted until it clears, and
-`MAX_VOICES` / `FILTER_BUS_COUNT` are provisional until then. This follows the
-FM and speech modules' precedent, and speech's #31 result is the reason: its
-prediction ran **25–55% low** against measurement.
+**P0 was a hard gate.** Nothing in §9's budget was trusted until it cleared, and
+`FILTER_BUS_COUNT` was provisional until then (`MAX_VOICES = 32` is a separate,
+already-settled decision — §13.3's allocation-pool/bitmap width, not the
+concurrent-voice CPU budget). This followed the FM and speech modules'
+precedent, and speech's #31 result was the reason to expect trouble: its
+prediction ran **25–55% low** against measurement. F0's own static estimate
+had the same problem, worse — see §14a.
 
 ---
 
@@ -406,39 +409,41 @@ Baseline anchors from `engine.md`: 3401 cycles/frame = 100% at 150 MHz / 44.1 kH
 Measured references — subtractive voice **5.9%**, speech voice **93.5 c/f
 (2.75%)**, reverb **~8%**, idle **~0.6%**.
 
-| Item | Est. c/f | % |
+**These are real breadboard_rp2350 measurements (§14a), not estimates.** The
+original static estimates are struck through for the record; every one of them
+was wrong, in both directions, by up to 3.7×. §14a.9 has the two bugs that
+caused the worst of it — one in this rig, one in `src/chip/`.
+
+| Item | ~~Est. c/f~~ Measured c/f | % |
 |---|---|---|
-| SID voice (acc + waveform + `EnvSID` + sub-osc + accumulate) | 45–65 | 1.3–1.9% |
-| Filter bus (SVF + LUT + saturation + mix) | 50–75 | 1.5–2.2% |
-| Bus round trip, ~12 filtered voices | 40–50 | 1.4% |
-| Frame VM, 24 voices @ 50 Hz | 7 | 0.2% |
-| Speaker simulation, mono (§10) | 55–75 | 1.6–2.2% |
+| SID voice (acc + waveform + `EnvSID` + sub-osc + accumulate) | ~~45–65~~ **~108** | ~~1.3–1.9%~~ **3.2%** |
+| Filter bus (SVF + LUT + saturation + mix), post-fix | ~~50–75~~ **~80** | ~~1.5–2.2%~~ **2.4%** |
+| Bus round trip, ~12 filtered voices | ~~40–50~~ **negligible** — filtered and unfiltered voice cost measured indistinguishable | ~~1.4%~~ **~0%** |
+| Frame VM, 20 voices @ 50 Hz | 7 (still an estimate — P3 not built) | 0.2% |
+| Speaker simulation, mono (§10) | ~~55–75~~ **~75** — F0's stand-in landed inside the original estimate | ~~1.6–2.2%~~ **2.2%** |
+| Delay insert (`fx/delay.h`) | **~41** | **1.2%** |
+| Reverb insert (`fx/reverb.h`), the expensive one | **~255** | **7.5%** — matches speech's own ~8% almost exactly, independent cross-check |
 
-**Target configuration — 24 voices, 4 buses, speaker stage:**
+**Target configuration — 20 voices, 4 buses, speaker stage, reverb (worst case):**
 
-| Line | c/f | % |
-|---|---|---|
-| 24 voices | 1080–1560 | 32–46% |
-| 4 buses | 200–300 | 6–9% |
-| Bus round trip | 40–50 | 1.4% |
-| Frame VM | 7 | 0.2% |
-| Speaker sim | 55–75 | 1.6–2.2% |
-| **Total** | | **41–59%** |
+| Config | Voices+buses only | + delay + speaker | **+ reverb + speaker (worst case)** |
+|---|---|---|---|
+| **20v / 4 buses (chosen)** | — | — | **86.6%** (measured) |
+| 22v / 2 buses (rejected) | — | — | **89.0%** (measured) |
 
-> **Do not trust these numbers.** They are static instruction-count estimates.
-> `speech.md`'s equivalent table ran **25–55% low** against #31's measurement, and
-> the gap lived entirely in unbudgeted per-sample glue. Bias-adjusted, the real
-> range for the target configuration is roughly **51–91%** — plausible but not
-> banked. P0 decides.
-
-**Watch item:** if P0 says hard sync needs 2× oversampling, the cost lands on the
-largest line. **Cut order if the budget does not close:** reduce voices first —
-24 → 18 reclaims 8–11%, while the speaker stage is only ~2% and is a higher
-priority per cycle than a fifth filter bus. Filter bus count is the second lever.
+20v/4f was chosen over 22v/2f on two independent grounds, not one: it has the
+more realistic voice-to-filter ratio, *and* it measures more headroom, not
+less. A bus (~80 c/f) is cheaper than a voice (~108 c/f), so trading 2 buses
+for 2 voices is a bad exchange rate — 22v/2f spends the bus savings back on
+voices at a loss. Frame VM (~0.2%, P3, not built) isn't in either number; at
+13.4pp / 11.0pp headroom that's noise, not a risk, unlike the 24v/4-bus
+config this replaced (99.9%, effectively zero margin before the frame VM was
+even added — see §14a.9).
 
 **Comparison for context:** a PSG voice (AY/SN/NES, est. 10–25 c/f, 0.3–0.7%) is
-roughly a third of a SID voice. SID is the *most* expensive chip in the family,
-not the least — later chips are strictly easier to fit.
+roughly a third of a SID voice's *estimated* cost — now that the real SID voice
+number is ~108 c/f, PSG voices are a smaller fraction still. SID remains the
+most expensive chip in the family; later chips are strictly easier to fit.
 
 ---
 
@@ -556,9 +561,11 @@ and other sample chips belong with the tracker; SP0256/TMS5220 belong with speec
 1. **Signal-path limitations kept, structural limitations discarded** (§3).
 2. **Modulation is a per-voice sub-oscillator**, not an allocated voice (§4.4).
    Removes `channels_needed` from the instrument format; every note = one voice.
-3. **Filter buses, typed, pooled** — `MAX_VOICES = 32`, `FILTER_BUS_COUNT = 4`
-   provisionally. Degrade to unfiltered on exhaustion. Revisit after P0, but the
-   speaker stage takes priority over a fifth bus.
+3. **Filter buses, typed, pooled** — `MAX_VOICES = 32` (allocation pool),
+   `FILTER_BUS_COUNT = 4` confirmed by P0 (§9, §14a.9): the CPU-budget target of
+   20 concurrently-sounding voices affords 4 buses with real headroom, and a
+   fifth bus is a worse trade than the voices it would cost (§9's exchange-rate
+   finding). Degrade to unfiltered on exhaustion.
 4. **Frame VM on Core 1**, sample-accurate frame boundaries (§6.1).
 5. **Combined waveforms: AND first (P1), LUTs later (P6).**
 6. **6581 first**, LUT-based, so 8580 is a table swap plus a saturation bypass.
@@ -602,11 +609,12 @@ setup) holds the reSID rig; `src/chip/` holds the primitives;
 scorecard committed at `tools/sid_ref/baseline_f0.json`, reSID `ef7873fc` vs
 `src/chip/` at this commit.
 
-**The hardware half has not run.** Per-voice cost, filtered-voice cost with the
-bus round trip, and sync at 1× vs 2× all need a device. `src/engines/chip/rig.h`
-plus `make ENGINE=chip` is that build, compile-verified but not flashed. §9's
-budget is still untrusted and `MAX_VOICES` / `FILTER_BUS_COUNT` are still
-provisional. **This is the P0 gate and it is still closed.**
+**The hardware half is done.** Per-voice cost, filtered-voice cost with the bus
+round trip, sync at 1× vs 2×, FX and speaker-sim cost, and the final
+20-voice/4-bus target were all measured on real breadboard_rp2350 hardware via
+`src/engines/chip/rig.h` + `make ENGINE=chip`. Two real bugs were found and
+fixed in the process, not just estimate-vs-measurement drift — see §14a.9.
+**The P0 gate is closed.**
 
 ### 14a.1 Four documented errors in this file
 
@@ -817,6 +825,63 @@ capture gives the slope. Each lever is a separate build (`src/engines/chip/rig.h
 | 12-bit waveform DAC | `CHIP_WAVE_DAC=0` vs `=1` | not in §9. Flash cost measured: **8200 bytes** |
 | saturation | `CHIP_RIG_SAT=0` vs `=1` | folded into the bus line |
 
+### 14a.9 Hardware results and two bugs the rig itself found
+
+The first hardware sweep (24 voices, 4 buses, `CHIP_RIG_SAT=1`) measured
+**idle at 31%** — with zero voices rendering. Chasing that down found two real
+bugs, neither of them in the SID primitives themselves:
+
+1. **The rig's own ADSR was pathological, not the engine.** `rig.h` set every
+   voice to `decay=0, sustain=15` as a shortcut to reach full sustain fast. But
+   decay rate 0 is the *fastest* rate period there is, and reaching sustain only
+   freezes `EnvSid`'s counter — the phase accumulator kept advancing at attack
+   speed forever, re-entering `tick()`'s per-sample loop 2-3×/sample for the
+   life of every note instead of the ~0 times a realistic decay rate needs.
+   Cost: **~62 c/f/voice**, over half the apparent per-voice overrun. Fixed by
+   changing the rig's default ADSR to a slow decay toward a mid sustain
+   (`rig.h`, decay rate 7) — a rig-only fix, `src/chip/env_sid.h` was never
+   wrong.
+
+2. **`sid_filter_saturate()` (`src/chip/sid_filter.h`) ran two software 64-bit
+   divides per call, every bus, every sample.** Cortex-M33 has no hardware
+   64-bit divide; each `int64_t/int32_t` in the cubic soft-clip's `x^3/lim^2`
+   compiled to a real `__aeabi_ldivmod` library call (confirmed by
+   disassembling the actual build, not inferred). With `CHIP_RIG_SAT=1`
+   (default) and 4 buses, that was 8 software divides/sample from saturation
+   alone — the dominant cause of the filter-bus line measuring ~3.5× over
+   estimate. Fixed by rewriting the divide as a Q31 reciprocal multiply (`lim`
+   is a compile-time constant); verified against the original formula across
+   its full input range, max error 180 units out of a ~870k peak (0.02%, only
+   at the clamp edge) — well inside this curve's own "cheap qualitative
+   shape, not reSID-fitted" tolerance. Idle-with-4-buses dropped from 31% to
+   9.8% after this one change alone.
+
+With both fixed, the remaining per-voice number (~108 c/f vs the original
+45–65 c/f estimate) looks like the static estimate simply being optimistic —
+consistent with speech's #31 precedent, not a further bug. `sid_filter_saturate`
+was the one place F0's estimate was wrong *because of a missed optimization*
+rather than an optimistic guess; worth remembering next time a chip primitive
+divides by a compile-time constant.
+
+**FX and speaker sim** (`src/engines/chip/speaker_sim.h`, a P0 measurement
+stand-in for the not-yet-built P5 stage — §10's shape, not its tuning) were
+then measured layered on top: delay ~41 c/f (1.2%), reverb ~255 c/f (7.5%,
+matching speech's own ~8% almost exactly), speaker sim ~75 c/f (2.2%, inside
+§10's original 55–75 c/f estimate — the one line that held up unmodified).
+
+**Final sweep, both fixes applied, worst case = reverb + speaker sim on top of
+a full voice/bus load:**
+
+| Config | Measured (worst case) |
+|---|---|
+| 24v / 4 buses (original target) | **99.9%** — no margin before the frame VM (§6, ~0.2%, not yet built) is even added |
+| 20v / 4 buses (chosen) | **86.6%** |
+| 22v / 2 buses (rejected) | **89.0%** |
+
+24 voices was the number this whole document assumed going in; it does not
+survive contact with a real reverb load. 20v/4f is the settled replacement —
+see §9 for the full breakdown and the exchange-rate reasoning against 22v/2f.
+
 ---
 
 ## 15. Open questions
@@ -832,8 +897,13 @@ capture gives the slope. Each lever is a separate build (`src/engines/chip/rig.h
    bitmap?
 4. **Speaker stage placement vs. master FX** — confirmed downstream of the insert,
    but does it sit before or after the final `__ssat` clip?
-5. **`FILTER_BUS_COUNT` after P0** — 4 is a guess. If voices measure cheap, is 6
-   better spent than 6 more voices?
+5. ~~**`FILTER_BUS_COUNT` after P0** — 4 is a guess. If voices measure cheap, is 6
+   better spent than 6 more voices?~~ **Resolved (§9, §14a.9): no.** Voices
+   measured *more* expensive than buses (~108 vs ~80 c/f), the opposite of what
+   this question assumed — a bus is the cheaper thing to add, not the pricier
+   one. 4 buses / 20 voices confirmed on hardware with real headroom (86.6%
+   worst case); trading buses for voices (22v/2f) measured *worse*, not
+   better (89.0%).
 
 ---
 

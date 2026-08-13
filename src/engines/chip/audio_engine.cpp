@@ -1,5 +1,8 @@
 #include "audio_engine.h"
 #include "rig.h"
+#include "speaker_sim.h"
+#include "fx/delay.h"
+#include "fx/reverb.h"
 #include "hardware/gpio.h"
 #include "pico/multicore.h"
 #include "pico/time.h"
@@ -29,6 +32,28 @@ static constexpr uint32_t BUF_PERIOD_US = 1000000u * SAMPLES_PER_BUFFER / SAMPLE
 
 static ChipRig rig;
 static int32_t dry[CHIP_RIG_SUBBLOCK];
+#if CHIP_RIG_FX != 0 || CHIP_RIG_SPEAKER
+static int32_t dry_full[SAMPLES_PER_BUFFER];
+#endif
+
+#if CHIP_RIG_FX == 1
+static FxDelay fx_delay;
+#elif CHIP_RIG_FX == 2
+static FxReverb fx_reverb;
+#endif
+#if CHIP_RIG_FX != 0
+static int32_t fx_buf[SAMPLES_PER_BUFFER];
+// Fixed mid-range settings -- sid.md §9's FX cost lines are the fixed
+// per-sample cost of the effect running, not a function of these knobs
+// (fx/delay.h, fx/reverb.h: both do the same work regardless of p1/p2/mix).
+static constexpr EffectParams CHIP_RIG_FX_PARAMS = {
+    (uint8_t)(CHIP_RIG_FX == 1 ? FX_DELAY : FX_REVERB), 100, 64, 64
+};
+#endif
+
+#if CHIP_RIG_SPEAKER
+static SidSpeakerStage speaker;
+#endif
 
 // Voice counts to step through. The slope across these is the per-voice cost;
 // the intercept at 0 is the fixed per-buffer overhead, which sid.md §9's
@@ -48,6 +73,14 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
     gpio_put(PROFILE_PIN, 0);
 
     rig.init();
+#if CHIP_RIG_FX == 1
+    fx_delay.init();
+#elif CHIP_RIG_FX == 2
+    fx_reverb.init();
+#endif
+#if CHIP_RIG_SPEAKER
+    speaker.init((float)SAMPLE_RATE);
+#endif
 
     uint32_t phase = 0;
     uint32_t held = 0;
@@ -64,6 +97,11 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
         uint32_t t_start = time_us_32();
         gpio_put(PROFILE_PIN, 1);
 
+#if CHIP_RIG_FX == 0 && CHIP_RIG_SPEAKER == 0
+        // Unchanged fast path -- fused render+output, no full-buffer staging.
+        // Kept byte-for-byte identical to the pre-FX/speaker rig so every
+        // number already measured with this build stays comparable; the
+        // staged path below only exists for builds that need it downstream.
         int16_t *out = i2s_buffer_ptr(buffers, buf_index);
         for (uint32_t base = 0; base < SAMPLES_PER_BUFFER; base += CHIP_RIG_SUBBLOCK) {
             uint32_t n = SAMPLES_PER_BUFFER - base;
@@ -81,6 +119,46 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
                 *out++ = s;
             }
         }
+#else
+        for (uint32_t base = 0; base < SAMPLES_PER_BUFFER; base += CHIP_RIG_SUBBLOCK) {
+            uint32_t n = SAMPLES_PER_BUFFER - base;
+            if (n > CHIP_RIG_SUBBLOCK) n = CHIP_RIG_SUBBLOCK;
+
+            for (uint32_t i = 0; i < n; i++) dry[i] = 0;
+            rig.render_n(dry, n, voices);
+            for (uint32_t i = 0; i < n; i++) dry_full[base + i] = dry[i];
+        }
+
+        // §10: "you want delay -> speaker, or reverb -> speaker" -- the
+        // insert sits upstream of the speaker sim, not after it. Mono send /
+        // stereo return per fx/delay.h and fx/reverb.h's own contract, but
+        // this rig's output is already mono, so the wet add-back is direct.
+#if CHIP_RIG_FX != 0
+        for (uint32_t i = 0; i < SAMPLES_PER_BUFFER; i++) fx_buf[i] = dry_full[i];
+#if CHIP_RIG_FX == 1
+        fx_delay.process(fx_buf, SAMPLES_PER_BUFFER, CHIP_RIG_FX_PARAMS);
+#else
+        fx_reverb.process(fx_buf, SAMPLES_PER_BUFFER, CHIP_RIG_FX_PARAMS);
+#endif
+        for (uint32_t i = 0; i < SAMPLES_PER_BUFFER; i++) dry_full[i] += fx_buf[i];
+#endif
+
+        int16_t *out = i2s_buffer_ptr(buffers, buf_index);
+        for (uint32_t i = 0; i < SAMPLES_PER_BUFFER; i++) {
+            int32_t v = dry_full[i];
+#if CHIP_RIG_SPEAKER
+            v = (int32_t)speaker.tick((float)(v >> SID_MIX_SHIFT));
+#else
+            v >>= SID_MIX_SHIFT;
+#endif
+            // Mono, duplicated -- sid.md §10 says the speaker stage is
+            // mono and "more authentic and half the price", and a stereo
+            // pan here would measure a stage the module does not have.
+            int16_t s = (int16_t)__ssat(v, 16);
+            *out++ = s;
+            *out++ = s;
+        }
+#endif  // CHIP_RIG_FX == 0 && CHIP_RIG_SPEAKER == 0
 
         uint32_t busy_us = time_us_32() - t_start;
         gpio_put(PROFILE_PIN, 0);
