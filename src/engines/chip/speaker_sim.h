@@ -56,8 +56,8 @@ struct SpeakerPresetDef {
 
 // Numbers below are a first, doc-range-respecting pass, not a hardware-
 // measured or by-ear-tuned set -- same status P3's vibrato constants had
-// before Carl's by-ear pass (history_chip.md §14d.5): "a better first guess, not a
-// calibrated one." Needs a real listen before it's trusted.
+// before the author's by-ear pass (history_chip.md §14d.5): "a better first
+// guess, not a calibrated one." Needs a real listen before it's trusted.
 static const SpeakerPresetDef SPEAKER_PRESETS[SPEAKER_PRESET_COUNT] = {
     // hp_hz  peak_hz  peak_bw  lp_hz    drive
     {  150.0f,  500.0f,  250.0f, 9000.0f, 1.0f },  // SPEAKER_1702 -- open, mild
@@ -102,8 +102,8 @@ struct SidSpeakerStage {
 
     inline float tick(float x) {
         // SPEAKER_BYPASS: a real short-circuit, not "corners tuned wide
-        // enough to sound flat" -- Carl heard the difference (a "tiny bit
-        // dull" against the pre-P5 build). Root cause: res2p's own LUT
+        // enough to sound flat" -- the author heard the difference (a "tiny
+        // bit dull" against the pre-P5 build). Root cause: res2p's own LUT
         // clamps peak_bw to RES2P_RADIUS_X_MAX (res2p.h) rather than
         // extrapolating, so the intended ~4 kHz bandwidth silently became
         // ~1.1 kHz at this sample rate -- a real, if broad, resonant bump,

@@ -15,11 +15,11 @@
 // same chrome/status-row shape as subtractive's and speech's display.cpp
 // (VOICES/CPU/NOTE), plus chip-specific rows: the active speaker preset
 // (speaker_sim.h), the current instrument (module_chip.md §12.4: by name *and*
-// number now, Carl's own ask, after the number-only version read as
+// number now, the author's own ask, after the number-only version read as
 // opaque), and a compact per-voice grid (engine.h's ChipVoiceUiState, §15
 // open question 3's "current table row, active instrument").
 //
-// The name treatment is INSTR-row only, by Carl's own call: the grid
+// The name treatment is INSTR-row only, by the author's own call: the grid
 // stays numeric (voice:instrument/table-row) -- a name doesn't fit eight
 // cells at once the way it fits one summary line.
 //
@@ -63,8 +63,8 @@ static constexpr int CBAR_X = 4, CBAR_Y = 96, CBAR_W = 232, CBAR_H = 12;
 // slot instead of introducing a second value column.
 static constexpr int INSTR_X = 0, INSTR_CH = 30;
 
-// 4 columns x 2 rows, same layout P5 shipped -- Carl's own call: names are
-// for the one-line INSTR row only, the grid stays numeric (voice:instrument
+// 4 columns x 2 rows, same layout P5 shipped -- the author's own call: names
+// are for the one-line INSTR row only, the grid stays numeric (voice:instrument
 // number/table row).
 static constexpr int GRID_ROW0 = 210, GRID_ROW_H = 12, GRID_W = 240 / 4, GRID_CH = 9;
 static constexpr int GRID_VOICES = 8;
@@ -72,7 +72,7 @@ static constexpr int GRID_VOICES = 8;
 static const char *NOTE_NAMES[12] =
     { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
 
-// Combined-space instrument name lookup (module_chip.md §12.3) -- `combined` is
+// Combined-space instrument name lookup (module_chip.md §12.4) -- `combined` is
 // whatever CC16/Program Change actually sent: < INSTRUMENT_COUNT is a SID
 // patch, the rest is AY's (midi_controller.cpp's own split).
 static const char *combined_instrument_name(uint8_t combined) {

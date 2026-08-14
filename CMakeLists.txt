@@ -51,9 +51,9 @@ endif()
 # into it are compiled out via HAS_VOICE_ALLOC below.
 # The chip module used to be the same case (P0's rig is self-cycling and
 # drives its voices directly, and P1-P3's MIDI controller used a static
-# channel->voice map), but chip.md §8 always reused voice_alloc.* unmodified
-# and only deferred going dynamic to P4 -- now built, so chip links it in
-# like every other engine.
+# channel->voice map), but module_chip.md §8 always reused voice_alloc.*
+# unmodified and only deferred going dynamic to P4 -- now built, so chip
+# links it in like every other engine.
 set(ENGINE_VOICE_ALLOC src/voice_alloc.cpp)
 if(T00T_ENGINE STREQUAL "tracker")
     set(ENGINE_VOICE_ALLOC "")

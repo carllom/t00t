@@ -18,9 +18,14 @@ despite history_chip.md §14a's earlier claim otherwise) are built and passing
 (§5.2), degrade-to-unfiltered, and the per-bus idle skip §5.2 flagged as a P2
 TODO — see history_chip.md §14c. P3 adds the frame table VM (§6) —
 wave/pulse/filter tables, vibrato, gate-off timer — and resolves open question
-1 — see history_chip.md §14d. **None of P1/P2/P3 have been re-measured or
-listened to on real hardware yet**; every number since history_chip.md §14a is
-still the last hardware-verified state.
+1 — see history_chip.md §14d. **P1, P2 and P3 have each had a by-ear pass on
+real breadboard_rp2350 hardware since §14a** — P2's CC18 filter-toggle bug
+(history_chip.md §14c.2) and P3's seven instrument bugs (history_chip.md
+§14d.5) were both found this way. **None of P1/P2/P3 have had their CPU cost
+re-measured on hardware since §14a**, though (history_chip.md §14c.3 flags
+P2's dynamic bus binding specifically as still owed a bench check); every
+cycle number since history_chip.md §14a is still the last hardware-measured
+state.
 
 ---
 
@@ -34,7 +39,7 @@ still the last hardware-verified state.
 | **P3** | Frame table VM on Core 1: wave/pulse/filter tables, vibrato, arpeggio, hard restart, gate-off timer. This is where instruments become expressive. *(Built — §14d. Not yet heard on hardware.)* |
 | **P4** | Instrument import: GoatTracker `.ins` host converter; hand-authored text format → header. Dynamic voice allocation. *(Built — §14e. Not yet heard on hardware.)* |
 | **P5** | Speaker simulation output stage (§10). LCD UI. *(Built — §14f. Not yet heard on hardware.)* |
-| **P6** | 8580 model (table swap). Combined-waveform LUTs. *(Deferred by Carl's call — the combined-waveform LUT's only available source data is reSID's own sampled tables (`tools/sid_ref/resid/wave*.h`, GPL-2, deliberately gitignored/not vendored, same reasoning as the DAC tables at §14a.7). Unlike the DAC ladder, combined-waveform behavior has no known clean closed-form derivation to independently re-derive from — reSID's own tables come from resistor/leakage-level SPICE modeling, not a formula. Raised as a licensing question rather than guessed at; Carl chose to defer P6 entirely rather than resolve it now. AND stays the 6581/8580 combined-waveform approximation, with §14a.4's documented ~200 dB error on the pulse combinations unchanged.)* |
+| **P6** | 8580 model (table swap). Combined-waveform LUTs. *(Deferred by the author's call — the combined-waveform LUT's only available source data is reSID's own sampled tables (`tools/sid_ref/resid/wave*.h`, GPL-2, deliberately gitignored/not vendored, same reasoning as the DAC tables at §14a.7). Unlike the DAC ladder, combined-waveform behavior has no known clean closed-form derivation to independently re-derive from — reSID's own tables come from resistor/leakage-level SPICE modeling, not a formula. Raised as a licensing question rather than guessed at; the author chose to defer P6 entirely rather than resolve it now. AND stays the 6581/8580 combined-waveform approximation, with §14a.4's documented ~200 dB error on the pulse combinations unchanged.)* |
 | **later** | Other chips (§12): AY/YM2149, SN76489, NES 2A03, GB DMG. *(AY-3-8910/YM2149 P0-P3 (§12.1-§12.4) built, all hardware-verified -- P2's vibrato had a real bug, found and fixed from an on-hardware report (§12.3). First real AY CPU measurement: ~44 c/f/voice (§9, §12.4), retiring the old 10-25 c/f estimate.)* |
 
 **P0 was a hard gate.** Nothing in §9's budget was trusted until it cleared, and
@@ -456,7 +461,7 @@ and other sample chips belong with the tracker; SP0256/TMS5220 belong with speec
 
 ### 12.1 AY-3-8910/YM2149 P0 (measurement gate, primitives only)
 
-**Hardware-verified.** Carl listened on real breadboard_rp2350: "everything
+**Hardware-verified.** The author, on real breadboard_rp2350: "everything
 sounds fine and voices have quite low duty cycle" -- confirms the P0
 primitives and P1 engine wiring (§12.2) both by ear and, qualitatively, on
 CPU cost. AY's own primitives are cheaper than SID's by construction (no
@@ -465,7 +470,7 @@ period counter, a 17-bit LFSR and a 32-step ramp), so a low duty cycle is
 the expected shape of the result, not a surprise -- a real number (not just
 "quite low") is still owed before it goes in §9-style budget language.
 
-Carl picked AY as the next chip: simple (3 tone + noise, no filter model),
+The author picked AY as the next chip: simple (3 tone + noise, no filter model),
 and — unlike SID's combined-waveform problem (§14a.4), which needed real
 chip-measurement data under a GPL license that couldn't be vendored — no
 equivalent licensing wall. The best available reference,
@@ -615,11 +620,11 @@ literal constant on real hardware) landing as a half-scale residual DC
 instead of a full one. `AY_MIX_SCALE` (the constant mapping AY's [0,1]
 DAC output onto SID's raw `dry[]` magnitude) is a first guess against
 SID's own typical peak, not a calibrated one -- same status P3's vibrato
-constants had before Carl's by-ear pass found them 4x off. Needs a real
+constants had before the author's by-ear pass found them 4x off. Needs a real
 listen, same as everything below.
 
 **Hardware-verified** (§12.1's note applies here too -- "everything sounds
-fine and voices have quite low duty cycle", Carl, breadboard_rp2350):
+fine and voices have quite low duty cycle", the author, breadboard_rp2350):
 confirms the mix-scaling/bipolar-gate fix above actually sums correctly
 against SID voices in practice, not just in theory, and that the abrupt
 gate-mute (no release tail) doesn't read as broken by ear even though it's
@@ -678,8 +683,9 @@ like that down instead of just fixing them and moving on.
 carried over from P1, unchanged).
 
 **Heard on hardware, and the vibrato bug this section warned about turned
-out to be real, not just theoretical.** Carl: "the arp messes up after a
-couple of laps (3-4) ... more pronounced ... the higher the base pitch."
+out to be real, not just theoretical.** The author, on real hardware: "the arp
+messes up after a couple of laps (3-4) ... more pronounced ... the higher the
+base pitch."
 Exactly the failure mode the additive-on-period design above should have
 been checked against before it shipped, not after: `vibrato_delay = 30`
 frames is ~3-4 laps of `AY_INS_ARP`'s 8-row table, and a *fixed absolute*
@@ -715,11 +721,11 @@ tables) is actually reachable through an instrument, not just declared in
 a struct nothing reads. `audio_engine.cpp`'s mix loop reads `ins.model`
 instead of the P1/P2 hardcoded `AY_MODEL_AY8910`.
 
-**Display: Carl's own ask** ("improve the display with proper instrument
+**Display: the author's own ask** ("improve the display with proper instrument
 names ... instrument # as well as name, preferably on the same line") --
 the INSTR row (the *currently selected* instrument, one line) was a bare
 combined index before this. First pass also renamed the per-voice grid's
-cells to names; Carl's own correction: names for the one-line INSTR row
+cells to names; the author's own correction: names for the one-line INSTR row
 only, the grid stays numeric -- a name doesn't fit eight cells at once the
 way it fits one summary line, and that was never the ask. The grid also
 now shows `VT_AY` voices (still SID-only through P2, §12.2's own
@@ -745,9 +751,9 @@ inactive.
   one thing everywhere on this screen, the same principle the combined
   selection space itself was built on.
 
-**Hardware-verified.** Carl: "sounds fine. Very similar to [AY_INS_LEAD],
-but I think the differences are subtle" -- comparing `AY_INS_LEAD` against
-`AY_INS_LEAD_YM`, exactly the outcome the real, documented AY8910-vs-
+**Hardware-verified.** The author, on real hardware: "sounds fine. Very
+similar to [AY_INS_LEAD], but I think the differences are subtle" -- comparing
+`AY_INS_LEAD` against `AY_INS_LEAD_YM`, exactly the outcome the real, documented AY8910-vs-
 YM2149 difference should produce (a real but subtle DAC-curve difference,
 not a night-and-day one -- ayumi.c's own two tables, `ay_envelope.h`,
 never claimed more than that).
@@ -865,7 +871,7 @@ song-dependent. Both accepted.
 
 ## 9. CPU budget
 
-Baseline: 3401 cycles/frame = 100% at 150 MHz / 44.1 kHz (`engine.md`).
+Baseline: 3401 cycles/frame = 100% at 150 MHz / 44.1 kHz.
 Measured references — subtractive voice **5.9%** (`history_subtractive.md`),
 speech voice **93.5 c/f (2.75%)** (`history_speech.md`), reverb **~8%** and
 idle **~0.6%** (`history_subtractive.md`).
@@ -932,8 +938,10 @@ specific multiple was wrong, not the conclusion.
    filter — a quiet note then drives the 6581 nonlinearity less hard, which is both
    physically right and what makes velocity feel like dynamics rather than a volume
    knob. ~2–3 c/f. Compiles out under `CHIP_STRICT` (§11.1).
-8. **Glossary lands in `architecture.md`**, not here — the voice/channel/track
-   collision predates this module (§16).
+8. **Glossary stays in this doc**, as a trailing appendix (§16), rather than
+   moving to `architecture.md` as first proposed — the voice/channel/track
+   collision predates this module, but no other module doc carries a
+   glossary either, so there was nowhere shared to merge it into.
 9. **Primitives are topology-free from the first commit** (§4).
 10. **Hard restart is an instantaneous envelope reset**, zero latency (§4.3).
 11. **>32 voices rejected**; tag-bit approach recorded but not built (§8).
@@ -993,7 +1001,7 @@ specific multiple was wrong, not the conclusion.
 
 ---
 
-## 16. Glossary (proposed — belongs in `architecture.md`)
+## 16. Glossary
 
 Terms have been overloaded across this module's design discussion and the existing
 docs. Proposed definitions, grounded in current code usage:

@@ -58,19 +58,20 @@ FM_RIG_FB           ?= default
 FM_BLOCK ?= default
 
 # Chip module P0 measurement rig (rig.h), preserved behind a flag once P1's
-# real MIDI-driven engine became the default (sid.md §1, §14a.9). Same idiom
-# as SPEECH_PROFILE above -- lets sid.md §9's hardware numbers stay
-# re-measurable against later changes without deleting the rig that produced
-# them. No effect on other engines.
+# real MIDI-driven engine became the default (module_chip.md §1,
+# history_chip.md §14a.9). Same idiom as SPEECH_PROFILE above -- lets
+# module_chip.md §9's hardware numbers stay re-measurable against later
+# changes without deleting the rig that produced them. No effect on other
+# engines.
 #   make ENGINE=chip CHIP_PROFILE=1
 CHIP_PROFILE ?= 0
 
-# Chip module F0 measurement rig levers (src/engines/chip/rig.h, sid.md P0).
-# Each measurement is its own build -- a runtime switch would put a branch
-# inside the loop whose cycle count is the thing being measured. "default"
-# leaves rig.h's own value in place.
+# Chip module F0 measurement rig levers (src/engines/chip/rig.h,
+# module_chip.md P0). Each measurement is its own build -- a runtime switch
+# would put a branch inside the loop whose cycle count is the thing being
+# measured. "default" leaves rig.h's own value in place.
 #
-#   make ENGINE=chip                                  # 20 voices, 12 filtered (P0 decision, sid.md §9)
+#   make ENGINE=chip                                  # 20 voices, 12 filtered (P0 decision, module_chip.md §9)
 #   make ENGINE=chip CHIP_RIG_FILTERED=0              # unfiltered, for the diff
 #   make ENGINE=chip CHIP_RIG_MOD=1 CHIP_RIG_OVERSAMPLE=2   # sync at 2x
 #   make ENGINE=chip CHIP_WAVE_DAC=0                  # without the 8 KB DAC LUT
