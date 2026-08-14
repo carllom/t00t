@@ -24,12 +24,25 @@ are enough to act on without it.
 
 ## Phase checklist
 
-- [ ] **Phase 0** — this tracking file (in progress — being created now)
-- [ ] **Phase 1** — reference correctness (docs + source comments)
-  - [ ] 1a. Fix 3 doc-internal cross-reference issues
-  - [ ] 1b. Fix 464 source-comment references, batched by module/directory
-  - [ ] 1c. Verification sweep (grep old filenames → 0 hits except the one
-        intentional exception)
+- [x] **Phase 0** — this tracking file (commit `d589bfa`)
+- [x] **Phase 1** — reference correctness (docs + source comments)
+  - [x] 1a. Fix 3 doc-internal cross-reference issues (commit `50ab737`)
+  - [x] 1b. Fix 463 source-comment references across 103 files, batched by
+        module/directory (5 parallel agents: chip, fm, speech, tracker,
+        groovebox/subtractive/shared — commit `69e98f7`). Actual count
+        landed at 463 lines, not the original audit's 464 — one of the
+        "hits" (`src/engines/fm/audio_engine.cpp:184`) was already correct
+        and deliberately left untouched.
+  - [x] 1c. Verification sweep — repo-wide grep for old filenames (bare,
+        unprefixed) in `src/`+`tools/` returns 0 hits; grep for malformed
+        `module_module_`/`history_history_`/`history_module_`/
+        `module_history_` artifacts (one batch had a sed-ordering bug,
+        self-caught and fixed before reporting) returns 0 hits; the one
+        remaining `engine.md` hit is confirmed legitimate (Trigger/Gate
+        Signaling genuinely still lives there). Also spot-checked the
+        non-comment-marker-prefixed diff lines (continuation lines inside
+        block comments/docstrings) to confirm no real code was touched —
+        all clean.
 - [ ] **Phase 2** — section reordering across the six `module_*.md` docs
   - [ ] Design canonical section order (propose before applying)
   - [ ] Apply per doc, renumber, fix internal `§N` self-refs
@@ -255,7 +268,34 @@ Target shape for "bad" (rewrite, move history to `history_X.md`):
 before/after narratives citing issue numbers, exact examples of the pattern
 to fix.
 
+## Lessons from Phase 1 (useful for Phase 2's similar renumber/rename work)
+
+- **`chip.md §14 item N` (no letter suffix) is NOT the same as `§14a`-`§14f`.**
+  `module_chip.md`'s own §14 "Recommended build order" has a real numbered
+  list (1. P0 rig, 2. P1 skeleton, ...) that bare `item N` citations match
+  correctly — only the *letter-suffixed* forms moved to `history_chip.md`.
+  Checked against real headings before generalizing; don't assume every
+  `§14`-anything moved.
+- **Compound citations may need splitting across two files.** E.g.
+  `chip.md §9/§14a.9` became `module_chip.md §9 / history_chip.md §14a.9` —
+  §9 (CPU budget, the claim) stayed in the module doc, §14a.9 (the measured
+  number backing it) is in history. Don't force a compound citation into one
+  file if its two halves genuinely live in different docs now.
+- **Sed/bulk-replace ordering matters when two rename rules can chain.**
+  One batch ran `fm2.md`→`history_fm.md` before `fm.md`→`module_fm.md`, and
+  the second rule's `fm.md` pattern then matched inside the just-produced
+  `history_fm.md`, corrupting it to `history_module_fm.md` in 19 files.
+  Caught by a post-fix grep for `history_module_`/`module_module_`-style
+  artifacts — worth running that check after any multi-pattern bulk edit,
+  not just a "did the old string disappear" check.
+
 ## Session log
 
 - 2026-08-14: Investigation done (3 parallel Explore agents), plan approved,
-  this tracking file created (Phase 0). Starting Phase 1 next.
+  this tracking file created (Phase 0). Phase 1 complete: 3 doc-internal
+  fixes (commit `50ab737`) + 463 source-comment reference fixes across 103
+  files via 5 parallel agents (commit `69e98f7`). Verification sweep clean.
+  Next: Phase 2 (section reordering) or Phase 4 (per-module validation +
+  comment cleanup) — check with the user which to pick up next; both are
+  substantial, and Phase 3 (anonymize) is folded into Phase 4's per-module
+  passes rather than run standalone.
