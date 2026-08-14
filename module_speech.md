@@ -1,6 +1,6 @@
 # T00T — Speech Synthesis Module (Implementation Plan)
 
-Companion to `architecture.md` and `tracker.md`. This document assumes the tracker
+Companion to `architecture.md` and `module_tracker.md`. This document assumes the tracker
 module has been built first and that its infrastructure work is already merged.
 
 ---
@@ -528,10 +528,10 @@ Do not trust these numbers. The tracker taught that estimated per-voice costs ca
 wrong by a factor of five in either direction depending on surrounding machinery.
 **Measure with the profiling pin at the end of P2 before scaling voice count.**
 
-**Measured (#31, engine.md "Speech Engine P2 Profiling"): ~93.5 cycles/frame/voice
+**Measured (#31, history_speech.md "Speech Engine P2 Profiling"): ~93.5 cycles/frame/voice
 (2.75%), flat from 1 to 8 voices** — about 25–55% over this table's top end, all of
 it in the excitation/resonator/ZOH bucket rather than coefficient recompute (which
-landed close to predicted). See engine.md for the full breakdown and the
+landed close to predicted). See history_speech.md for the full breakdown and the
 `MAX_SPEECH_VOICES = 8` decision under Settled Decisions below.
 
 Memory: phoneme table ~1 KB, phrases <4 KB, per-voice state ~200 bytes. Negligible
@@ -628,7 +628,7 @@ closing note: "notes, pan, vowel select, both delay and reverb" confirmed on
 `breadboard_rp2350`). Overdrive was never actually part of "the existing effects
 chain" anywhere in the codebase -- checked: `EffectType` (`engine_base.h`) only ever
 had `FX_DELAY`/`FX_REVERB`; "delay/reverb/overdrive" traces back to an *Open
-Question* in `tracker.md`, not a built feature -- so it's explicitly deferred rather
+Question* in `module_tracker.md`, not a built feature -- so it's explicitly deferred rather
 than implemented here; see "Settled Decisions" below for the reasoning against
 building it as part of this issue. What #38 actually added: `presets.h`
 (`SpeechPreset`, `voice_apply_preset()`, 9 presets -- one per `SpeechMode`
@@ -636,7 +636,7 @@ building it as part of this issue. What #38 actually added: `presets.h`
 breathy, tract-shift up/down, and a robot-chorus preset spreading up to
 `MAX_SPEECH_VOICES` simultaneously-held notes across the stereo field with a small
 per-voice detune -- see "MIDI Mapping" above for the exit criterion this closes:
-`speech.md`'s own "the range the parameters actually cover"), CC16 preset select
+`module_speech.md`'s own "the range the parameters actually cover"), CC16 preset select
 (`midi_controller.cpp`), and a CMake fix (`CMakeLists.txt`'s VGA-board button
 controller was gated on "does this engine ship a presets.h" -- true only by accident
 for the subtractive engine until this issue gave speech one too; re-gated on
@@ -645,8 +645,8 @@ for the subtractive engine until this issue gave speech one too; re-gated on
 (`make`/`make ENGINE=groovebox`/`make ENGINE=tracker`/`make ENGINE=speech`, plus
 `SPEECH_PROFILE=1`). Not yet done: hardware listening confirmation of the preset
 table (particularly the robot-chorus preset's stereo spread) and the profiling-pin
-measurement of effects-on cost for `engine.md` -- both need Carl at the bench, same
-as #36's MIDI-wiring gap.
+measurement of effects-on cost for `history_subtractive.md`'s performance table --
+both need Carl at the bench, same as #36's MIDI-wiring gap.
 
 ### P6 — LPC sibling engine (optional, later)
 
@@ -771,7 +771,7 @@ Listed for completeness; no new work.
       nothing extra over that flat per-voice number (both are already
       unconditional in the code). 8 voices is 22% of Core 1 alone, 30% with
       reverb on top — comfortably inside budget, and makes a "robot chorus" preset
-      a real option for P5. See engine.md "Speech Engine P2 Profiling (#31)" for
+      a real option for P5. See history_speech.md "Speech Engine P2 Profiling (#31)" for
       the full breakdown and the discrepancy explanation against this doc's
       predicted 60-75 cycles/frame/voice budget.
 - [x] Segment sequencer landed scoped to what P3's exit criterion actually needs
@@ -822,9 +822,10 @@ Listed for completeness; no new work.
       values rather than being one itself. `utterance = note % SPEECH_PHRASE_COUNT` —
       no base-note offset/config, since "reachable without a rebuild" only requires
       that every phrase be reachable from *some* note, not a specific keyboard layout.
-- [x] Vibrato (#36) is resampled once per sub-block, matching engine.md's "recompute
-      coefficients from ramped parameters, not per sample" convention this module
-      already applies to F/B — not per glottal cycle (that's jitter's job) and not
+- [x] Vibrato (#36) is resampled once per sub-block, matching this document's own
+      "recompute coefficients from ramped parameters, not per sample" convention
+      already applied to F/B (see "Resonator and the stability rule" above) — not
+      per glottal cycle (that's jitter's job) and not
       per output sample (unnecessary cost for something this slow relative to audio
       rate). Depth is semitones (`VIBRATO_MAX_SEMITONES`, excitation.h), the same
       "musical, not raw-Hz" mapping every other pitched/timbral CC in this engine uses.
@@ -837,13 +838,13 @@ Listed for completeness; no new work.
       (not just multiplies by zero), so a jitter/shimmer-off render stays bit-exact
       with pre-#36 behaviour — verified by `render_speech.cpp`'s zero-crossing-period
       check measuring exactly 0.0 coefficient of variation at the default settings.
-- [x] Overdrive deferred, not built as part of #38 (speech.md P5 "Effects and
+- [x] Overdrive deferred, not built as part of #38 (module_speech.md P5 "Effects and
       polish"): #38's own wording ("route through the existing delay/reverb/
       overdrive chain ... nothing about it needs rework, just wiring") assumed
       overdrive was already a member of the shared post-mix effects chain
       (`EffectType`, `engine_base.h`) the way delay/reverb are. It never was —
       grepping the whole repo, "overdrive" only ever appears (a) as an *Open
-      Question* in `tracker.md` ("the existing delay/reverb/overdrive could run as
+      Question* in `module_tracker.md` ("the existing delay/reverb/overdrive could run as
       a stereo send" — itself hypothetical) and (b) as the groovebox's unrelated
       per-voice 303 ladder-filter `drive` parameter, a different mechanism with the
       same name. Adding a real `FX_OVERDRIVE` would mean extending `EffectType`
@@ -905,5 +906,5 @@ Listed for completeness; no new work.
    glitching an in-flight utterance" claim (true by construction — `speech_load_
    preset()` never writes `shadow.voices[]`, so it cannot touch an already-sounding
    voice — but not yet confirmed by ear). Also pending: the effects-on cost
-   measurement for `engine.md`'s performance table (needs the profiling pin, i.e.
-   Carl at the bench, same as #31/#37's numbers).
+   measurement for `history_subtractive.md`'s performance table (needs the
+   profiling pin, i.e. Carl at the bench, same as #31/#37's numbers).

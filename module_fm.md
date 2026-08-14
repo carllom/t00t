@@ -1,4 +1,4 @@
-# T00T — FM Module (DX7-class): Design & Implementation Plan
+# T00T — FM Module (DX7-class)
 
 A design document for a dedicated **6-operator phase-modulation engine** for the
 t00t platform, targeting DX7 feature parity and DX7-class polyphony on the
@@ -10,13 +10,11 @@ A secondary, much smaller proposal — adding a 2-operator FM oscillator to the
 *generic* subtractive engine — is covered in §10. The two are independent and can
 proceed in either order.
 
-Status: **design draft.** No code written yet.
-
 > ~~**Provenance of the numbers in this document.** The per-operator cycle
 > figures in §3 are derived from *static instruction counts*... **P0 exists to
 > replace these estimates with measurements before any DX7 logic is
 > written.**~~ **Struck, #43.** P0's profiling-pin bench pass is done
-> (`engine.md` §"FM P0 Measurement (#43)") — the per-operator kernel costs in
+> (`history_fm.md` §"FM P0 Measurement (#43)") — the per-operator kernel costs in
 > §3.2/§3.3 are now confirmed by real hardware measurement, matching the
 > static analysis closely (unlike the tracker/speech pattern of measured
 > running 25–50% *above* static, this landed at or slightly below). One piece
@@ -83,9 +81,9 @@ At 150 MHz and 44100 Hz, Core 1 has:
 - **3401 cycles per sample frame**
 - **870,748 cycles per 256-sample buffer** (5.805 ms deadline)
 
-Calibrating against the measured figures in `engine.md`:
+Calibrating against the measured figures in `history_subtractive.md`:
 
-| Measured (engine.md) | Duty | Cycles/sample |
+| Measured (`history_subtractive.md`) | Duty | Cycles/sample |
 |---|---|---|
 | Idle | 0.44% | ~15 |
 | Subtractive voice (osc + ADSR + SVF + LFO) | ~5.9% | ~201 |
@@ -149,7 +147,7 @@ instead of `+=`, resolved at note-on when the routing is compiled.
 
 ### 3.4 Headline number
 
-**Measured, #43** (`engine.md` §"FM P0 Measurement (#43)", `breadboard_rp2350`,
+**Measured, #43** (`history_fm.md` §"FM P0 Measurement (#43)", `breadboard_rp2350`,
 2026-08-08): raw 6-operator kernel cost is **100.05 c/f/voice** (linear fit,
 flat 2–24 voices, 7.79 c/f fixed overhead), against a corrected available
 budget of **2607 c/f** (85% × 3401 − 15 idle − 268.7 measured FX reserve, §9).
@@ -184,7 +182,7 @@ original guess, not the LFO/pitch-EG that don't exist yet (P4) but purely
 6 operators/voice). Still comfortably inside the ≤130→"20+" / ~160→"16,
 proceed as planned" sensitivity tiers below (137 sits just above the ≤130
 cutoff, confirming 16 was the right call, not a conservative one) — no
-change to `MAX_VOICES`. See `engine.md` §"FM Engine — EnvDX + BLOCK
+change to `MAX_VOICES`. See `history_fm.md` §"FM Engine — EnvDX + BLOCK
 Confirmation (#45)" for the full number and what it means for the
 BLOCK=8-vs-16 tradeoff (it strengthens the case for keeping 16, since
 BLOCK=8 would double this now-larger real overhead, not the original
@@ -227,7 +225,7 @@ but that is not a dependency.)
 
 ### 3.6 Tuning levers, in expected order of value
 
-Measured #43 (`engine.md` §"FM P0 Measurement (#43)"), decisions in §3.4:
+Measured #43 (`history_fm.md` §"FM P0 Measurement (#43)"), decisions in §3.4:
 
 1. **Two operators interleaved in one loop body.** ~~Likely the single
    largest win.~~ **Measured: −1.5%, not the largest win.** Plausible cause:
@@ -241,7 +239,7 @@ Measured #43 (`engine.md` §"FM P0 Measurement (#43)"), decisions in §3.4:
    linking, so there's no separate symbol left to place; confirmed via
    `objdump`, identical `.text` either way — genuinely always flash). Fixed
    in `rig.h` using the pico-sdk's `__no_inline_not_in_flash_func`, and
-   re-measured (tests 14/15, `engine.md` §"FM P0 Measurement (#43)"):
+   re-measured (tests 14/15, `history_fm.md` §"FM P0 Measurement (#43)"):
    **SRAM is +4.9 c/f/voice *worse* than flash**, isolated from the noinline
    call overhead via a flash-only control — backwards from this item's
    "non-negotiable" assumption. Confirmed by evidence, not asserted: the
@@ -263,7 +261,7 @@ Measured #43 (`engine.md` §"FM P0 Measurement (#43)"), decisions in §3.4:
    loop-unrolling threshold** (confirmed: `audio_engine_run()` compiles to
    5,568 bytes at BLOCK=16 vs. 1,336 at BLOCK=32, and BLOCK=32 alone
    compiles the per-operator loop as a real branch). **Closed, #45:
-   BLOCK=16 confirmed (not changed)** — see `engine.md` §"FM P2 BLOCK
+   BLOCK=16 confirmed (not changed)** — see `history_fm.md` §"FM P2 BLOCK
    Confirmation (#45)" for the host-rendered rate-99 attack-transient
    comparison. BLOCK=32 loses on both axes now measured (10.8% more
    expensive kernel *and* the coarsest, least accurate attack transient: 9
@@ -279,7 +277,7 @@ Measured #43 (`engine.md` §"FM P0 Measurement (#43)"), decisions in §3.4:
 4. **M33 DSP extension.** `smulwb` fuses the `mul` + `asr` pair. **Measured:
    −3.0%, as predicted. Adopted where convenient** — real, no correctness
    cost (host + device verified in #42).
-5. **SIO interpolators.** Not tried — `fm.md`'s own prediction ("probably not
+5. **SIO interpolators.** Not tried — this document's own prediction ("probably not
    worth it with a non-interpolating lookup") held up well enough by the
    other levers' small margins that this wasn't worth #43's bench time.
 
@@ -556,7 +554,7 @@ alongside the pitch EG; amplitude mod folds into each operator's `gain`/`gain_st
 computation according to its AM sensitivity. Per-sample cost: **zero**.
 
 **Implemented, #49 — closes open question 5: per-voice, global-phase
-mode dropped (not deferred).** fm.md's own recommendation (per-voice with
+mode dropped (not deferred).** This document's own recommendation (per-voice with
 key sync, "strictly better for polyphony") is what shipped; the "patch flag
 for global-phase mode" alternative was considered and rejected, not left
 unbuilt. Reason: #48 already made this engine genuinely multitimbral (one
@@ -796,8 +794,19 @@ and the generated header are gitignored, never committed — a real DX7 bank
 is Yamaha's own commercial patch data, the same reasoning `xm2t00t`'s `xm/`
 already established for copyrighted third-party `.xm` songs. The device and
 `tools/host_render`'s `render_fm` both compile against `patches.h`'s absence
-gracefully (`T00T_FM_HAS_PATCHES`, gated in both `CMakeLists.txt`s) — every
-voice just plays `FM_TEST_PATCH` until someone runs the converter locally.
+gracefully (`T00T_FM_HAS_PATCHES`, gated in both `CMakeLists.txt`s and
+detected at configure time via `if(EXISTS …)` — the same pattern the
+top-level `CMakeLists.txt` already uses for other optional generated files)
+— every voice just plays `FM_TEST_PATCH` until someone runs the converter
+locally.
+
+```
+syx2patch.py convert <in.syx> <out.h>   # writes patches.h (enum FmPatchId,
+                                          # FM_PATCH_COUNT, const FmPatch
+                                          # FM_PATCHES[], FM_PATCH_NAMES[])
+syx2patch.py dump <in.syx>               # prints a per-voice summary
+                                          # (algorithm, name, warnings), writes nothing
+```
 
 v1 actually resolves:
 
@@ -822,6 +831,48 @@ rather than approximated, since v1 had no way to represent them without
 silently changing the patch's character; v2 fixed that. Transpose remains
 deliberately unwired (#49) — it's a Core 0/MIDI-controller-layer concern, not
 something a patch-data-only converter can apply.
+
+### Algorithm decode
+
+`DX7_ALGORITHMS[32]` is Dexed's own bus-flag table (Source/msfa/fm_core.cc,
+Apache-2.0), reused as data — not because Dexed's 2-bus render scheme is
+copied, but because it's a compact, already-correct encoding of all 32
+algorithms' topology. `decode_algorithm()` simulates DX7's fixed OP6→OP1
+processing order once, generically, to reconstruct each operator's real
+`mod_target`: a bus (1 or 2) is a stack, written by a contiguous run of
+operators, and the next operator that reads that bus number is,
+unambiguously, every writer in that run's actual downstream target. One
+function handles all 32 rows — the acceptance criterion "generated or
+table-driven, not 32 hand-written cases" is met by the data being a table
+and the decode being one generic simulation, not per-algorithm branches.
+Hand-verified against algorithm 1 (two independent chains,
+`6→5→4→3→OUT`/`2→1→OUT`, feedback on OP6) and algorithm 32 (all six
+operators as independent carriers, feedback on OP6) — both match every
+published DX7 algorithm chart.
+
+Algorithms 4 and 6 each have a second operator with the FB_OUT bit set
+alone (not paired with FB_IN, unlike the algorithm's primary feedback
+operator) — real DX7 hardware routes that operator's output into the same
+shared feedback register the primary operator reads, a genuine
+operator-spanning loop closed only across block-processing order. Detected
+generically (not by hardcoding "algorithm == 4 or 6"): a test graph adds a
+tentative edge from every such secondary operator to the primary, and a real
+cycle check runs over it. `needs_interleaved` is set when a cycle is found;
+the fallback is simply that the secondary edge was never added to the real
+emitted routing in the first place — `patches.h` gets a per-patch comment
+and the tool logs a warning, `#54` is the eventual real fix.
+
+### Packed-voice unpacking
+
+`unpack_voice()` is a bit-for-bit port of Dexed's
+`Cartridge::unpackProgram` (Source/PluginData.cpp, Apache-2.0), cross-checked
+against the DX7 MIDI Data Format Sheet's own published "Bulk Dump Packed
+Format" table. Every field is range-checked against its documented range
+(0-99, 0-31, 0-7, …) and raises rather than silently clamping — unlike
+Dexed's own `normparm`, which clamps corrupted bytes defensively since it
+has to keep running against whatever's already loaded. `parse_syx_bulk()`
+validates the full `F0 43 0n 09 20 00 … checksum F7` envelope, including the
+masked 2's-complement checksum.
 
 Two real, unanticipated issues surfaced only by actually host-rendering a
 real bank (ROM1A), not by design review alone: multi-carrier algorithms
@@ -873,7 +924,7 @@ design invariant of the module.
 | Item | Cycles/sample | % of 3401 |
 |---|---|---|
 | Idle / DMA / IPC (measured) | ~15 | 0.44% |
-| Global FX insert (reverb — measured, reused from the subtractive engine's identical shared code, `engine.md` §"FM P0 Measurement (#43)") | 268.7 | 7.9% |
+| Global FX insert (reverb — measured, reused from the subtractive engine's identical shared code, `history_fm.md` §"FM P0 Measurement (#43)") | 268.7 | 7.9% |
 | 16 × 6-op voice @ 100.5 measured kernel + ~19 unmeasured EG/LFO (P2) ≈ 120 | ~1920 | 56.5% |
 | **Total** | **~2204** | **~65%** |
 
@@ -885,7 +936,7 @@ was low by about 1.8×), and the voice figure is #43's bench-measured
 EG/LFO estimate forward unmeasured (P0's rig has no EG/LFO by design; that
 piece is P2's to measure). Total Core 1 load at 16 voices + reverb, using
 the best current numbers, is well under the budget this table originally
-targeted — see `engine.md` §"FM P0 Measurement (#43)" for the full
+targeted — see `history_fm.md` §"FM P0 Measurement (#43)" for the full
 derivation and the decision not to raise `MAX_VOICES` on this projection
 alone.
 
@@ -929,7 +980,7 @@ possibly the 4096-entry table.
    no EG, no patch logic. Scope GPIO 22. In the same session, measure:
    flash vs. `__not_in_flash_func`; 1024 vs. 4096 table; interleaved vs. plain
    kernel; BLOCK = 8/16/32; and the FX insert in isolation.
-2. ~~Record the results in `engine.md`'s performance table before writing P1.
+2. ~~Record the results in `history_fm.md`'s performance table before writing P1.
    Update §3.4 of this document with measured figures and strike the
    provenance caveat.~~ **Done, #43.**
 3. ~~**P1** — engine skeleton with one hardcoded patch. Verify ratios and routing
@@ -940,7 +991,7 @@ possibly the 4096-entry table.
    Carl's to do.
 4. ~~**P2** — `EnvDX`. Confirm BLOCK choice against fastest-attack patches.~~
    **Implemented, #45** (4-stage log-domain EG, DX7 level table, velocity
-   sensitivity, BLOCK=16 confirmed — `engine.md` §"FM P2 BLOCK Confirmation
+   sensitivity, BLOCK=16 confirmed — `history_fm.md` §"FM P2 BLOCK Confirmation
    (#45)"). By-ear EP/bell check on real hardware still Carl's to do.
 5. ~~**P3** — the converter.~~ **Implemented, #47 (v1) + #48 (v2)**
    (`tools/syx2patch.py`: 32-voice .syx unpack, all 32 algorithms mapped to
@@ -962,8 +1013,10 @@ possibly the 4096-entry table.
    EG, LFO, and transpose remain unwired — no `pitch_eg.h`/`lfo.h` exists
    yet at all, that's P4. The `.syx` input and generated `patches.h` are
    both gitignored (Yamaha's own patch data, same policy `xm2t00t`'s `xm/`
-   already established for copyrighted third-party content) — see
-   `engine.md`'s syx2patch sections for the full writeup and usage.
+   already established for copyrighted third-party content) — see §7 above
+   for the full writeup and usage, and `history_fm.md`'s "syx2patch Host
+   Converter (#47)" section for the bug-discovery narrative and validation
+   results.
 6. ~~**P4** — pitch EG + LFO.~~ **Implemented, #49** (`pitch_eg.h`/`lfo.h`:
    4-stage pitch EG in cents, LFO with all six waveforms/rate/delay/PMD/AMD/
    key-sync/PMS/per-op AM sensitivity, both ported from Dexed's real
@@ -985,9 +1038,9 @@ possibly the 4096-entry table.
 
 | # | Question | When |
 |---|---|---|
-| 1 | ~~Measured cycles/operator, and therefore the real voice count~~ **Closed, #43: 100.05 c/f/voice measured (kernel only), `MAX_VOICES=16` confirmed** — `engine.md` §"FM P0 Measurement (#43)". Raising past 16 deferred to a P2 bench pass once EG/LFO exist to measure. | **P0 — done** |
+| 1 | ~~Measured cycles/operator, and therefore the real voice count~~ **Closed, #43: 100.05 c/f/voice measured (kernel only), `MAX_VOICES=16` confirmed** — `history_fm.md` §"FM P0 Measurement (#43)". Raising past 16 deferred to a P2 bench pass once EG/LFO exist to measure. | **P0 — done** |
 | 2 | ~~FX insert cost in isolation; is Freeverb worth ~4% in an FM context?~~ **Closed, #43: 268.7 c/f / 7.9% (reused from the subtractive engine's identical shared FX code), not ~4%. Freeverb stays** — the 16-voice budget clears with ~27% margin even at the corrected cost. | **P0 — done** |
-| 3 | ~~BLOCK size — 16 assumed; confirm against rate-99 attacks~~ **Closed, #45: BLOCK=16 confirmed, not raised to 32 or lowered to 8** — `engine.md` §"FM P2 BLOCK Confirmation (#45)". | **P2 — done** |
+| 3 | ~~BLOCK size — 16 assumed; confirm against rate-99 attacks~~ **Closed, #45: BLOCK=16 confirmed, not raised to 32 or lowered to 8** — `history_fm.md` §"FM P2 BLOCK Confirmation (#45)". | **P2 — done** |
 | 4 | ~~Extract a shared `BlockClock` for FM and speech, or keep them separate?~~ **Closed, #46: reject — common pattern, no common code.** Compared the real `EnvDX` (§5.3) against speech's segment sequencer: per-operator vs. per-voice instancing, fixed 4-stage log2 vs. variable-length float segments, exact per-sample `gain_step` interpolation vs. per-sub-block-constant IIR smoothing. See §5.3's cross-module note and `architecture.md` "Settled Decisions". Speech's sequencer (#34/#36/#37) untouched. | **P2 — done** |
 | 5 | ~~Global vs. per-voice LFO default~~ **Closed, #49: per-voice, global-phase mode dropped (not built), by design.** #48's multitimbrality (one patch pointer per voice) leaves a literal shared LFO with no principled behavior once two active voices with *different* patches both request global phase — a case that can't arise on real single-timbral hardware, so there's no real DX7 behavior to match. Per-voice-with-key-sync already covers the common "block chord" fidelity case. See §5.5's own writeup. | **P4 — done** |
 | 6 | Algorithms 4 and 6: interleaved fallback (X1) or documented limitation? **Partially closed, #47**: v1 documents the limitation and applies a collapse-to-single-self-feedback fallback (detected generically via cycle analysis, logged, never silent) — real X1 interleaved rendering (the actual two-operator loop) is `#54`, still open. | P4 |
@@ -1005,7 +1058,7 @@ possibly the 4096-entry table.
 
 **Modified:**
 `voice_alloc.*` (operator-cost weight), `CMakeLists.txt` (engine selection),
-`engine.md` (P0 measurements), `wslcd/display.cpp` (operator budget readout).
+`history_fm.md` (P0 measurements), `wslcd/display.cpp` (operator budget readout).
 
 **Unchanged:** IPC, MIDI, output, effects, LCD driver.
 
