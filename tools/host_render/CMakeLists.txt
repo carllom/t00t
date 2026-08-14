@@ -69,14 +69,14 @@ target_include_directories(render_fm PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}/../../src
 )
 
-# #47 P3 patch bank: patches.h is generated locally by tools/syx2patch.py
+# #47 patch bank: patches.h is generated locally by tools/syx2patch.py
 # and gitignored (see the top-level CMakeLists.txt's matching gate) --
 # render_fm.cpp's patch-bank render only compiles in when it's present.
 if(EXISTS ${CMAKE_CURRENT_LIST_DIR}/../../src/engines/fm/patches.h)
     target_compile_definitions(render_fm PRIVATE T00T_FM_HAS_PATCHES=1)
 endif()
 
-# Host build of src/engines/fm/rig.h (#42): the P0 measurement rig's
+# Host build of src/engines/fm/rig.h (#42): the measurement rig's
 # stripped 6-operator x N-voice mixer, checked here for correctness (real,
 # finite, non-clipping audio through all three kernel variants) before the
 # actual cycle-count bench session. Fully self-contained -- rig.h has its own
@@ -87,7 +87,7 @@ target_include_directories(render_fm_rig PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}/../../src
 )
 
-# CHIP_STRICT reference-diff harness (module_chip.md §11.1, P0/P1). Takes the same
+# CHIP_STRICT reference-diff harness (module_chip.md §11.1). Takes the same
 # CLI as tools/sid_ref/resid_render.cpp; tools/sid_compare.py runs both and
 # scores the difference. Header-only against src/chip/, no extra .cpp inputs.
 add_executable(render_sid render_sid.cpp)
@@ -106,7 +106,7 @@ target_include_directories(t00t_chip_dump PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}/../../src
 )
 
-# AY_STRICT reference-diff harness (module_chip.md §12.1, AY-P0) -- the second chip in
+# AY_STRICT reference-diff harness (module_chip.md §12.1) -- the second chip in
 # this module, same shape as render_sid above. Takes the same CLI as
 # tools/ay_ref/ayumi_render.cpp; tools/sid_compare.py (reused unmodified,
 # it is generic over any two float32 WAVs) scores the difference.

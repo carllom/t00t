@@ -1,5 +1,5 @@
 # Host-only build for the chip module's AY-3-8910/YM2149 reference rig
-# (module_chip.md §12.1, AY-P0). Plain g++, no cmake -- mirrors tools/sid_ref/Makefile.
+# (module_chip.md §12.1). Plain g++, no cmake.
 #
 #   make    # -> ./ayumi_render ./ayumi_dump
 #
