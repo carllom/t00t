@@ -4,7 +4,7 @@ UF2 = $(BUILD_DIR)/t00t.uf2
 # Board selection: breadboard_rp2350 (default) or vgaboard_rp2350
 BOARD ?= breadboard_rp2350
 
-# Synthesis engine: subtractive (default) or groovebox
+# Synthesis engine: subtractive (default), groovebox, tracker, speech or chip
 ENGINE ?= subtractive
 
 # MIDI transport overrides: 0, 1, or "default" (use the board header's default).
@@ -23,10 +23,45 @@ DMA_BUFFER_SIZE ?= default
 #   make ENGINE=speech SPEECH_PROFILE=1
 SPEECH_PROFILE ?= 0
 
+# Chip module P0 measurement rig (rig.h), preserved behind a flag once P1's
+# real MIDI-driven engine became the default (sid.md §1, §14a.9). Same idiom
+# as SPEECH_PROFILE above -- lets sid.md §9's hardware numbers stay
+# re-measurable against later changes without deleting the rig that produced
+# them. No effect on other engines.
+#   make ENGINE=chip CHIP_PROFILE=1
+CHIP_PROFILE ?= 0
+
+# Chip module F0 measurement rig levers (src/engines/chip/rig.h, sid.md P0).
+# Each measurement is its own build -- a runtime switch would put a branch
+# inside the loop whose cycle count is the thing being measured. "default"
+# leaves rig.h's own value in place.
+#
+#   make ENGINE=chip                                  # 20 voices, 12 filtered (P0 decision, sid.md §9)
+#   make ENGINE=chip CHIP_RIG_FILTERED=0              # unfiltered, for the diff
+#   make ENGINE=chip CHIP_RIG_MOD=1 CHIP_RIG_OVERSAMPLE=2   # sync at 2x
+#   make ENGINE=chip CHIP_WAVE_DAC=0                  # without the 8 KB DAC LUT
+#   make ENGINE=chip CHIP_RIG_FX=2 CHIP_RIG_SPEAKER=1 # 20v/4-bus + reverb + speaker sim, worst case
+CHIP_RIG_VOICES     ?= default
+CHIP_RIG_BUSES      ?= default
+CHIP_RIG_FILTERED   ?= default
+CHIP_RIG_OVERSAMPLE ?= default
+CHIP_RIG_SAT        ?= default
+CHIP_RIG_SUBBLOCK   ?= default
+CHIP_RIG_MOD        ?= default
+CHIP_WAVE_DAC       ?= default
+CHIP_RIG_FX         ?= default
+CHIP_RIG_SPEAKER    ?= default
+
 CMAKE_FLAGS = -DPICO_BOARD=$(BOARD) -DPICO_PLATFORM=rp2350 \
               -DMIDI_USB=$(MIDI_USB) -DMIDI_UART=$(MIDI_UART) \
               -DT00T_ENGINE=$(ENGINE) -DDMA_BUFFER_SIZE=$(DMA_BUFFER_SIZE) \
-              -DSPEECH_PROFILE=$(SPEECH_PROFILE)
+              -DSPEECH_PROFILE=$(SPEECH_PROFILE) -DCHIP_PROFILE=$(CHIP_PROFILE) \
+              -DCHIP_RIG_VOICES=$(CHIP_RIG_VOICES) -DCHIP_RIG_BUSES=$(CHIP_RIG_BUSES) \
+              -DCHIP_RIG_FILTERED=$(CHIP_RIG_FILTERED) \
+              -DCHIP_RIG_OVERSAMPLE=$(CHIP_RIG_OVERSAMPLE) \
+              -DCHIP_RIG_SAT=$(CHIP_RIG_SAT) -DCHIP_RIG_SUBBLOCK=$(CHIP_RIG_SUBBLOCK) \
+              -DCHIP_RIG_MOD=$(CHIP_RIG_MOD) -DCHIP_WAVE_DAC=$(CHIP_WAVE_DAC) \
+              -DCHIP_RIG_FX=$(CHIP_RIG_FX) -DCHIP_RIG_SPEAKER=$(CHIP_RIG_SPEAKER)
 
 HOST_BUILD_DIR = tools/host_render/build
 
