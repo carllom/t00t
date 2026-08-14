@@ -317,6 +317,117 @@ static uint32_t   ay_tick_phase = 0;  // shared across every AY voice -- same cl
                                         // same sample rate, so the tick-count sequence
                                         // for a given sample is identical for all of them
 
+// Per-voice AY frame-VM state (chip.md §12.2, AY-P2), same role ChipVm
+// plays for SID.
+struct AyVm {
+    uint8_t  tone_pos, volume_pos;
+    uint8_t  volume_hold;         // frames left in the current volume-sweep row
+    int16_t  volume_delta;        // that row's delta, reapplied until hold expires
+    int32_t  volume_cur;          // current software-envelope level, 0-15
+    int8_t   tone_note_offset;    // last tone-table row's semitone offset
+    uint16_t vib_phase;
+    uint16_t frames_since_trigger;
+    bool     gate_off_fired;
+};
+static AyVm ay_vm[MAX_VOICES];
+
+// Fresh AY instrument: tables start from row 0, volume seeded from the
+// instrument's initial_volume (ignored if use_envelope -- the hardware
+// envelope owns level entirely then). Mirrors vm_reset()'s shape.
+static void ay_vm_reset(uint32_t v, const AyInstrument &ins) {
+    AyVm &s = ay_vm[v];
+    s.tone_pos = 0; s.volume_pos = 0;
+    s.volume_hold = 0;
+    s.volume_delta = 0;
+    s.volume_cur = ins.initial_volume;
+    s.tone_note_offset = 0;
+    s.vib_phase = 16384;   // center, not trough -- same reasoning as vm_reset()'s
+                            // own comment: tri(16384) = 0, rising, so vibrato eases
+                            // out from zero deviation instead of snapping to one edge
+    s.frames_since_trigger = 0;
+    s.gate_off_fired = false;
+}
+
+// One frame boundary's worth of table stepping for one AY voice, mirroring
+// vm_frame_tick()'s shape. base_period is the trigger-time register value
+// (p.freq); arpeggio/vibrato both divide it rather than adding, since AY's
+// period is inversely proportional to pitch (note_freq.h's ay_hz_to_period)
+// -- an additive delta that works for SID's roughly-linear freq_reg would
+// wobble asymmetrically here, sharper on one side than the other.
+static void ay_vm_frame_tick(uint32_t v, const AyInstrument &ins, uint16_t base_period) {
+    AyVm &s = ay_vm[v];
+    s.frames_since_trigger++;
+
+    if (ins.tone.len > 0) {
+        const AyToneRow &r = ins.tone.rows[s.tone_pos];
+        s.tone_note_offset = r.note;
+        s.tone_pos++;
+        if (s.tone_pos >= ins.tone.len)
+            s.tone_pos = (ins.tone.loop < ins.tone.len) ? ins.tone.loop : (uint8_t)(ins.tone.len - 1);
+    }
+
+    if (!ins.use_envelope && ins.volume.len > 0) {
+        if (s.volume_hold == 0) {
+            const SweepRow &r = ins.volume.rows[s.volume_pos];
+            s.volume_delta = r.delta;
+            s.volume_hold = r.duration;
+            s.volume_pos++;
+            if (s.volume_pos >= ins.volume.len)
+                s.volume_pos = (ins.volume.loop < ins.volume.len) ? ins.volume.loop : (uint8_t)(ins.volume.len - 1);
+        }
+        s.volume_cur += s.volume_delta;
+        if (s.volume_cur < 0) s.volume_cur = 0;
+        if (s.volume_cur > 15) s.volume_cur = 15;
+        if (s.volume_hold > 0) s.volume_hold--;
+    }
+
+    // Arpeggio: exact, via division by the same Q16 semitone-ratio table
+    // SID's own vibrato/arpeggio multiply by (audio_engine.cpp's
+    // semitone_ratio_q16[], computed once at boot) -- multiplying Hz by a
+    // ratio is dividing period by the same ratio, so this reuses the table
+    // as-is rather than needing an inverted copy of it.
+    uint32_t period = base_period;
+    if (s.tone_note_offset != 0) {
+        int off = s.tone_note_offset;
+        if (off < -24) off = -24;
+        if (off > 24) off = 24;
+        period = (uint32_t)(((uint64_t)period << 16) / semitone_ratio_q16[off + 24]);
+    }
+    // Vibrato: proportional to the *current* period, not a fixed offset on
+    // it -- Carl heard why the first version was wrong on real hardware:
+    // "the arpeggio deteriorates after a couple of laps [vibrato_delay's
+    // own 30-frame onset, ~3-4 laps of AY_INS_ARP's 8-row table], more
+    // pronounced ... the higher the base pitch." A fixed absolute delta
+    // subtracted from period is a *tiny* relative pitch shift at a large
+    // (low-pitch) period and a *huge* one at a small (high-pitch) period,
+    // since period is inversely related to pitch -- traced on host
+    // (base_hz=880) before touching this code again: period went
+    // 84 -> 38 -> 26 across three frames the instant vibrato armed, a
+    // ~1319 Hz -> ~4263 Hz swing, not a wobble. Scaling the delta by
+    // `period` itself keeps the *fractional* deviation constant across the
+    // whole pitch range instead, the same fix arpeggio's own divide-by-
+    // ratio already gets right above -- still an uncalibrated "raw wobble
+    // scale, not cents" depth constant (SID's own vibrato_depth has the
+    // identical caveat, chip.md §14d.5 finding 2), just proportional now
+    // instead of structurally broken at one end of the keyboard.
+    if (ins.vibrato_depth > 0 && s.frames_since_trigger >= ins.vibrato_delay) {
+        s.vib_phase = (uint16_t)(s.vib_phase + ins.vibrato_speed * 64u);
+        int32_t tri = (s.vib_phase < 32768)
+                          ? (int32_t)s.vib_phase - 16384
+                          : 49152 - (int32_t)s.vib_phase;
+        int32_t delta = (int32_t)(((int64_t)period * tri * ins.vibrato_depth) >> 24);
+        int32_t signed_period = (int32_t)period - delta;
+        period = (uint32_t)(signed_period < 1 ? 1 : signed_period);
+    }
+    if (period > 4095) period = 4095;
+    if (period < 1) period = 1;
+    ay_tone[v].set_period((uint16_t)period);
+
+    if (ins.gate_off_timer > 0 && !s.gate_off_fired && s.frames_since_trigger >= ins.gate_off_timer) {
+        s.gate_off_fired = true;
+    }
+}
+
 // Fresh instrument: first-frame waveform immediately (before any tick),
 // filter cutoff seeded from the instrument's init value, everything else
 // zeroed so the tables start from row 0.
@@ -469,13 +580,16 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
             const VoiceParams &p = vp.voices[v];
 
             if (p.type == VT_AY) {
-                // AY-P1 (chip.md §12.1): no frame VM yet, so this is the
-                // whole per-buffer story -- apply the instrument once on a
-                // fresh trigger, and let p.freq (already the right register
-                // for this type, note_freq.h) drive pitch every buffer,
-                // live pitch bend included, with no repush guard needed --
-                // unlike SID's vm_frame_tick, nothing else on Core 1
-                // contests ay_tone[v]'s period between triggers.
+                // AY-P2 (chip.md §12.2): apply the instrument once on a
+                // fresh trigger, raw base period immediately -- exactly
+                // SID's own P3 pattern (this file's SID trigger block,
+                // below), for exactly the same reason: ay_vm_frame_tick()
+                // is the ongoing authority on ay_tone[v]'s period from the
+                // next frame tick on, so setting it unconditionally every
+                // buffer here would stomp arpeggio/vibrato on every buffer
+                // that doesn't also contain a frame tick -- the precise
+                // buffer-rate-snap bug SID's own P3 by-ear pass found and
+                // fixed (chip.md §14d.5 finding 3).
                 uint8_t ins_idx = p.instrument < AY_INSTRUMENT_COUNT ? p.instrument : 0;
                 const AyInstrument &ins = AY_INSTRUMENTS[ins_idx];
 
@@ -484,24 +598,25 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
                     ay_tone[v].init();
                     ay_noise[v].init();
                     ay_env[v].init();
+                    ay_tone[v].set_period(p.freq);
                     if (ins.noise_on) ay_noise[v].set_period(ins.noise_period);
                     if (ins.use_envelope) {
                         ay_env[v].set_period(ins.envelope_period);
                         ay_env[v].set_shape(ins.envelope_shape);
                     }
+                    ay_vm_reset(v, ins);
                 }
-                ay_tone[v].set_period(p.freq);
 
                 // Real AY-3-8910 hardware has no gate/release concept at the
-                // chip level (ay_instrument.h's header note) -- P1 mutes the
-                // mixed output the instant MIDI gate goes false, envelope-
-                // driven or not, so active_mask/render_mask track p.gate
-                // itself rather than a decaying counter the way VT_SID's do
-                // below: there is nothing to decay yet.
-                if (p.gate) { active_mask |= (1u << v); render_mask |= (1u << v); }
+                // chip level (ay_instrument.h's header note) -- gate_off_timer
+                // is software's own answer, same guard shape as SID's
+                // vm[v].gate_off_fired (below): without it, the next buffer
+                // would still see p.gate true and never re-arm renders.
+                bool renders = p.gate && !ay_vm[v].gate_off_fired;
+                if (renders) { active_mask |= (1u << v); render_mask |= (1u << v); }
                 s_voice_ui[v] = ChipVoiceUiState{false, 0, 0};   // AY voices don't appear
                                                                   // in the per-voice grid yet
-                                                                  // (SID-only, a known P1 gap)
+                                                                  // (SID-only, a known gap)
                 continue;
             }
             if (p.type != VT_SID) continue;
@@ -587,14 +702,15 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
             }
             if (frame_tick) {
                 for (uint32_t v = 0; v < MAX_VOICES; v++) {
-                    // render_mask now covers VT_AY voices too (P1) -- this
-                    // loop is SID's own frame VM, so it must stay SID-only,
-                    // or it reads INSTRUMENTS[] with an AY-table index and
-                    // stomps vm[v] state that isn't SID's to touch.
-                    if (!(render_mask & (1u << v)) || vp.voices[v].type != VT_SID) continue;
+                    if (!(render_mask & (1u << v))) continue;
                     const VoiceParams &p = vp.voices[v];
-                    uint8_t ins_idx = p.instrument < INSTRUMENT_COUNT ? p.instrument : 0;
-                    vm_frame_tick(v, INSTRUMENTS[ins_idx], p.freq);
+                    if (p.type == VT_SID) {
+                        uint8_t ins_idx = p.instrument < INSTRUMENT_COUNT ? p.instrument : 0;
+                        vm_frame_tick(v, INSTRUMENTS[ins_idx], p.freq);
+                    } else if (p.type == VT_AY) {
+                        uint8_t ins_idx = p.instrument < AY_INSTRUMENT_COUNT ? p.instrument : 0;
+                        ay_vm_frame_tick(v, AY_INSTRUMENTS[ins_idx], p.freq);
+                    }
                 }
             }
 
@@ -686,7 +802,14 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
                         uint8_t noise_bit = ins.noise_on ? ay_noise[v].out() : 0;
                         uint8_t n_off_bit = ins.noise_on ? 0 : 1;
                         uint8_t gate = (uint8_t)((tone_out | t_off) & (noise_bit | n_off_bit));
-                        int8_t level = ins.use_envelope ? ay_env[v].level : (int8_t)(ins.volume * 2 + 1);
+                        // ay_vm[v].volume_cur is the live level either way:
+                        // seeded from initial_volume at trigger (ay_vm_reset)
+                        // and, if the instrument has a volume table, stepped
+                        // by ay_vm_frame_tick() every frame -- the P1 static
+                        // case (no table) just never advances it past its
+                        // starting value, so this one read covers both.
+                        int8_t level = ins.use_envelope ? ay_env[v].level
+                                                         : (int8_t)(ay_vm[v].volume_cur * 2 + 1);
                         float amp = ay_dac_table(AY_MODEL_AY8910)[level];
                         float bipolar = gate ? 1.0f : -1.0f;
 

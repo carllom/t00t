@@ -34,7 +34,7 @@ still the last hardware-verified state.
 | **P4** | Instrument import: GoatTracker `.ins` host converter; hand-authored text format → header. Dynamic voice allocation. *(Built — §14e. Not yet heard on hardware.)* |
 | **P5** | Speaker simulation output stage (§10). LCD UI. *(Built — §14f. Not yet heard on hardware.)* |
 | **P6** | 8580 model (table swap). Combined-waveform LUTs. *(Deferred by Carl's call — the combined-waveform LUT's only available source data is reSID's own sampled tables (`tools/sid_ref/resid/wave*.h`, GPL-2, deliberately gitignored/not vendored, same reasoning as the DAC tables at §14a.7). Unlike the DAC ladder, combined-waveform behavior has no known clean closed-form derivation to independently re-derive from — reSID's own tables come from resistor/leakage-level SPICE modeling, not a formula. Raised as a licensing question rather than guessed at; Carl chose to defer P6 entirely rather than resolve it now. AND stays the 6581/8580 combined-waveform approximation, with §14a.4's documented ~200 dB error on the pulse combinations unchanged.)* |
-| **later** | Other chips (§12): AY/YM2149, SN76489, NES 2A03, GB DMG. *(AY-3-8910/YM2149 P0 (§12.1) and P1 (§12.2) built — primitives, `VoiceType`, MIDI routing, three static instruments. No frame table yet; not yet heard.)* |
+| **later** | Other chips (§12): AY/YM2149, SN76489, NES 2A03, GB DMG. *(AY-3-8910/YM2149 P0 (§12.1), P1 (§12.2) and P2 (§12.3, frame table: arpeggio, software volume envelope, vibrato, gate-off timer) built, hardware-verified. P2's vibrato had a real bug (fixed on-hardware report, §12.3) -- see it before trusting vibrato elsewhere in this doc's own uncalibrated-depth caveats.)* |
 
 **P0 was a hard gate.** Nothing in §9's budget was trusted until it cleared, and
 `FILTER_BUS_COUNT` was provisional until then (`MAX_VOICES = 32` is a separate,
@@ -579,6 +579,15 @@ and other sample chips belong with the tracker; SP0256/TMS5220 belong with speec
 
 ### 12.1 AY-3-8910/YM2149 P0 (measurement gate, primitives only)
 
+**Hardware-verified.** Carl listened on real breadboard_rp2350: "everything
+sounds fine and voices have quite low duty cycle" -- confirms the P0
+primitives and P1 engine wiring (§12.2) both by ear and, qualitatively, on
+CPU cost. AY's own primitives are cheaper than SID's by construction (no
+filter, no combined-waveform AND, no DAC-table envelope lookup, just a
+period counter, a 17-bit LFSR and a 32-step ramp), so a low duty cycle is
+the expected shape of the result, not a surprise -- a real number (not just
+"quite low") is still owed before it goes in §9-style budget language.
+
 Carl picked AY as the next chip: simple (3 tone + noise, no filter model),
 and — unlike SID's combined-waveform problem (§14a.4), which needed real
 chip-measurement data under a GPL license that couldn't be vendored — no
@@ -666,10 +675,9 @@ way — this is closer to "a free-bonus stage the primitives don't have yet"
 itself, but it is a real difference and a future engine integration should
 know about it rather than rediscover it by ear.
 
-**Not built**: any engine integration (`VoiceType`, `VoiceParams`, MIDI
-routing, an instrument format for envelope shape/period + mixer state), any
-device-side wiring at all, and no hardware listen -- this is P0, the
-measurement gate, same scope SID's own P0 had.
+At the time this was written, P0's own scope stopped at the primitives and
+host validation -- no engine, no device wiring. §12.2 (below) is that next
+step, built the same session and now hardware-confirmed alongside it.
 
 ### 12.2 AY-3-8910/YM2149 P1 (engine integration)
 
@@ -733,11 +741,87 @@ SID's own typical peak, not a calibrated one -- same status P3's vibrato
 constants had before Carl's by-ear pass found them 4x off. Needs a real
 listen, same as everything below.
 
+**Hardware-verified** (§12.1's note applies here too -- "everything sounds
+fine and voices have quite low duty cycle", Carl, breadboard_rp2350):
+confirms the mix-scaling/bipolar-gate fix above actually sums correctly
+against SID voices in practice, not just in theory, and that the abrupt
+gate-mute (no release tail) doesn't read as broken by ear even though it's
+a known, real limitation.
+
 **Not built**: AY-P2's frame table (arpeggio, software envelope/mixer
 automation), YM2149 model selection (hardcoded to AY8910's DAC table --
 `AyInstrument` has no model field yet), AY voices in `display.cpp`'s
-per-voice grid (SID-only for now, a known gap not a design decision), and
-no hardware listen.
+per-voice grid (SID-only for now, a known gap not a design decision).
+
+### 12.3 AY-3-8910/YM2149 P2 (frame table)
+
+Built on the hardware-confirmed P1 base (§12.2) without touching it: an
+instrument with no tone/volume table rows behaves exactly as it did before
+this phase, since `ay_vm_frame_tick()` only steps a table that has rows.
+
+**`ay_instrument.h` grows a tone table (`AyToneTable`/`AyToneRow`,
+arpeggio) and reuses `instrument.h`'s `SweepTable`/`SweepRow` verbatim for
+a software volume envelope** -- the real mechanism every AY tracker
+instrument has always needed, since the chip itself has no release. Real
+hardware's `e_on` bit is exclusive with manual volume, so the format keeps
+that: `use_envelope` instruments never read the volume table at all, same
+as they never read `initial_volume` past the first frame. Two more
+instruments demonstrate the new rows, same "one documented feature each"
+pattern as before: `AY_INS_ARP` (major-triad arpeggio + light vibrato) and
+`AY_INS_PLUCK` (a fast volume-table decay plus `gate_off_timer` -- AY's
+actual answer to "no hardware release", finally built).
+
+**Arpeggio is exact, vibrato is a documented approximation, and the two
+are deliberately not the same math.** AY's period register is *inversely*
+proportional to pitch (`note_freq.h`'s `ay_hz_to_period`), unlike SID's
+`freq_reg`, so reusing SID's additive-ratio approach verbatim would wobble
+asymmetrically -- sharper on one side of centre than the other. Arpeggio
+divides the base period by the same Q16 `semitone_ratio_q16[]` table SID's
+own vibrato already multiplies by (multiplying Hz by a ratio is dividing
+period by it -- no inverted copy of the table needed), which is exact.
+Vibrato stays additive-on-period, a small-angle approximation of that same
+correction, chosen because neither implementation claims to be physically
+calibrated yet (SID's own vibrato_depth carries the identical "raw wobble
+scale, not cents" caveat, chip.md §14d.5 finding 2) -- not worth a second,
+more expensive code path to fix an approximation nobody has tuned by ear
+regardless.
+
+**Trigger handling mirrors SID's own P3 fix, not its P1 mistake.**
+`ay_tone[v].set_period()` is set unconditionally only once, at trigger
+(raw base period, immediate) -- not every buffer. `ay_vm_frame_tick()`
+becomes the ongoing authority on it from the next frame tick onward,
+exactly SID's pattern for exactly the same reason: setting it every buffer
+would stomp arpeggio/vibrato on every buffer that doesn't also contain a
+frame tick, the precise bug SID's P3 by-ear pass found and fixed (§14d.5
+finding 3). Building AY-P2 with that lesson already in hand rather than
+rediscovering it a second time is the actual payoff of writing findings
+like that down instead of just fixing them and moving on.
+
+**Not built**: YM2149 model selection, AY voices in the LCD grid (both
+carried over from P1, unchanged).
+
+**Heard on hardware, and the vibrato bug this section warned about turned
+out to be real, not just theoretical.** Carl: "the arp messes up after a
+couple of laps (3-4) ... more pronounced ... the higher the base pitch."
+Exactly the failure mode the additive-on-period design above should have
+been checked against before it shipped, not after: `vibrato_delay = 30`
+frames is ~3-4 laps of `AY_INS_ARP`'s 8-row table, and a *fixed absolute*
+delta subtracted from period is a tiny relative pitch shift at a large
+(low-pitch) period and a huge one at a small (high-pitch) period, since
+period is inversely related to pitch. Traced on host before touching the
+code again (same discipline as SID's PWM-sweep and osc.inc bugs, §14d.5):
+at a 880 Hz base, period went 84 -> 38 -> 26 across three frames the
+instant vibrato armed -- a jump from ~1319 Hz to ~4263 Hz, not a wobble.
+Fixed by scaling the delta by the *current* period (`(period * tri *
+depth) >> 24`) so the fractional deviation stays constant across the pitch
+range instead of the absolute one -- the same fix arpeggio's own divide-
+by-ratio already had right two paragraphs up; vibrato just didn't get it
+the first time. Re-traced at both a low (110 Hz) and high (880 Hz) base
+after the fix: both now show a bounded, comparable *proportional* wobble
+(a few percent either side of each arpeggio note), not a runaway one.
+`vibrato_depth`'s scale is unchanged (still "raw, not cents," same
+uncalibrated status as before) -- only the structural bug is fixed, not
+promoted to a claim of precision it doesn't have.
 
 ---
 
