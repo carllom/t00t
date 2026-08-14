@@ -31,7 +31,7 @@ still the last hardware-verified state.
 | **P1** | Engine skeleton: `engines/chip/`, `VoiceType` dispatch, static MIDI-channel→voice map, register-stream playback path. Prove a SID voice sounds right against reSID. *(Built — §14b. Device engine, `CHIP_STRICT` spectral harness, and the exact control-plane diff (`sid_ctl_diff.py`) all in and passing.)* |
 | **P2** | Filter buses + 6581 model (cutoff LUT + saturation). Bus binding, degrade-to-unfiltered. *(Built — §14c.)* |
 | **P3** | Frame table VM on Core 1: wave/pulse/filter tables, vibrato, arpeggio, hard restart, gate-off timer. This is where instruments become expressive. *(Built — §14d. Not yet heard on hardware.)* |
-| **P4** | Instrument import: GoatTracker `.ins` host converter; hand-authored text format → header. Dynamic voice allocation. |
+| **P4** | Instrument import: GoatTracker `.ins` host converter; hand-authored text format → header. Dynamic voice allocation. *(Built — §14e. Not yet heard on hardware.)* |
 | **P5** | Speaker simulation output stage (§10). LCD UI. |
 | **P6** | 8580 model (table swap). Combined-waveform LUTs. |
 | **later** | Other chips (§12): AY/YM2149, SN76489, NES 2A03, GB DMG. |
@@ -408,7 +408,7 @@ have required exists.
   question past the point where P0 might change the voice count anyway.
 - **P4: dynamic allocation.** Existing three-tier steal policy (silent → released →
   oldest active) applies unmodified. Filter-bus binding (§5.2) is a separate,
-  independent decision made at note-on.
+  independent decision made at note-on. Built — §14e.
 
 `MAX_VOICES = 32` — exactly fills the existing `uint32_t` bitmap, so the FIFO
 feedback path is unchanged. >32 was considered and rejected: it is only reachable
@@ -537,9 +537,11 @@ reSID diff fails for reasons unrelated to the primitives.
    freq/wave/ADSR/pulse/filter columns from a `.sid`. Its output is *literally in
    the same columns as the table model* — ground truth for how a given classic
    sound was made.
-2. **GoatTracker `.ins`** — documented single-instrument format, large community
-   corpus. Host converter → header, same pattern as `xm2t00t` and the planned
-   `.syx` converter.
+2. **GoatTracker `.ins`** — single-instrument format, large community corpus.
+   Host converter → header, same pattern as `xm2t00t` and the planned `.syx`
+   converter. Built — §14e.3. Turned out not to be "documented" in any
+   byte-level sense anywhere in GoatTracker's own repo or the community docs
+   found by search; the real spec is the save/load code itself.
 3. **Hand-authored text → generator script**, same as `speechgen.py`.
 
 **On `.ins` compatibility:** a `.ins` file contains AD/SR, table pointers, vibrato,
@@ -1350,6 +1352,153 @@ fixable issue, not an expectation mismatch -- worth keeping that base rate in
 mind for what's still unheard. The frame VM's timing, hard-restart
 interaction, and the sub-block-quantised tick's own audibility are still
 owed a real listen beyond what these seven findings covered.
+
+---
+
+## 14e. P4 results
+
+**Built, all-engine build regression clean via the top-level `make` (not raw
+`cmake` -- that skips the Pico cross toolchain and fails on `__ssat`/board
+defines).  Not yet heard on hardware** -- unlike P1-P3, no by-ear pass has
+happened for this phase yet, and that should be the next checkpoint before
+trusting any of this section's design calls the way §14d's seven findings
+got trusted only after real speakers disagreed with several of them.
+
+### 14e.1 Dynamic voice allocation
+
+`voice_alloc.*` reused unmodified per §8's own instruction, but two things
+P1-P3's static one-voice-per-channel model never had to get right showed up
+immediately once allocation went dynamic:
+
+- **`active_mask` was computed from `p.type == VT_SID`**, which is set once
+  at note-on and never cleared -- every voice would have read as
+  permanently "active", so priority 1/2 (steal silent/steal released) of
+  the three-tier policy could never fire and every allocation would fall
+  through to stealing the oldest held note regardless of whether quieter
+  voices existed. Fixed to `voice[v].env.counter > 0` (`EnvSid::counter` is
+  the literal audible-amplitude proxy) so the bitmap means "still audible",
+  matching what the allocator's steal policy actually needs it to mean.
+- **Pitch bend was a single global `bend_ratio`** in P1-P3, correct only
+  because the monophonic-per-channel model never had two channels sounding
+  at once to expose it as wrong. Made per-channel (`channel_bend[16]`),
+  live-pushed to every currently-held voice on that channel on
+  `MIDI_PITCH_BEND`, same shape as speech's live-CC push pattern.
+- **Filter-bus binding (§5.2) stays per-channel, not per-voice** -- multiple
+  simultaneous notes on one channel (a chord) share that channel's one
+  bound bus, which is exactly §5.2's "already owns a bus -> share it" rule,
+  just no longer limited to one note at a time to demonstrate it.
+
+`midi_controller.cpp` was rewritten around `midi_note_voice[128]` (note
+number -> allocated voice) + `voice_held[]`/`voice_channel[]`/`voice_note[]`,
+the same shape speech's controller already used for #36 -- speech got there
+first, chip's version differs only in adding `voice_note[]` for pitch-bend
+reverse lookup, which speech's controller doesn't need since it has no
+pitch-bend handling at all. `CMakeLists.txt` now links `voice_alloc.cpp` for
+chip like every engine except tracker.
+
+**Hardware-observed bug (Carl, first P4 by-ear/by-scope pass): CPU duty
+cycle never comes back down after release.** Hold 8 keys and release all of
+them -- the duty cycle stays pegged at the 8-voice level. Press and hold new
+keys one at a time afterward and it stays exactly where it was, only rising
+again once more than 8 keys are held at once. Root cause: `VoiceParams.type`
+is set once at note-on and **never reset to `VT_SILENT`** -- dynamic
+allocation reuses a slot by flipping `p.gate` only. The render loop's sole
+gate for doing any DSP work (`p.type != VT_SID`) therefore stays true
+forever once a slot has been touched even once, so Core 1 keeps fully
+ticking that voice's oscillator/envelope/bus-feed indefinitely, long after
+it has actually decayed to silence -- CPU cost tracks the high-water mark of
+voice slots ever used, not currently-audible voices, and the *audio* itself
+was never wrong (a fully-decayed envelope is inaudible regardless), which
+is why this surfaced on a duty-cycle read rather than by ear. Fixed with a
+second per-buffer bitmask, `render_mask` (`p.gate || env.counter > 0`,
+alongside the existing `active_mask`'s `env.counter > 0`), used in place of
+the `p.type != VT_SID` check in both the frame-VM tick loop and the
+per-sample tick/bus-feed loop; `|| p.gate` (not `active_mask`'s bare
+`counter > 0`) matters specifically for the sample right after
+`hard_restart()`, which resets `counter` to 0 before the attack has had any
+samples to ramp it back up.
+
+### 14e.2 Hand-authored text format + `chipgen.py`
+
+`tools/chip_instruments.txt` (source) → `tools/chipgen.py` (generator) →
+`src/engines/chip/instruments.h` (device header), same host-authors/
+device-ships-a-table split as `speechgen.py`. `instruments.h` is now a
+generated file; the four hand-tuned P1-P3 instruments (`ARP_LEAD`,
+`PWM_PLUCK`, `FILTER_PAD`, `VIBRATO_LEAD`) were ported into the text format
+and the generator's output verified byte-for-byte identical to the prior
+hand-written header before it was replaced. Negative-tested with four
+deliberately malformed inputs (bad waveform name, out-of-range
+`wave_loop`, missing `end`, duplicate instrument name) -- all produced
+clear, line-numbered errors and non-zero exit, same discipline as
+`speechgen.py`'s own error path.
+
+### 14e.3 GoatTracker `.ins` converter (`tools/ins2chip.py`)
+
+An earlier web search claimed a fixed "GTI5" header (magic at offset 0, then
+AD/SR/Wavepointer/Pulsepointer/Filterpointer/Vibrato at offsets 4-9) --
+unverified, and wrong: it doesn't match either GoatTracker's own source or
+two real `.ins` files pulled from the same repo. Per this project's
+"verify against primary source" rule (the same one `fetch_resid.sh` exists
+for), the byte layout actually used was read out of
+[leafo/goattracker2](https://github.com/leafo/goattracker2)'s own
+`src/gsong.c` (`saveinstrument()`/`loadinstrument()`), `src/gcommon.h`
+(`INSTR` struct), and `src/gplay.c` (the row-execution semantics --
+wavetable delay/command/jump rows, pulse absolute-set vs. delta+duration
+rows, filter type/ctrl/cutoff vs. delta+duration rows), then cross-checked
+by hand-decoding two real files (`examples/sfx_arp1.ins`,
+`examples/sfx_gun.ins`) byte-by-byte against that source and confirming the
+decode consumes the file exactly (both landed on `file length == bytes
+consumed`, the strongest available check with no independent parser to
+diff against).
+
+The converter emits `chip_instruments.txt`-format text, not a header
+directly -- it feeds `chipgen.py` rather than replacing it, which is what
+§1's own P4 line ("host converter; ... → header") already implied as a
+two-stage pipeline once both halves existed.
+
+**Scope is deliberately narrower than the full `.ins` format**, refusing
+(hard error, not a silent wrong translation) rather than guessing at
+constructs that don't map onto chip's model:
+
+- WAVECMD rows (0xF0-0xFE wavetable bytes: portamento, vibrato-via-table,
+  set-AD/SR/wave/filterptr/filterctrl/cutoff/mastervol) -- these dispatch
+  through GT's per-tick command executor, which the frame VM has no
+  equivalent of.
+- Absolute-pitch wavetable rows (note byte ≥ 0x80, used as a literal
+  freqtable index instead of an offset from the played note) -- chip's
+  `WaveRow.note` is always relative to the played note; there's no slot for
+  "ignore what was played, use this fixed pitch". **Both real example
+  files hit exactly this case** (they're one-shot SFX instruments with
+  hardcoded absolute pitches, not melodic patches) and were correctly
+  refused rather than mistranslated.
+- A pulse or filter absolute-set row anywhere but the start of its table --
+  chip has one `pulse_init`/`filter_cutoff_init`, not a reseekable pointer.
+- GT's real per-instrument vibrato is command/speed-table-driven, not a
+  constant depth/speed/delay triple; a standalone `.ins`'s `vibdelay` byte
+  only means anything paired with a pattern-level vibrato command that
+  lives in the `.sng`, not the `.ins`, so it can't be reconstructed from an
+  instrument file alone regardless of engine differences.
+
+Verified three ways: (1) both real `.ins` files parse their header and all
+three tables exactly, and are correctly refused for the absolute-pitch
+reason above; (2) a hand-built synthetic `GTI5` file exercising the full
+positive path -- wavetable delay-rows folded into repeat counts, a loop
+jump, pulse absolute-init + signed delta/duration sweep + loop, filter
+type/resonance + cutoff + delta/duration sweep -- round-trips through
+`chipgen.py` to field values matching the hand-authored `ARP_LEAD`/
+`FILTER_PAD` shape exactly; (3) three deliberate negative constructs
+(a WAVECMD row, a delay row with nothing preceding it, a filter table
+missing its required cutoff row) all produce clear, correctly-attributed
+errors and non-zero exit.
+
+**Honestly still open:** neither real example file available for testing
+was a melodic/tonal instrument using only relative-note rows -- both were
+absolute-pitch SFX, which is the one case the converter is built to refuse.
+The positive path is verified against a hand-built file matching the
+documented byte layout, not against a real relative-note `.ins` pulled from
+the wild. Worth running against a real melodic patch (e.g. from a `.sng`'s
+instrument table, if one can be isolated) before trusting the converter on
+an arbitrary user-supplied file.
 
 ---
 

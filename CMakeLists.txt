@@ -49,12 +49,13 @@ endif()
 # fixed, per tracker.md's "Deviation From the Existing Layer Model" — so
 # voice_alloc.cpp is left out of that build entirely (#13). main.cpp's calls
 # into it are compiled out via HAS_VOICE_ALLOC below.
-# The chip module's F0 measurement build (sid.md P0) is the same case: the rig
-# is self-cycling and drives its voices directly, so there is nothing to
-# allocate. P1 brings the allocator back -- sid.md §8 reuses voice_alloc.* as
-# is, and only at P4 does it become dynamic.
+# The chip module used to be the same case (P0's rig is self-cycling and
+# drives its voices directly, and P1-P3's MIDI controller used a static
+# channel->voice map), but sid.md §8 always reused voice_alloc.* unmodified
+# and only deferred going dynamic to P4 -- now built, so chip links it in
+# like every other engine.
 set(ENGINE_VOICE_ALLOC src/voice_alloc.cpp)
-if(T00T_ENGINE STREQUAL "tracker" OR T00T_ENGINE STREQUAL "chip")
+if(T00T_ENGINE STREQUAL "tracker")
     set(ENGINE_VOICE_ALLOC "")
 endif()
 
@@ -128,7 +129,7 @@ endif()
 
 # See ENGINE_VOICE_ALLOC above — tells main.cpp to skip the voice_alloc calls
 # it would otherwise fail to link against on the tracker build.
-if(T00T_ENGINE STREQUAL "tracker" OR T00T_ENGINE STREQUAL "chip")
+if(T00T_ENGINE STREQUAL "tracker")
     target_compile_definitions(t00t PRIVATE HAS_VOICE_ALLOC=0)
 endif()
 if(T00T_ENGINE STREQUAL "tracker")

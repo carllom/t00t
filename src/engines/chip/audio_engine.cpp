@@ -190,17 +190,20 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
 
 #else  // !T00T_CHIP_PROFILE -- the real engine
 
-// --- Engine (sid.md §1 P1/P2/P3, §14 item 2) --------------------------------
+// --- Engine (sid.md §1 P1/P2/P3/P4, §14 item 2) ------------------------------
 //
 // One SidVoice per MAX_VOICES slot, dispatched by VoiceType exactly like the
-// groovebox (§7.3) -- VT_SILENT is skipped, VT_SID renders.
+// groovebox (§7.3) -- VT_SILENT is skipped, VT_SID renders (render_mask, P4:
+// also skips a VT_SID slot once it's both ungated and fully decayed, so CPU
+// cost tracks currently-audible voices rather than every slot dynamic
+// allocation has ever touched -- see the render_mask comment below).
 //
 // Retrigger uses env.hard_restart() (§4.3's default: instantaneous reset,
 // not the 6581's 1-2 frame delay bug, which isn't modelled) rather than
-// gate_on()'s "only attacks if not already gated" -- a static MIDI-channel
-// map means the same voice slot retriggers on every repeated note on that
-// channel, and it must restart the attack even if the previous note's
-// release hasn't finished.
+// gate_on()'s "only attacks if not already gated" -- P4's dynamic allocator
+// can steal a slot that's still mid-release from a *different* note (§8's
+// three-tier policy's own priority 2/3), so the attack must restart even
+// though the envelope is neither idle nor freshly gated-off.
 //
 // P2 (sid.md §5, §7.2): filter buses. Rendering is sub-blocked so bus
 // accumulators are sized FILTER_BUS_COUNT x sub-block, not FILTER_BUS_COUNT
@@ -422,6 +425,7 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
         // read from VoiceParams directly -- there is no raw waveform/pw/ad/
         // sr in VoiceParams any more (§6 supersedes P1's fixed-patch fields).
         uint32_t active_mask = 0;
+        uint32_t render_mask = 0;
         for (uint32_t v = 0; v < MAX_VOICES; v++) {
             const VoiceParams &p = vp.voices[v];
             if (p.type != VT_SID) continue;
@@ -462,7 +466,28 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
             if (p.gate && !vm[v].gate_off_fired) voice[v].env.gate_on();
             else if (!p.gate)                    voice[v].env.gate_off();
 
-            active_mask |= (1u << v);
+            // sid.md §8 P4: voice_alloc's three-tier steal policy needs this
+            // bit to mean "still audible" (counter > 0), not "this slot has
+            // a VT_SID note nominally assigned" -- the latter never clears,
+            // so every voice would read as permanently active and priority
+            // 1/2 (silent/released steals) would never fire, forcing every
+            // allocation to fall through to stealing the oldest held note.
+            if (voice[v].env.counter > 0) active_mask |= (1u << v);
+
+            // render_mask (P4 fix, sid.md §8): p.type is never reset to
+            // VT_SILENT on note-off -- dynamic allocation only ever flips
+            // p.gate, reusing the same slot on its next note. Without this,
+            // the `p.type != VT_SID` checks below stay true forever once a
+            // slot has been touched, so Core 1 keeps ticking every voice,
+            // bus feed and frame-VM table included, that was *ever* played
+            // this session -- CPU cost tracks the high-water mark of voice
+            // slots used, not currently audible voices, and never comes back
+            // down after release. `|| p.gate` (not just counter > 0, unlike
+            // active_mask above) matters here specifically for the sample
+            // right after a hard_restart: counter is reset to 0 there and
+            // only ramps up as tick() runs through the attack, so counter
+            // alone would skip a note's own opening samples.
+            if (p.gate || voice[v].env.counter > 0) render_mask |= (1u << v);
         }
 
         for (uint32_t i = 0; i < SAMPLES_PER_BUFFER; i++) dry[i] = 0;
@@ -482,8 +507,8 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
             }
             if (frame_tick) {
                 for (uint32_t v = 0; v < MAX_VOICES; v++) {
+                    if (!(render_mask & (1u << v))) continue;
                     const VoiceParams &p = vp.voices[v];
-                    if (p.type != VT_SID) continue;
                     uint8_t ins_idx = p.instrument < INSTRUMENT_COUNT ? p.instrument : 0;
                     vm_frame_tick(v, INSTRUMENTS[ins_idx], p.freq);
                 }
@@ -495,8 +520,8 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
             uint32_t bus_hits[FILTER_BUS_COUNT] = {0};
             uint32_t bus_feeder[FILTER_BUS_COUNT];   // valid only where bus_hits[b] > 0
             for (uint32_t v = 0; v < MAX_VOICES; v++) {
+                if (!(render_mask & (1u << v))) continue;
                 const VoiceParams &p = vp.voices[v];
-                if (p.type != VT_SID) continue;
 
                 uint8_t bus = p.filter_bus;
                 if (bus < FILTER_BUS_COUNT) {
@@ -558,10 +583,8 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
         uint32_t busy_us = time_us_32() - t_start;
         gpio_put(PROFILE_PIN, 0);
 
-        // No consumer yet (chip skips voice_alloc.cpp -- CMakeLists.txt
-        // HAS_VOICE_ALLOC=0, static channel->voice map, §8). Pushed anyway,
-        // same as the tracker engine's equivalent push: harmless, and ready
-        // for a P5 LCD "active voices" telemetry read.
+        // Consumed by voice_alloc.cpp's three-tier steal policy on Core 0
+        // (§8, P4) -- chip links voice_alloc.cpp now, unlike the tracker.
         multicore_fifo_push_timeout_us(active_mask, 0);
 
         uint32_t inst = busy_us * 100u / BUF_PERIOD_US;
