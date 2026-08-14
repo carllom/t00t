@@ -17,13 +17,13 @@ MIDI_UART ?= default
 #   make ENGINE=tracker DMA_BUFFER_SIZE=512
 DMA_BUFFER_SIZE ?= default
 
-# #31 P2 profiling rig: replaces the speech engine's normal MIDI-driven render
+# #31 profiling rig: replaces the speech engine's normal MIDI-driven render
 # loop with a self-cycling, pin-only measurement build (see history_speech.md
 # "Speech Engine P2 Profiling"). No effect on other engines.
 #   make ENGINE=speech SPEECH_PROFILE=1
 SPEECH_PROFILE ?= 0
 
-# #42 P0 rig: replaces the FM engine's normal test-tone build with the
+# #42 rig: replaces the FM engine's normal test-tone build with the
 # stripped N-voice x 6-operator mixer (src/engines/fm/rig.h). No effect on
 # other engines. See history_fm.md "FM P0 Rig (#42)".
 #   make ENGINE=fm FM_PROFILE=1
@@ -57,7 +57,7 @@ FM_RIG_FB           ?= default
 #   make ENGINE=fm FM_BLOCK=32
 FM_BLOCK ?= default
 
-# Chip module P0 measurement rig (rig.h), preserved behind a flag once P1's
+# Chip module measurement rig (rig.h), preserved behind a flag once the
 # real MIDI-driven engine became the default (module_chip.md §1,
 # history_chip.md §14a.9). Same idiom as SPEECH_PROFILE above -- lets
 # module_chip.md §9's hardware numbers stay re-measurable against later
@@ -66,12 +66,12 @@ FM_BLOCK ?= default
 #   make ENGINE=chip CHIP_PROFILE=1
 CHIP_PROFILE ?= 0
 
-# Chip module F0 measurement rig levers (src/engines/chip/rig.h,
-# module_chip.md P0). Each measurement is its own build -- a runtime switch
+# Chip module measurement rig levers (src/engines/chip/rig.h,
+# module_chip.md). Each measurement is its own build -- a runtime switch
 # would put a branch inside the loop whose cycle count is the thing being
 # measured. "default" leaves rig.h's own value in place.
 #
-#   make ENGINE=chip                                  # 20 voices, 12 filtered (P0 decision, module_chip.md §9)
+#   make ENGINE=chip                                  # 20 voices, 12 filtered (module_chip.md §9)
 #   make ENGINE=chip CHIP_RIG_FILTERED=0              # unfiltered, for the diff
 #   make ENGINE=chip CHIP_RIG_MOD=1 CHIP_RIG_OVERSAMPLE=2   # sync at 2x
 #   make ENGINE=chip CHIP_WAVE_DAC=0                  # without the 8 KB DAC LUT
