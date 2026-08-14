@@ -120,7 +120,7 @@ simplest first). Each module has two sub-deliverables, tracked separately.
 | subtractive | done (commit `9720744`) | done (commit `9720744`) | n/a (0 hits, confirmed) |
 | speech | done (commit `1d2d3b1`) | done (commit `1d2d3b1`) | done (commit `1d2d3b1`, 3/3 hits) |
 | tracker | done (commit `5f743f1`) | done (commit `5f743f1`) | done (commit `5f743f1`, 2/2 hits in module_tracker.md; 1 hit remains in tracker_song_blob.h, out of scope, see session log) |
-| chip | not started | not started | not started (module_chip.md 9, history_chip.md 3) |
+| chip | done (commit `420a762`) | done (commit `420a762`) | done (commit `420a762`, 9+3 doc hits + 6 newly-found source hits, all 18) |
 | fm | not started | not started | not started (module_fm.md 4, history_fm.md 9) |
 
 `CONTEXT.md`'s 2 "Carl" hits (hardware-ownership: "Carl's actual rig" /
@@ -458,3 +458,38 @@ to fix.
   under `src/engines/`, so treat it as part of fm's pass too (same reasoning
   `module_groovebox.md`'s tooling citations get folded into a module pass —
   it's fm's own host tool). Next: chip.
+- 2026-08-14 (same day, continued): chip done — the largest module doc pair
+  so far (2136 combined lines across module_chip.md/history_chip.md, 18
+  source files). Real drift found: the intro overclaimed "none of P1/P2/P3
+  re-measured or listened to on hardware" when P1-P3 each had a real by-ear
+  pass (split into the accurate CPU-not-remeasured vs. listening-has-happened
+  claims); a stale "Glossary belongs in architecture.md" note (architecture.md
+  has no glossary — §16 is where it actually lives); a false `engine.md`
+  citation for the 3401 c/f baseline (post-trim, that number no longer
+  exists there); 7 wrong `§12.x` citations in source comments (AY's own
+  P0-P3 sub-phases are `§12.1`-`§12.4`, several comments mixed up the phase
+  label with the section number); a stale `VoiceParams.freq` comment
+  claiming AY has no frame VM (false since AY-P2). Also fixed stale
+  doc-filename refs in `CMakeLists.txt` (`chip.md`) and `Makefile` (four
+  `sid.md` refs — an even older filename) that Phase 1 never scoped (that
+  pass covered `src/`+`tools/` only, not root build files) — **flagging
+  that `CMakeLists.txt`/`Makefile` likely still carry other stray
+  `tracker.md`/`fm.md`/`engine.md` refs beyond what this pass touched,
+  worth a small dedicated sweep at Phase 5**. All 18 Carl hits reworded
+  (9 module_chip.md + 3 history_chip.md + 6 source-comment hits from the
+  scope discovery). Verified `make ENGINE=chip` and `make host` both pass.
+  Commit `420a762`.
+
+  **One unresolved discrepancy flagged for Carl, not auto-fixed:**
+  `history_chip.md` §14d.5's documented ARP_LEAD arpeggio-speed fix says
+  "repeating each note's row 6x (120 ms/note, 480 ms/cycle, ~2.1 Hz)", but
+  the actual shipped data (`tools/chip_instruments.txt`, `instruments.h`)
+  uses `x2` (8 rows, 40 ms/note, 160 ms/cycle, ~6.25 Hz) — and AY's own
+  arpeggio (§12.3) is consistent with the *current* `x2`/8-row shape, not
+  the documented `6x`. Squashed git history for this module makes it
+  impossible to tell whether §14d.5's "6x" was a math slip when the
+  section was written, or a later re-tune of the actual data that was
+  never re-documented. Needs a human call — not something to guess at
+  silently in a docs-cleanup pass. Next: fm (the last module — also carries
+  1 more discovered source-comment Carl hit in `tools/host_render/render_fm.cpp`,
+  outside `src/engines/`, per the scope-discovery note above).
