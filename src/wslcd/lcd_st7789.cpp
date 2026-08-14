@@ -11,8 +11,7 @@
 #error "LCD_*_PIN must be defined by the board header (HAS_LCD board only)"
 #endif
 
-// SPI clock. 64 MHz runs cleanly even over the breadboard's dupont jumpers
-// (the demo is conservative at 8 MHz, but the panel tolerates far more).
+// SPI clock. 64 MHz runs cleanly even over the breadboard's dupont jumpers.
 // spi_init returns the actual achievable rate, which is all we depend on.
 #ifndef LCD_SPI_HZ
 #define LCD_SPI_HZ (64000000u)
@@ -61,9 +60,9 @@ static inline void spi_drain() {
     while (spi_is_busy(spi1)) tight_loop_contents();
 }
 
-// CS is framed per transaction (CS low → transfer → CS high), matching the
-// verified Waveshare demo. spi_write_blocking only returns once the last frame
-// has shifted out (it reads back the RX bytes), so CS can be raised right after.
+// CS is framed per transaction (CS low → transfer → CS high).
+// spi_write_blocking only returns once the last frame has shifted out (it
+// reads back the RX bytes), so CS can be raised right after.
 static void lcd_write_cmd(uint8_t cmd) {
     gpio_put(LCD_CS_PIN, 0);
     gpio_put(LCD_DC_PIN, 0);          // command

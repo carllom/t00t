@@ -3,7 +3,7 @@
 #include "common.h"
 #include <cstdint>
 
-// Sine wavetable — generated at runtime by osc_init_tables()
+// Sine wavetable — generated at runtime by osc_init_sine()
 extern int16_t sine_table[WAVETABLE_SIZE];
 
 void osc_init_sine();
