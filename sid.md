@@ -32,7 +32,7 @@ still the last hardware-verified state.
 | **P2** | Filter buses + 6581 model (cutoff LUT + saturation). Bus binding, degrade-to-unfiltered. *(Built — §14c.)* |
 | **P3** | Frame table VM on Core 1: wave/pulse/filter tables, vibrato, arpeggio, hard restart, gate-off timer. This is where instruments become expressive. *(Built — §14d. Not yet heard on hardware.)* |
 | **P4** | Instrument import: GoatTracker `.ins` host converter; hand-authored text format → header. Dynamic voice allocation. *(Built — §14e. Not yet heard on hardware.)* |
-| **P5** | Speaker simulation output stage (§10). LCD UI. |
+| **P5** | Speaker simulation output stage (§10). LCD UI. *(Built — §14f. Not yet heard on hardware.)* |
 | **P6** | 8580 model (table swap). Combined-waveform LUTs. |
 | **later** | Other chips (§12): AY/YM2149, SN76489, NES 2A03, GB DMG. |
 
@@ -495,7 +495,9 @@ Three notes on shape:
   Applies *before* the speaker stage, near-zero cost.
 
 Presets worth having: Commodore 1702 monitor, portable TV, Game Boy, arcade
-cabinet, bypass.
+cabinet, bypass. Built — §14f. All five share one HP→peak→LP→soft-clip chain
+(`speaker_sim.h`); per-preset character is corner frequencies plus a drive
+scalar into one fixed clip curve, not five different signal paths.
 
 **Backports well beyond this module:** 808 through a boombox, Amiga through a TV,
 and especially the speech engine — a toy-speaker curve in front of the Das Boot
@@ -1565,6 +1567,71 @@ makes about sync).
 
 ---
 
+## 14f. P5 results
+
+**Built, all-engine build regression clean (both `CHIP_PROFILE=0` and `=1`
+configs). Not yet heard on hardware** -- same status P3/P4 carried before
+their own by-ear passes; the numbers below are a documented first guess
+against §10's ranges, not a tuned or measured result.
+
+### 14f.1 Speaker simulation output stage
+
+`speaker_sim.h`'s `SidSpeakerStage` (already built at P0-gate quality, one
+fixed HP/peak/LP corner set, for the P0 rig's cost measurement only) now
+carries the five presets §10 named -- `SPEAKER_1702`/`TV`/`GAMEBOY`/
+`ARCADE`/`BYPASS` -- as one shared HP→peak→LP→soft-clip chain with per-
+preset corner frequencies and a `drive` scalar into one fixed cubic clip
+curve, rather than five separate signal paths. Wired into the real engine's
+render tail, downstream of the FX insert and upstream of the final `__ssat`
+(§15 open question 4, resolved) -- previously only reachable from the
+`CHIP_PROFILE` rig's `CHIP_RIG_SPEAKER` flag. `res2p_init()` (the peak
+stage's pole-radius LUT, needed once before any `res2p_set()` call) was
+missing from the real engine's boot -- added; the rig already had its own
+copy via a different init path, so this had never been exercised end-to-end
+before.
+
+**`BYPASS` was first built as corners pushed outside the audible-effect
+range (20 Hz HP, 20 kHz LP, a deliberately wide-bandwidth peak) rather than
+a conditional skip, on the reasoning that it should exercise the same DSP
+as every other preset. Carl heard it anyway** -- "a tiny bit dull" against
+the pre-P5 build. Real cause: `res2p_radius()` (res2p.h) clamps to its LUT's
+last entry rather than extrapolating past `RES2P_RADIUS_X_MAX`, so the
+intended ~4 kHz peak bandwidth silently became ~1.1 kHz at 44.1 kHz -- a
+real, if broad, resonant bump, not the negligible one the preset row aimed
+for. A resonant 2-pole filter can't actually be tuned into a flat response
+by widening `bw` past what the pole radius supports; only a real
+passthrough is guaranteed transparent. Fixed: `tick()` short-circuits to
+`return x;` when the current preset is `SPEAKER_BYPASS`, before touching
+any of the HP/peak/LP state -- an actual bypass, not an approximation of
+one.
+
+Preset selection is global, not per-voice, but `VoiceParams` is the only
+Core0→Core1 channel chip has (§7.1) -- rather than widen the shared
+`VoiceParamBlockT` (`engine_base.h`) for one scalar every other engine
+would carry unused, the chosen preset is replicated identically to all
+`MAX_VOICES` slots on CC17 and Core 1 reads it once from voice 0. CC17 was
+free and sits inside the BeatStep Pro's absolute-CC encoder range
+(16-31) other CC-selectable controls already target for that reason.
+
+### 14f.2 LCD UI
+
+`display.cpp` (previously a stub -- "no display yet, sid.md §1 P5 owns
+this") now shows VOICES/CPU/NOTE (same shape as subtractive's and speech's
+displays), the active speaker preset name, the current instrument index,
+and a fixed 8-voice grid (of `MAX_VOICES = 32`) showing each voice's
+instrument + current wave-table row, colour-coded held vs. ringing-out.
+32 voices don't fit a full one-cell-per-voice grid the way speech's 8 do;
+the grid is fixed to voices 0-7 rather than scrolling, which `voice_alloc`'s
+own allocation order (always scans from `v = 0` first, `src/voice_alloc.cpp`)
+makes representative for anything up to 8-note polyphony -- past that the
+VOICES count row is still exact, the grid just stops being the whole
+picture. Instrument names aren't shown (only the numeric index) --
+`chipgen.py` doesn't currently emit a name table, and adding one felt like
+scope creep on top of everything else this phase already touched; a
+reasonable next small addition, not a gap in the design.
+
+---
+
 ## 15. Open questions
 
 1. ~~**Sub-block size vs. frame tick.** Speech cuts sub-blocks per voice; the
@@ -1575,11 +1642,20 @@ makes about sync).
    predicted -- no separate sample-exact cut point. Not yet confirmed by ear.
 2. **Multispeed default.** 50 Hz PAL only at v1, or 2× from the start? Affects the
    instrument data format, so it wants deciding before assets are generated.
-3. **Telemetry struct contents** for the LCD — how much VM state does the display
+3. ~~**Telemetry struct contents** for the LCD — how much VM state does the display
    actually want, and does it justify widening the reverse channel beyond the
-   bitmap?
-4. **Speaker stage placement vs. master FX** — confirmed downstream of the insert,
-   but does it sit before or after the final `__ssat` clip?
+   bitmap?~~ **Resolved (§14f): `ChipVoiceUiState` (`instrument`, `wave_pos`,
+   `held`)** — exactly the two pieces of VM state §6.1's own text named
+   ("current table row, active instrument"), same shape as speech's per-voice
+   telemetry. Does not widen the Core1→Core0 reverse channel's *bitmap*
+   (`multicore_fifo`) itself — a separate polled getter, same mechanism
+   speech already uses for the same reason.
+4. ~~**Speaker stage placement vs. master FX** — confirmed downstream of the insert,
+   but does it sit before or after the final `__ssat` clip?~~ **Resolved
+   (§14f): before.** The stage's own soft clip is the cone-breakup
+   *character* (a deliberate tonal choice, varying by preset), not a second
+   safety clamp — it runs, then the existing final `__ssat` still guards the
+   int16 conversion regardless of what the speaker stage's clip did.
 5. ~~**`FILTER_BUS_COUNT` after P0** — 4 is a guess. If voices measure cheap, is 6
    better spent than 6 more voices?~~ **Resolved (§9, §14a.9): no.** Voices
    measured *more* expensive than buses (~108 vs ~80 c/f), the opposite of what

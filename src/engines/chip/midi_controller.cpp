@@ -3,6 +3,7 @@
 #include "note_freq.h"
 #include "instruments.h"
 #include "voice_alloc.h"
+#include "speaker_sim.h"
 #include <cmath>
 
 // Chip module MIDI routing (Core 0), sid.md §1 P4 / §8: dynamic voice
@@ -31,6 +32,9 @@
 
 enum ChipCC : uint8_t {
     CC_INSTRUMENT = 16,   // per-channel, next-note instrument select, banded 0..INSTRUMENT_COUNT-1
+    CC_SPEAKER    = 17,   // sid.md §1 P5: speaker sim preset, banded 0..SPEAKER_PRESET_COUNT-1.
+                           // Global (not per-channel/next-note like CC_INSTRUMENT) -- applies
+                           // immediately, same as CC_FX_TYPE below.
     CC_FX_TYPE  = 74,     // effect select (engine_base.h EffectParams convention)
     CC_FX_MIX   = 73,
     CC_FX_P1    = 72,
@@ -43,6 +47,11 @@ static constexpr uint8_t  NUM_CHANNELS = 16;
 
 static MidiParser midi_parser;
 static MidiUiState ui_state;
+static uint8_t s_speaker_preset_ui = SPEAKER_1702;   // sid.md §1 P5: display-only mirror of
+                                                       // shadow.voices[*].speaker_preset --
+                                                       // not in MidiUiState, which is shared
+                                                       // across every engine and has no
+                                                       // speaker-sim concept
 
 static int8_t  midi_note_voice[128];         // note number -> allocated voice, -1 = none
 static bool    voice_held[MAX_VOICES];       // physically held (for live-CC channel scoping)
@@ -188,6 +197,13 @@ void midi_controller_process(const uint8_t *data, uint32_t len, ParamExchange *p
                         changed = true;
                         break;
                     }
+                    case CC_SPEAKER: {
+                        uint8_t idx = (uint8_t)((uint32_t)ev.data2 * SPEAKER_PRESET_COUNT / 128u);
+                        for (uint32_t v = 0; v < MAX_VOICES; v++) shadow.voices[v].speaker_preset = idx;
+                        s_speaker_preset_ui = idx;
+                        changed = true;
+                        break;
+                    }
                     case CC_FX_TYPE:
                         shadow.fx.type = (uint8_t)((uint32_t)ev.data2 * FX_COUNT / 128u);
                         ui_state.fx_type = shadow.fx.type;
@@ -245,3 +261,4 @@ void midi_controller_process(const uint8_t *data, uint32_t len, ParamExchange *p
 }
 
 void midi_controller_ui_state(MidiUiState *out) { *out = ui_state; }
+uint8_t chip_speaker_preset_ui() { return s_speaker_preset_ui; }
