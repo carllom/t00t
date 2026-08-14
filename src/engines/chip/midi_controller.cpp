@@ -2,9 +2,19 @@
 #include "midi_parser.h"
 #include "note_freq.h"
 #include "instruments.h"
+#include "ay_instruments.h"
 #include "voice_alloc.h"
 #include "speaker_sim.h"
 #include <cmath>
+
+// chip.md §12.1, AY-P1: one combined instrument-selection space spans both
+// chip types (SID instruments first, then AY's) so CC_INSTRUMENT/PC stay a
+// single "pick a patch" list rather than needing a separate chip-type
+// selector -- a player thinks in patches, not in which silicon a patch
+// happens to come from. Index < INSTRUMENT_COUNT is VT_SID (sub-index
+// unchanged); >= INSTRUMENT_COUNT is VT_AY (sub-index = combined -
+// INSTRUMENT_COUNT).
+static constexpr uint8_t TOTAL_INSTRUMENT_COUNT = INSTRUMENT_COUNT + AY_INSTRUMENT_COUNT;
 
 // Chip module MIDI routing (Core 0), chip.md §1 P4 / §8: dynamic voice
 // allocation. voice_alloc.* (existing three-tier steal policy: silent ->
@@ -96,8 +106,16 @@ static void bind_filter(VoiceParamBlock &shadow, uint32_t voice, uint8_t ch, con
     shadow.voices[voice].filter_bus = (chan_bus[ch] >= 0) ? (uint8_t)chan_bus[ch] : BUS_NONE;
 }
 
+// Dispatches on the voice's own (already-set) type -- SID's freq_reg is
+// proportional to frequency, AY's tone period is inverted (note_freq.h),
+// so this cannot be one formula the way it could when only one chip type
+// existed. Correct for both the note-on path (type just written this call)
+// and the pitch-bend live-repush path (type from whatever the voice was
+// triggered as).
 static void set_voice_freq(VoiceParamBlock &shadow, uint32_t voice, uint8_t note, uint8_t ch) {
-    shadow.voices[voice].freq = chip_hz_to_freq_reg(chip_note_to_hz(note) * channel_bend[ch]);
+    float hz = chip_note_to_hz(note) * channel_bend[ch];
+    VoiceParams &vp = shadow.voices[voice];
+    vp.freq = (vp.type == VT_AY) ? ay_hz_to_period(hz) : chip_hz_to_freq_reg(hz);
 }
 
 void midi_controller_init() {
@@ -153,11 +171,12 @@ void midi_controller_process(const uint8_t *data, uint32_t len, ParamExchange *p
                 }
                 int v = voice_alloc_allocate();
                 if (v >= 0) {
-                    const Instrument &ins = INSTRUMENTS[chan_instrument[ev.channel]];
+                    uint8_t combined = chan_instrument[ev.channel];
+                    bool is_ay = combined >= INSTRUMENT_COUNT;
                     VoiceParams &vp = shadow.voices[v];
-                    vp.type = VT_SID;
+                    vp.type = is_ay ? VT_AY : VT_SID;
                     set_voice_freq(shadow, (uint32_t)v, note, ev.channel);
-                    vp.instrument = chan_instrument[ev.channel];
+                    vp.instrument = is_ay ? (uint8_t)(combined - INSTRUMENT_COUNT) : combined;
                     vp.velocity = ev.data2 ? ev.data2 : 127;
                     vp.gate = true;
                     vp.trigger++;   // Core 1 hard-restarts the envelope + VM on this edge
@@ -165,7 +184,11 @@ void midi_controller_process(const uint8_t *data, uint32_t len, ParamExchange *p
                     voice_held[v] = true;
                     voice_channel[v] = ev.channel;
                     voice_note[v] = note;
-                    bind_filter(shadow, (uint32_t)v, ev.channel, ins);
+                    // AY has no filter model (chip.md §12.1) -- always BUS_NONE,
+                    // same as bind_filter() would resolve for any uses_filter=false
+                    // SID instrument, just without a bus to release on this channel.
+                    if (is_ay) { release_bus(ev.channel); vp.filter_bus = BUS_NONE; }
+                    else       bind_filter(shadow, (uint32_t)v, ev.channel, INSTRUMENTS[vp.instrument]);
 
                     ui_state.last_note = note;
                     ui_state.last_velocity = ev.data2;
@@ -191,7 +214,7 @@ void midi_controller_process(const uint8_t *data, uint32_t len, ParamExchange *p
                 switch (ev.data1) {
                     case CC_INSTRUMENT: {
                         if (ev.channel >= NUM_CHANNELS) break;
-                        uint8_t idx = (uint8_t)((uint32_t)ev.data2 * INSTRUMENT_COUNT / 128u);
+                        uint8_t idx = (uint8_t)((uint32_t)ev.data2 * TOTAL_INSTRUMENT_COUNT / 128u);
                         chan_instrument[ev.channel] = idx;
                         if (ev.channel == ui_state.last_channel) ui_state.program = idx;
                         changed = true;
@@ -246,7 +269,7 @@ void midi_controller_process(const uint8_t *data, uint32_t len, ParamExchange *p
             }
 
             case MIDI_PROGRAM_CHANGE:
-                if (ev.channel < NUM_CHANNELS && ev.data1 < INSTRUMENT_COUNT) {
+                if (ev.channel < NUM_CHANNELS && ev.data1 < TOTAL_INSTRUMENT_COUNT) {
                     chan_instrument[ev.channel] = ev.data1;
                     ui_state.program = ev.data1;
                     changed = true;

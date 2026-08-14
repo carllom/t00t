@@ -34,7 +34,7 @@ still the last hardware-verified state.
 | **P4** | Instrument import: GoatTracker `.ins` host converter; hand-authored text format → header. Dynamic voice allocation. *(Built — §14e. Not yet heard on hardware.)* |
 | **P5** | Speaker simulation output stage (§10). LCD UI. *(Built — §14f. Not yet heard on hardware.)* |
 | **P6** | 8580 model (table swap). Combined-waveform LUTs. *(Deferred by Carl's call — the combined-waveform LUT's only available source data is reSID's own sampled tables (`tools/sid_ref/resid/wave*.h`, GPL-2, deliberately gitignored/not vendored, same reasoning as the DAC tables at §14a.7). Unlike the DAC ladder, combined-waveform behavior has no known clean closed-form derivation to independently re-derive from — reSID's own tables come from resistor/leakage-level SPICE modeling, not a formula. Raised as a licensing question rather than guessed at; Carl chose to defer P6 entirely rather than resolve it now. AND stays the 6581/8580 combined-waveform approximation, with §14a.4's documented ~200 dB error on the pulse combinations unchanged.)* |
-| **later** | Other chips (§12): AY/YM2149, SN76489, NES 2A03, GB DMG. *(AY-3-8910/YM2149 P0 built — §12.1. Primitives only; not yet an engine, not yet heard.)* |
+| **later** | Other chips (§12): AY/YM2149, SN76489, NES 2A03, GB DMG. *(AY-3-8910/YM2149 P0 (§12.1) and P1 (§12.2) built — primitives, `VoiceType`, MIDI routing, three static instruments. No frame table yet; not yet heard.)* |
 
 **P0 was a hard gate.** Nothing in §9's budget was trusted until it cleared, and
 `FILTER_BUS_COUNT` was provisional until then (`MAX_VOICES = 32` is a separate,
@@ -670,6 +670,74 @@ know about it rather than rediscover it by ear.
 routing, an instrument format for envelope shape/period + mixer state), any
 device-side wiring at all, and no hardware listen -- this is P0, the
 measurement gate, same scope SID's own P0 had.
+
+### 12.2 AY-3-8910/YM2149 P1 (engine integration)
+
+Wires the P0 primitives into the real engine. `VT_AY` added alongside
+`VT_SID` (`engine.h`) in the *same* `MAX_VOICES` pool and the *same*
+`voice_alloc` dynamic allocation P4 already built for SID -- unlike SID's
+own P1 (which needed a static channel map because dynamic allocation
+didn't exist yet), AY-P1 skips straight to the mature infrastructure §12
+promised ("additional VoiceTypes in this module, not new modules"). No new
+allocator, no new MIDI note-routing plumbing.
+
+**Instrument format** (`ay_instrument.h`/`ay_instruments.h`) is
+deliberately static, no frame table -- the same shape SID's own P1 had
+("no instrument system yet... one fixed default patch", chip.md §14b.1)
+grown to three hand-authored patches instead of one, since even a static
+format needed something to exercise §12's table row (tone-only lead,
+envelope-driven "buzzer bass" at shape 8 -- a repeating sawtooth decay,
+tuned to a ~50 Hz buzz -- and a noise-only percussive hit using shape 9's
+one-shot decay-to-silence as its own release, no frame table required for
+that much). A per-frame table (arpeggio, software volume/mixer envelopes)
+is AY-P2's job, mirroring SID's own P1 -> P3 gap.
+
+**One combined instrument-selection space** spans both chip types
+(`midi_controller.cpp`'s `TOTAL_INSTRUMENT_COUNT = INSTRUMENT_COUNT +
+AY_INSTRUMENT_COUNT`) rather than a separate chip-type selector -- a player
+picks a patch, not a silicon. `CC_INSTRUMENT`/Program Change band against
+the combined total; index `< INSTRUMENT_COUNT` is SID, the rest is AY.
+
+**Real, load-bearing bug caught before it shipped**: the existing
+`render_mask`/frame-tick/bus-feed loops all gated purely on
+`render_mask & (1 << v)`, which now also includes `VT_AY` voices. Left
+alone, SID's own frame-VM loop would have read `INSTRUMENTS[]` with an
+AY-table index on an AY voice slot, and the bus-feed loop would have called
+`SidVoice::tick()` on a slot that was never a `SidVoice` this trigger --
+garbage audio, not a crash, so nothing would have flagged it short of
+noticing the output was wrong. Fixed by adding an explicit `vp.voices[v].
+type != VT_SID` guard to both loops before they were ever run.
+
+**Real AY-3-8910 hardware has no gate/release concept at the chip level at
+all** -- every tracker's "note off" is a software fiction. AY-P1 doesn't
+invent one yet either: the mixed output mutes the instant MIDI gate goes
+false, envelope-driven or not, so `active_mask`/`render_mask` for `VT_AY`
+voices track `p.gate` directly rather than a decaying counter the way
+`VT_SID`'s do -- there's nothing to decay until AY-P2's frame table can
+ramp a release the way real AY tracker instruments always have to fake one
+in software.
+
+**Mix scaling, not yet calibrated**: AY's own mixer/DAC output
+(`ay_envelope.h`'s `ay_mix()`) is normalized and effectively unipolar
+(silence is a literal 0, not a centred value) -- summed into `dry[]`
+as-is it would inject a real DC bias into an otherwise-bipolar bus SID's
+`(w - wave_zero()) * amp` voices already populate correctly. Fixed for the
+*common* case by treating the mixer's gate bit as bipolar (0/1 -> -1/+1)
+before scaling, which recovers real AC content for every ordinary tone/
+noise combination; the one case this doesn't fully fix is the documented
+"both tone and noise disabled" AY quirk (§12.1's own finding, there as a
+literal constant on real hardware) landing as a half-scale residual DC
+instead of a full one. `AY_MIX_SCALE` (the constant mapping AY's [0,1]
+DAC output onto SID's raw `dry[]` magnitude) is a first guess against
+SID's own typical peak, not a calibrated one -- same status P3's vibrato
+constants had before Carl's by-ear pass found them 4x off. Needs a real
+listen, same as everything below.
+
+**Not built**: AY-P2's frame table (arpeggio, software envelope/mixer
+automation), YM2149 model selection (hardcoded to AY8910's DAC table --
+`AyInstrument` has no model field yet), AY voices in `display.cpp`'s
+per-voice grid (SID-only for now, a known gap not a design decision), and
+no hardware listen.
 
 ---
 

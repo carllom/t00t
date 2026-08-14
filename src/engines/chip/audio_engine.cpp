@@ -2,8 +2,12 @@
 #include "rig.h"
 #include "speaker_sim.h"
 #include "instruments.h"
+#include "ay_instruments.h"
+#include "note_freq.h"       // AY_CLOCK_ZX
 #include "chip/sid_voice.h"
 #include "chip/sid_filter.h"
+#include "chip/ay_osc.h"
+#include "chip/ay_envelope.h"
 #include "fx/delay.h"
 #include "fx/reverb.h"
 #include "hardware/gpio.h"
@@ -300,6 +304,19 @@ static FxReverb fx_reverb;
 static uint8_t  s_last_fx_type = 0xFF;
 static SidSpeakerStage speaker;   // chip.md §1 P5, §10
 
+// AY-3-8910/YM2149 voices (chip.md §12.1, AY-P1). One AyTone/AyNoise/
+// AyEnvelope trio per slot, independent -- not the real chip's shared-
+// noise/shared-envelope-across-3-channels topology (§12.1's design note,
+// same file). VT_AY reuses the same MAX_VOICES pool and voice_alloc as
+// VT_SID; a slot holds one or the other, never both, decided at note-on.
+static AyTone     ay_tone[MAX_VOICES];
+static AyNoise    ay_noise[MAX_VOICES];
+static AyEnvelope ay_env[MAX_VOICES];
+static uint32_t   ay_tick_scale_g;   // Q16 ticks/sample, clock/8 internal rate (ay_osc.h)
+static uint32_t   ay_tick_phase = 0;  // shared across every AY voice -- same clock,
+                                        // same sample rate, so the tick-count sequence
+                                        // for a given sample is identical for all of them
+
 // Fresh instrument: first-frame waveform immediately (before any tick),
 // filter cutoff seeded from the instrument's init value, everything else
 // zeroed so the tables start from row 0.
@@ -425,6 +442,12 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
     fx_delay.init();
     fx_reverb.init();
     speaker.init((float)SAMPLE_RATE);
+    ay_tick_scale_g = ay_tick_scale_q16(AY_CLOCK_ZX, (double)SAMPLE_RATE);
+    for (uint32_t v = 0; v < MAX_VOICES; v++) {
+        ay_tone[v].init();
+        ay_noise[v].init();
+        ay_env[v].init();
+    }
 
     while (true) {
         uint32_t buf_index = multicore_fifo_pop_blocking();
@@ -444,6 +467,43 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
         uint32_t render_mask = 0;
         for (uint32_t v = 0; v < MAX_VOICES; v++) {
             const VoiceParams &p = vp.voices[v];
+
+            if (p.type == VT_AY) {
+                // AY-P1 (chip.md §12.1): no frame VM yet, so this is the
+                // whole per-buffer story -- apply the instrument once on a
+                // fresh trigger, and let p.freq (already the right register
+                // for this type, note_freq.h) drive pitch every buffer,
+                // live pitch bend included, with no repush guard needed --
+                // unlike SID's vm_frame_tick, nothing else on Core 1
+                // contests ay_tone[v]'s period between triggers.
+                uint8_t ins_idx = p.instrument < AY_INSTRUMENT_COUNT ? p.instrument : 0;
+                const AyInstrument &ins = AY_INSTRUMENTS[ins_idx];
+
+                if (p.trigger != last_trigger[v]) {
+                    last_trigger[v] = p.trigger;
+                    ay_tone[v].init();
+                    ay_noise[v].init();
+                    ay_env[v].init();
+                    if (ins.noise_on) ay_noise[v].set_period(ins.noise_period);
+                    if (ins.use_envelope) {
+                        ay_env[v].set_period(ins.envelope_period);
+                        ay_env[v].set_shape(ins.envelope_shape);
+                    }
+                }
+                ay_tone[v].set_period(p.freq);
+
+                // Real AY-3-8910 hardware has no gate/release concept at the
+                // chip level (ay_instrument.h's header note) -- P1 mutes the
+                // mixed output the instant MIDI gate goes false, envelope-
+                // driven or not, so active_mask/render_mask track p.gate
+                // itself rather than a decaying counter the way VT_SID's do
+                // below: there is nothing to decay yet.
+                if (p.gate) { active_mask |= (1u << v); render_mask |= (1u << v); }
+                s_voice_ui[v] = ChipVoiceUiState{false, 0, 0};   // AY voices don't appear
+                                                                  // in the per-voice grid yet
+                                                                  // (SID-only, a known P1 gap)
+                continue;
+            }
             if (p.type != VT_SID) continue;
 
             uint8_t ins_idx = p.instrument < INSTRUMENT_COUNT ? p.instrument : 0;
@@ -527,7 +587,11 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
             }
             if (frame_tick) {
                 for (uint32_t v = 0; v < MAX_VOICES; v++) {
-                    if (!(render_mask & (1u << v))) continue;
+                    // render_mask now covers VT_AY voices too (P1) -- this
+                    // loop is SID's own frame VM, so it must stay SID-only,
+                    // or it reads INSTRUMENTS[] with an AY-table index and
+                    // stomps vm[v] state that isn't SID's to touch.
+                    if (!(render_mask & (1u << v)) || vp.voices[v].type != VT_SID) continue;
                     const VoiceParams &p = vp.voices[v];
                     uint8_t ins_idx = p.instrument < INSTRUMENT_COUNT ? p.instrument : 0;
                     vm_frame_tick(v, INSTRUMENTS[ins_idx], p.freq);
@@ -540,7 +604,11 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
             uint32_t bus_hits[FILTER_BUS_COUNT] = {0};
             uint32_t bus_feeder[FILTER_BUS_COUNT];   // valid only where bus_hits[b] > 0
             for (uint32_t v = 0; v < MAX_VOICES; v++) {
-                if (!(render_mask & (1u << v))) continue;
+                // Same SID-only guard as above -- an AY voice's filter_bus
+                // is always BUS_NONE (midi_controller.cpp), so it would fall
+                // into the dry-mix else branch below and call SidVoice::tick()
+                // on a slot that was never a SidVoice this trigger.
+                if (!(render_mask & (1u << v)) || vp.voices[v].type != VT_SID) continue;
                 const VoiceParams &p = vp.voices[v];
 
                 uint8_t bus = p.filter_bus;
@@ -569,6 +637,69 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
                 int32_t q = sid_filter_q(SID_MODEL_6581, ins.filter_resonance);
                 for (uint32_t i = 0; i < n; i++)
                     dry[base + i] += bus_filter[b].tick(bus_acc[b][i], f_half, q, ins.filter_mode_mask, /*saturate=*/true);
+            }
+
+            // AY voices (chip.md §12.1, AY-P1): no filter bus, straight to
+            // dry[]. Tick-phase is shared across every AY voice -- same
+            // clock, same sample rate, so the tick-count sequence for a
+            // given sample is identical for all of them (ay_tick_scale_g,
+            // computed once at boot).
+            uint32_t ay_ticks[CHIP_SUBBLOCK];
+            bool any_ay = false;
+            for (uint32_t v = 0; v < MAX_VOICES; v++) {
+                if ((render_mask & (1u << v)) && vp.voices[v].type == VT_AY) { any_ay = true; break; }
+            }
+            if (any_ay) {
+                uint32_t phase = ay_tick_phase;
+                for (uint32_t i = 0; i < n; i++) {
+                    phase += ay_tick_scale_g;
+                    ay_ticks[i] = phase >> 16;
+                    phase &= 0xffffu;
+                }
+                ay_tick_phase = phase;
+
+                for (uint32_t v = 0; v < MAX_VOICES; v++) {
+                    if (!(render_mask & (1u << v)) || vp.voices[v].type != VT_AY) continue;
+                    const VoiceParams &p = vp.voices[v];
+                    uint8_t ins_idx = p.instrument < AY_INSTRUMENT_COUNT ? p.instrument : 0;
+                    const AyInstrument &ins = AY_INSTRUMENTS[ins_idx];
+
+                    for (uint32_t i = 0; i < n; i++) {
+                        uint32_t ticks = ay_ticks[i];
+                        ay_tone[v].advance(ticks);
+                        if (ins.noise_on) ay_noise[v].advance(ticks);
+                        if (ins.use_envelope) ay_env[v].advance(ticks);
+
+                        // ay_mix()'s gate bit toggles 0/1 for every real
+                        // tone/noise combination (only the documented "both
+                        // disabled" quirk makes it a true constant) -- bipolar-
+                        // izing it here (0/1 -> -1/+1) recovers the AC content
+                        // dry[] needs to sum sensibly with SID's own bipolar
+                        // (w - wave_zero()) voices, at the cost of that one
+                        // quirk becoming a half-scale residual DC bias instead
+                        // of a full one. AY_STRICT's render_ay.cpp (host tool)
+                        // does not do this -- it compares against ayumi's own
+                        // raw (unipolar, DC-filtered separately) output, so it
+                        // must not apply a correction the reference doesn't.
+                        uint8_t tone_out = ins.tone_on ? ay_tone[v].out : 0;
+                        uint8_t t_off = ins.tone_on ? 0 : 1;
+                        uint8_t noise_bit = ins.noise_on ? ay_noise[v].out() : 0;
+                        uint8_t n_off_bit = ins.noise_on ? 0 : 1;
+                        uint8_t gate = (uint8_t)((tone_out | t_off) & (noise_bit | n_off_bit));
+                        int8_t level = ins.use_envelope ? ay_env[v].level : (int8_t)(ins.volume * 2 + 1);
+                        float amp = ay_dac_table(AY_MODEL_AY8910)[level];
+                        float bipolar = gate ? 1.0f : -1.0f;
+
+                        // Scale to roughly a SID voice's own raw dry[] peak
+                        // magnitude (~2-3e5 typical, sid_voice.h's (w -
+                        // wave_zero()) * amp) so AY and SID voices sum into
+                        // one mix without one silently dominating -- a first
+                        // guess, not a calibrated one, same status P3's
+                        // vibrato constants had before a by-ear pass.
+                        constexpr float AY_MIX_SCALE = 700000.0f;
+                        dry[base + i] += (int32_t)(bipolar * amp * AY_MIX_SCALE);
+                    }
+                }
             }
         }
 
