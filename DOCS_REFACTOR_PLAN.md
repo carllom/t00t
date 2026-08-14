@@ -116,8 +116,8 @@ simplest first). Each module has two sub-deliverables, tracked separately.
 
 | Module | 4a. Doc validation | 4b. Comment cleanup | Carl→author |
 |---|---|---|---|
-| groovebox | not started | not started | n/a (module_groovebox.md has 0 "Carl" hits) |
-| subtractive | not started | not started | n/a (0 hits) |
+| groovebox | done (commit `9720744`) | done (commit `9720744`) | n/a (0 hits, confirmed) |
+| subtractive | done (commit `9720744`) | done (commit `9720744`) | n/a (0 hits, confirmed) |
 | speech | not started | not started | not started (module_speech.md 3 hits) |
 | tracker | not started | not started | not started (module_tracker.md 2 hits) |
 | chip | not started | not started | not started (module_chip.md 9, history_chip.md 3) |
@@ -387,3 +387,23 @@ to fix.
   session with the same brief.** Next session: retry Phase 4 starting with
   groovebox + subtractive, then speech → tracker → chip → fm per the
   existing order.
+- 2026-08-14 (same day, third session after rate-limit reset): Re-launched
+  the groovebox and subtractive agents with the same briefs. Both completed
+  cleanly this time — reviewed each diff by spot-checking the agents'
+  claims directly against source (`ladder.h`, `clap.h`, `metal.h`,
+  `engine_base.h`, `CMakeLists.txt`, `kit.h`'s `GrooveVoice` enum,
+  `polyblep.h`, `filter.h`) before committing; all claims held up.
+  Committed as `9720744`. groovebox got ~20 as-built annotations (its doc
+  was pure design-draft, never checked against what shipped — real gaps
+  found: `VoiceParams` is a flat struct not a union, 303 uses a dedicated
+  ladder not the shared SVF, rimshot was never built, CH/OH hi-hat share
+  one voice slot rather than two, `voice_alloc.cpp` actually is linked
+  into the build, no `route.cpp` anywhere, plus a wrong
+  `engine.md`→`architecture.md` citation fix in §9 not part of the
+  original Phase 1 list). subtractive needed only 3 small fixes (stale
+  RP2040→RP2350 ref, wrong SVF op count, a sub-block-vs-per-sample
+  computation caveat) — it was already close to accurate. Both confirmed 0
+  "Carl" hits. Per-module table updated below. Next: speech (has a
+  `history_speech.md`, 3 "Carl" hits to fold in, and 124 issue-ref comment
+  lines per the baseline audit — the first module in this phase with real
+  anonymization + comment-history work to do, not just validation).
