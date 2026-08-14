@@ -21,7 +21,7 @@ static const SongHeader *s_song;
 static PlayerState s_player_state;
 static bool s_playing = false;
 
-// Display snapshot (#24), latched alongside each produced tick -- see
+// Display snapshot, latched alongside each produced tick -- see
 // TrackerUiState's comment (player_task.h) for why this is captured *before*
 // player_produce_tick() rather than read back from PlayerState afterwards
 // (its row/order_idx advance logic runs at the tail of that call, so reading

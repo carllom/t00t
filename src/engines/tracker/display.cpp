@@ -5,7 +5,7 @@
 #include "pico/time.h"
 #include <cstdio>
 
-// Playback position display (#24, module_tracker.md "Display"): order/pattern/row,
+// Playback position display (module_tracker.md "Display"): order/pattern/row,
 // per-channel activity, and song title/tracker name/channel count. Reads
 // tracker_player_ui_state()/tracker_player_song() -- both Core-0-local state
 // the player task already holds, so no reverse channel from Core 1 is

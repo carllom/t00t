@@ -1,8 +1,11 @@
-# T00T — XM Tracker Module (Design Draft)
+# T00T — XM Tracker Module
 
-Design notes for a tracker module playback engine, built as a new build-time
-module alongside the existing subtractive and 303/808 engines. This is a working
-design document — decisions recorded here are provisional until code exists.
+Design notes for the tracker module playback engine, a build-time module
+alongside the subtractive and groovebox engines. Status: **built and
+hardware-verified** — Build Order steps 1-8 below have shipped (order/pattern
+playback, the full XM effect and instrument/envelope set, ping-pong loops,
+sample offset); the FT2 quirk tail, the subtractive sub-block retrofit, and
+dynamic sample loading remain open (see Open Questions and Build Order).
 
 Target: RP2350 @ 150 MHz, PCM5122 I2S DAC, 44.1 kHz stereo output.
 
@@ -603,11 +606,13 @@ with decode-on-load gives ~4× without touching the runtime path.
 
 ## Display
 
-Optional for this module and explicitly low priority. If included:
+**Built (#24)**, `src/engines/tracker/display.cpp`. Order/pattern/row
+position, per-channel activity, and song title/tracker name/channel count.
 
-A full 240×284 16bpp framebuffer is **133 KB** — a quarter of SRAM, competing
-directly with sample data. Use tile or single-line rendering into a small scratch
-buffer, redrawn on row change (~5–20 Hz), not a persistent framebuffer.
+A full 240×284 16bpp framebuffer would be **133 KB** — a quarter of SRAM,
+competing directly with sample data — so this uses tile rendering into
+`gfx.cpp`'s existing shared scratch buffer instead, redrawn on change at up
+to 20 Hz, not a persistent framebuffer.
 
 Core 0 already holds playback position, so no reverse channel is needed. It runs
 one tick ahead of what is audible; at 20 ms this is invisible.
@@ -676,7 +681,7 @@ engine first — where the voice loop is simple enough to get right in an aftern
       IRQ overhead is not measurable at this sample rate; 512 would only add
       latency (11.6ms round-trip -> 23.2ms) for no offsetting benefit, so
       256 stays the default for every engine.
-- [x] **Ring depth: 2 tick slots** (#17, resolving open question 1 below).
+- [x] **Ring depth: 2 tick slots** (#17).
       `player.h`'s `TickRing` picked the 2-slot side of the tradeoff: 20 ms of
       slack per tick is sufficient, and the host reference-diff harness that
       drives the ring today is single-threaded (produce, then immediately
@@ -696,7 +701,7 @@ engine first — where the voice loop is simple enough to get right in an aftern
       existing DMA IRQ (~every 5.8ms at the default buffer size), so no new
       timer was needed.
 - [x] **Ping-pong loop implementation: direction flag with a mirrored read**
-      (#21, resolving open question 2 below), not host-side loop unrolling.
+      (#21), not host-side loop unrolling.
       Decided from the two constraints already on record rather than a fresh
       measurement of the losing option: #16 measured ~20 points of spare
       Core 1 headroom at 32 voices (8.20%/15.3%/22.8%/30.1% at 8/16/24/32v,
@@ -710,7 +715,7 @@ engine first — where the voice loop is simple enough to get right in an aftern
       header comment for the mechanism (a signed-64-bit boundary reflection,
       resolved only when a voice actually crosses a loop edge).
       **Re-measured on real `breadboard_rp2350` hardware, profiling pin**
-      (Carl, 2026-08-07), matching #16's own methodology — one voice on a
+      (the author, 2026-08-07), matching #16's own methodology — one voice on a
       deliberately tight loop plus a chorus of the rest, idle/8/16/24/32
       voices — except the tight voice is now ping-pong instead of forward:
       **0.7% idle, 8.19% (8v), 15.6% (16v), 23.0% (24v), 30.4% (32v)**.
@@ -733,6 +738,8 @@ engine first — where the voice loop is simple enough to get right in an aftern
       unless it's a one-shot that plays through to its natural end. Not a
       #21 regression (pre-existing, unrelated to ping-pong/9xx) and out of
       scope here, but real — see Open Questions below.
+- [x] **Display: tile-rendered, Core-0-only, no reverse channel** (#24). See
+      "Display" above and `src/engines/tracker/display.cpp`.
 
 ---
 
@@ -792,10 +799,11 @@ Prerequisites are more interesting than the tracker itself. Do them first:
    break, `F` speed/tempo.~~ — done (#19). All ten land in
    `player.h`'s `player_produce_tick()` as per-channel state machines, tick
    0 vs later-tick semantics enforced by only ever calling
-   `tracker_apply_pitch_vol_effect()` when `!row_boundary` (arpeggio's own
-   tick-0 contribution is 0 either way, so it's included in that same gate
-   rather than special-cased). Pitch effects needed real period math on
-   Core 0 for the first time — `tracker_note_to_period()`/
+   `tracker_tick_period()`/`tracker_apply_tick_volume_effects()` when
+   `!row_boundary` (arpeggio's own tick-0 contribution is 0 either way, so
+   it's included in that same gate rather than special-cased). Pitch
+   effects needed real period math on Core 0 for the first time —
+   `tracker_note_to_period()`/
    `tracker_period_to_inc()` are a runtime C++ port of
    `tools/xm2t00t/periods.py`'s linear/Amiga formulas (double-precision, not
    fixed-point: 32 channels of `pow()` at ~50 Hz is nowhere near Core 0's
@@ -955,7 +963,7 @@ Prerequisites are more interesting than the tracker itself. Do them first:
      rule, the suppression bounds check) that the audio diff can't cheaply
      pin down, matching the #19/#20 precedent of pairing an audio fixture
      with a targeted unit test rather than one or the other.
-   - **Re-measured on real hardware** (Carl, 2026-08-07): 0.7/8.19/15.6/
+   - **Re-measured on real hardware** (the author, 2026-08-07): 0.7/8.19/15.6/
      23.0/30.4% idle/8v/16v/24v/32v with a ping-pong voice in the mix,
      indistinguishable from #16's forward-loop baseline. See the Settled
      Decisions entry above for the numbers and for the key-off/voice-

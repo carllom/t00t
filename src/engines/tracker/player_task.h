@@ -2,7 +2,7 @@
 
 #include "player.h"
 
-// Core 0's tracker player (#18): song load (flash -> SRAM), the ordered
+// Core 0's tracker player: song load (flash -> SRAM), the ordered
 // TickBlock ring, and play/stop/seek transport. player_tick() (via
 // player_produce_tick(), player.h) runs here rather than on Core 1 because
 // it's a pure function of song state and needs nothing Core 1 owns, and
@@ -42,7 +42,7 @@ void tracker_transport_play();                    // resume producing from the c
 void tracker_transport_stop();                    // stop producing; ring drains to silence
 void tracker_transport_seek(uint32_t order_idx);  // rewind to an order, clamped to [0, num_orders)
 
-// Read-only playback snapshot for the display (#24). Taken from the row/tick
+// Read-only playback snapshot for the display. Taken from the row/tick
 // that produced the most recently *pushed* TickBlock, not live PlayerState --
 // module_tracker.md "Display": Core 0 already holds this, no reverse channel from
 // Core 1 needed, and it runs one tick ahead of what's audible (invisible at
