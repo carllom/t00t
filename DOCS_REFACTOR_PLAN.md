@@ -547,3 +547,42 @@ to fix.
   flagged items with Carl, delete this file, hand off for merge review) —
   or address the two open items first if Carl wants to weigh in before
   wrap-up starts.
+- 2026-08-14 (same day, final session): Both flagged items resolved per
+  the author's direction: (1) ARP_LEAD — backported the shipped 2x/40ms/
+  ~6.25Hz data into `history_chip.md` §14d.5's documented number, which had
+  said 6x/120ms/~2.1Hz (commit `4f94292`); (2) the deferred chip/fm
+  `§`-renumbering pass stays deferred, explicitly out of scope for this
+  effort — to be done in a separate future session, low on tokens now.
+
+  Phase 5 final grep sweep (commit `47a7949`): Phase 1's own reference-fix
+  sweep (`69e98f7`) covered `src/`+`tools/` but in practice missed
+  non-`.h`/`.cpp`/`.py` file types under `tools/` (`.txt`, `.json`, `.sh`,
+  `.sidreg`, and `Makefile`/`CMakeLists.txt` files inside tool
+  subdirectories) plus 2 stray refs in the root `CMakeLists.txt`/`Makefile`
+  — a full repo-wide grep (not scoped to `src/`+`tools/` this time) found
+  ~24 more stale pre-split doc-name citations across 19 files, all fixed
+  and each verified against the real target heading first, same discipline
+  as Phase 1. Also reworded the last 4 "Carl" mentions found repo-wide:
+  `CONTEXT.md`'s 2 (hardware-ownership pattern, deferred since Phase 3 —
+  not a module doc), `tracker_song_blob.h`'s 1 (flagged during the tracker
+  pass as not matching a cataloged pattern, resolved now), and 1 more newly
+  found in `tools/xm2t00t/xm_synth.py` that no prior scope-discovery grep
+  had caught. Repo-wide grep for "Carl" outside this file now returns zero
+  hits. Verified all six `ENGINE=` builds
+  (subtractive/groovebox/speech/tracker/chip/fm) plus `make host` pass
+  clean after the sweep.
+
+  **All of Phase 1–5 is now complete except the deferred chip/fm
+  renumbering pass** (intentionally out of scope, see above — do it in a
+  separate future session before merging `docs` into `main`, or fold it in
+  if `main` isn't cut yet by then). This file is being deleted now per its
+  own Phase 5 instruction, in the next commit. Final state for whoever
+  picks up the renumbering pass or reviews before merge: 12 commits this
+  effort produced on the `docs` branch, from `d589bfa` (Phase 0, this
+  file's creation) through `47a7949` (Phase 5 sweep) plus the ARP_LEAD fix
+  (`4f94292`) — `git log --oneline d589bfa^..HEAD` on `docs` has the full
+  list. Every module doc has been validated against its actual source,
+  every source comment narrating change history has been trimmed or moved
+  to its `history_X.md`, and all "Carl" references are anonymized to "the
+  author". Ready for merge review once the renumbering question is
+  resolved.
