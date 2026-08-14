@@ -31,7 +31,12 @@ static constexpr uint32_t FILTER_BUS_COUNT = 4;
 enum VoiceType : uint8_t {
     VT_SILENT = 0,
     VT_SID,          // 6581/8580 voice
-    // later: VT_AY, VT_SN76489, VT_NES_PULSE, VT_NES_TRI, VT_NES_NOISE, VT_GB_WAVE
+    VT_AY,           // AY-3-8910/YM2149 voice (chip.md §12.1, AY-P1) -- one
+                      // AyTone + one AyNoise + one AyEnvelope per voice, not
+                      // the real chip's shared-noise/shared-envelope-across-
+                      // 3-channels topology (§12.1's own design note: full
+                      // 32-voice independence traded for that hardware trick)
+    // later: VT_SN76489, VT_NES_PULSE, VT_NES_TRI, VT_NES_NOISE, VT_GB_WAVE
 };
 
 // chip.md §5: "VoiceParams carries only uint8_t filter_bus, with BUS_NONE as
@@ -42,18 +47,24 @@ static constexpr uint8_t BUS_NONE = 0xff;
 
 struct VoiceParams {
     VoiceType type;
-    uint16_t freq;        // SID frequency register, the control-plane unit (§4.1) --
-                           // base pitch (bend already applied by Core 0); the frame
-                           // VM layers wave-table arpeggio + vibrato on top of this
-                           // on Core 1, per note-on, not per sample
-    uint8_t  instrument;   // index into INSTRUMENTS[] (engines/chip/instruments.h) --
-                           // drives waveform/pw/ADSR/filter; §6, replaces P1's raw fields
+    uint16_t freq;        // The target chip's own pitch register, already converted by
+                           // Core 0 (note_freq.h) -- SID's freq_reg for VT_SID (§4.1),
+                           // AY's 12-bit tone period for VT_AY (inverted: period, not
+                           // frequency-proportional). Bend already applied. For VT_SID
+                           // the frame VM layers wave-table arpeggio + vibrato on top of
+                           // this on Core 1, per note-on, not per sample; VT_AY has no
+                           // frame VM yet (AY-P1, chip.md §12.1) so this is the whole story.
+    uint8_t  instrument;   // index into INSTRUMENTS[] (VT_SID, engines/chip/instruments.h)
+                           // or AY_INSTRUMENTS[] (VT_AY, ay_instruments.h) -- which table
+                           // depends on type, resolved by midi_controller.cpp at note-on
+                           // from one combined selection space (TOTAL_INSTRUMENT_COUNT)
     uint8_t  trigger;      // generation counter, incremented on each note-on
     uint8_t  velocity;     // 1-127 (§13.7)
     bool     gate;
     uint8_t  filter_bus;   // index into VoiceParamBlock::bus[], or BUS_NONE (§5) --
                            // set by Core 0's bind_filter() at note-on, from the
-                           // selected instrument's uses_filter flag
+                           // selected instrument's uses_filter flag. Always BUS_NONE
+                           // for VT_AY -- this chip has no filter model.
     uint8_t  speaker_preset;   // chip.md §1 P5, §10: SpeakerPreset (speaker_sim.h).
                            // A single global choice, not really per-voice, but
                            // VoiceParams is the only Core0->Core1 channel and
