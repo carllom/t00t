@@ -1,16 +1,10 @@
 #!/usr/bin/env python3
 """make_fb_bank -- synthetic DX7 banks that sweep operator FEEDBACK depth.
 
-Built for F7 (history_fm.md §5.19), and for the same reason make_freq_bank.py exists:
-a quantity the control-plane diff cannot reach as a table.
-
-F4 verified the 32-algorithm routing table exactly -- 192/192 (algorithm,
-operator) entries identical -- but "which operator has feedback" is all that
-table says. How *deep* the feedback runs at each of the 8 levels lives in the
-per-sample kernel (`op_render_fb` against Dexed's `FmOpKernel::compute_fb`),
-and nothing tested it. F7 found the gap the expensive way: ROM1A #00 BRASS 1
-scores 4.5 dB harmonic MAE at feedback 7 and 1.0 dB at every level up to 3, a
-clean monotonic ramp with depth that no other test could see.
+A quantity the control-plane diff cannot reach as a table: the algorithm
+routing table only records *which* operator has feedback, not how deep the
+feedback runs at each of the 8 levels, which lives in the per-sample kernel
+(`op_render_fb` against Dexed's `FmOpKernel::compute_fb`).
 
 Each voice is algorithm 32 (all six operators are carriers) with only OP6
 audible and OP6's feedback level set to the value under test. So the render is
@@ -107,10 +101,8 @@ def spec_depth():
 def spec_depth_mod():
     """The same 8 levels again, but with OP6 feeding OP5 instead of the output.
 
-    F7's reason for adding this: ROM1A #00 BRASS 1 scores 4.5 dB harmonic MAE
-    and -7.1 dB of averaged upper spectrum, entirely because of feedback, while
-    the carrier-mode sweep above is within 0.2 dB at every level. The one
-    structural difference is that BRASS 1's feedback operator is a modulator.
+    A feedback operator's own output can be right while what it does as a
+    modulator is wrong, and vice versa, so both modes need separate coverage.
     """
     vs, desc = [], []
     for fb in range(8):

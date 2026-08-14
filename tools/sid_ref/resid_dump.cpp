@@ -1,11 +1,8 @@
 // resid_dump -- control-plane ground truth from reSID, as CSV. No audio.
 //
-// The FM module's attempt 1 failed because every check ran through ears on
-// hardware, and a composite sound cannot tell you which of a dozen chained
-// curves is wrong (history_fm.md §1). Attempt 2's fix was to split verification into
-// a control plane compared *exactly*, numerically, and a signal plane compared
-// spectrally. Most of a SID voice is control-rate or purely combinational
-// logic, so most of it lands on the exact side:
+// Verification is split into a control plane compared *exactly*, numerically,
+// and a signal plane compared spectrally. Most of a SID voice is control-rate
+// or purely combinational logic, so most of it lands on the exact side:
 //
 //   env    envelope counter trajectories -- the time, in master clock cycles,
 //          at which the 8-bit counter first reaches each level, for all 16
@@ -15,12 +12,11 @@
 //          output. Bit-exact; there is no tolerance to argue about.
 //   wave   the 12-bit waveform output for every one of the 4096 accumulator
 //          top-12 values, for each waveform selection and ring-mod state.
-//          Pure combinational logic, and the ground truth against which
-//          module_chip.md §4.2's "AND first, LUTs at P6" deferral gets a *number*.
-//   dac    reSID's own 8-bit (envelope) and 12-bit (waveform) R-2R DAC tables.
-//          module_chip.md does not mention these at all; they are signal-path and
-//          therefore §3 says keep. Emitted so the cost of keeping them, and
-//          of not keeping them, is measurable rather than assumed.
+//          Pure combinational logic; ground truth for module_chip.md §4.2's
+//          waveform deferral.
+//   dac    reSID's own 8-bit (envelope) and 12-bit (waveform) R-2R DAC tables
+//          (module_chip.md §3). Emitted so the cost of keeping them is
+//          measurable rather than assumed.
 //
 // The domains are defined here and this file is the authority on them:
 // tools/host_render/t00t_chip_dump.cpp must emit the same columns, and
@@ -86,9 +82,7 @@ static void dump_env(bool model_8580) {
             // to 255 first. Measuring from gate-on instead would time the
             // attack and call it a decay -- and because the counter starts at
             // 0, every "has it fallen to level k yet" test passes immediately
-            // and the whole trajectory collapses onto cycle 0. Worth spelling
-            // out: that is exactly the failure this dump existed to catch on
-            // the *other* side of the diff.
+            // and the whole trajectory collapses onto cycle 0.
             env.writeCONTROL_REG(0x01);  // gate on
             if (s.mode != 0) {
                 while (env.readENV() != 255 && cycle < limit) { env.clock(); cycle++; }
@@ -131,13 +125,13 @@ static void dump_env(bool model_8580) {
 // 0x100000/0xffff = 16 cycles. Emits the 23-bit register state and the 12-bit
 // scattered output after each shift, from the post-reset state 0x7fffff.
 //
-// This is the domain where module_chip.md §4.2 is wrong and says so loudly: it lists
-// "taps 22/20/16/13/11/7/4/2", but reSID's clock_shift_register() is
-// bit0 = bit22 ^ bit17 -- two taps. The eight positions in module_chip.md's list are
-// the *output* scatter (register bits 20,18,14,11,9,5,2,0 -> output bits
-// 11..4), not the feedback taps. An implementation built from the doc alone
-// would produce a different sequence with a different spectrum, and this dump
-// is what catches that in one diff.
+// This is the domain where module_chip.md §4.2 lists the wrong bit positions:
+// it lists taps 22/20/16/13/11/7/4/2, but reSID's clock_shift_register() is
+// bit0 = bit22 ^ bit17 -- two taps. The eight positions in module_chip.md's
+// list are the *output* scatter (register bits 20,18,14,11,9,5,2,0 -> output
+// bits 11..4), not the feedback taps. An implementation built from the doc
+// alone would produce a different sequence with a different spectrum, and
+// this dump is what catches that in one diff.
 // ---------------------------------------------------------------------------
 static void dump_lfsr(bool model_8580, int count) {
     // Only the scattered output is emitted, not the register itself: the
@@ -255,16 +249,12 @@ static void dump_wave(bool model_8580) {
 // This is the *reference* side only. t00t derives its own tables independently
 // by nodal analysis of the same ladder (tools/fit_6581_filter.py's r2r_vbit),
 // so the diff between them is a real conformance test rather than a table
-// compared against a copy of itself -- which is what it was when t00t's tables
-// were generated from this dump. Perturbing the resistor ratio by 2% now
-// breaks 4044 of 4096 entries; before, nothing could break it.
+// compared against a copy of itself.
 //
 // 6581 has 2R/R = 2.20 and a missing bit-0 termination; 8580 has 2.00 and
 // correct termination. The 6581's is not merely imprecise but non-monotonic --
 // 19 descending steps at 8 bits, 347 at 12 -- and that is a large part of why
-// a quiet 6581 note sounds dirty rather than merely quiet. module_chip.md's §3
-// signal-path/structural test puts these squarely on the "keep" side, so their
-// cost needs to be a measured number, not an omission.
+// a quiet 6581 note sounds dirty rather than merely quiet (module_chip.md §3).
 // ---------------------------------------------------------------------------
 static void dump_dac(bool model_8580) {
     printf("# domain=dac cols=bits,index,value\n");

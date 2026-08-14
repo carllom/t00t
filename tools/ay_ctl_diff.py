@@ -1,12 +1,10 @@
 #!/usr/bin/env python3
 """Exact control-plane conformance: t00t's AY-3-8910/YM2149 primitives
-against ayumi.
+against ayumi (module_chip.md §11.1's control-plane/signal-plane split).
 
-Mirrors tools/sid_ctl_diff.py's role (module_chip.md §11.1's control-plane/signal-
-plane split) for the second chip in this module. Unlike SID's envelope,
-AY's is a plain ramp counter with no piecewise-exponential segments, so
-every domain here is bit-exact -- there is no sample-quantisation tolerance
-to argue about the way tools/sid_ctl_diff.py's `env` domain needs one.
+AY's envelope is a plain ramp counter with no piecewise-exponential segments,
+so every domain here is bit-exact -- there is no sample-quantisation
+tolerance to argue about.
 
     tools/ay_ref/.venv/bin/python tools/ay_ctl_diff.py
     tools/ay_ref/.venv/bin/python tools/ay_ctl_diff.py --only noise --verbose
@@ -72,8 +70,7 @@ def diff_tone(verbose):
 def diff_noise(verbose):
     """The shared 17-bit LFSR's output-bit sequence. Bit-exact.
 
-    This is the domain that would catch a wrong tap pair the way
-    tools/sid_ctl_diff.py's lfsr domain catches SID's -- a wrong feedback
+    This is the domain that would catch a wrong tap pair: a wrong feedback
     polynomial gives a different sequence with a different spectrum, and
     nothing but a listening test would otherwise have found it.
     """
@@ -116,10 +113,9 @@ def diff_dac(verbose):
 
     Tolerance, not exact: ayumi.c's tables are `double`; ay_envelope.h's are
     `float` (deliberately -- the DAC output feeds a real-time mix on an
-    embedded target, same choice speaker_sim.h already made). float32's own
-    precision is ~1.2e-7 relative; 1e-6 absolute is comfortably above that
-    noise floor while still catching an actual mistyped digit, which is
-    orders of magnitude larger.
+    embedded target). float32's own precision is ~1.2e-7 relative; 1e-6
+    absolute is comfortably above that noise floor while still catching an
+    actual mistyped digit, which is orders of magnitude larger.
     """
     r = Result("dac")
     ref = {(a, int(b)): float(c) for a, b, c in run(REF, "dac")}

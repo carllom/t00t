@@ -41,11 +41,9 @@
 // unity-amplitude carrier at 1.0, which is the natural unit to report in and
 // keeps the float WAV's numbers interpretable rather than arbitrary.
 //
-// Measured for context (this rig, 96 renders: ROM1A/2A/4B x 32 voices x notes
-// 36/48/60 at velocity 127): the hottest factory patch peaks at raw 144,096,955
-// = 8.59 in these units. Nothing is clamped -- float WAV has no headroom limit,
-// and fm_compare.py normalises. This constant exists so the reported dB numbers
-// mean something, not to prevent clipping.
+// Nothing is clamped -- float WAV has no headroom limit, and fm_compare.py
+// normalises. This constant exists so the reported dB numbers mean something,
+// not to prevent clipping.
 static constexpr double DEXED_UNIT = 16777216.0;  // 2^24
 
 static constexpr double SR = 44100.0;

@@ -1,10 +1,9 @@
-// Host-side proof of src/engines/tracker/mixer.h (#15): renders the stripped
-// 32-voice sample mixer to WAV and checks its behaviour objectively before
-// trusting the on-device render. Referenced directly by module_tracker.md
-// "Testing": "diff against device output (or against a host build of the
-// same mixer)" -- this is that host build. No pico-sdk, no ARM intrinsics;
-// mixer.h's __not_in_flash_func and __ssat both no-op/fall back to a plain
-// clamp when __arm__ is unset (see mixer.h).
+// Host-side proof of src/engines/tracker/mixer.h (#15): renders the
+// stripped 32-voice sample mixer to WAV and checks its behaviour
+// objectively before trusting the on-device render -- the host build
+// module_tracker.md's "Testing" section calls for. No pico-sdk, no ARM
+// intrinsics; mixer.h's __not_in_flash_func and __ssat both no-op/fall
+// back to a plain clamp when __arm__ is unset (see mixer.h).
 //
 // Run from the build directory (tools/host_render/build):
 //   cmake -S .. -B . && cmake --build . && ./render_tracker_mixer
@@ -130,8 +129,7 @@ static bool test_loop_wrap() {
 //
 // Same 8-sample buffer/[2,6) region as test_loop_wrap() but with an
 // increment (6 samples/step) larger than the loop region (loop_len=4
-// samples) -- module_tracker.md's own "deliberately tight ... loop" measurement
-// convention (#16) pushed to ping-pong's worst case, so wrap_ping_pong()'s
+// samples), pushed to ping-pong's worst case so wrap_ping_pong()'s
 // multi-reflection path (more than one bounce per call) actually gets
 // exercised, not just a single mirror.
 static bool test_pingpong_wrap() {

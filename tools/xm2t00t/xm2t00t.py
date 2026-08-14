@@ -12,8 +12,8 @@
 
     xm2t00t.py gen-header <out.h>
         (Re)generate the C++ mirror of blob_format.py's struct/enum layout
-        (see blob_format.py:generate_cpp_header). Not wired into
-        CMakeLists.txt yet — #14 is host-only.
+        (see blob_format.py:generate_cpp_header). Not part of the CMake
+        build — run by hand when blob_format.py changes.
 
 See module_tracker.md for the design background and blob_format.py for the wire
 format itself (the source of truth this tool packs against).

@@ -1,43 +1,31 @@
 #!/usr/bin/env python3
-"""Reference-diff harness driver (#17): the one-command entry point module_tracker.md's
-"Testing" section and issue #17 ask for.
+"""Reference-diff harness: runs the checked-in synthetic XM fixtures
+(tools/xm2t00t/xm_synth.py) and any real corpus found in `xm/` (gitignored,
+same convention as tools/xm2t00t/test_xm2t00t.py) through both the device
+renderer and openmpt123, and reports a windowed-RMS-in-dB comparison.
 
     python3 tools/host_render/diff_xm.py
 
-Pipeline per module, both for the checked-in synthetic fixtures
-(tools/xm2t00t/xm_synth.py) and any real corpus found in `xm/` (gitignored,
-same convention as tools/xm2t00t/test_xm2t00t.py):
+Pipeline per module:
 
     .xm --[xm2t00t.py convert --raw-blob]--> blob
     blob --[render_xm_device render]--> device WAV + per-tick trace CSV
     .xm --[openmpt123 --render, --filter 2 to match our linear interpolation]--> reference WAV
     (device WAV, reference WAV) --[windowed RMS in dB, see diff_wavs()]--> report
 
-Tolerance policy (see diff_wavs() for the numbers): a fixed, justified
-windowed-RMS-in-dB threshold, chosen to sit well above the noise floor our own
-lossy 8-bit conversion guarantees (module_tracker.md: "sample-exact equality with
-openmpt123 is not achievable") but well below the level a genuinely wrong note
-or a timing slip produces -- applied AFTER correcting for a measured, global,
-roughly-constant ~11-12 dB level gap this harness turned up between our
-engine's channel-volume convention (linear vol/64 of full Q15 scale, "no
-headroom") and libopenmpt's default XM render level (almost certainly its own
-internal mix-level/headroom compatibility handling, not part of the raw XM
-spec). That gap is real and worth its own investigation (reported via
-`gain_ratio` below), but it is a level-*convention* question, not a
-correctness one -- baking a guessed correction factor into the engine here,
-under a diff-harness issue, would be worse than reporting it and moving on.
-Folding an unexamined constant gain mismatch into the pass/fail metric would
-also just make the tolerance useless (everything either passes trivially
-because the threshold had to be opened wide enough to swallow it, or fails
-on every fixture for the same non-bug reason).
+Tolerance (see diff_wavs() for the numbers): a fixed windowed-RMS-in-dB
+threshold, applied AFTER correcting for a measured, global, roughly-constant
+level gap between our engine's channel-volume convention and libopenmpt's
+default XM render level. That gap is reported separately via `gain_ratio`
+rather than folded into the tolerance -- it's a level-convention question,
+not a correctness one.
 
 The synthetic fixtures are built to stay entirely inside src/engines/tracker/
 player.h's current (notes-only, no effects, no envelopes) scope, so they are
 asserted against that tolerance -- a regression there is a real bug. Real
 corpus modules almost certainly use effects/envelopes player.h doesn't
-implement yet (#19-22); those are run and reported for visibility (this is
-the "turns every subsequent correctness question into a diff" tooling
-module_tracker.md asks for) but never assert pass/fail here.
+implement yet (#19-22); those are run and reported for visibility but never
+assert pass/fail here.
 """
 
 from __future__ import annotations
@@ -74,39 +62,25 @@ sys.path.insert(0, XM2T00T_DIR)
 WINDOW_FRAMES = 512
 
 # Tolerance, in dB relative to the reference track's global peak, applied
-# AFTER the gain_ratio correction in diff_wavs(). Justification (module_tracker.md:
-# "choosing [a tolerance] is part of this slice") -- empirically measured,
-# not just theoretical:
-#
-# Once interpolation filter (--filter 2) and overall level (gain_ratio) are
-# both matched, what's left is dominated by *onset transients*: our sub-block
-# volume ramp (module_tracker.md: reach target by the end of a 64-frame sub-block)
-# and libopenmpt's own internal declick ramping are two independently-
-# implemented answers to "how do we get from 0 (or the previous level) to the
-# target without a click", and they settle along different sample-by-sample
-# paths to the same destination. Measured on the checked-in fixtures (both
-# gain-corrected, worst 512-frame window): notes_basic peaks at -19.1 dB
-# right at its note-on; retrig_and_keyoff peaks at -11.7 dB at its row-2
-# retrigger -- in both cases the *only* windows anywhere near the threshold
-# are the ones straddling a note-on/retrigger boundary (verified directly
-# against the per-tick trace), never a sustained region. -10 dB clears both
-# with a little margin. A wrong note, a dropped trigger, or a gross timing
-# slip instead replaces the signal with something uncorrelated of comparable
-# amplitude to the signal itself -- error at or above 0 dB, not a marginal
-# nudge -- so -10 dB stays unambiguously on the "known-good" side of that
-# separation even though it's far looser than the ~-45..-50 dBFS quantization
-# floor alone would suggest. Tightening this further is real future work
-# (matching libopenmpt's ramp *shape*, not just reaching the same target) but
-# isn't needed to make the harness useful now.
+# AFTER the gain_ratio correction in diff_wavs(). Once interpolation filter
+# (--filter 2) and overall level (gain_ratio) are both matched, what's left
+# is dominated by *onset transients*: our sub-block volume ramp and
+# libopenmpt's own internal declick ramping are two independently-
+# implemented answers to "how do we get from 0 (or the previous level) to
+# the target without a click", and they settle along different
+# sample-by-sample paths to the same destination. -10 dB sits comfortably
+# above that onset-transient noise while staying well below the error level
+# a wrong note, dropped trigger, or timing slip produces (which replaces the
+# signal with something uncorrelated of comparable amplitude -- error at or
+# above 0 dB, not a marginal nudge).
 THRESHOLD_DB = -10.0
 
 OPENMPT_ARGS = [
     "--render", "--no-float", "--samplerate", "44100", "--channels", "2",
-    # Filter taps 2 == linear interpolation (matches mixer.h's mix_voice()
-    # exactly, per module_tracker.md open question 2 / #16 -- the mixer never grew
-    # a nearest/cubic/sinc build flag). Using openmpt123's own higher-quality
-    # default here would make interpolation choice, not player correctness,
-    # the dominant source of "divergence".
+    # Filter taps 2 == linear interpolation, matching mixer.h's mix_voice()
+    # exactly. Using openmpt123's own higher-quality default here would make
+    # interpolation choice, not player correctness, the dominant source of
+    # divergence.
     "--filter", "2",
     "--gain", "0", "--stereo", "100",
     "--output-type", "wav",

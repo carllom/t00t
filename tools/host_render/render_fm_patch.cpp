@@ -1,5 +1,5 @@
 // render_fm_patch -- t00t's FM engine, rendered on the host with the same CLI
-// as tools/fm_ref/dexed_render (history_fm.md §3.1, F0-b).
+// as tools/fm_ref/dexed_render.
 //
 // Deliberately argument-for-argument identical to dexed_render so that
 // tools/fm_compare.py is a thin diff rather than a translation layer:
@@ -38,12 +38,11 @@
 #include "../../src/engines/fm/patches.h"
 #endif
 
-// Since F2 the two engines share a level anchor, so this is no longer an
-// arbitrary constant: op.h's FM_CYCLE is one full cycle of phase deviation,
-// dexed_render's DEXED_UNIT (2^24) is the same thing on Dexed's side, and a
-// max-level operator peaks at 2.0 in these units on both. That makes
-// fm_compare.py's `level gap` a real measurement of the engine rather than a
-// readout of two unrelated scale choices.
+// op.h's FM_CYCLE is one full cycle of phase deviation; dexed_render's
+// DEXED_UNIT (2^24) is the same thing on Dexed's side, and a max-level
+// operator peaks at 2.0 in these units on both -- so fm_compare.py's
+// `level gap` is a real measurement of the engine, not a readout of two
+// unrelated scale choices.
 //
 // The int16 conversion (op.h's FM_VOICE_OUT_SHIFT) is deliberately undone
 // here rather than skipped: the point is to measure what the device path
@@ -125,7 +124,7 @@ int main(int argc, char **argv) {
     }
 
     if (a.check) {
-        // F2's gate: prove no bus can overflow int32 on any patch in the bank.
+        // Proves no bus can overflow int32 on any patch in the bank.
         //
         // This is a bound, not a sample. Every operator's contribution is
         // bounded exactly: fm_mul_gain() is (gain * sample) >> 16 with |sample|

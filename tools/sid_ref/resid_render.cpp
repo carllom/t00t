@@ -63,11 +63,10 @@ int main(int argc, char **argv) {
     sid.set_chip_model(st.model_8580 ? reSID::MOS8580 : reSID::MOS6581);
     sid.enable_filter(true);
     // The external filter is the C64 *board's* passive output network, not the
-    // chip's -- module_chip.md §10 calls it out separately as a near-zero-cost one-pole
-    // that is "genuinely part of the SID sound". It is deliberately left ON
-    // here so the reference includes it: the t00t side models it too, and
-    // taking it out of the reference would make the comparison measure a stage
-    // neither engine is supposed to omit.
+    // chip's (module_chip.md §10). It is deliberately left ON here so the
+    // reference includes it: the t00t side models it too, and taking it out
+    // of the reference would make the comparison measure a stage neither
+    // engine is supposed to omit.
     sid.enable_external_filter(true);
     if (!sid.set_sampling_parameters(st.clock_hz,
                                      fast ? reSID::SAMPLE_FAST : reSID::SAMPLE_RESAMPLE,

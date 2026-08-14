@@ -1,12 +1,5 @@
 #!/usr/bin/env python3
-"""fm_regress -- the committed timbral regression gate for the FM engine (F7).
-
-This is history_fm.md §6, the recommendation the whole rewrite was organised around:
-
-    "The original problem was never the DSP -- it was that the feedback loop ran
-    through your ears and your memory, so nothing was ever pinned down and every
-    fix could silently regress an earlier one. A checked-in threshold file makes
-    timbral regression a failing command instead of a listening session."
+"""fm_regress -- the committed timbral regression gate for the FM engine.
 
 `--update` sweeps every factory bank against Dexed and writes what it measured
 into fm_thresholds.json. Plain `fm_regress.py` re-runs the same sweep and fails
@@ -43,21 +36,21 @@ THRESHOLDS = REPO / "tools" / "fm_thresholds.json"
 BANK_NAMES = ["rom1a", "rom1b", "rom2a", "rom2b", "rom3a", "rom3b", "rom4a", "rom4b",
               "fb_depth", "fb_depth_mod"]
 
-# Notes and velocities. Three octaves apart, because key level scaling, key rate
-# scaling and detune are all note-dependent and a C3-only sweep cannot see any
-# of them -- F5 (history_fm.md §5.12) added multi-note coverage for exactly that
-# reason. The second velocity catches velocity-sensitivity errors, which scale
-# the modulators hardest and so show up as timbre rather than level.
+# Notes and velocities. Three octaves apart, because key level scaling, key
+# rate scaling and detune are all note-dependent and a C3-only sweep cannot
+# see any of them. The second velocity catches velocity-sensitivity errors,
+# which scale the modulators hardest and so show up as timbre rather than
+# level.
 CONFIGS = [(36, 100), (48, 100), (60, 100), (72, 100), (48, 40)]
 
 # The three metrics worth gating on, and why these three:
 #   harm  -- steady-state timbre, the "does it sound like a DX7" number
 #   atk   -- the first 100 ms, envelope-independent; attacks are where FM
-#            patches are recognisable and where F0's worst errors lived
+#            patches are recognisable
 #   env   -- amplitude over time, the axis a spectral score cannot see
 # Level gap and centroid are reported by fm_compare but not gated: centroid is
-# meaningless on the inharmonic patches (history_fm.md §5.9) and level gap is already
-# implied by env.
+# meaningless on the inharmonic patches (history_fm.md §5.9) and level gap is
+# already implied by env.
 METRICS = ["harmonic_mae_db", "attack_harmonic_mae_db", "env_mae_db"]
 
 # Headroom over the measured value, so ordinary numerical drift (a compiler

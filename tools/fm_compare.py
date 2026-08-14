@@ -196,9 +196,7 @@ def compare(ref_path, test_path, note, gate_s, label=""):
     # Scoring timbre wherever the *reference* sounds conflates the two axes: an
     # engine whose envelope dies early then reads as spectrally wrong for every
     # frame it is silent, and a real timbre difference in the frames it does
-    # sound gets averaged into noise. (Measured on the F0 baseline: the harmonic
-    # error was dominated by frames where t00t had already decayed 60 dB, which
-    # says nothing about its spectrum.) So spectral metrics run over frames where
+    # sound gets averaged into noise. So spectral metrics run over frames where
     # BOTH are sounding, and `coactive_frac` reports how much of the reference
     # that actually covered -- a low value is itself the envelope finding, and
     # makes the spectral numbers alongside it correspondingly less meaningful.

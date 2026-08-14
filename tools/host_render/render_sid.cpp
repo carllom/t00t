@@ -1,4 +1,4 @@
-// render_sid -- the t00t side of the F0 comparison (module_chip.md §11.1, CHIP_STRICT).
+// render_sid -- the t00t side of the SID comparison (module_chip.md §11.1, CHIP_STRICT).
 //
 // Consumes a register stream (see sidreg.h) and renders it through
 // src/chip/'s own primitives at 44.1 kHz, in the strict hardware topology:
@@ -81,7 +81,7 @@ struct StrictSid {
             voice[v].osc.waveform = (uint8_t)((control[v] >> 4) & 0x0f);
             voice[v].osc.test = (uint8_t)((control[v] >> 3) & 0x01);
             // Gate bit drives ATTACK/RELEASE directly, hardware-literal --
-            // NOT the instantaneous hard_restart() t00t's own P1 engine uses
+            // NOT the instantaneous hard_restart() t00t's own engine uses
             // for MIDI retriggering (module_chip.md §4.3's deliberate divergence).
             // CHIP_STRICT models the chip's actual register semantics, so a
             // gate rewrite while already gated must be a no-op here too.

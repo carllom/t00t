@@ -1,4 +1,4 @@
-// render_ay -- the t00t side of the AY-P0 comparison (module_chip.md, AY_STRICT).
+// render_ay -- the t00t side of the AY comparison (module_chip.md, AY_STRICT).
 //
 // Consumes a register stream (see ../ay_ref/ayreg.h) and renders it through
 // src/chip/ay_osc.h / ay_envelope.h at 44.1 kHz, in the strict hardware
@@ -48,12 +48,11 @@ struct StrictAy {
         envelope.init();
     }
 
-    // Apply one R0-R13 register write. Layout is the AY-3-8910's own
-    // (matching ayumi's t_off/n_off/e_on naming 1:1, cross-checked against
-    // its setter API): R0-R5 tone period fine/coarse x3, R6 noise period,
-    // R7 mixer (bit i = A/B/C tone disable, bit i+3 = A/B/C noise disable),
-    // R8-R10 volume (bits 0-3) + envelope-enable (bit 4), R11/R12 envelope
-    // period fine/coarse, R13 envelope shape (any write restarts it).
+    // Apply one R0-R13 register write. Layout is the AY-3-8910's own:
+    // R0-R5 tone period fine/coarse x3, R6 noise period, R7 mixer (bit i =
+    // A/B/C tone disable, bit i+3 = A/B/C noise disable), R8-R10 volume
+    // (bits 0-3) + envelope-enable (bit 4), R11/R12 envelope period
+    // fine/coarse, R13 envelope shape (any write restarts it).
     void write_reg(uint8_t reg, uint8_t val) {
         switch (reg) {
             case 0x00: tone[0].set_period((uint16_t)((tone[0].period & 0xf00) | val)); break;
@@ -90,12 +89,9 @@ struct StrictAy {
         for (int i = 0; i < 3; i++) {
             sum += ay_mix(model, tone[i].out, t_off[i], n, n_off[i], e_on[i] != 0, volume[i], envelope.level);
         }
-        // 0.5x, matching ayumi_render's ayumi_set_pan(0.5, eqp=false) mono
-        // convention (pan_left = pan_right = 0.5, summed across 3 channels)
-        // rather than an arbitrary different scale -- keeps the two
-        // renderers' output levels directly comparable for
-        // tools/sid_compare.py rather than differing by a constant offset
-        // for no reason.
+        // 0.5x mono downmix (pan_left = pan_right = 0.5, summed across 3
+        // channels), matching ayumi_render's convention so both renderers'
+        // output levels are directly comparable.
         return sum * 0.5f;
     }
 };

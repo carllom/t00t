@@ -27,11 +27,10 @@ from typing import Any, Dict, Tuple
 MAGIC = b"T00T"
 VERSION = 1
 
-# module_tracker.md "Fixed-Point Formats": Q18.14 position caps a sample at this
-# many frames (256 KB at 8-bit); module_tracker.md "Memory Strategy": realistically
-# 350-400 KB of SRAM is available for sample data after code/stacks/DMA/mixer
-# scratch. Both are enforced by blob_writer.py, not the device.
+# Q18.14 position caps a sample at this many frames (256 KB at 8-bit).
 MAX_SAMPLE_FRAMES = 262_144
+# Sample-data SRAM budget. Both limits are enforced by blob_writer.py, not
+# the device.
 DEFAULT_SRAM_BUDGET_BYTES = 380 * 1024
 
 # One increment table entry per playable XM note (file note values 1..96,
@@ -218,10 +217,9 @@ def _cpp_field_line(f: Field) -> str:
 
 
 def generate_cpp_header() -> str:
-    """Mirror of this file's struct/enum layout, consumed by src/engines/tracker/
-    player.h (#17) and, once #18 wires the device side up, the real on-device
-    player too. Regenerate via `xm2t00t.py gen-header` whenever a struct here
-    changes."""
+    """Mirror of this file's struct/enum layout, consumed by
+    src/engines/tracker/player.h. Regenerate via `xm2t00t.py gen-header`
+    whenever a struct here changes."""
     # Local import: effects.py has no dependency on this module, so this
     # stays a one-way edge (blob_format -> effects), not a cycle.
     from effects import Effect, VolEffect

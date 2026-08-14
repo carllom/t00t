@@ -10,7 +10,7 @@ Layout mirrors blob_format.py's field order. Two kinds of regions:
 - **Sample PCM** (`sample_data_offset` .. `sample_data_offset +
   sample_data_bytes`): appended as one uninterrupted run, nothing else
   interleaved into it, so the device can `memcpy` this single span into SRAM
-  at song load — the "straight copy" module_tracker.md and #14 both call for.
+  at song load.
 """
 
 from __future__ import annotations
@@ -53,8 +53,8 @@ class BlobBuilder:
 
 def _guard_byte(sample: XmSample) -> int:
     """Loop-start value for looped samples, last value for one-shots — so
-    the future mixer's `s[idx+1]` interpolator read never needs a bounds
-    check (issue #14 spec)."""
+    the mixer's `s[idx+1]` interpolator read never needs a bounds check
+    (#14)."""
     if not sample.data:
         return 0
     if sample.loop_type != 0 and 0 <= sample.loop_start < len(sample.data):

@@ -1,17 +1,17 @@
 #pragma once
 
-// WAV writers for the chip module's F0 comparison (module_chip.md §11.1). Shared by
-// tools/sid_ref/resid_render.cpp and tools/host_render/render_sid.cpp -- both
-// sides of the comparison must write byte-identical container formats or
-// sid_compare.py is comparing readers as much as engines.
+// WAV writers for the chip module's comparison (module_chip.md §11.1). Shared
+// by tools/sid_ref/resid_render.cpp and tools/host_render/render_sid.cpp --
+// both sides of the comparison must write byte-identical container formats
+// or sid_compare.py is comparing readers as much as engines.
 //
 // The analysis path is 32-bit float, deliberately: reSID's output and
 // src/chip/'s fixed-point contract are on different scales (reSID is a
 // 16-bit PCM synthesis, t00t's voice_output units are (waveform_dac -
-// wave_zero) * envelope_dac, §sid_voice.h), so quantising either to a shared
-// PCM16 range would bake in a guessed headroom constant. Float sidesteps it:
-// each renderer writes its own natural scale and sid_compare.py normalises.
-// Same reasoning, same file shape, as the FM module's tools/fm_ref/wav32.h.
+// wave_zero) * envelope_dac, §sid_voice.h), so quantising either to a
+// shared PCM16 range would bake in a guessed headroom constant. Float
+// sidesteps it: each renderer writes its own natural scale and
+// sid_compare.py normalises.
 
 #include <cmath>
 #include <cstdint>

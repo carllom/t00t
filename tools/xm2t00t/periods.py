@@ -1,7 +1,6 @@
 """XM note -> playback frequency -> Q8.24 phase increment (#14).
 
-module_tracker.md build order step 3 asks for period -> increment tables
-"precomputed" at convert time (one 96-entry table per sample, see
+Precomputed at convert time (one 96-entry table per sample, see
 blob_format.SampleHeader.note_increments_offset) so the device never runs
 period math — it indexes an array.
 
@@ -13,12 +12,9 @@ long-documented formulas/constants:
   table (the same one reproduced in essentially every MOD/XM format
   writeup), octave-scaled by note and linearly interpolated for finetune.
 
-Caveat (see also history_tracker.md and the plan for #14): sanity-checked against
-the well-known anchor (note C-4, finetune 0, relative_note 0 -> exactly
-8363 Hz, the XM sample-rate reference), not verified bit-exact against a
-real FT2/OpenMPT period table dump. That level of precision matters once
-something actually plays these increments back (the mixer issue); a v1
-loader only needs internally-consistent, correctly-ordered pitches.
+Sanity-checked against the well-known anchor (note C-4, finetune 0,
+relative_note 0 -> exactly 8363 Hz, the XM sample-rate reference); not
+verified bit-exact against a real FT2/OpenMPT period table dump.
 """
 
 from __future__ import annotations
