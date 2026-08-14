@@ -47,6 +47,13 @@ if filter_mode != OFF:
     scaled = filter.tick(scaled, F_half, Q_q15, mode)
 ```
 
+The actual Core 1 loop computes `env_f`, the LFO value, and `F_half` once per
+64-sample sub-block (`SUBBLOCK` in `audio_engine.cpp`) and linearly ramps each
+toward its next target across the block, rather than recomputing them fresh
+every sample as shown above — an optimization, not a behavior change; the
+oscillator phase advance, PolyBLEP correction, and the filter's own two-pass
+state update stay genuinely per-sample.
+
 Current ADSR values:
 - Attack:  10ms
 - Decay:   100ms
@@ -104,7 +111,7 @@ tables needed except sine); `WAVE_SAMPLE` plays back PCM data instead:
   separately via `osc_sample_play()` / `osc_sample_advance_phase()`.
 
 PolyBLEP smooths discontinuities over one sample on each side using a quadratic
-polynomial residual. Fixed-point Q10 arithmetic, uses RP2040 hardware divider.
+polynomial residual. Fixed-point Q10 arithmetic, uses RP2350 hardware divider.
 The naive (non-BLEP) variants are kept for intentionally aliased/"crusty" sound.
 
 ## State-Variable Filter (SVF)
@@ -145,5 +152,6 @@ clamped 20–18000 Hz. Q is constant per buffer.
 Filter state (lp, bp) reset to 0 on voice trigger for clean attacks.
 
 ### CPU cost
-~18 integer ops per sample per voice (8 multiplies, shifts, adds).
+~20 integer ops per sample per voice (6 multiplies, 6 shifts, 8 adds/
+subtracts — 2-pass integration, 3 multiplies per pass).
 Estimated ~1-2% per voice on profiling pin.
