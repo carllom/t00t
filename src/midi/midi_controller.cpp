@@ -33,8 +33,8 @@ static uint8_t channel_program[NUM_CHANNELS];   // current preset index per chan
 static float   channel_bend_ratio[NUM_CHANNELS]; // phase_inc multiplier (1.0 = centered)
 static int16_t channel_mod[NUM_CHANNELS];        // mod-wheel vibrato depth, Q15
 static int16_t channel_pan[NUM_CHANNELS];        // CC10 pan, Q15 (-32768=L .. 0=center .. 32767=R)
-static uint8_t channel_bank_msb[NUM_CHANNELS];   // CC0  — stored for future use
-static uint8_t channel_bank_lsb[NUM_CHANNELS];   // CC32 — stored for future use
+static uint8_t channel_bank_msb[NUM_CHANNELS];   // CC0  — bank select MSB
+static uint8_t channel_bank_lsb[NUM_CHANNELS];   // CC32 — bank select LSB
 
 static uint8_t default_preset_for_channel(uint8_t ch) {
     return ch < NUM_CHANNEL_PRESETS ? channel_preset[ch] : channel_preset[NUM_CHANNEL_PRESETS - 1];
@@ -220,7 +220,7 @@ void midi_controller_process(const uint8_t *data, uint32_t len, ParamExchange *p
                         break;
                     case 0:   channel_bank_msb[ev.channel] = ev.data2; break;
                     case 32:  channel_bank_lsb[ev.channel] = ev.data2; break;
-                    default:  break;  // other CCs — to be mapped later
+                    default:  break;  // other CCs — ignored
                 }
                 break;
             }

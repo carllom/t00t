@@ -105,8 +105,7 @@ struct ParamExchangeT {
             // (p1=55), fully dry (mix=0) so it's silent until CC73 opens it.
             blocks[b].fx = { FX_DELAY, 0, 55, 36 };
             // bus[] is left zero-init: FB_OFF == 0, so every bus starts
-            // unbound — the correct default (module_chip.md §5.2: "most voices in
-            // real tunes ran unfiltered, because the filter was scarce").
+            // unbound — the correct default (module_chip.md §5.2).
         }
     }
 

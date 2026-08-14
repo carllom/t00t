@@ -12,7 +12,7 @@
 // coefficients per sub-block — never interpolate a1/a2/b0 directly. Walking
 // between two coefficient sets can push a pole outside the unit circle and
 // produce a burst of noise. Verified on host in tools/host_render
-// (render_res2p.cpp) before this gets wired into any real-time engine.
+// (render_res2p.cpp).
 struct Res2p {
     float a1 = 0.0f, a2 = 0.0f, b0 = 1.0f;
     float s1 = 0.0f, s2 = 0.0f;
@@ -52,9 +52,8 @@ inline float res2p_radius(float bw, float fs) {
 
 // f = resonant frequency (Hz), bw = -3dB bandwidth (Hz), fs = sample rate (Hz).
 // Unity DC gain (b0 = 1 + a1 + a2). Debug builds assert the pole stays
-// strictly inside the unit circle (module_speech.md "Testing": "catches the
-// interpolation-instability class immediately") -- this only guards against
-// bw/theta values that push the pole out, not against interpolating a1/a2/b0
+// strictly inside the unit circle -- this only guards against bw/theta
+// values that push the pole out, not against interpolating a1/a2/b0
 // directly, which no code path in this repo does.
 inline void res2p_set(Res2p &r, float f, float bw, float fs) {
     float rr    = res2p_radius(bw, fs);

@@ -41,7 +41,7 @@ void lcd_set_window(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1);
 // until the transfer completes.
 void lcd_blit(const uint16_t *buf, uint32_t npix);
 
-// Non-blocking variants for a future low-priority Core-0 update loop.
+// Non-blocking variants: start the transfer, poll for completion, or wait.
 void lcd_blit_start(const uint16_t *buf, uint32_t npix);
 bool lcd_blit_busy();
 void lcd_blit_wait();
