@@ -6,15 +6,22 @@
 #include "midi/midi_controller.h"
 #include "speaker_sim.h"
 #include "engine.h"
+#include "instruments.h"
+#include "ay_instruments.h"
 #include "pico/time.h"
 #include <cstdio>
 
 // Chip status display (Core 0, low priority). chip.md §1 P5's "LCD UI" --
 // same chrome/status-row shape as subtractive's and speech's display.cpp
-// (VOICES/CPU/NOTE), plus two chip-specific rows P5 introduced: the active
-// speaker preset (speaker_sim.h) and current instrument, and a compact
-// per-voice table/wave-row grid (engine.h's ChipVoiceUiState, §15 open
-// question 3's "current table row, active instrument").
+// (VOICES/CPU/NOTE), plus chip-specific rows: the active speaker preset
+// (speaker_sim.h), the current instrument (chip.md §12.4: by name *and*
+// number now, Carl's own ask, after the number-only version read as
+// opaque), and a compact per-voice grid (engine.h's ChipVoiceUiState, §15
+// open question 3's "current table row, active instrument").
+//
+// The name treatment is INSTR-row only, by Carl's own call: the grid
+// stays numeric (voice:instrument/table-row) -- a name doesn't fit eight
+// cells at once the way it fits one summary line.
 //
 // MAX_VOICES here is 32, not speech's 8 -- too many for a full one-cell-
 // per-voice grid on this panel, so the grid below is fixed to voices 0-7
@@ -23,6 +30,13 @@
 // v = 0, src/voice_alloc.cpp), so in practice this covers whatever's
 // sounding for anything up to 8-note polyphony -- past that, the VOICES
 // count row is still exact, only the grid stops being the full picture.
+//
+// chip.md §12.2's combined instrument-selection space (SID instruments
+// first, then AY's) is what CC16/Program Change actually address, so
+// every instrument number shown here -- the INSTR row and each grid cell
+// alike -- is that combined number, not INSTRUMENTS[]/AY_INSTRUMENTS[]'s
+// own per-table index. One number means one thing everywhere on this
+// screen.
 
 static const uint16_t COL_BG      = gfx_rgb(0, 0, 0);
 static const uint16_t COL_TITLE   = gfx_rgb(200, 120, 20);   // amber -- distinct from
@@ -36,23 +50,55 @@ static const uint16_t COL_LOAD_HI = gfx_rgb(230, 60, 50);
 static const uint16_t COL_HELD    = gfx_rgb(255, 200, 60);    // gated (key down)
 static const uint16_t COL_RINGING = gfx_rgb(120, 140, 160);   // released, still audible
 
+static constexpr uint8_t TOTAL_INSTRUMENT_COUNT = INSTRUMENT_COUNT + AY_INSTRUMENT_COUNT;
+
 static constexpr int VAL_X  = 104;
 static constexpr int VAL_CH = 12;
 static constexpr int ROW_VOICES = 36, ROW_CPU = 76, ROW_NOTE = 116;
 static constexpr int ROW_SPEAKER = 156, ROW_INSTR = 176;
 static constexpr int CBAR_X = 4, CBAR_Y = 96, CBAR_W = 232, CBAR_H = 12;
 
-// Fixed 8-voice grid (voices 0-7 of MAX_VOICES -- see file header).
+// INSTR's own value needs more room than VAL_CH's scale-2 budget gives --
+// "VIBRATO_LEAD #3" is 15 characters -- so it draws at scale 1 in the same
+// slot instead of introducing a second value column.
+static constexpr int INSTR_X = 0, INSTR_CH = 30;
+
+// 4 columns x 2 rows, same layout P5 shipped -- Carl's own call: names are
+// for the one-line INSTR row only, the grid stays numeric (voice:instrument
+// number/table row).
 static constexpr int GRID_ROW0 = 210, GRID_ROW_H = 12, GRID_W = 240 / 4, GRID_CH = 9;
 static constexpr int GRID_VOICES = 8;
 
 static const char *NOTE_NAMES[12] =
     { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
 
+// Combined-space instrument name lookup (chip.md §12.3) -- `combined` is
+// whatever CC16/Program Change actually sent: < INSTRUMENT_COUNT is a SID
+// patch, the rest is AY's (midi_controller.cpp's own split).
+static const char *combined_instrument_name(uint8_t combined) {
+    if (combined < INSTRUMENT_COUNT) return INSTRUMENT_NAMES[combined];
+    uint8_t ay_idx = (uint8_t)(combined - INSTRUMENT_COUNT);
+    return ay_idx < AY_INSTRUMENT_COUNT ? AY_INSTRUMENT_NAMES[ay_idx] : "?";
+}
+
+// VoiceParams.instrument is a per-table index (engine.h's own comment on
+// that field); this converts it back to the one combined number the rest
+// of the screen uses, given the voice's own type.
+static uint8_t combined_instrument_index(VoiceType type, uint8_t instrument) {
+    if (type == VT_AY) return (uint8_t)(INSTRUMENT_COUNT + instrument);
+    return instrument;
+}
+
 static void draw_val(int y, const char *raw, uint16_t fg) {
     char b[VAL_CH + 1];
     snprintf(b, sizeof(b), "%-*.*s", VAL_CH, VAL_CH, raw);
     gfx_text(VAL_X, y, b, fg, COL_BG, 2);
+}
+
+static void draw_instr_val(const char *raw, uint16_t fg) {
+    char b[INSTR_CH + 1];
+    snprintf(b, sizeof(b), "%-*.*s", INSTR_CH, INSTR_CH, raw);
+    gfx_text(INSTR_X, ROW_INSTR, b, fg, COL_BG, 1);
 }
 
 static void draw_grid_cell(uint32_t v, const char *text, uint16_t fg) {
@@ -73,7 +119,6 @@ void display_init() {
     gfx_text(0, ROW_CPU,     "CPU",     COL_LABEL, COL_BG, 2);
     gfx_text(0, ROW_NOTE,    "NOTE",    COL_LABEL, COL_BG, 2);
     gfx_text(0, ROW_SPEAKER, "SPKR",    COL_LABEL, COL_BG, 2);
-    gfx_text(0, ROW_INSTR,   "INSTR",   COL_LABEL, COL_BG, 2);
 
     lcd_set_backlight(100);
 }
@@ -91,8 +136,9 @@ void display_task() {
     static uint8_t  last_load = 0xFF;
     static MidiUiState last_midi = { 0xFE, 0, 0xFF, 0, 0, 0, 0xFF, 0xFF, 0xFF, 0xFF };
     static uint8_t  last_speaker = 0xFF;
-    static bool     last_held[GRID_VOICES] = {};
-    static uint8_t  last_instr[GRID_VOICES], last_wave_pos[GRID_VOICES];
+    static bool       last_held[GRID_VOICES] = {};
+    static VoiceType  last_type[GRID_VOICES] = {};
+    static uint8_t    last_instr[GRID_VOICES] = {};
 
     uint32_t snd  = voice_alloc_active_mask();
     uint8_t  load = audio_engine_load();
@@ -100,7 +146,7 @@ void display_task() {
     midi_controller_ui_state(&m);
     uint8_t speaker = chip_speaker_preset_ui();
 
-    char buf[16];
+    char buf[32];
 
     if (first || snd != last_snd) {
         snprintf(buf, sizeof(buf), "%d/%d", __builtin_popcount(snd), MAX_VOICES);
@@ -135,8 +181,12 @@ void display_task() {
     }
 
     if (first || m.program != last_midi.program) {
-        snprintf(buf, sizeof(buf), "%d", m.program);
-        draw_val(ROW_INSTR, buf, COL_VALUE);
+        uint8_t combined = m.program < TOTAL_INSTRUMENT_COUNT ? m.program : 0;
+        // "I:" stands in for a separate label row -- ROW_INSTR draws at
+        // scale 1 to fit "VIBRATO_LEAD #3"-length names at all, and there
+        // is no room left for a scale-2 label column alongside that.
+        snprintf(buf, sizeof(buf), "I:%s #%u", combined_instrument_name(combined), combined);
+        draw_instr_val(buf, COL_VALUE);
     }
     last_midi = m;
 
@@ -144,16 +194,17 @@ void display_task() {
         ChipVoiceUiState ui;
         chip_voice_ui_state(v, &ui);
         bool sounding = (snd >> v) & 1u;
-        if (first || ui.held != last_held[v] || ui.instrument != last_instr[v] || ui.wave_pos != last_wave_pos[v]) {
-            if (sounding) {
-                snprintf(buf, sizeof(buf), "%u:%u/%u", v, ui.instrument, ui.wave_pos);
+        if (first || ui.held != last_held[v] || ui.type != last_type[v] || ui.instrument != last_instr[v]) {
+            if (sounding && ui.type != VT_SILENT) {
+                uint8_t combined = combined_instrument_index(ui.type, ui.instrument);
+                snprintf(buf, sizeof(buf), "%u:%u/%u", v, combined, ui.wave_pos);
                 draw_grid_cell(v, buf, ui.held ? COL_HELD : COL_RINGING);
             } else {
                 draw_grid_cell(v, "", COL_LABEL);
             }
             last_held[v] = ui.held;
+            last_type[v] = ui.type;
             last_instr[v] = ui.instrument;
-            last_wave_pos[v] = ui.wave_pos;
         }
     }
 

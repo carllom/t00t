@@ -80,9 +80,15 @@ struct VoiceParams {
 // phoneme display -- enough for the display to show what each voice is
 // actually doing without widening the reverse channel bitmap itself.
 struct ChipVoiceUiState {
+    VoiceType type;        // chip.md §12.3: VT_SILENT/VT_SID/VT_AY -- display.cpp
+                            // needs this to know which instrument table `instrument`
+                            // indexes and how to label the voice (was implicitly
+                            // VT_SID-only through P2, when AY voices always reported
+                            // the all-zero/inactive state here)
     bool    held;         // gate currently true (note held, not just ringing out)
-    uint8_t instrument;    // index into INSTRUMENTS[]
-    uint8_t wave_pos;      // current row in the instrument's wave table
+    uint8_t instrument;    // index into INSTRUMENTS[] (VT_SID) or AY_INSTRUMENTS[] (VT_AY)
+    uint8_t wave_pos;      // current row in the instrument's wave table (VT_SID) or
+                            // tone table (VT_AY) -- same field, same meaning either way
 };
 void chip_voice_ui_state(uint32_t voice, ChipVoiceUiState *out);
 uint8_t chip_speaker_preset_ui();   // SpeakerPreset (speaker_sim.h), for display.cpp

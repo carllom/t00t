@@ -41,6 +41,13 @@ enum ChipInstrumentId : uint8_t {
     INSTRUMENT_COUNT,
 };
 
+static const char *const INSTRUMENT_NAMES[INSTRUMENT_COUNT] = {
+    "ARP_LEAD",
+    "PWM_PLUCK",
+    "FILTER_PAD",
+    "VIBRATO_LEAD",
+};
+
 static const Instrument INSTRUMENTS[INSTRUMENT_COUNT] = {
     // INS_ARP_LEAD
     {
