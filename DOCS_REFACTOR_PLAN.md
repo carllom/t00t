@@ -118,7 +118,7 @@ simplest first). Each module has two sub-deliverables, tracked separately.
 |---|---|---|---|
 | groovebox | done (commit `9720744`) | done (commit `9720744`) | n/a (0 hits, confirmed) |
 | subtractive | done (commit `9720744`) | done (commit `9720744`) | n/a (0 hits, confirmed) |
-| speech | not started | not started | not started (module_speech.md 3 hits) |
+| speech | done (commit `1d2d3b1`) | done (commit `1d2d3b1`) | done (commit `1d2d3b1`, 3/3 hits) |
 | tracker | not started | not started | not started (module_tracker.md 2 hits) |
 | chip | not started | not started | not started (module_chip.md 9, history_chip.md 3) |
 | fm | not started | not started | not started (module_fm.md 4, history_fm.md 9) |
@@ -407,3 +407,22 @@ to fix.
   `history_speech.md`, 3 "Carl" hits to fold in, and 124 issue-ref comment
   lines per the baseline audit — the first module in this phase with real
   anonymization + comment-history work to do, not just validation).
+- 2026-08-14 (same day, continued): speech done in one combined agent
+  (4a+4b+Carl→author together, same approach as groovebox/subtractive).
+  Real drift found: `MAX_SPEECH_VOICES` was cited throughout the doc and
+  several source comments but the actual constant has always been
+  `MAX_VOICES`; the res2p.h groovebox-backport Settled Decision was
+  checked off as done but never happened; the "Display" open question was
+  stale since #37 shipped it (struck, moved to Settled Decisions, new
+  `history_speech.md` section added); two copy-paste typos referenced
+  `history_subtractive.md` instead of `history_speech.md`; two source
+  comments stated outright wrong current behavior (audio_engine.cpp's
+  "MAX_VOICES=4", phoneme_def.h's "read by nothing yet" for fields
+  sequencer.h has read since #34), not just stale narrative — worth noting
+  since 4b was scoped as narrative cleanup but caught real doc-in-comment
+  bugs too. 124 issue-ref comment lines cleaned across 13 files. All 3 Carl
+  hits reworded. Verified `make ENGINE=speech`, `SPEECH_PROFILE=1`, and
+  `make host` build clean before committing (commit `1d2d3b1`) —
+  spot-checked several of the agent's specific claims against source first
+  (MAX_VOICES value, res2p.h header comment, phoneme count). Next: tracker
+  (per the stated module order).
