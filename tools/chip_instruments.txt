@@ -1,0 +1,100 @@
+# Chip module instrument definitions (sid.md §6, §11.2 "hand-authored text ->
+# generator script", same pattern as speechgen.py's phoneme CSV). chipgen.py
+# parses this file and writes engines/chip/instruments.h -- edit this file,
+# not the generated header.
+#
+# Grammar:
+#   instrument NAME              starts a block; NAME becomes enum ChipInstrumentId's
+#                                 INS_NAME and the C++ array's identifier prefix.
+#   end                           closes the block.
+#
+#   Scalar fields (any order, all optional except at least one of wave/pulse/
+#   first_wave should probably be set or the instrument is silent):
+#     ad ATTACK DECAY              nibbles 0-15 (env_sid.h's ENV_SID_RATE_PERIOD index)
+#     sr SUSTAIN RELEASE           nibbles 0-15
+#     first_wave WAVE[+WAVE...]    waveform(s) at trigger, before the wave table's
+#                                   row 0 takes effect at the first frame tick
+#     gate_off N                   frames after trigger to force release; 0 = never
+#                                   (sustain for as long as the key is held)
+#     vibrato DEPTH SPEED DELAY    depth: raw freq-register wobble scale, not
+#                                   calibrated to cents (by-ear tuning item).
+#                                   speed: phase units/frame (*64 internally) --
+#                                   ~50*speed*64/65536 Hz. delay: frames before
+#                                   vibrato ramps in. "0 0 0" or omitted = off.
+#     pulse_init N                 pw (0-4095) at trigger, before the pulse table's
+#                                   first row takes effect. 0 is a real degenerate
+#                                   value for a pure/combined pulse waveform (constant
+#                                   output, not a tone) -- give this a real value
+#                                   whenever first_wave or the wave table ever
+#                                   selects "pulse".
+#
+#   WAVE names (combine with +): tri saw pulse noise, or "hold" (WAVE_HOLD --
+#   keep whatever waveform is already set, change only the note).
+#   FILTER mode names (combine with +): lp bp hp.
+#
+#   Wave table (one row = one frame; there is no duration field, unlike pulse/
+#   filter -- repeat a row with x<N> to hold a note longer):
+#     wave
+#         WAVE NOTE_OFFSET [xN]     NOTE_OFFSET is semitones relative to the
+#                                    played note (arpeggios); xN repeats this
+#                                    row N times (default x1).
+#     wave_loop N                   row index to jump back to at the end of the
+#                                    table; omit to hold the last row forever.
+#
+#   Pulse sweep (a per-frame delta held for `duration` frames before the next
+#   row; same shape reused for the filter sweep below):
+#     pulse
+#         DELTA DURATION
+#     pulse_loop N
+#
+#   Filter sweep -- the header line also turns on uses_filter and sets the
+#   static cutoff/resonance the sweep starts from:
+#     filter MODE cutoff=N resonance=N
+#         DELTA DURATION
+#     filter_loop N
+
+instrument ARP_LEAD
+    ad 1 6
+    sr 10 5
+    first_wave saw
+    wave
+        saw 0  x2
+        saw 4  x2
+        saw 7  x2
+        saw 12 x2
+    wave_loop 0
+end
+
+instrument PWM_PLUCK
+    ad 0 4
+    sr 4 3
+    first_wave pulse
+    gate_off 45
+    pulse_init 200
+    pulse
+        90 32
+        45 4
+        20 2
+        8  2
+        0  250
+    pulse_loop 4
+end
+
+instrument FILTER_PAD
+    ad 9 9
+    sr 12 10
+    first_wave saw+pulse
+    vibrato 15 40 20
+    pulse_init 2048
+    filter lp cutoff=200 resonance=8
+        30 60
+        0  250
+    filter_loop 1
+end
+
+instrument VIBRATO_LEAD
+    ad 3 7
+    sr 11 8
+    first_wave saw
+    vibrato 40 110 15
+end

@@ -1,0 +1,11 @@
+# Third-party sources, fetched not vendored (see fetch_resid.sh for why).
+resid/
+
+# Build products and renders.
+resid_render
+resid_dump
+resid_probe
+out/
+
+# numpy venv (requirements.txt is committed).
+.venv/
