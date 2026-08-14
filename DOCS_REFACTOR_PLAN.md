@@ -44,8 +44,55 @@ are enough to act on without it.
         block comments/docstrings) to confirm no real code was touched —
         all clean.
 - [ ] **Phase 2** — section reordering across the six `module_*.md` docs
-  - [ ] Design canonical section order (propose before applying)
-  - [ ] Apply per doc, renumber, fix internal `§N` self-refs
+  - [x] Design canonical section order (proposed, approved — see below)
+  - [ ] Apply per doc: **physically reorder `##` blocks only. Do NOT
+        renumber the "N." prefixes.** Decided with the user after
+        discovering the cascade cost: chip has 151 external source
+        citations + 190 internal self-refs using `§N` numbers, fm has 67 +
+        140. Renumbering now would re-break everything Phase 1 just fixed.
+        Since heading text (including its number) stays exactly as-is and
+        only its physical position in the file moves, **zero citations —
+        internal or external — need touching**: `§5.2` still finds a
+        section literally titled `### 5.2 ...`, wherever it now sits.
+        Numbers will read out of sequence in the file until a later
+        renumbering pass (deliberately deferred — the user may want
+        additional reordering/restructuring first). Confirmed no doc has a
+        manual table-of-contents block that would also need updating.
+  - [ ] Verify: for chip/fm/groovebox, confirm zero citation-fix commits
+        were needed (grep counts before/after should be identical, only
+        line *positions* in the file changed, not the citation text)
+
+### Canonical section order (approved)
+
+Applies to `module_chip.md`, `module_fm.md`, `module_groovebox.md`,
+`module_speech.md`, `module_tracker.md`. `module_subtractive.md` is left
+untouched — it has no Scope/Reuse/Architecture/Decisions/Questions framing
+at all (pure ADSR/LFO/Waveform/SVF reference content), and forcing empty
+headers onto it would invent structure it doesn't have.
+
+1. Prerequisites (if present)
+2. Scope & phasing (or equivalent — "Goals" for tracker, "Scope" for speech)
+3. Reuse inventory (if present)
+4. Architecture integration (including any nested voice-allocation subsection)
+5. DSP detail / New DSP components / Data structures — the technical core.
+   Judge by actual content, not just title (e.g. fm's "§3 The performance
+   question" is budget/cycle-cost analysis despite its name — see bucket 9,
+   not this one). Keep multi-section blocks (chip's Voice model/Filter
+   buses/Frame table VM) together, in original relative order.
+6. MIDI / control mapping (only if it's already a standalone top-level
+   section — don't extract one from embedded content)
+7. Voice allocation (only if standalone — most docs already nest it in #4/#6)
+8. Host tooling
+9. CPU / memory / performance budget
+10. Module-specific extras, kept together in original relative order —
+    Testing, Backporting, Display, Feedback to Existing Engines, Optional
+    Extensions, Sequencer (future), Code layout & integration strategy,
+    Other chips (future), The other option (alternative approach) — whatever
+    a given doc actually has, nothing invented
+11. Settled decisions (chip/speech/tracker only)
+12. Open questions
+13. Recommended build order, then Summary — new-code list if both exist
+14. Glossary (chip only, last — it's an appendix)
 - [ ] **Phase 3** — anonymize "Carl" → "the author"
   - [ ] Folded into each module's Phase 4 pass (see per-module table below)
 - [ ] **Phase 4** — per-module deep validation + comment cleanup (see table)
