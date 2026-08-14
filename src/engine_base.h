@@ -43,10 +43,36 @@ struct EffectParams {
     uint8_t p2;     // CC75: delay time  / reverb damping
 };
 
+// Filter bus model (chip module, chip.md §5/§7.1) — a small typed pool of
+// filters voices can share, sized to bound worst-case CPU load by
+// construction rather than by what the player happens to play. FB_SVF is a
+// plain two-pole filter any engine could reuse; FB_6581/FB_8580 select a
+// chip-specific cutoff LUT plus optional saturation. FB_OFF marks an unbound
+// slot. Not per-voice, not global — a new sibling in the param block.
+enum FilterModel : uint8_t { FB_OFF, FB_6581, FB_8580, FB_SVF };
+
+struct FilterBusParams {
+    uint8_t  model;       // FilterModel
+    uint8_t  mode_mask;   // LP | BP | HP, summed — SID mode-register semantics
+    uint16_t cutoff;      // raw register units, mapped by the model's LUT
+    uint16_t resonance;   // raw register units (SID: 0-15 nibble)
+};
+
+// FILTER_BUS_COUNT is engine-specific, same rule as MAX_VOICES above: each
+// engine.h defines it (0 if unused) before its own #include "engine_base.h".
+// Deliberately not a preprocessor #ifndef default here -- an engine that
+// declares it as a real constexpr (as chip's engine.h does, so it can be
+// used in other constexpr contexts) would have every later use of the name
+// silently macro-replaced by this file's default, a bug that only shows up
+// as an array sized 0 somewhere downstream.
+
 // A complete snapshot of all voice parameters for one render pass.
 template <typename VoiceParams>
 struct VoiceParamBlockT {
     VoiceParams voices[MAX_VOICES];
+    // Zero-size arrays aren't standard C++; engines with FILTER_BUS_COUNT=0
+    // (the default) still get one harmless, never-indexed slot.
+    FilterBusParams bus[FILTER_BUS_COUNT > 0 ? FILTER_BUS_COUNT : 1];
     EffectParams fx;
 };
 
@@ -78,6 +104,9 @@ struct ParamExchangeT {
             // Default: delay selected, ~300 ms (p2=36) / moderate feedback
             // (p1=55), fully dry (mix=0) so it's silent until CC73 opens it.
             blocks[b].fx = { FX_DELAY, 0, 55, 36 };
+            // bus[] is left zero-init: FB_OFF == 0, so every bus starts
+            // unbound — the correct default (chip.md §5.2: "most voices in
+            // real tunes ran unfiltered, because the filter was scarce").
         }
     }
 

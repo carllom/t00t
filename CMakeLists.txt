@@ -49,6 +49,11 @@ endif()
 # fixed, per tracker.md's "Deviation From the Existing Layer Model" — so
 # voice_alloc.cpp is left out of that build entirely (#13). main.cpp's calls
 # into it are compiled out via HAS_VOICE_ALLOC below.
+# The chip module used to be the same case (P0's rig is self-cycling and
+# drives its voices directly, and P1-P3's MIDI controller used a static
+# channel->voice map), but chip.md §8 always reused voice_alloc.* unmodified
+# and only deferred going dynamic to P4 -- now built, so chip links it in
+# like every other engine.
 set(ENGINE_VOICE_ALLOC src/voice_alloc.cpp)
 if(T00T_ENGINE STREQUAL "tracker")
     set(ENGINE_VOICE_ALLOC "")
@@ -84,6 +89,18 @@ add_executable(t00t
 # The selected engine directory is on the include path so `#include "engine.h"`
 # (and its preset/kit headers) resolve to that engine's copy.
 target_include_directories(t00t PRIVATE src src/midi src/wslcd src/engines/${T00T_ENGINE})
+
+# Chip-module F0 rig levers (src/engines/chip/rig.h). Each is a separate build
+# because the value being measured is cycles per frame and a runtime switch
+# would put a branch inside the loop under test. Passed through from the
+# Makefile every configure, so nothing gets stuck in the CMake cache.
+foreach(_rig CHIP_RIG_VOICES CHIP_RIG_BUSES CHIP_RIG_FILTERED CHIP_RIG_OVERSAMPLE
+             CHIP_RIG_SAT CHIP_RIG_SUBBLOCK CHIP_RIG_MOD CHIP_WAVE_DAC
+             CHIP_RIG_FX CHIP_RIG_SPEAKER)
+    if(DEFINED ${_rig} AND NOT ${_rig} STREQUAL "default")
+        target_compile_definitions(t00t PRIVATE ${_rig}=${${_rig}})
+    endif()
+endforeach()
 
 # Optional MIDI transport overrides. Each may be 0, 1, or unset/"default"
 # (board header decides). Passed through from the Makefile every configure,
@@ -134,6 +151,11 @@ endif()
 # succeeds (FM_TEST_PATCH only) when nobody has generated it locally yet.
 if(EXISTS ${CMAKE_CURRENT_LIST_DIR}/src/engines/fm/patches.h)
     target_compile_definitions(t00t PRIVATE T00T_FM_HAS_PATCHES=1)
+endif()
+
+# Chip P0 rig override (chip engine only, see src/engines/chip/audio_engine.cpp).
+if(DEFINED CHIP_PROFILE AND NOT CHIP_PROFILE STREQUAL "0")
+    target_compile_definitions(t00t PRIVATE T00T_CHIP_PROFILE=1)
 endif()
 
 # See ENGINE_VOICE_ALLOC above — tells main.cpp to skip the voice_alloc calls

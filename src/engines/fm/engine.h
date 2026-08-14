@@ -13,6 +13,7 @@
 // 100.05 c/f/voice (kernel only) and *confirmed* 16 rather than raising it
 // -- see fm.md §3.4. Only this engine -- the other four are untouched.
 static constexpr uint32_t MAX_VOICES = 16;
+static constexpr uint32_t FILTER_BUS_COUNT = 0;   // chip module only (chip.md §5)
 
 #include "engine_base.h"
 
