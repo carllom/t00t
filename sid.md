@@ -8,14 +8,18 @@ It is **not** a SID player and **not** a `.sid` file emulator. It is a synth who
 voices sound like SID voices and whose instruments are expressive in the way SID
 instruments were expressive — via a per-frame table VM, not via LFOs.
 
-Status: **P0 closed, P1 and P2 built.** P0's CPU budget in §9 is real
+Status: **P0 closed, P1/P2/P3 built.** P0's CPU budget in §9 is real
 breadboard_rp2350 numbers, not static estimates (§14a); target configuration
 settled at **20 voices, 4 filter buses**. P1's engine skeleton is in
 `engines/chip/`, and both halves of §11.1's validation (the `CHIP_STRICT`
 spectral harness and the exact control-plane diff, both missing until now
 despite §14a's earlier claim otherwise) are built and passing — see §14b. P2
 adds the filter buses themselves: binding (§5.2), degrade-to-unfiltered, and
-the per-bus idle skip §5.2 flagged as a P2 TODO — see §14c.
+the per-bus idle skip §5.2 flagged as a P2 TODO — see §14c. P3 adds the frame
+table VM (§6) — wave/pulse/filter tables, vibrato, gate-off timer — and
+resolves open question 1 — see §14d. **None of P1/P2/P3 have been
+re-measured or listened to on real hardware yet**; every number since §14a is
+still the last hardware-verified state.
 
 ---
 
@@ -26,7 +30,7 @@ the per-bus idle skip §5.2 flagged as a P2 TODO — see §14c.
 | **P0** | **Measurement gate.** Primitives built standalone + host harness; measure per-voice cost, filtered-voice cost *including bus round trip*, and sync at 1× vs 2× oversampling. No engine, no VM. *(Closed — §14a. Hardware measured on breadboard_rp2350; 20 voices / 4 buses confirmed at 86.6% worst-case load.)* |
 | **P1** | Engine skeleton: `engines/chip/`, `VoiceType` dispatch, static MIDI-channel→voice map, register-stream playback path. Prove a SID voice sounds right against reSID. *(Built — §14b. Device engine, `CHIP_STRICT` spectral harness, and the exact control-plane diff (`sid_ctl_diff.py`) all in and passing.)* |
 | **P2** | Filter buses + 6581 model (cutoff LUT + saturation). Bus binding, degrade-to-unfiltered. *(Built — §14c.)* |
-| **P3** | Frame table VM on Core 1: wave/pulse/filter tables, vibrato, arpeggio, hard restart, gate-off timer. This is where instruments become expressive. |
+| **P3** | Frame table VM on Core 1: wave/pulse/filter tables, vibrato, arpeggio, hard restart, gate-off timer. This is where instruments become expressive. *(Built — §14d. Not yet heard on hardware.)* |
 | **P4** | Instrument import: GoatTracker `.ins` host converter; hand-authored text format → header. Dynamic voice allocation. |
 | **P5** | Speaker simulation output stage (§10). LCD UI. |
 | **P6** | 8580 model (table swap). Combined-waveform LUTs. |
@@ -1113,12 +1117,250 @@ dynamic. Worth a bench check before P3 builds further on top, the same
 
 ---
 
+## 14d. P3 results
+
+### 14d.1 Format decisions not pinned down by §6 itself
+
+§6 describes the instrument model conceptually ("ADSR + vibrato + three
+per-frame tables") without a byte-exact row format, so `instrument.h`
+(`engines/chip/`) settles the gaps:
+
+- **Wave-table `note` is relative, not absolute.** §6 says "note abs/rel"
+  without picking one; every table-model editor's arpeggio row actually is
+  relative, so that is what got built. Absolute-note rows are not
+  implemented.
+- **Loop semantics**: `loop >= len` holds the last row forever instead of
+  wrapping (GoatTracker's convention for a non-looping table); `loop < len`
+  jumps back there.
+- **Pulse and filter tables share one row shape** (`SweepRow`: a per-frame
+  delta held for `duration` frames) since both are ramps with identical
+  stepping logic, just different targets.
+- **`hard_restart`** exists in `Instrument` for P4 `.ins`-import format
+  completeness only. It is never read: §4.3 already settled t00t always
+  hard-restarting instantly, so an imported value carrying the 6581 delay
+  bug's timing simply lands on the fast path, same as that section says.
+
+### 14d.2 Not wired: sync/ring toggles, `mod_inc` sweeps
+
+§4.4's per-voice sub-oscillator (`mod_acc`/`mod_inc`/`mod_mode`) was never
+added to the real engine's per-voice state at P1 or P2 -- only the P0 rig and
+the `CHIP_STRICT` harness's adjacency topology ever used it.
+`WaveRow.flags`' two bits (`WAVE_FLAG_SYNC`/`WAVE_FLAG_RING`) are reserved in
+the format but not read by `vm_frame_tick()`, and `mod_inc` sweeps aren't
+built at all. Wiring the sub-oscillator into the real engine is real work in
+its own right -- sync_reset/ring_msb_flip stay `0` at every `SidVoice::tick()`
+call site, same as P1/P2. Half-wiring "sync toggle" without an oscillator
+underneath it to toggle would be a no-op that looks implemented; left honest
+instead.
+
+### 14d.3 Frequency composition: ratios on the register, not a note recompute
+
+The wave table's arpeggio offset and vibrato both apply as multiplicative/
+additive adjustments to the SID frequency *register* Core 0 already computed
+(bend included), rather than Core 1 recomputing Hz from a raw note number.
+A 49-entry Q16 semitone-ratio table (`-24..+24`, `semitone_ratio_q16`,
+computed once at boot the same way `env_sid_make_rates` is) handles the
+arpeggio; vibrato is a frame-stepped triangle LFO added as a raw register
+delta. Two consequences of this choice, both deliberate:
+
+- **Pitch bend composes for free.** Whatever `bend_ratio` Core 0 already
+  baked into `p.freq` survives arpeggio and vibrato untouched, since both
+  are just further multiplies/adds on the same register -- no separate bend
+  handling needed on Core 1.
+- **Vibrato depth is not calibrated to cents or semitones.** It is a raw
+  register-wobble scale (0-255) with an arbitrary shift constant. This is a
+  by-ear tuning item, explicitly not a correctness one -- flagged here so it
+  isn't mistaken for a bug when it inevitably sounds too subtle or too
+  seasick on first listen.
+
+Frame-stepped, not smoothed, on purpose: §6's "the 50 Hz steppiness is not a
+limitation to smooth over... the quantisation is the sound" applies to
+vibrato exactly as much as to the wave/pulse/filter tables it already
+governs. A continuously-interpolated vibrato would be a different,
+un-asked-for design.
+
+### 14d.4 `FilterBusParams` goes unused by chip's own rendering
+
+P2 built `vp.bus[]` (`engine_base.h`, §7.1) as the live channel for a bus's
+cutoff/resonance/mode. P3 makes it redundant for chip specifically:
+`INSTRUMENTS[]` is `const` data compiled into flash and equally reachable
+from both cores, so once a voice carries an `instrument` index there is
+nothing left for Core 0 to push through `vp.bus[]` that Core 1 doesn't
+already have locally. `audio_engine.cpp` now reads a bound bus's tonal
+parameters directly from the *feeding* voice's own instrument
+(`bus_feeder[b]`, tracked in the same per-sub-block voice scan that already
+computes `bus_hits[b]`) -- valid because §5.2 binding is 1:1 (a channel
+shares a bus only with its own repeated notes, never with a different
+channel), so "which instrument feeds this bus" is never ambiguous.
+`midi_controller.cpp`'s `bind_filter()` is consequently routing-only now: it
+assigns `filter_bus` and tracks ownership, and no longer writes
+cutoff/resonance/mode anywhere. `FilterBusParams` stays in `engine_base.h`
+for any engine that does want a live Core-0-set bus preset -- chip just
+isn't one of them any more.
+
+### 14d.5 Example instruments, and what's still missing
+
+Four hand-authored instruments (`instruments.h`) exercise the documented
+feature set one at a time -- arpeggio, PWM sweep + gate-off timer, filter
+sweep + gentle vibrato, and prominent delayed vibrato alone -- so a wrong
+table shows up as one wrong instrument, not a wrong chord. Selected per
+channel by Program Change (real per-channel MIDI semantics: each channel
+keeps its own program) or CC16 (the BeatStep-Pro-safe alternative, same
+banding `CC_FX_TYPE` already uses), replacing P1's single fixed patch and
+P2's manual filter CCs.
+
+**Untested at write time -- first by-ear pass already found two real
+issues.** Everything in this section was logic-reviewed and disassembly-
+checked (struct sizes match expected layout, no repeat of §14c.1's zero-size-
+array class of bug) but not heard, before it was heard:
+
+1. **`ARP_LEAD`'s arpeggio was far too fast.** Wave-table rows have no
+   duration field (unlike pulse/filter's `SweepRow`) -- one row is one
+   frame, so the original 4-row table (one row per note) cycled at
+   50/4 = 12.5 Hz, 20 ms/note. Reported as the instruments sounding "rough"
+   and "grainy." Fixed by repeating each note's row 6x (120 ms/note,
+   480 ms/cycle, ~2.1 Hz) -- the standard tracker convention for "hold" in a
+   1-frame-per-row table, an authoring fix, not a VM one.
+2. **Vibrato depth was miscalibrated by ~4 bits, not just "uncalibrated."**
+   The `>>8` shift this section already flagged as a by-ear item put
+   `FILTER_PAD`'s depth 15 at ~22% frequency deviation and `VIBRATO_LEAD`'s
+   depth 40 at ~58% -- a siren, not vibrato, and the more likely dominant
+   cause of "rough/grainy" on the instruments that have no arpeggio at all
+   to blame instead (`ins.vibrato_depth`'s own comment predicted "too subtle
+   or too seasick," not that it would be off by an order of magnitude).
+   Changed to `>>12`: depth 15/40 now land around 1.3%/3.6%, a reasonable
+   first guess, still not a calibrated one.
+
+Both fixes above were logic-only corrections to already-identified by-ear
+tuning items. The next report was a real bug in the mechanism itself, not a
+tuning item: `ARP_LEAD`'s notes sounded "too close together in pitch" (cycle
+timing confirmed correct) and the waveform sounded "really weird."
+
+3. **`osc.inc` was being stomped back to the raw base pitch every buffer.**
+   The per-buffer param-apply loop unconditionally ran
+   `voice[v].osc.inc = sid_freq_to_inc(p.freq, acc_scale_g)` -- every ~5.8 ms
+   (`SAMPLES_PER_BUFFER`/`SAMPLE_RATE`), regardless of whether a frame tick
+   had just run `vm_frame_tick()` and set `osc.inc` to include the arpeggio
+   offset (or vibrato). A ~882-sample frame period spans ~3.4 256-sample
+   buffers, so the modulated pitch only survived until the *next* buffer --
+   roughly 1 buffer in 3.4, the rest snapped back to root. That is a
+   buffer-rate (172 Hz, §6.1's own "Core 1 reads `ParamExchange` at 172 Hz"
+   figure) alternation between the true pitch and the unmodulated one: never
+   cleanly sustaining the interval ("too close together"), and a sawtooth's
+   fundamental being yanked at 172 Hz produces real FM-sideband-like buzz
+   ("weird waveform"). Verified independently of the render loop first, not
+   just reasoned about: a host-side simulation of the ratio math and of a
+   full 24-tick cycle both confirmed root/+4/+7/+12 land exactly on notes
+   60/64/67/72 in isolation, which is what pointed at *use* of `osc.inc`
+   rather than its *computation* as the actual bug.
+
+   Consistent with why `PWM_PLUCK`/`FILTER_PAD` read as fine and `ARP_LEAD`
+   didn't: every non-arpeggio, non-vibrato instrument's "modulated" pitch
+   *is* the base pitch, so stomping back to base is a no-op for them; a ~1.3%
+   vibrato deviation snapping in and out is far below the threshold an
+   octave-spanning arpeggio blows straight through.
+
+   Fixed by moving the initial `osc.inc` assignment into the trigger-change
+   block (sets the correct raw pitch once, immediately, before the first
+   frame tick can) and removing the unconditional per-buffer reassignment --
+   `vm_frame_tick()` is now the sole ongoing authority on `osc.inc` for a
+   held note's lifetime, matching the comment that was already there
+   claiming exactly that and not, until this fix, actually true.
+
+4. **Vibrato onset jumped to the bottom of its swing instead of easing out
+   from zero, and both instruments' `vibrato_speed` were uncalibrated by
+   roughly the same order of magnitude as the original depth constant.**
+   `vib_phase` was reset to 0 at trigger, but the triangle mapping has
+   `tri(phase=0) = -16384` -- the *trough*, not the center -- so the instant
+   a delayed vibrato started, it snapped straight to the bottom of its range
+   rather than rising smoothly from no deviation. Fixed by resetting to
+   `16384` instead, where `tri = 0`. Separately, `VIBRATO_LEAD`'s
+   `vibrato_speed = 10` produced a ~2.0 s cycle (reported as "quite slow,
+   perhaps over a second per cycle" -- exactly what the math gives) against
+   an ordinary vocal/instrumental vibrato target of 4-7 Hz; `FILTER_PAD`'s
+   `speed = 6` was worse, ~3.4 s/cycle. Neither value had ever been checked
+   against a real target rate. Retuned to 110 (~5.4 Hz, `VIBRATO_LEAD`) and
+   40 (~2.0 Hz, a deliberately gentler pad wobble, `FILTER_PAD`) -- the phase
+   scale itself (`vibrato_speed * 64` per frame) already covers a reasonable
+   0-12.5 Hz range at the full 0-255 input; the bug was the two chosen
+   values, not the formula.
+
+5. **`PWM_PLUCK`'s sweep "jumps to another value" after it finishes -- but
+   the value itself doesn't jump.** A host-side simulation of the exact
+   `SweepRow` state machine confirmed the pulse width lands precisely on
+   3600 and the following hold row starts from exactly 3600 -- no value
+   discontinuity anywhere. What *is* discontinuous is the *rate of change*:
+   a flat delta of +90/frame running straight into a delta of 0/frame is a
+   kink in the derivative, and the ear hears that as a "jump" even though
+   the number itself never does -- the classic reason a swept parameter
+   stopping cold reads as a click. Fixed by tapering the last few rows
+   (90 -> 45 -> 20 -> 8 -> 0 per frame) instead of a hard stop, same 40-frame
+   total. Separately noticed while re-deriving the table: `gate_off_timer`
+   (30 frames) was firing *during* the original 40-frame sweep, cutting the
+   pluck's own signature effect short before it finished -- bumped to 45 so
+   release only starts once the (now-tapered) sweep has settled.
+
+6. **`gate_off_timer` caused a spurious full re-attack, not a graceful
+   auto-release -- the real cause of "volume jumps up again and tapers
+   down."** `vm_frame_tick()`'s timer calls `env.gate_off()` directly, which
+   clears the envelope's own internal `gate` flag. But the per-buffer loop
+   unconditionally ran `if (p.gate) env.gate_on()` every buffer, and `p.gate`
+   -- the *MIDI* gate, tied to whether the key is still physically held --
+   never went false. So the very next buffer saw `p.gate == true`, found the
+   envelope no longer gated, and re-triggered a full ATTACK: one spurious
+   re-attack immediately after every timed auto-release, same envelope
+   shape as the original note-on (confirmed by ear: "it looked exactly the
+   same shape as the retrigger"). Fixed with a `gate_off_fired` guard --
+   once the timer has fired, the per-buffer loop stops reasserting
+   `gate_on()` for that voice until a genuine new trigger (`vm_reset()`)
+   clears the flag again.
+
+   This fully accounts for what was heard; a second, independent
+   observation from the same report -- "at start the volume is high and
+   tapers down" -- turned out on closer listening to be the ordinary attack
+   phase, not a separate artifact (the same envelope shape as the confirmed
+   re-attack, which is exactly why it looked identical).
+7. **`pulse_cur` started at the degenerate `pw = 0`, a real issue on its own
+   merit even though it wasn't the cause of finding 6.** `sid_pulse()`'s
+   `top12 >= pw` is true for *every* `top12` when `pw = 0`, so a pure pulse
+   waveform outputs a constant, non-oscillating level -- not audio -- until
+   the first frame tick corrects it. Added an explicit `pulse_init` field
+   (`instrument.h`, mirroring `filter_cutoff_init`'s existing pattern) so
+   `vm_reset()` seeds a real starting pulse width instead of the degenerate
+   default. Also caught in passing: `FILTER_PAD`'s waveform is `0x6`
+   (SAW|PULSE combined, §4.2's AND-combination), so its *static* pulse width
+   matters even with no sweep table -- at the old implicit `pw=0` its PULSE
+   component was a permanent no-op and the "combined" waveform was silently
+   just SAW. Both now seeded to real values (200 and 2048 respectively)
+   instead of 0.
+
+**The streak breaks here, which is itself useful signal.** A follow-up
+question -- "is PWM_PLUCK a 2-voice instrument?" -- turned out to be the
+pulse sweep's own shifting harmonics (a single oscillator's PWM sweep is
+well known for a thickened, near-chorus quality on its own) mistaken for a
+second voice. Not a bug: this engine has no unison/layering mechanism at
+all, every instrument is strictly one `SidVoice` (§4.4's "every note
+occupies exactly one voice"). Recorded so the tally below doesn't read as
+"every report is a bug" pattern-matching -- seven real fixes and one correct
+"working as intended" out of eight questions is what a well-calibrated
+by-ear pass actually looks like.
+
+Seven for seven bugs so far: every reported "sounds wrong" has been a real,
+fixable issue, not an expectation mismatch -- worth keeping that base rate in
+mind for what's still unheard. The frame VM's timing, hard-restart
+interaction, and the sub-block-quantised tick's own audibility are still
+owed a real listen beyond what these seven findings covered.
+
+---
+
 ## 15. Open questions
 
-1. **Sub-block size vs. frame tick.** Speech cuts sub-blocks per voice; the frame
-   tick is global here. Does the VM tick get its own cut point, or ride the
-   existing `SUBBLOCK` boundary with ≤1.45 ms of quantisation? (1.45 ms on a 20 ms
-   frame is 7% — likely fine, unlike Core 0's 29%. Confirm at P3.)
+1. ~~**Sub-block size vs. frame tick.** Speech cuts sub-blocks per voice; the
+   frame tick is global here. Does the VM tick get its own cut point, or ride
+   the existing `SUBBLOCK` boundary with ≤1.45 ms of quantisation? (1.45 ms on
+   a 20 ms frame is 7% — likely fine, unlike Core 0's 29%. Confirm at P3.)~~
+   **Resolved (§14d): rides `CHIP_SUBBLOCK`.** Built as the doc's own lean
+   predicted -- no separate sample-exact cut point. Not yet confirmed by ear.
 2. **Multispeed default.** 50 Hz PAL only at v1, or 2× from the start? Affects the
    instrument data format, so it wants deciding before assets are generated.
 3. **Telemetry struct contents** for the LCD — how much VM state does the display
