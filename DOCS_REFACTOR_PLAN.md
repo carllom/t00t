@@ -43,24 +43,33 @@ are enough to act on without it.
         non-comment-marker-prefixed diff lines (continuation lines inside
         block comments/docstrings) to confirm no real code was touched —
         all clean.
-- [ ] **Phase 2** — section reordering across the six `module_*.md` docs
+- [x] **Phase 2** — section reordering across the six `module_*.md` docs
+      (commit `96fa4ed`)
   - [x] Design canonical section order (proposed, approved — see below)
-  - [ ] Apply per doc: **physically reorder `##` blocks only. Do NOT
-        renumber the "N." prefixes.** Decided with the user after
-        discovering the cascade cost: chip has 151 external source
-        citations + 190 internal self-refs using `§N` numbers, fm has 67 +
-        140. Renumbering now would re-break everything Phase 1 just fixed.
-        Since heading text (including its number) stays exactly as-is and
-        only its physical position in the file moves, **zero citations —
-        internal or external — need touching**: `§5.2` still finds a
-        section literally titled `### 5.2 ...`, wherever it now sits.
-        Numbers will read out of sequence in the file until a later
-        renumbering pass (deliberately deferred — the user may want
-        additional reordering/restructuring first). Confirmed no doc has a
-        manual table-of-contents block that would also need updating.
-  - [ ] Verify: for chip/fm/groovebox, confirm zero citation-fix commits
-        were needed (grep counts before/after should be identical, only
-        line *positions* in the file changed, not the citation text)
+  - [x] Applied per doc via 5 parallel agents (chip/fm/groovebox/speech/
+        tracker; subtractive untouched by design). **Physically reordered
+        `##` blocks only — did NOT renumber the "N." prefixes**, per the
+        decision below.
+  - [x] Verified: sorted-line diff empty for all 5 files (pure permutation,
+        zero content added/removed/altered) and line counts identical to
+        the pre-reorder baseline (chip 1012, fm 1067, groovebox 562,
+        speech 910, tracker 1020). No citation-fix commit was needed —
+        `git diff --stat` for the reorder commit shows equal insertions/
+        deletions per file (pure line-position churn), confirming zero
+        citation text was touched.
+
+  **Decision recorded:** chip has 151 external source citations + 190
+  internal self-refs using `§N` numbers, fm has 67 + 140. Renumbering now
+  would re-break everything Phase 1 just fixed. Since heading text
+  (including its number) stayed exactly as-is and only physical position
+  moved, `§5.2` still finds a section literally titled `### 5.2 ...`,
+  wherever it now sits. **Numbers now read out of sequence within each
+  reordered doc** (e.g. `module_chip.md` goes §1, §2, §3, §7, §4, §5, §6...)
+  — deliberate, deferred to a later, separately-scoped renumbering pass
+  (the user may want additional reordering/restructuring first, so
+  renumbering happens once, at the end, not after every future reshuffle).
+  No doc had a manual table-of-contents block that would also have needed
+  updating.
 
 ### Canonical section order (approved)
 
@@ -342,7 +351,15 @@ to fix.
   this tracking file created (Phase 0). Phase 1 complete: 3 doc-internal
   fixes (commit `50ab737`) + 463 source-comment reference fixes across 103
   files via 5 parallel agents (commit `69e98f7`). Verification sweep clean.
-  Next: Phase 2 (section reordering) or Phase 4 (per-module validation +
-  comment cleanup) — check with the user which to pick up next; both are
-  substantial, and Phase 3 (anonymize) is folded into Phase 4's per-module
-  passes rather than run standalone.
+  Phase 2 complete: canonical order proposed and approved; user caught that
+  renumbering would re-break Phase 1's 463 fixes (151+190 chip, 67+140 fm
+  citations/self-refs) and decided to reorder without renumbering, deferring
+  renumbering to a later pass (recorded above). Applied via 5 parallel
+  agents (commit `96fa4ed`), verified via sorted-line diff (empty for all 5
+  files) and line-count match. Next: Phase 4 (per-module deep validation +
+  comment cleanup, Phase 3's anonymization folded in per-module) — check
+  with the user before starting, it's the largest remaining phase and will
+  likely span multiple sessions. A future session should also decide when
+  to do the deferred renumbering pass for chip/fm (could be its own step
+  before Phase 5, or folded into chip/fm's Phase 4 pass as originally
+  discussed).
