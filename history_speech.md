@@ -65,7 +65,7 @@ entries due to unrelated work landed since — not this change).
 ## Speech Engine P2 Profiling (#31)
 
 Speech's measurement gate — the direct analogue of the tracker's #16 — deciding
-`MAX_SPEECH_VOICES` from a real profiling-pin reading of the full tract (#28 cascade
+`MAX_VOICES` from a real profiling-pin reading of the full tract (#28 cascade
 + #29 fricative/nasal branches) instead of `module_speech.md`'s "do not trust these
 numbers" budget-table estimate.
 
@@ -169,7 +169,7 @@ single-precision float work with no vectorization, a handful of extra multiply/
 store instructions per sample is a plausible source for the remaining gap, sized
 about right for what it costs.
 
-### Decision: `MAX_SPEECH_VOICES = 8`
+### Decision: `MAX_VOICES = 8`
 
 Landed in `src/engines/speech/engine.h` (was 4 since #27).
 
@@ -190,6 +190,29 @@ Landed in `src/engines/speech/engine.h` (was 4 since #27).
   coefficient computation" but hasn't been measured yet.
 
 `module_speech.md`'s former "voice count" open question is struck and moved into
-Settled Decisions (as the `MAX_SPEECH_VOICES = 8` bullet above) — its numbered
+Settled Decisions (as the `MAX_VOICES = 8` bullet above) — its numbered
 position in the Open Questions list has since shifted as other items were added
 and resolved, so it's no longer "Open Question 2" there.
+
+## Speech Engine — Display + Per-Voice Telemetry (#37)
+
+Closes `module_speech.md`'s former "what does the LCD show for a speech module"
+open question with the answer the doc itself predicted: current phoneme plus a
+formant-space plot.
+
+`display.cpp` replaces the #27/#28-era single PHON row (last note-on's channel
+program only) with a per-voice phoneme grid (one cell per voice, `MAX_VOICES`
+up to 8) and an F1/F2 formant-space plot, oriented like a conventional IPA
+vowel chart (F1 increasing downward, F2 increasing leftward). Both read
+`SpeechVoiceUiState` (`engine.h`), published once per render buffer by
+`audio_engine.cpp` from each voice's live, ramped `SpeechVoice::F[0]`/`F[1]`
+— the same values the tract renders from, not the phoneme's static target, so
+a plotted dot moves continuously as a segment glides. Redraw is ~10 Hz
+(Core 0, `display_task()`), well below segment rate and with no effect on
+Core 1's render deadline.
+
+**Hardware-verified on real `breadboard_rp2350`:** 8 simultaneously-held
+phrase voices plus reverb hold steady at 31% Core 1 load — consistent with
+#31's flat ~93.5 c/f/voice (22% for 8 voices) plus reverb's own measured
+overhead, with no additional cost from the display telemetry itself (it reads
+already-published per-voice state on Core 0, off the audio path entirely).

@@ -3,20 +3,19 @@
 #include "tract.h"
 #include <cstdint>
 
-// Packed, flash-resident phoneme table entry (#32, module_speech.md "Host Tooling").
-// Byte-quantized so a 64-phoneme table stays negligible in flash: F is Hz
+// Packed, flash-resident phoneme table entry (module_speech.md "Host Tooling").
+// Byte-quantized so a 48-phoneme table stays negligible in flash: F is Hz
 // (fits every formant this engine will ever target), B/fric_B/nasal_B are
 // Hz/4 (0-1020 Hz representable in a uint8_t -- the bandwidths this engine
 // uses sit in the tens-to-low-hundreds range, comfortably inside that), and
 // av/af/an are 0-255 mapping onto FormantTarget's 0.0-1.0 excitation mix.
-// duration_ms and flags are read by nothing yet (P3's segment sequencer,
-// unbuilt) -- reserved the same way #30 reserved the SUSTAINABLE bit ahead
-// of a CSV existing at all.
+// duration_ms and flags are read by sequencer.h's segment clock
+// (speech_seg_duration_samples(), speech_seg_load()), not by phoneme_unpack()
+// below -- they're sequencer data, not per-sample DSP state.
 //
 // This is module_speech.md's "Generated data" PhonemeDef struct, extended with
-// fric_F/fric_B/nasal_F/nasal_B: that struct predates #29's parallel
-// fricative/nasal branches, which need a per-phoneme fricative/nasal pole
-// (e.g. /s/ vs /sh/'s fric_F is their entire distinguishing feature) that
+// fric_F/fric_B/nasal_F/nasal_B for the parallel fricative/nasal branches
+// (e.g. /s/ vs /sh/'s fric_F is their entire distinguishing feature), which
 // the original 16-byte sketch had no field for. Still negligible in flash
 // (sizeof(PhonemeDef) below) at any phoneme count this engine will reach.
 //
@@ -34,20 +33,20 @@ struct PhonemeDef {
     uint8_t  flags;
 };
 
-// module_speech.md "Plosives" / "Singing mode (#30 decision)": bit meanings fixed
-// by the doc, not by this generator -- speechgen.py validates CSV flag
-// names against these same constants so a typo fails the build instead of
-// silently clearing a bit.
+// module_speech.md "Plosives" / "Singing mode": bit meanings fixed by the doc,
+// not by this generator -- speechgen.py validates CSV flag names against
+// these same constants so a typo fails the build instead of silently
+// clearing a bit.
 static constexpr uint8_t PHONEME_FLAG_PLOSIVE         = 0x01;
 static constexpr uint8_t PHONEME_FLAG_STOP_CLOSURE     = 0x02;
 static constexpr uint8_t PHONEME_FLAG_TRANSITION_FAST  = 0x04;
-static constexpr uint8_t PHONEME_FLAG_SUSTAINABLE      = 0x08;  // #30, unread until P4
+static constexpr uint8_t PHONEME_FLAG_SUSTAINABLE      = 0x08;  // reserved, still unread -- see module_speech.md "Singing mode"
 
 // Expands a packed table entry into the float FormantTarget tract_retrigger()/
 // tract_set_target() actually consume. Every PHONEME_TARGETS[] access needs
 // this -- the packed form only exists to be small in flash, nothing renders
 // from it directly. duration_ms/flags aren't part of a render target (they're
-// P3 sequencer data, not per-sample DSP state) so they don't appear in the
+// sequencer data, read by sequencer.h instead) so they don't appear in the
 // unpacked result; read them straight off the PhonemeDef if you need them.
 inline FormantTarget phoneme_unpack(const PhonemeDef &d) {
     FormantTarget t;
