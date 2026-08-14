@@ -347,94 +347,6 @@ than per sample.
 
 ---
 
-## Performance Budget
-
-Measured baseline from `history_subtractive.md`: Voice A (Fairlight 8-bit sample, linear
-interpolated) = **5.9%**, i.e. ~200 cycles/frame. **32 of those is 190% of
-Core 1** — this is the trap.
-
-The 200 cycles are not sample interpolation. They are the surrounding per-sample
-machinery: a float ADSR, a float-phase LFO with sine-table lookup, the
-four-destination modulation chain, and `osc_sample_play()` dispatch. **A tracker
-voice needs none of it per sample** — XM envelopes, vibrato, tremolo, autovibrato
-and volume slides all update per tick.
-
-Target for a stripped tracker voice: **25–40 cycles/frame** = 0.7–1.2% each, so
-**32 channels ≈ 25–40% of Core 1**, leaving room for a limiter or a global
-stereo effect send.
-
-Verify with the existing profiling pin before writing any XM logic.
-
-RP2350 accelerators worth evaluating (measure before committing):
-
-- **M33 DSP extension** — `SMULBB`/`SMLABB`, `SMLAD` for the Q15 mix.
-- **SIO interpolator blend mode** — computes `a + ((b - a) * alpha)` in hardware,
-  which is exactly the lerp. Per-core, so Core 1 owns one outright with no
-  save/restore. Caveat: 8-bit alpha = 256 steps. Inaudible summed across 32
-  voices, but the DSP instructions may already be fast enough that setup
-  overhead isn't worth it.
-
----
-
-## Memory Strategy
-
-SRAM is 520 KB total. After code, stacks, DMA buffers and mixer scratch,
-realistically **350–400 KB for sample data**.
-
-**Sample data must live in SRAM.** Do not mix directly out of XIP: the XIP cache
-is 8 KB, and 32 voices reading scattered addresses at non-integer strides will
-thrash it continuously *and* evict Core 0's code. Applies equally to flash and to
-PSRAM over QMI CS1. Mixer inner loop gets `__not_in_flash_func`.
-
-Baseline v1: **module must fit in SRAM.** Modules are baked into flash as `const`
-data (no SD on `breadboard_rp2350`) and copied to SRAM at song load.
-
-### Dynamic sample loading (phase 2)
-
-Bandwidth check first: QSPI quad at ~75 MHz ≈ 35 MB/s, so a **64 KB sample loads
-in ~2 ms by DMA** while a row at 125 BPM / speed 6 is 120 ms. This ratio collapses
-the design — you need one or two rows of notice, not long-horizon streaming.
-
-Because the song is deterministic, **the schedule is computed on the host, not by
-Core 0 speed-playing at runtime**. Same answer, and offline it unlocks:
-
-- **Belady's MIN eviction** — with the whole future known, evict the sample whose
-  next use is furthest away. Provably optimal; no online heuristic can match it.
-- **Static placement** — variable-size samples in a fixed pool is a fragmentation
-  problem at runtime, but an interval-packing problem offline. Greedy first-fit
-  over liveness intervals. No runtime allocator, no compaction.
-- **Build-time verification** — the converter computes peak working set and
-  rejects modules it cannot schedule, with a reason.
-
-The MCU just executes a load script. Correctness requirements:
-
-- **Liveness, not triggers.** A sample is evictable only when no channel is still
-  *reading* it. Looped sustains with no note-off and long envelope releases hold
-  samples past their last trigger. Easiest place to introduce rare,
-  unreproducible clicks.
-- **Load before evict.** Peak residency is working set *plus* the largest
-  in-flight load.
-- **Seeking**: precompute a required-resident-set manifest per order position.
-  Jump → load set → resume. A full 400 KB reload is ~12 ms.
-
-**What this does not fix:** peak simultaneous working set. A module with 700 KB of
-instruments all live in one pattern is unplayable regardless. The scheme converts
-a hard limit into a soft one. Favourable case: tracker modules have poor
-count-weighted locality (the kick is everywhere) but decent *size*-weighted
-locality — big samples tend to be the localised ones.
-
-### Hardware escape hatch
-
-RP2350 QMI CS1 supports PSRAM; boards like the Pimoroni Pico Plus 2 wire up 8 MB.
-Makes single-module capacity a non-issue and loads faster. Does not remove the
-SRAM working-set architecture (same random-access latency problem), and it is a
-board change from bare `breadboard_rp2350` — a fork, not a drop-in.
-
-If *flash* capacity limits how many modules ship in one firmware, ADPCM in flash
-with decode-on-load gives ~4× without touching the runtime path.
-
----
-
 ## Host Preprocessing
 
 A host-side tool converts `.xm` into a t00t-native binary blob linked as `const`
@@ -598,6 +510,94 @@ implemented from XM/FT2's public, well-documented formulas and sanity-checked
 doubles the frequency) — not verified bit-exact against a real FT2 period
 dump. That precision matters once something plays these increments back (the
 mixer issue), not for a v1 loader.
+
+---
+
+## Performance Budget
+
+Measured baseline from `history_subtractive.md`: Voice A (Fairlight 8-bit sample, linear
+interpolated) = **5.9%**, i.e. ~200 cycles/frame. **32 of those is 190% of
+Core 1** — this is the trap.
+
+The 200 cycles are not sample interpolation. They are the surrounding per-sample
+machinery: a float ADSR, a float-phase LFO with sine-table lookup, the
+four-destination modulation chain, and `osc_sample_play()` dispatch. **A tracker
+voice needs none of it per sample** — XM envelopes, vibrato, tremolo, autovibrato
+and volume slides all update per tick.
+
+Target for a stripped tracker voice: **25–40 cycles/frame** = 0.7–1.2% each, so
+**32 channels ≈ 25–40% of Core 1**, leaving room for a limiter or a global
+stereo effect send.
+
+Verify with the existing profiling pin before writing any XM logic.
+
+RP2350 accelerators worth evaluating (measure before committing):
+
+- **M33 DSP extension** — `SMULBB`/`SMLABB`, `SMLAD` for the Q15 mix.
+- **SIO interpolator blend mode** — computes `a + ((b - a) * alpha)` in hardware,
+  which is exactly the lerp. Per-core, so Core 1 owns one outright with no
+  save/restore. Caveat: 8-bit alpha = 256 steps. Inaudible summed across 32
+  voices, but the DSP instructions may already be fast enough that setup
+  overhead isn't worth it.
+
+---
+
+## Memory Strategy
+
+SRAM is 520 KB total. After code, stacks, DMA buffers and mixer scratch,
+realistically **350–400 KB for sample data**.
+
+**Sample data must live in SRAM.** Do not mix directly out of XIP: the XIP cache
+is 8 KB, and 32 voices reading scattered addresses at non-integer strides will
+thrash it continuously *and* evict Core 0's code. Applies equally to flash and to
+PSRAM over QMI CS1. Mixer inner loop gets `__not_in_flash_func`.
+
+Baseline v1: **module must fit in SRAM.** Modules are baked into flash as `const`
+data (no SD on `breadboard_rp2350`) and copied to SRAM at song load.
+
+### Dynamic sample loading (phase 2)
+
+Bandwidth check first: QSPI quad at ~75 MHz ≈ 35 MB/s, so a **64 KB sample loads
+in ~2 ms by DMA** while a row at 125 BPM / speed 6 is 120 ms. This ratio collapses
+the design — you need one or two rows of notice, not long-horizon streaming.
+
+Because the song is deterministic, **the schedule is computed on the host, not by
+Core 0 speed-playing at runtime**. Same answer, and offline it unlocks:
+
+- **Belady's MIN eviction** — with the whole future known, evict the sample whose
+  next use is furthest away. Provably optimal; no online heuristic can match it.
+- **Static placement** — variable-size samples in a fixed pool is a fragmentation
+  problem at runtime, but an interval-packing problem offline. Greedy first-fit
+  over liveness intervals. No runtime allocator, no compaction.
+- **Build-time verification** — the converter computes peak working set and
+  rejects modules it cannot schedule, with a reason.
+
+The MCU just executes a load script. Correctness requirements:
+
+- **Liveness, not triggers.** A sample is evictable only when no channel is still
+  *reading* it. Looped sustains with no note-off and long envelope releases hold
+  samples past their last trigger. Easiest place to introduce rare,
+  unreproducible clicks.
+- **Load before evict.** Peak residency is working set *plus* the largest
+  in-flight load.
+- **Seeking**: precompute a required-resident-set manifest per order position.
+  Jump → load set → resume. A full 400 KB reload is ~12 ms.
+
+**What this does not fix:** peak simultaneous working set. A module with 700 KB of
+instruments all live in one pattern is unplayable regardless. The scheme converts
+a hard limit into a soft one. Favourable case: tracker modules have poor
+count-weighted locality (the kick is everywhere) but decent *size*-weighted
+locality — big samples tend to be the localised ones.
+
+### Hardware escape hatch
+
+RP2350 QMI CS1 supports PSRAM; boards like the Pimoroni Pico Plus 2 wire up 8 MB.
+Makes single-module capacity a non-issue and loads faster. Does not remove the
+SRAM working-set architecture (same random-access latency problem), and it is a
+board change from bare `breadboard_rp2350` — a fork, not a drop-in.
+
+If *flash* capacity limits how many modules ship in one firmware, ADPCM in flash
+with decode-on-load gives ~4× without touching the runtime path.
 
 ---
 

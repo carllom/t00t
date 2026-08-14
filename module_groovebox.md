@@ -66,6 +66,80 @@ mature sample player. So 909 hats/cymbals are largely done once P0 gives us a
 
 ---
 
+## 5. Architecture integration
+
+### 5.1 Groovebox as a build-time engine variant
+
+Follows `architecture.md`'s **Option A** (compile-time engine selection): a new
+`engines/groovebox/` directory selected by `T00T_ENGINE=groovebox`, defining its
+own `VoiceParams`, `audio_engine_run()`, and preset/kit tables. It **replaces**
+the subtractive engine for that build — no runtime coexistence, matching the
+"synth is *set into* a mode" framing.
+
+> Runtime mode-switch (subtractive ↔ groovebox without reflash) is possible later
+> but costs RAM (both param layouts resident) and a dispatch layer. Not
+> recommended for the first version.
+
+### 5.2 Per-voice `VoiceType` dispatch (contained Option B, *within* this engine)
+
+Unlike the melodic engine (all voices identical, dispatched only by waveform), the
+groovebox is **heterogeneous**: a 303 voice and a snare voice run fundamentally
+different code. So *inside* the groovebox engine, each voice carries a type tag and
+the render loop dispatches per voice:
+
+```cpp
+enum VoiceType : uint8_t {
+    VT_TB303,        // saw/square + ladder LP + dual env + slide/accent
+    VT_DRUM_BD,      // sine + pitch env + amp decay (+ click for 909)
+    VT_DRUM_SNARE,   // 2 tone + noise→BP
+    VT_DRUM_TOM,     // sine/tri + pitch env (lo/mid/hi via tune)
+    VT_DRUM_CLAP,    // noise→BP + clap env
+    VT_DRUM_METAL,   // N-square metal bank → BP/HP (cowbell/hats/cymbal)
+    VT_DRUM_SAMPLE,  // PCM playback (909 hats/cymbals, sample pads)
+    VT_DRUM_RIM,     // short pulse/ring
+};
+
+struct VoiceParams : VoiceNoteBase {   // phase_inc, amplitude, trigger, gate
+    VoiceType type;
+    union {
+        Tb303Params  tb303;
+        BdParams     bd;
+        SnareParams  snare;
+        TomParams    tom;
+        ClapParams   clap;
+        MetalParams  metal;   // N, ratios[], filter, decay
+        SampleParams sample;  // const SampleDef*
+        RimParams    rim;
+    };
+};
+```
+
+The `union` is sized to the largest member (`MetalParams` with its ratio table, or
+just store a pointer to a const ratio set to keep it small). With only 16 voices
+this is a few hundred bytes per param block — negligible.
+
+Render loop:
+
+```
+for each voice v:
+    handle trigger/gate/slide
+    switch (p.type):
+        case VT_TB303:  render_303(v, p);   break;
+        case VT_DRUM_*: render_drum(v, p);  break;
+```
+
+Each `render_*` is a focused inner loop. The compiler keeps them separate and
+optimizes each; no per-sample megaswitch inside the hot path (the switch is once
+per voice per buffer, not per sample).
+
+### 5.3 IPC unchanged
+
+`ParamExchange` mechanism (double-buffer, `commit()`/`active()`, `__sev()`) is
+untouched — only the `VoiceParams` payload type changes, exactly as
+`architecture.md` anticipates. Reverse FIFO active-voice bitmap: unchanged.
+
+---
+
 ## 3. Gap analysis per machine
 
 ### 3.1 TB-303
@@ -233,80 +307,6 @@ stepped amplitude table driving `env_a`. Only the clap voice uses it. Trivial co
 
 ---
 
-## 5. Architecture integration
-
-### 5.1 Groovebox as a build-time engine variant
-
-Follows `architecture.md`'s **Option A** (compile-time engine selection): a new
-`engines/groovebox/` directory selected by `T00T_ENGINE=groovebox`, defining its
-own `VoiceParams`, `audio_engine_run()`, and preset/kit tables. It **replaces**
-the subtractive engine for that build — no runtime coexistence, matching the
-"synth is *set into* a mode" framing.
-
-> Runtime mode-switch (subtractive ↔ groovebox without reflash) is possible later
-> but costs RAM (both param layouts resident) and a dispatch layer. Not
-> recommended for the first version.
-
-### 5.2 Per-voice `VoiceType` dispatch (contained Option B, *within* this engine)
-
-Unlike the melodic engine (all voices identical, dispatched only by waveform), the
-groovebox is **heterogeneous**: a 303 voice and a snare voice run fundamentally
-different code. So *inside* the groovebox engine, each voice carries a type tag and
-the render loop dispatches per voice:
-
-```cpp
-enum VoiceType : uint8_t {
-    VT_TB303,        // saw/square + ladder LP + dual env + slide/accent
-    VT_DRUM_BD,      // sine + pitch env + amp decay (+ click for 909)
-    VT_DRUM_SNARE,   // 2 tone + noise→BP
-    VT_DRUM_TOM,     // sine/tri + pitch env (lo/mid/hi via tune)
-    VT_DRUM_CLAP,    // noise→BP + clap env
-    VT_DRUM_METAL,   // N-square metal bank → BP/HP (cowbell/hats/cymbal)
-    VT_DRUM_SAMPLE,  // PCM playback (909 hats/cymbals, sample pads)
-    VT_DRUM_RIM,     // short pulse/ring
-};
-
-struct VoiceParams : VoiceNoteBase {   // phase_inc, amplitude, trigger, gate
-    VoiceType type;
-    union {
-        Tb303Params  tb303;
-        BdParams     bd;
-        SnareParams  snare;
-        TomParams    tom;
-        ClapParams   clap;
-        MetalParams  metal;   // N, ratios[], filter, decay
-        SampleParams sample;  // const SampleDef*
-        RimParams    rim;
-    };
-};
-```
-
-The `union` is sized to the largest member (`MetalParams` with its ratio table, or
-just store a pointer to a const ratio set to keep it small). With only 16 voices
-this is a few hundred bytes per param block — negligible.
-
-Render loop:
-
-```
-for each voice v:
-    handle trigger/gate/slide
-    switch (p.type):
-        case VT_TB303:  render_303(v, p);   break;
-        case VT_DRUM_*: render_drum(v, p);  break;
-```
-
-Each `render_*` is a focused inner loop. The compiler keeps them separate and
-optimizes each; no per-sample megaswitch inside the hot path (the switch is once
-per voice per buffer, not per sample).
-
-### 5.3 IPC unchanged
-
-`ParamExchange` mechanism (double-buffer, `commit()`/`active()`, `__sev()`) is
-untouched — only the `VoiceParams` payload type changes, exactly as
-`architecture.md` anticipates. Reverse FIFO active-voice bitmap: unchanged.
-
----
-
 ## 6. Voice allocation & control mapping
 
 A drum machine has a **fixed instrument set**, not dynamic polyphony. So in
@@ -404,6 +404,22 @@ design already sketched in `engine.md`.
 
 ---
 
+## 11. Open questions / decisions to make
+
+1. **Ladder filter fidelity vs. cost** — ship Option A (cascaded SVF) for v1, or
+   go straight to the dedicated ladder (Option B)? (Recommend A→B.)
+2. **Mode selection** — compile-time engine variant only (recommended), or invest
+   in runtime subtractive↔groovebox switching?
+3. **Metal bank size** — 6 oscillators (authentic 808) or 4 (cheaper) as default?
+4. **Accent source** — velocity threshold now; dedicated accent flag once the
+   sequencer exists?
+5. **808 vs 909 as separate build kits or one switchable kit** at runtime via a CC
+   / program change?
+6. **Envelope reuse** — extend `Envelope` with a one-shot decay mode (recommended)
+   or add a separate lightweight `DecayEnv` type?
+
+---
+
 ## 10. Recommended build order
 
 1. **P0 skeleton** — `engines/groovebox/`, `VoiceType` + union `VoiceParams`,
@@ -418,22 +434,6 @@ design already sketched in `engine.md`.
    analog voices. Ship 808 + 909 kits.
 6. **Extensions** — 2nd 303 (X1), sample pads (X2) as budget allows.
 7. **Later** — sequencer + LCD UI on Core 0.
-
----
-
-## 11. Open questions / decisions to make
-
-1. **Ladder filter fidelity vs. cost** — ship Option A (cascaded SVF) for v1, or
-   go straight to the dedicated ladder (Option B)? (Recommend A→B.)
-2. **Mode selection** — compile-time engine variant only (recommended), or invest
-   in runtime subtractive↔groovebox switching?
-3. **Metal bank size** — 6 oscillators (authentic 808) or 4 (cheaper) as default?
-4. **Accent source** — velocity threshold now; dedicated accent flag once the
-   sequencer exists?
-5. **808 vs 909 as separate build kits or one switchable kit** at runtime via a CC
-   / program change?
-6. **Envelope reuse** — extend `Envelope` with a one-shot decay mode (recommended)
-   or add a separate lightweight `DecayEnv` type?
 
 ---
 

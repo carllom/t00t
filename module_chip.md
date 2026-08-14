@@ -106,6 +106,72 @@ thesis of this section in miniature.
 
 ---
 
+## 7. Architecture integration
+
+### 7.1 Param block
+
+`FilterBusParams` is neither per-voice nor global, so it becomes a new sibling in
+the param block:
+
+```cpp
+template <typename VoiceParams>
+struct VoiceParamBlockT {
+    VoiceParams     voices[MAX_VOICES];
+    FilterBusParams bus[FILTER_BUS_COUNT];   // new
+    EffectParams    fx;
+};
+```
+
+This is a change to `engine_base.h` shared by all engines. Engines that do not use
+buses set `FILTER_BUS_COUNT = 0`.
+
+`ParamExchange` keeps **latest-wins** semantics — correct here, because the VM
+lives on Core 1 and Core 0 only supplies note/CC/instrument-select. No ordered ring.
+
+### 7.2 Two-phase render pass
+
+The one structural change to Core 1, and it is not how any existing engine is
+shaped:
+
+```
+per sub-block:
+    clear bus accumulators                       // FILTER_BUS_COUNT × SUBBLOCK
+    for each active voice:
+        tick frame VM if a frame boundary falls in this sub-block
+        render → bus[v.filter_bus], or → dry mix directly if BUS_NONE
+    for each bound bus:
+        filter its accumulator, sum into dry mix
+```
+
+Accumulators are `FILTER_BUS_COUNT × SUBBLOCK × int32` — 4 × 64 × 4 = **1 KB**, not
+buffer-sized, which is why the sub-block cut point matters here.
+
+Cost is one extra store-and-load per *filtered* voice. Unfiltered voices skip the
+round trip entirely and go straight to the mix, keeping the common case at full
+speed. **P0 must measure filtered-voice cost with the round trip included**, not
+without it.
+
+### 7.3 Chip descriptors
+
+"Chip" survives, but only as a **tonal profile** — a per-voice type tag selecting
+oscillator/envelope/LFSR/filter models, dispatched in the render loop exactly like
+the groovebox's `VoiceType`. It is not a container, not an allocation unit, and
+does not appear in the voice topology.
+
+```cpp
+enum VoiceType : uint8_t {
+    VT_SILENT = 0,
+    VT_SID,          // 6581/8580 voice
+    // later: VT_AY, VT_SN76489, VT_NES_PULSE, VT_NES_TRI, VT_NES_NOISE, VT_GB_WAVE
+};
+```
+
+Per-chip *shared* resources that survive the structural cull (AY's single envelope
+generator, SN76489's slaved noise period) are handled by the same
+small-typed-pool mechanism as filter buses, so no second abstraction is needed.
+
+---
+
 ## 4. Voice model and render primitives
 
 All primitives are **topology-free**: they know nothing about chips, buses,
@@ -332,148 +398,6 @@ one.
 
 ---
 
-## 7. Architecture integration
-
-### 7.1 Param block
-
-`FilterBusParams` is neither per-voice nor global, so it becomes a new sibling in
-the param block:
-
-```cpp
-template <typename VoiceParams>
-struct VoiceParamBlockT {
-    VoiceParams     voices[MAX_VOICES];
-    FilterBusParams bus[FILTER_BUS_COUNT];   // new
-    EffectParams    fx;
-};
-```
-
-This is a change to `engine_base.h` shared by all engines. Engines that do not use
-buses set `FILTER_BUS_COUNT = 0`.
-
-`ParamExchange` keeps **latest-wins** semantics — correct here, because the VM
-lives on Core 1 and Core 0 only supplies note/CC/instrument-select. No ordered ring.
-
-### 7.2 Two-phase render pass
-
-The one structural change to Core 1, and it is not how any existing engine is
-shaped:
-
-```
-per sub-block:
-    clear bus accumulators                       // FILTER_BUS_COUNT × SUBBLOCK
-    for each active voice:
-        tick frame VM if a frame boundary falls in this sub-block
-        render → bus[v.filter_bus], or → dry mix directly if BUS_NONE
-    for each bound bus:
-        filter its accumulator, sum into dry mix
-```
-
-Accumulators are `FILTER_BUS_COUNT × SUBBLOCK × int32` — 4 × 64 × 4 = **1 KB**, not
-buffer-sized, which is why the sub-block cut point matters here.
-
-Cost is one extra store-and-load per *filtered* voice. Unfiltered voices skip the
-round trip entirely and go straight to the mix, keeping the common case at full
-speed. **P0 must measure filtered-voice cost with the round trip included**, not
-without it.
-
-### 7.3 Chip descriptors
-
-"Chip" survives, but only as a **tonal profile** — a per-voice type tag selecting
-oscillator/envelope/LFSR/filter models, dispatched in the render loop exactly like
-the groovebox's `VoiceType`. It is not a container, not an allocation unit, and
-does not appear in the voice topology.
-
-```cpp
-enum VoiceType : uint8_t {
-    VT_SILENT = 0,
-    VT_SID,          // 6581/8580 voice
-    // later: VT_AY, VT_SN76489, VT_NES_PULSE, VT_NES_TRI, VT_NES_NOISE, VT_GB_WAVE
-};
-```
-
-Per-chip *shared* resources that survive the structural cull (AY's single envelope
-generator, SN76489's slaved noise period) are handled by the same
-small-typed-pool mechanism as filter buses, so no second abstraction is needed.
-
----
-
-## 8. Voice allocation
-
-Flat, unchanged, `voice_alloc.*` reused as-is. Because §4.4 made every note exactly
-one voice, none of the group-allocation machinery that a chip-container model would
-have required exists.
-
-- **P1: static assignment.** MIDI channel → voice, no allocator. Follows the
-  groovebox. Enough for register-stream bring-up, and defers every allocation
-  question past the point where P0 might change the voice count anyway.
-- **P4: dynamic allocation.** Existing three-tier steal policy (silent → released →
-  oldest active) applies unmodified. Filter-bus binding (§5.2) is a separate,
-  independent decision made at note-on. Built — §14e.
-
-`MAX_VOICES = 32` — exactly fills the existing `uint32_t` bitmap, so the FIFO
-feedback path is unchanged. >32 was considered and rejected: it is only reachable
-for the cheapest PSG voices, and CPU is better spent on the speaker stage (§10).
-
-**If >32 is ever wanted**, the FIFO-safe approach is a tag bit in the MSB marking
-msw/lsw, so each word is self-identifying and a dropped word degrades to "one half
-is a pass stale" rather than permanent lo/hi inversion. Natural boundaries become
-31 and 62; `if constexpr (MAX_VOICES <= 32)` keeps today's untagged single-word
-format at zero cost. Recorded here as the answer; not built.
-
----
-
-## 9. CPU budget
-
-Baseline: 3401 cycles/frame = 100% at 150 MHz / 44.1 kHz (`engine.md`).
-Measured references — subtractive voice **5.9%** (`history_subtractive.md`),
-speech voice **93.5 c/f (2.75%)** (`history_speech.md`), reverb **~8%** and
-idle **~0.6%** (`history_subtractive.md`).
-
-**These are real breadboard_rp2350 measurements (§14a), not estimates.** The
-original static estimates are struck through for the record; every one of them
-was wrong, in both directions, by up to 3.7×. §14a.9 has the two bugs that
-caused the worst of it — one in this rig, one in `src/chip/`.
-
-| Item | ~~Est. c/f~~ Measured c/f | % |
-|---|---|---|
-| SID voice (acc + waveform + `EnvSID` + sub-osc + accumulate) | ~~45–65~~ **~108** | ~~1.3–1.9%~~ **3.2%** |
-| Filter bus (SVF + LUT + saturation + mix), post-fix | ~~50–75~~ **~80** | ~~1.5–2.2%~~ **2.4%** |
-| Bus round trip, ~12 filtered voices | ~~40–50~~ **negligible** — filtered and unfiltered voice cost measured indistinguishable | ~~1.4%~~ **~0%** |
-| Frame VM, 20 voices @ 50 Hz | 7 (still an estimate — P3 not built) | 0.2% |
-| Speaker simulation, mono (§10) | ~~55–75~~ **~75** — F0's stand-in landed inside the original estimate | ~~1.6–2.2%~~ **2.2%** |
-| Delay insert (`fx/delay.h`) | **~41** | **1.2%** |
-| Reverb insert (`fx/reverb.h`), the expensive one | **~255** | **7.5%** — matches speech's own ~8% almost exactly, independent cross-check |
-
-**Target configuration — 20 voices, 4 buses, speaker stage, reverb (worst case):**
-
-| Config | Voices+buses only | + delay + speaker | **+ reverb + speaker (worst case)** |
-|---|---|---|---|
-| **20v / 4 buses (chosen)** | — | — | **86.6%** (measured) |
-| 22v / 2 buses (rejected) | — | — | **89.0%** (measured) |
-
-20v/4f was chosen over 22v/2f on two independent grounds, not one: it has the
-more realistic voice-to-filter ratio, *and* it measures more headroom, not
-less. A bus (~80 c/f) is cheaper than a voice (~108 c/f), so trading 2 buses
-for 2 voices is a bad exchange rate — 22v/2f spends the bus savings back on
-voices at a loss. Frame VM (~0.2%, P3, not built) isn't in either number; at
-13.4pp / 11.0pp headroom that's noise, not a risk, unlike the 24v/4-bus
-config this replaced (99.9%, effectively zero margin before the frame VM was
-even added — see §14a.9).
-
-**Comparison for context:** ~~a PSG voice (AY/SN/NES, est. 10–25 c/f,
-0.3–0.7%) is roughly a third of a SID voice's *estimated* cost~~ —
-**measured, not estimated, as of AY-P3 (§12.4): ~44 c/f (~1.3%), from real
-breadboard_rp2350 duty-cycle sweeps of `AY_INS_LEAD` at 1/4/8/16 voices.**
-Higher than the struck-through guess by roughly 2–4×, the same shape of
-miss (both directions, "up to 3.7×") §14a.9 already found for SID's own
-voice cost — not a fluke specific to one chip's estimate. Still
-comfortably cheaper than the measured SID voice (~108 c/f) by a wide
-margin, so SID remains the most expensive chip in the family; only the
-specific multiple was wrong, not the conclusion.
-
----
-
 ## 10. Speaker simulation output stage
 
 Period-correct playback was through a TV or monitor speaker, and that colouration
@@ -510,61 +434,6 @@ scalar into one fixed clip curve, not five different signal paths.
 **Backports well beyond this module:** 808 through a boombox, Amiga through a TV,
 and especially the speech engine — a toy-speaker curve in front of the Das Boot
 bitcrusher does more for that character than further bit reduction would.
-
----
-
-## 11. Host tooling & validation
-
-Mirrors `tools/host_render/`'s existing pattern (`render_res2p.cpp`, `diff_xm.py`).
-
-### 11.1 `CHIP_STRICT` — the reference harness
-
-A register stream is `$D400–$D418`: three voices, one shared filter,
-adjacency-wired sync. Free-routing mode **cannot consume it**. Without a strict
-mode there is no way to prove the oscillator, envelope, LFSR and filter are
-correct at all.
-
-The resolution is that **validation targets the primitives, not the routing:**
-
-| | `CHIP_STRICT` | Free mode |
-|---|---|---|
-| Where | host only, `tools/host_render/render_sid.cpp` | firmware |
-| Topology | 3 voices / chip, 1 shared filter, adjacency sync | flat pool, typed buses, per-voice sub-osc |
-| Input | register write stream | MIDI + frame VM |
-| Validated against | reSID / resid-fp, spectral diff | inherits primitive correctness |
-| Performance | irrelevant | budgeted (§9) |
-
-Free mode is the same validated primitives wired differently. This costs almost
-nothing if planned for and is painful to retrofit — hence the topology-free rule
-in §4.
-
-**Velocity scaling must compile out under `CHIP_STRICT`** (see §13 item 7), or the
-reSID diff fails for reasons unrelated to the primitives.
-
-### 11.2 Instrument sources
-
-1. **`siddump`** (Cadaver — the GoatTracker author) dumps per-frame, per-voice
-   freq/wave/ADSR/pulse/filter columns from a `.sid`. Its output is *literally in
-   the same columns as the table model* — ground truth for how a given classic
-   sound was made.
-2. **GoatTracker `.ins`** — single-instrument format, large community corpus.
-   Host converter → header, same pattern as `xm2t00t` and the planned `.syx`
-   converter. Built — §14e.3. Turned out not to be "documented" in any
-   byte-level sense anywhere in GoatTracker's own repo or the community docs
-   found by search; the real spec is the save/load code itself.
-3. **Hand-authored text → generator script**, same as `speechgen.py`.
-
-**On `.ins` compatibility:** a `.ins` file contains AD/SR, table pointers, vibrato,
-gate-off timer, hard-restart ADSR and first wave — and **no channel reference at
-all**. Sync/ring live in wavetable control-register values that say "sync me"
-without saying to what, because adjacency made it implicit. So a GoatTracker sync
-instrument is *already* not self-contained; its sound depends on whatever the
-neighbouring channel's pattern was playing. **The sub-oscillator model (§4.4) makes
-such instruments reproducible for the first time.**
-
-What is actually lost: filter-table per-voice routing bits collapse to a bus
-selection, and bit-exact reproduction of a specific `.sid` whose sync source was
-song-dependent. Both accepted.
 
 ---
 
@@ -914,6 +783,137 @@ holds; only the specific multiple was wrong.
 
 ---
 
+## 8. Voice allocation
+
+Flat, unchanged, `voice_alloc.*` reused as-is. Because §4.4 made every note exactly
+one voice, none of the group-allocation machinery that a chip-container model would
+have required exists.
+
+- **P1: static assignment.** MIDI channel → voice, no allocator. Follows the
+  groovebox. Enough for register-stream bring-up, and defers every allocation
+  question past the point where P0 might change the voice count anyway.
+- **P4: dynamic allocation.** Existing three-tier steal policy (silent → released →
+  oldest active) applies unmodified. Filter-bus binding (§5.2) is a separate,
+  independent decision made at note-on. Built — §14e.
+
+`MAX_VOICES = 32` — exactly fills the existing `uint32_t` bitmap, so the FIFO
+feedback path is unchanged. >32 was considered and rejected: it is only reachable
+for the cheapest PSG voices, and CPU is better spent on the speaker stage (§10).
+
+**If >32 is ever wanted**, the FIFO-safe approach is a tag bit in the MSB marking
+msw/lsw, so each word is self-identifying and a dropped word degrades to "one half
+is a pass stale" rather than permanent lo/hi inversion. Natural boundaries become
+31 and 62; `if constexpr (MAX_VOICES <= 32)` keeps today's untagged single-word
+format at zero cost. Recorded here as the answer; not built.
+
+---
+
+## 11. Host tooling & validation
+
+Mirrors `tools/host_render/`'s existing pattern (`render_res2p.cpp`, `diff_xm.py`).
+
+### 11.1 `CHIP_STRICT` — the reference harness
+
+A register stream is `$D400–$D418`: three voices, one shared filter,
+adjacency-wired sync. Free-routing mode **cannot consume it**. Without a strict
+mode there is no way to prove the oscillator, envelope, LFSR and filter are
+correct at all.
+
+The resolution is that **validation targets the primitives, not the routing:**
+
+| | `CHIP_STRICT` | Free mode |
+|---|---|---|
+| Where | host only, `tools/host_render/render_sid.cpp` | firmware |
+| Topology | 3 voices / chip, 1 shared filter, adjacency sync | flat pool, typed buses, per-voice sub-osc |
+| Input | register write stream | MIDI + frame VM |
+| Validated against | reSID / resid-fp, spectral diff | inherits primitive correctness |
+| Performance | irrelevant | budgeted (§9) |
+
+Free mode is the same validated primitives wired differently. This costs almost
+nothing if planned for and is painful to retrofit — hence the topology-free rule
+in §4.
+
+**Velocity scaling must compile out under `CHIP_STRICT`** (see §13 item 7), or the
+reSID diff fails for reasons unrelated to the primitives.
+
+### 11.2 Instrument sources
+
+1. **`siddump`** (Cadaver — the GoatTracker author) dumps per-frame, per-voice
+   freq/wave/ADSR/pulse/filter columns from a `.sid`. Its output is *literally in
+   the same columns as the table model* — ground truth for how a given classic
+   sound was made.
+2. **GoatTracker `.ins`** — single-instrument format, large community corpus.
+   Host converter → header, same pattern as `xm2t00t` and the planned `.syx`
+   converter. Built — §14e.3. Turned out not to be "documented" in any
+   byte-level sense anywhere in GoatTracker's own repo or the community docs
+   found by search; the real spec is the save/load code itself.
+3. **Hand-authored text → generator script**, same as `speechgen.py`.
+
+**On `.ins` compatibility:** a `.ins` file contains AD/SR, table pointers, vibrato,
+gate-off timer, hard-restart ADSR and first wave — and **no channel reference at
+all**. Sync/ring live in wavetable control-register values that say "sync me"
+without saying to what, because adjacency made it implicit. So a GoatTracker sync
+instrument is *already* not self-contained; its sound depends on whatever the
+neighbouring channel's pattern was playing. **The sub-oscillator model (§4.4) makes
+such instruments reproducible for the first time.**
+
+What is actually lost: filter-table per-voice routing bits collapse to a bus
+selection, and bit-exact reproduction of a specific `.sid` whose sync source was
+song-dependent. Both accepted.
+
+---
+
+## 9. CPU budget
+
+Baseline: 3401 cycles/frame = 100% at 150 MHz / 44.1 kHz (`engine.md`).
+Measured references — subtractive voice **5.9%** (`history_subtractive.md`),
+speech voice **93.5 c/f (2.75%)** (`history_speech.md`), reverb **~8%** and
+idle **~0.6%** (`history_subtractive.md`).
+
+**These are real breadboard_rp2350 measurements (§14a), not estimates.** The
+original static estimates are struck through for the record; every one of them
+was wrong, in both directions, by up to 3.7×. §14a.9 has the two bugs that
+caused the worst of it — one in this rig, one in `src/chip/`.
+
+| Item | ~~Est. c/f~~ Measured c/f | % |
+|---|---|---|
+| SID voice (acc + waveform + `EnvSID` + sub-osc + accumulate) | ~~45–65~~ **~108** | ~~1.3–1.9%~~ **3.2%** |
+| Filter bus (SVF + LUT + saturation + mix), post-fix | ~~50–75~~ **~80** | ~~1.5–2.2%~~ **2.4%** |
+| Bus round trip, ~12 filtered voices | ~~40–50~~ **negligible** — filtered and unfiltered voice cost measured indistinguishable | ~~1.4%~~ **~0%** |
+| Frame VM, 20 voices @ 50 Hz | 7 (still an estimate — P3 not built) | 0.2% |
+| Speaker simulation, mono (§10) | ~~55–75~~ **~75** — F0's stand-in landed inside the original estimate | ~~1.6–2.2%~~ **2.2%** |
+| Delay insert (`fx/delay.h`) | **~41** | **1.2%** |
+| Reverb insert (`fx/reverb.h`), the expensive one | **~255** | **7.5%** — matches speech's own ~8% almost exactly, independent cross-check |
+
+**Target configuration — 20 voices, 4 buses, speaker stage, reverb (worst case):**
+
+| Config | Voices+buses only | + delay + speaker | **+ reverb + speaker (worst case)** |
+|---|---|---|---|
+| **20v / 4 buses (chosen)** | — | — | **86.6%** (measured) |
+| 22v / 2 buses (rejected) | — | — | **89.0%** (measured) |
+
+20v/4f was chosen over 22v/2f on two independent grounds, not one: it has the
+more realistic voice-to-filter ratio, *and* it measures more headroom, not
+less. A bus (~80 c/f) is cheaper than a voice (~108 c/f), so trading 2 buses
+for 2 voices is a bad exchange rate — 22v/2f spends the bus savings back on
+voices at a loss. Frame VM (~0.2%, P3, not built) isn't in either number; at
+13.4pp / 11.0pp headroom that's noise, not a risk, unlike the 24v/4-bus
+config this replaced (99.9%, effectively zero margin before the frame VM was
+even added — see §14a.9).
+
+**Comparison for context:** ~~a PSG voice (AY/SN/NES, est. 10–25 c/f,
+0.3–0.7%) is roughly a third of a SID voice's *estimated* cost~~ —
+**measured, not estimated, as of AY-P3 (§12.4): ~44 c/f (~1.3%), from real
+breadboard_rp2350 duty-cycle sweeps of `AY_INS_LEAD` at 1/4/8/16 voices.**
+Higher than the struck-through guess by roughly 2–4×, the same shape of
+miss (both directions, "up to 3.7×") §14a.9 already found for SID's own
+voice cost — not a fluke specific to one chip's estimate. Still
+comfortably cheaper than the measured SID voice (~108 c/f) by a wide
+margin, so SID remains the most expensive chip in the family; only the
+specific multiple was wrong, not the conclusion.
+
+---
+
 ## 13. Settled decisions
 
 1. **Signal-path limitations kept, structural limitations discarded** (§3).
@@ -937,25 +937,6 @@ holds; only the specific multiple was wrong.
 9. **Primitives are topology-free from the first commit** (§4).
 10. **Hard restart is an instantaneous envelope reset**, zero latency (§4.3).
 11. **>32 voices rejected**; tag-bit approach recorded but not built (§8).
-
----
-
-## 14. Recommended build order
-
-1. **P0 measurement rig** — SID oscillator + `EnvSID` + LFSR + 6581 filter as
-   standalone primitives; `CHIP_STRICT` host harness; reSID diff. Then on hardware:
-   per-voice cost, filtered-voice cost *with* bus round trip, sync 1× vs 2×. **Gate.**
-2. **P1 skeleton** — `engines/chip/`, `VoiceType` dispatch, static MIDI map,
-   register-stream playback. Proves the synth core before any instrument VM exists
-   — the analogue of speech's P1 phoneme keyboard.
-3. **P2 buses** — `FilterBusParams`, two-phase render, binding policy, 6581 LUT.
-4. **P3 frame VM** — wave/pulse/filter tables, vibrato, arpeggio, hard restart,
-   `mod_inc` as a table target. This is where instruments become expressive.
-5. **P4 instruments** — `.ins` converter, text format + generator, dynamic
-   allocation.
-6. **P5 speaker stage** + LCD UI.
-7. **P6 polish** — 8580 table, combined-waveform LUTs.
-8. **Later** — AY, SN76489, NES, GB DMG as additional `VoiceType`s.
 
 ---
 
@@ -990,6 +971,25 @@ holds; only the specific multiple was wrong.
    one. 4 buses / 20 voices confirmed on hardware with real headroom (86.6%
    worst case); trading buses for voices (22v/2f) measured *worse*, not
    better (89.0%).
+
+---
+
+## 14. Recommended build order
+
+1. **P0 measurement rig** — SID oscillator + `EnvSID` + LFSR + 6581 filter as
+   standalone primitives; `CHIP_STRICT` host harness; reSID diff. Then on hardware:
+   per-voice cost, filtered-voice cost *with* bus round trip, sync 1× vs 2×. **Gate.**
+2. **P1 skeleton** — `engines/chip/`, `VoiceType` dispatch, static MIDI map,
+   register-stream playback. Proves the synth core before any instrument VM exists
+   — the analogue of speech's P1 phoneme keyboard.
+3. **P2 buses** — `FilterBusParams`, two-phase render, binding policy, 6581 LUT.
+4. **P3 frame VM** — wave/pulse/filter tables, vibrato, arpeggio, hard restart,
+   `mod_inc` as a table target. This is where instruments become expressive.
+5. **P4 instruments** — `.ins` converter, text format + generator, dynamic
+   allocation.
+6. **P5 speaker stage** + LCD UI.
+7. **P6 polish** — 8580 table, combined-waveform LUTs.
+8. **Later** — AY, SN76489, NES, GB DMG as additional `VoiceType`s.
 
 ---
 
