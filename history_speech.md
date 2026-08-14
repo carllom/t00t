@@ -189,5 +189,7 @@ Landed in `src/engines/speech/engine.h` (was 4 since #27).
   segment sequencer, which module_speech.md itself budgets as "a table read plus
   coefficient computation" but hasn't been measured yet.
 
-`module_speech.md`'s Open Question 2 (voice count) is struck and moved into Settled
-Decisions.
+`module_speech.md`'s former "voice count" open question is struck and moved into
+Settled Decisions (as the `MAX_SPEECH_VOICES = 8` bullet above) — its numbered
+position in the Open Questions list has since shifted as other items were added
+and resolved, so it's no longer "Open Question 2" there.
