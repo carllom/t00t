@@ -7,77 +7,46 @@
 #include "presets.h"
 #include <cmath>
 
-// Phoneme keyboard (#28, module_speech.md MIDI Mapping Phase 1 "SPEECH_HOLD"): one
-// MIDI note is one sustained phoneme. Note number sets glottal pitch, gate
-// sustains the phoneme; the phoneme new notes on a channel use is selectable
-// two ways -- Program Change, or CC20 (banded into PHONEME_COUNT zones, same
-// shape as CC74's effect-type select). CC20 exists because not every
-// controller can actually send Program Change from a live control -- an
-// Arturia BeatStep Pro encoder assigned to "PC" in its editor was found to
-// emit something else entirely (its encoders are absolute CC by default,
-// CC16-31 -- see groovebox's midi_controller.cpp), so a real synth with a
-// genuine PC message worked while the BSP didn't. CC20 sits in that same
-// BSP encoder range so the same physical knob can drive phoneme selection
-// without needing to be reconfigured. Own controller (not the shared
-// src/midi/midi_controller.cpp) for the same reason the #27 skeleton stub
-// gave: this engine's VoiceParams has no VoicePreset shape for the shared
-// controller's presets.h to apply.
+// Phoneme keyboard: one MIDI note is one sustained phoneme (module_speech.md
+// "MIDI Mapping"). Note number sets glottal pitch, gate sustains the
+// phoneme. The phoneme new notes on a channel use is selected by Program
+// Change or by CC20 (banded into PHONEME_COUNT zones, same shape as CC74's
+// effect-type select) -- CC20 exists because not every controller can send
+// Program Change from a live control: an Arturia BeatStep Pro encoder
+// assigned to "PC" sends CC instead, since its encoders are absolute CC by
+// default, CC16-31 (see groovebox's midi_controller.cpp). CC20 sits in that
+// same BSP range so the same physical knob still works. Own controller, not
+// the shared src/midi/midi_controller.cpp: this engine's VoiceParams has no
+// VoicePreset shape for the shared controller's presets.h to apply.
 //
-// formant_shift (CC21) and bandwidth_scale (CC22, #29) sit right after
-// CC20 in that same BSP bank. Unlike pan/phoneme -- which only take effect
-// on the *next* note-on, matching every other engine's "next note" CCs --
-// these two are genuinely live (module_speech.md: "the field that makes this an
-// instrument"): the CC handler pushes the new value into every voice
-// currently held on that channel, not just the per-channel default used by
-// future notes, so sweeping the knob is audible mid-note.
+// formant_shift (CC21) and bandwidth_scale (CC22) sit right after CC20 in
+// the same BSP bank. Unlike pan/phoneme, which take effect on the next
+// note-on only, these two are genuinely live: the CC handler pushes the new
+// value into every voice currently held on the channel, not just the
+// per-channel default for future notes -- module_speech.md: "the field that
+// makes this an instrument". rate/jitter/shimmer/mode (CC24-27) and vibrato
+// depth/rate (CC1/CC76) are live the same way.
 //
-// #36 (module_speech.md P4 "MIDI Mapping"/"Utterances and MIDI integration") fills
-// out the rest of the BSP block (CC24-28) plus GM's own standard vibrato
-// CCs (1, 76), and changes what Program Change means:
+// Program Change and CC23 both select an utterance (phrases.h's
+// SPEECH_PHRASES); CC20 stays phoneme-only, since a single PC message can't
+// mean both. CC28 (phrase-bank mode, next-note) makes each note-on's own
+// note number pick the phrase instead of PC/CC23's selection -- "playing the
+// words themselves" rather than "playing a line" -- while pitch still comes
+// from the note as always.
 //
-//   - Program Change now selects an utterance -- one of phrases.h's
-//     SPEECH_PHRASES (#35's generated phrase bank), not a phoneme.
-//     "Playing a line": one word/phrase held fixed by PC, sung at whatever
-//     pitch each note-on carries. Phoneme selection for the #28 keyboard
-//     stays CC20-only; a single PC message can no longer mean two different
-//     things depending on channel_utterance, so PC had to pick one.
-//   - CC23 keeps its #34 job (utterance select, live-reachable alternative
-//     to PC for the same BSP-can't-send-PC reason CC20 exists), just
-//     repointed at SPEECH_PHRASES instead of utterance.h's two P3 fixtures.
-//   - CC28: phrase-bank mode toggle (<64 off / >=64 on). On: "playing the
-//     words themselves" -- each NOTE_ON's own note number selects which
-//     phrase plays (`note % SPEECH_PHRASE_COUNT`), overriding PC/CC23's
-//     selection for that note, while still using the note's pitch for
-//     glottal frequency exactly as always. Off (default): PC/CC23 pick the
-//     phrase, note number only sets pitch.
-//   - CC24/25/26: rate/jitter/shimmer (speech_rate_cc_to_q4_4() --
-//     sequencer.h -- and raw 0-255 scaling -- excitation.h). Live, same
-//     push-to-held-voices treatment as CC21/22.
-//   - CC27: mode select (SpeechMode, #30) -- 3 bands, ONESHOT/GATED/LOOP.
-//     Live-pushed like the others: changing it mid-utterance only affects
-//     the *next* note-off/end-of-utterance decision, never the waveform
-//     directly, so there's no click risk in pushing it live.
-//   - CC1 (mod wheel) / CC76 (GM "Vibrato Rate"): lfo_depth/lfo_rate. CC1
-//     is the same "mod wheel -> vibrato depth" convention the shared
-//     src/midi/midi_controller.cpp and subtractive engine already use
-//     (module_speech.md: "following the existing CC1/CC10 pattern in the
-//     subtractive engine"); CC76 is GM's own standard vibrato-rate
-//     controller, not a project-specific choice.
+// CC16 selects a preset (presets.h SpeechPreset / voice_apply_preset()),
+// next-note only like CC20/CC23: a preset can set utterance/mode/phoneme,
+// and pushing those into an already-sequencing voice would be exactly the
+// note-off-adjacent glitch the release-segment mechanism (module_speech.md
+// "Voice lifetime and note-off") exists to avoid. Loading a preset
+// bulk-writes the same per-channel state CC21/22/24-27 individually own
+// (speech_load_preset() below), so those CCs still work afterward -- they
+// tweak away from whatever the preset loaded, and selecting a different
+// preset overwrites those tweaks again.
 //
-// #38 (module_speech.md P5 "Preset table") adds CC16: preset select
-// (presets.h SpeechPreset / voice_apply_preset()), banded into
-// SPEECH_PRESET_COUNT zones same shape as CC20/CC23. CC16 sits in the same
-// BSP absolute-encoder bank (CC16-31) as CC20-28 and was the first free slot
-// in it. Next-note only, like CC20/CC23 -- a preset changes utterance/mode/
-// phoneme, and pushing those into an already-sequencing voice is exactly the
-// kind of note-off-adjacent glitch #30's release-segment mechanism exists to
-// avoid (#38 acceptance: "presets ... switchable live without glitching an
-// in-flight utterance"). Loading a preset bulk-writes the same per-channel
-// state CC21/22/24-27 individually own, so those CCs still work exactly as
-// before -- they now tweak away from whatever the preset loaded rather than
-// from a fixed power-on default, and a later preset select overwrites those
-// tweaks again, the same "preset is a starting point" behaviour every other
-// hardware synth with knobs *and* presets has.
+// See module_speech.md's "MIDI Mapping" for the full CC table and the
+// reasoning behind CC1/CC10/CC76 following the GM standard while CC16/
+// CC20-28 stay in the BeatStep Pro's contiguous absolute-CC block.
 
 static MidiParser midi_parser;
 static int8_t midi_note_voice[128];
@@ -97,11 +66,11 @@ static SpeechMode channel_mode[NUM_CHANNELS];          // CC27 (live)
 static bool    channel_phrase_bank[NUM_CHANNELS];      // CC28: note number selects the phrase
 static float   channel_lfo_rate[NUM_CHANNELS];         // CC76, Hz (live)
 static float   channel_lfo_depth[NUM_CHANNELS];        // CC1, 0-1 (live)
-static uint8_t channel_preset[NUM_CHANNELS];           // CC16 (#38): last preset loaded, for UI only --
+static uint8_t channel_preset[NUM_CHANNELS];           // CC16: last preset loaded, for UI only --
                                                          // individual field CCs above can drift it out of
                                                          // sync with presets[channel_preset[ch]], same as
                                                          // any hardware synth's knobs-vs-preset relationship
-static bool    channel_chorus[NUM_CHANNELS];            // CC16 (#38): pr.chorus of the last preset loaded
+static bool    channel_chorus[NUM_CHANNELS];            // CC16: pr.chorus of the last preset loaded
 
 static MidiUiState ui_state;
 
@@ -145,7 +114,7 @@ static void midi_voice_on(VoiceParamBlock &shadow, int v, uint8_t note, uint8_t 
     vp.pan = channel_pan[channel];
     vp.formant_shift = channel_formant_shift[channel];
     vp.bandwidth_scale = channel_bandwidth_scale[channel];
-    // #36 phrase-bank mode (CC28): this note's own number picks the phrase,
+    // Phrase-bank mode (CC28): this note's own number picks the phrase,
     // overriding whatever PC/CC23 selected for the channel -- "playing the
     // words themselves" instead of "playing a line".
     vp.utterance = channel_phrase_bank[channel]
@@ -157,7 +126,7 @@ static void midi_voice_on(VoiceParamBlock &shadow, int v, uint8_t note, uint8_t 
     vp.shimmer = channel_shimmer[channel];
     vp.lfo_rate = channel_lfo_rate[channel];
     vp.lfo_depth = channel_lfo_depth[channel];
-    // Robot chorus (#38, presets.h): overrides the CC10 pan set just above
+    // Robot chorus (presets.h): overrides the CC10 pan set just above
     // and further perturbs phase_inc, keyed by this note-on's real allocated
     // voice slot `v` -- speech_load_preset() above only saw voice_index 0
     // when the preset was loaded, since the real slot isn't known until
@@ -179,10 +148,10 @@ void midi_controller_init() {
     for (int i = 0; i < 128; i++) midi_note_voice[i] = -1;
     for (uint32_t v = 0; v < MAX_VOICES; v++) voice_held[v] = false;
     for (uint8_t ch = 0; ch < NUM_CHANNELS; ch++) {
-        // PRESET_PHONEME_KEYBOARD's fields (presets.h) are exactly the
-        // pre-#38 literal defaults this loop used to set field-by-field --
-        // loading it here is not a behaviour change, just routed through the
-        // same preset machinery CC16 (#38) uses at runtime.
+        // PRESET_PHONEME_KEYBOARD's fields (presets.h) match this engine's
+        // power-on defaults; loading it here routes those defaults through
+        // the same preset machinery CC16 uses at runtime, rather than
+        // duplicating the field values.
         speech_load_preset(ch, PRESET_PHONEME_KEYBOARD);
         channel_pan[ch] = 0;
         channel_phrase_bank[ch] = false;
@@ -241,7 +210,7 @@ void midi_controller_process(const uint8_t *data, uint32_t len, ParamExchange *p
             }
             case MIDI_CC: {
                 switch (ev.data1) {
-                    case 1:  // vibrato depth (mod wheel, #36 -- see header comment)
+                    case 1:  // vibrato depth (mod wheel) -- see header comment
                         channel_lfo_depth[ev.channel] = (float)ev.data2 / 127.0f;
                         for (uint32_t v = 0; v < MAX_VOICES; v++) {
                             if (voice_held[v] && voice_channel[v] == ev.channel)
@@ -256,7 +225,7 @@ void midi_controller_process(const uint8_t *data, uint32_t len, ParamExchange *p
                         ui_state.last_channel = ev.channel;
                         changed = true;
                         break;
-                    case 16: {  // preset select (#38, presets.h) — split range into
+                    case 16: {  // preset select (presets.h) — split range into
                                 // SPEECH_PRESET_COUNT bands, next-note only (see header comment)
                         uint8_t band = (uint8_t)((uint32_t)ev.data2 * SPEECH_PRESET_COUNT / 128u);
                         speech_load_preset(ev.channel, band);
@@ -270,7 +239,7 @@ void midi_controller_process(const uint8_t *data, uint32_t len, ParamExchange *p
                         ui_state.program = channel_phoneme[ev.channel];
                         ui_state.last_channel = ev.channel;
                         break;
-                    case 21:  // formant_shift (#29, live — see header comment)
+                    case 21:  // formant_shift, live — see header comment
                         channel_formant_shift[ev.channel] = tract_cc_to_q8_8(ev.data2, FORMANT_SHIFT_MIN, FORMANT_SHIFT_MAX);
                         for (uint32_t v = 0; v < MAX_VOICES; v++) {
                             if (voice_held[v] && voice_channel[v] == ev.channel)
@@ -279,7 +248,7 @@ void midi_controller_process(const uint8_t *data, uint32_t len, ParamExchange *p
                         ui_state.last_channel = ev.channel;
                         changed = true;
                         break;
-                    case 22:  // bandwidth_scale (#29, live — see header comment)
+                    case 22:  // bandwidth_scale, live — see header comment
                         channel_bandwidth_scale[ev.channel] = tract_cc_to_q8_8(ev.data2, BANDWIDTH_SCALE_MIN, BANDWIDTH_SCALE_MAX);
                         for (uint32_t v = 0; v < MAX_VOICES; v++) {
                             if (voice_held[v] && voice_channel[v] == ev.channel)
@@ -288,7 +257,7 @@ void midi_controller_process(const uint8_t *data, uint32_t len, ParamExchange *p
                         ui_state.last_channel = ev.channel;
                         changed = true;
                         break;
-                    case 23: {  // utterance/phrase select (#34, repointed at SPEECH_PHRASES by #36)
+                    case 23: {  // utterance/phrase select, indexes SPEECH_PHRASES
                         // Split range into SPEECH_PHRASE_COUNT + 1 bands,
                         // same shape as CC20/CC74's banding -- band 0 is
                         // "off" (SPEECH_NO_UTTERANCE, back to CC20's phoneme
@@ -300,7 +269,7 @@ void midi_controller_process(const uint8_t *data, uint32_t len, ParamExchange *p
                         ui_state.last_channel = ev.channel;
                         break;
                     }
-                    case 24:  // rate (#36, live — see header comment)
+                    case 24:  // rate, live — see header comment
                         channel_rate[ev.channel] = speech_rate_cc_to_q4_4(ev.data2);
                         for (uint32_t v = 0; v < MAX_VOICES; v++) {
                             if (voice_held[v] && voice_channel[v] == ev.channel)
@@ -309,7 +278,7 @@ void midi_controller_process(const uint8_t *data, uint32_t len, ParamExchange *p
                         ui_state.last_channel = ev.channel;
                         changed = true;
                         break;
-                    case 25:  // jitter (#36, live — see header comment)
+                    case 25:  // jitter, live — see header comment
                         channel_jitter[ev.channel] = (uint8_t)((uint32_t)ev.data2 * 255u / 127u);
                         for (uint32_t v = 0; v < MAX_VOICES; v++) {
                             if (voice_held[v] && voice_channel[v] == ev.channel)
@@ -318,7 +287,7 @@ void midi_controller_process(const uint8_t *data, uint32_t len, ParamExchange *p
                         ui_state.last_channel = ev.channel;
                         changed = true;
                         break;
-                    case 26:  // shimmer (#36, live — see header comment)
+                    case 26:  // shimmer, live — see header comment
                         channel_shimmer[ev.channel] = (uint8_t)((uint32_t)ev.data2 * 255u / 127u);
                         for (uint32_t v = 0; v < MAX_VOICES; v++) {
                             if (voice_held[v] && voice_channel[v] == ev.channel)
@@ -327,7 +296,7 @@ void midi_controller_process(const uint8_t *data, uint32_t len, ParamExchange *p
                         ui_state.last_channel = ev.channel;
                         changed = true;
                         break;
-                    case 27: {  // mode select (#30/#36) — 3 bands: ONESHOT/GATED/LOOP, live
+                    case 27: {  // mode select — 3 bands: ONESHOT/GATED/LOOP, live
                         uint8_t band = (uint8_t)((uint32_t)ev.data2 * 3u / 128u);
                         SpeechMode m = band == 0 ? SPEECH_MODE_ONESHOT : (band == 1 ? SPEECH_MODE_GATED : SPEECH_MODE_LOOP);
                         channel_mode[ev.channel] = m;
@@ -339,7 +308,7 @@ void midi_controller_process(const uint8_t *data, uint32_t len, ParamExchange *p
                         changed = true;
                         break;
                     }
-                    case 28:  // phrase-bank mode toggle (#36, next-note — see header comment)
+                    case 28:  // phrase-bank mode toggle, next-note — see header comment
                         channel_phrase_bank[ev.channel] = ev.data2 >= 64;
                         ui_state.last_channel = ev.channel;
                         break;
@@ -363,7 +332,7 @@ void midi_controller_process(const uint8_t *data, uint32_t len, ParamExchange *p
                         ui_state.fx_p2 = ev.data2;
                         changed = true;
                         break;
-                    case 76:  // vibrato rate (GM standard "Vibrato Rate", #36 — live)
+                    case 76:  // vibrato rate (GM standard "Vibrato Rate"), live
                         channel_lfo_rate[ev.channel] = (float)ev.data2 / 127.0f * SPEECH_LFO_RATE_HZ_MAX;
                         for (uint32_t v = 0; v < MAX_VOICES; v++) {
                             if (voice_held[v] && voice_channel[v] == ev.channel)
@@ -377,7 +346,7 @@ void midi_controller_process(const uint8_t *data, uint32_t len, ParamExchange *p
                 break;
             }
             case MIDI_PROGRAM_CHANGE: {
-                // #36: Program Change now selects an utterance (SPEECH_PHRASES,
+                // Program Change selects an utterance (SPEECH_PHRASES,
                 // phrases.h), not a phoneme -- see header comment. Affects
                 // future notes only, same as every other "next note" CC.
                 channel_utterance[ev.channel] = ev.data1 % SPEECH_PHRASE_COUNT;

@@ -5,7 +5,7 @@
 #include "phonemes.h"
 #include <cmath>
 
-// Preset table (#38, module_speech.md P5 "Preset table"): following the subtractive
+// Preset table (module_speech.md "Preset table"): following the subtractive
 // engine's presets.h pattern (VoicePreset / voice_apply_preset()) -- a
 // SpeechPreset is "what a voice sounds like", applied at note-on, same as
 // presets.h there. Unlike the subtractive engine, several of the fields a
@@ -19,9 +19,8 @@
 // value that would just get immediately overwritten by whatever the
 // channel's CC state already was.
 
-// Robot chorus (module_speech.md Scope: "If #31's measurement allowed more than
-// four voices, this is where the 'robot chorus' preset lands: per-voice
-// detune plus stereo spread") -- #31 raised MAX_SPEECH_VOICES to 8, so a
+// Robot chorus (module_speech.md Scope: "this is where the 'robot chorus'
+// preset lands: per-voice detune plus stereo spread") -- MAX_VOICES is 8, so a
 // preset with `chorus = true` spreads each simultaneously-held voice across
 // the stereo field with a small per-voice pitch offset, keyed by the
 // allocated voice slot (0..MAX_VOICES-1). Deterministic function of the
@@ -31,7 +30,7 @@ inline constexpr float CHORUS_DETUNE_SEMITONES = 0.18f;  // +/- half-range acros
 
 struct SpeechPreset {
     const char *name;
-    uint8_t    utterance;        // SPEECH_NO_UTTERANCE = #28 phoneme keyboard (HOLD); else a SPEECH_PHRASES index
+    uint8_t    utterance;        // SPEECH_NO_UTTERANCE = phoneme keyboard (HOLD); else a SPEECH_PHRASES index
     uint8_t    phoneme;          // used only when utterance == SPEECH_NO_UTTERANCE
     SpeechMode mode;             // read only when utterance != SPEECH_NO_UTTERANCE
     uint8_t    rate;             // Q4.4, 16 = 1.0x
@@ -94,12 +93,12 @@ inline void voice_apply_preset(VoiceParams &vp, const SpeechPreset &pr, uint32_t
 // sketch names (module_speech.md "Data Structures"): SPEECH_HOLD is represented
 // structurally (utterance == SPEECH_NO_UTTERANCE, see engine.h), the other
 // three explicitly -- plus the robotic/breathy/tract-shift-both-directions
-// range #38's acceptance criteria ask for, and the robot chorus preset the
-// Scope section calls out by name now that #31 makes it affordable.
+// range this table covers, and the robot chorus preset the Scope section
+// calls out by name now that 8 voices makes it affordable.
 enum SpeechPresetId : uint8_t {
-    PRESET_PHONEME_KEYBOARD,  // 0: HOLD -- one note, one sustained phoneme (#28)
+    PRESET_PHONEME_KEYBOARD,  // 0: HOLD -- one note, one sustained phoneme
     PRESET_ONESHOT_ANNOUNCE,  // 1: SPEECH_MODE_ONESHOT -- ignores note-off
-    PRESET_GATED_PHRASE,      // 2: SPEECH_MODE_GATED -- #30 default, note-off-aware
+    PRESET_GATED_PHRASE,      // 2: SPEECH_MODE_GATED -- the default mode, note-off-aware
     PRESET_LOOP_CHANT,        // 3: SPEECH_MODE_LOOP -- repeats while held
     PRESET_ROBOTIC,           // 4: zero jitter/shimmer, low bandwidth -- "unmistakably robotic 1978 sound"
     PRESET_BREATHY,           // 5: high bandwidth, jitter/shimmer + light vibrato -- closer to human
@@ -111,9 +110,9 @@ enum SpeechPresetId : uint8_t {
 
 static constexpr SpeechPreset presets[SPEECH_PRESET_COUNT] = {
     // name                utterance             phoneme  mode                rate  fmt_shift          bw_scale                    jit  shim lfo_rate lfo_depth chorus
-    // PH_I / formant_shift 1.0x / bandwidth_scale 1.0x matches midi_controller.cpp's
-    // pre-#38 power-on default exactly, so this preset being channel 0's
-    // initial load is not a behaviour change.
+    // PH_I / formant_shift 1.0x / bandwidth_scale 1.0x matches
+    // midi_controller.cpp's original power-on default exactly, so this
+    // preset being channel 0's initial load is not a behaviour change.
     { "PHON KEYS",   SPEECH_NO_UTTERANCE, PH_I,   SPEECH_MODE_GATED,   16, speech_q8_8(1.0f), speech_q8_8(1.0f),           0,   0,  0.0f, 0.0f, false },
     { "ANNOUNCE",    PHRASE_VOICE_TEST,   PH_SIL, SPEECH_MODE_ONESHOT, 16, speech_q8_8(1.0f), speech_q8_8(1.0f),           0,   0,  0.0f, 0.0f, false },
     { "GATED SAY",   PHRASE_NOW_PLAYING,  PH_SIL, SPEECH_MODE_GATED,   16, speech_q8_8(1.0f), speech_q8_8(1.0f),           0,   0,  0.0f, 0.0f, false },

@@ -58,18 +58,31 @@ LPC. Building formant first means the LPC engine is one new file plus a data pip
 
 ```
 src/engines/speech/
-  engine.h        VoiceParams, SpeechSegment, engine constants
-  engine.cpp      render pass, sub-block loop, per-voice segment clock
-  tract.h         formant resonator cascade + coefficient computation
-  excitation.h    glottal pulse train, LFSR noise, jitter/shimmer
-  sequencer.h     per-voice segment advance, target interpolation
-  phonemes.h      GENERATED — phoneme target table
-  phrases.h       GENERATED — utterance phoneme strings
-  presets.h       SpeechPreset, voice_apply_preset(), preset table
+  engine.h          VoiceParams, MAX_VOICES, engine constants
+  audio_engine.h    audio_engine_run()/audio_engine_load() declarations
+  audio_engine.cpp  render pass entry point, effects mix, #31 profiling rig
+  render.h          per-voice render core (phoneme-keyboard + sequenced paths) — no
+                     pico-sdk dependency, shared with host tooling
+  tract.h           formant resonator cascade + coefficient computation, SpeechVoice state
+  excitation.h      glottal pulse train, jitter/shimmer/vibrato
+  sequencer.h       per-voice segment advance, SpeechMode
+  phoneme_def.h     PhonemeDef struct, phoneme_unpack()
+  phonemes.h        GENERATED — phoneme target table
+  phrases.h         GENERATED — utterance phoneme strings
+  utterance.h       hand-picked P3 fixtures (HELLO/CAT), still used by host regression checks
+  presets.h         SpeechPreset, voice_apply_preset(), preset table
+  midi_controller.cpp  MIDI parsing, CC map, program change
+  display.cpp       LCD status, per-voice phoneme grid, F1/F2 formant plot
 
-src/res2p.h       COMMON — two-pole resonator (shared with groovebox)
-src/noise.h       COMMON — LFSR noise (shared with groovebox/subtractive)
+src/res2p.h       COMMON — two-pole resonator (used by speech; groovebox backport
+                   still pending, see "Backporting to Other Modules")
+src/osc/noise.h   COMMON — LFSR noise (shared with groovebox)
 ```
+
+(File layout above is as-built, not the original plan's file names — `engine.cpp`
+in early drafts of this section became `audio_engine.cpp` + `render.h`, and several
+files below it — `audio_engine.h`, `phoneme_def.h`, `utterance.h`, `midi_controller.cpp`,
+`display.cpp` — didn't exist yet when this section was first written.)
 
 ### Control plane: latest-wins, unchanged
 
@@ -159,7 +172,7 @@ to spot on the profiling pin than a dropout.
 
 constexpr uint32_t SPEECH_RATE      = 22050;   // native core rate, SAMPLE_RATE / 2
 constexpr uint32_t SPEECH_FORMANTS  = 5;       // F1..F5
-constexpr uint32_t MAX_SPEECH_VOICES = 8;  // #31 P2 profiling decision, was 4
+constexpr uint32_t MAX_VOICES = 8;  // #31 P2 profiling decision, was 4
 
 enum SpeechMode : uint8_t {
     SPEECH_ONESHOT,   // utterance runs to completion, ignores note-off
@@ -185,6 +198,18 @@ struct VoiceParams : VoiceNoteBase {   // phase_inc = glottal pitch, amplitude, 
 `formant_shift` is the field that makes this an instrument rather than a talking
 clock. Expose it on a CC by default.
 
+This `VoiceParams` sketch predates the sequencer and is superseded piece by piece
+in "Settled Decisions" below (see the "Segment sequencer landed scoped..." bullet
+for `utterance`/`mode`/`rate`, and the `#36` bullets for `jitter`/`shimmer`/
+`lfo_rate`/`lfo_depth`). One field never landed at all: `env`/`EnvConfig` (the
+shared `src/envelope.h` ADSR model). The shipped engine has no `env` field and no
+`Envelope` instance anywhere in the speech engine — gate on/off instead runs
+through `render.h`'s own exponential `cur_amp` smoothing (`AMP_SMOOTH_COEFF`), a
+simpler declick filter, not the shared attack/decay/sustain/release model every
+other engine's voices use. Not tracked as pending anywhere else in this doc; noted
+here so `EnvConfig` isn't mistaken for a real field of the shipped `VoiceParams`
+(`engine.h`).
+
 ```cpp
 // Per-voice render state, Core 1 only, never crosses ParamExchange
 struct SpeechVoice {
@@ -203,6 +228,20 @@ struct SpeechVoice {
     uint8_t  resample_acc;        // ZOH counter, 22.05k -> 44.1k
 };
 ```
+
+Sketch only, from before any tract/sequencer code existed — `tract.h`'s shipped
+`SpeechVoice` (see "DSP Detail" and "Segment sequencer" below) differs in most of
+its fields: `fric`/`nasal` swap order and gain a `_tgt` pair each plus their own
+F/B, like the cascade's; `F_step`/`B_step` don't exist — `tract_advance_subblock()`
+ramps `F`/`B` toward `F_tgt`/`B_tgt` by a fixed coefficient (`TRACT_RAMP_COEFF`)
+each sub-block instead of precomputing a per-sub-block delta; `resample_acc` also
+doesn't exist — the ZOH ×2 write in `render.h` needs no counter, since it always
+writes exactly two output samples per native sample inside the same loop
+iteration; `noise_state` is `noise_lfsr`, joined by a second, independently-seeded
+`jitter_lfsr` (`#36`); and the struct gained `formant_shift`/`bandwidth_scale`
+(current + target), `cur_amp`/`last_trigger`/`last_phoneme` (retrigger and
+declick state), the vibrato/jitter/shimmer fields (`#36`), and `seq_done`/
+`gate_prev`/`active` (`#34`'s sequencer) — none of which this sketch anticipated.
 
 ```cpp
 // Generated data — phonemes.h (src/engines/speech/phoneme_def.h, #32)
@@ -532,7 +571,7 @@ wrong by a factor of five in either direction depending on surrounding machinery
 (2.75%), flat from 1 to 8 voices** — about 25–55% over this table's top end, all of
 it in the excitation/resonator/ZOH bucket rather than coefficient recompute (which
 landed close to predicted). See history_speech.md for the full breakdown and the
-`MAX_SPEECH_VOICES = 8` decision under Settled Decisions below.
+`MAX_VOICES = 8` decision under Settled Decisions below.
 
 Memory: phoneme table ~1 KB, phrases <4 KB, per-voice state ~200 bytes. Negligible
 against the tracker's sample RAM pressure.
@@ -628,7 +667,14 @@ Listed for completeness; no new work.
       coefficients
 - [x] Segment duration carried per segment, not global
 - [x] Letter-to-sound rules run on the host; device ships a phrase table
-- [x] `res2p.h` lands in the groovebox first, before any speech code depends on it
+- [x] `res2p.h` should land in the groovebox first, before any speech code depends
+      on it, so the resonator is proven against a sound already known — the
+      decided *order*, not a completed backport. **Not yet executed:** speech's
+      P1-P4 work went ahead without waiting on it, `res2p.h`'s own header
+      comment still reads "backport pending", and the groovebox's toms/congas
+      still use their own pitch-envelope generator, not `res2p.h`
+      (`module_groovebox.md`, as-built). See "Backporting to Other Modules"
+      above; this stays open as a backport gap rather than a design question.
 - [x] Default `SpeechMode` for new presets is `SPEECH_GATED` (#30): note-off jumps to
       a bounded release segment rather than being ignored (`ONESHOT`) or requiring an
       opt-in loop/hold mode. See "Voice lifetime and note-off (#30 decision)"
@@ -639,7 +685,7 @@ Listed for completeness; no new work.
       original 16-byte sketch predates #29's parallel branches and had no field for
       a per-phoneme fricative/nasal pole. 26 bytes/phoneme now; still negligible.
       See "Generated data — phonemes.h" above.
-- [x] `MAX_SPEECH_VOICES = 8` (#31): measured ~93.5 cycles/frame/voice (2.75%),
+- [x] `MAX_VOICES = 8` (#31): measured ~93.5 cycles/frame/voice (2.75%),
       flat from 1 to 8 voices on real `breadboard_rp2350` hardware, with both the
       fricative branch and a live formant_shift/bandwidth_scale sweep costing
       nothing extra over that flat per-voice number (both are already
@@ -724,7 +770,7 @@ Listed for completeness; no new work.
       same name. Adding a real `FX_OVERDRIVE` would mean extending `EffectType`
       and CC74's band-select in the *shared* `engine_base.h`, which changes CC74's
       behaviour for the subtractive and groovebox engines too, not just speech —
-      a cross-engine feature, not speech-specific wiring. Decided with Carl:
+      a cross-engine feature, not speech-specific wiring. Decided with the author:
       defer it and document the gap here rather than build a shared three-engine
       feature inside a speech-branch issue. Delay and reverb — the two effects
       that actually exist — were already linked (#27) and are unchanged by #38.
@@ -746,7 +792,7 @@ Listed for completeness; no new work.
       directly. See "MIDI Mapping"'s CC16 paragraph above for the full reasoning.
       Robot chorus (per-voice pan spread + small detune, keyed by the allocated
       voice slot, deterministic, no new state) is the "if #31 allowed more than
-      four voices" payoff the Scope section named — #31 raised `MAX_SPEECH_VOICES`
+      four voices" payoff the Scope section named — #31 raised `MAX_VOICES`
       to 8, so it's in the table (`PRESET_ROBOT_CHORUS`).
 - [x] `src/controller.cpp` (the VGA-board 3-button demo) was gated in
       `CMakeLists.txt` on "does this engine's directory contain a `presets.h`" —
@@ -759,6 +805,15 @@ Listed for completeness; no new work.
       groovebox and tracker still don't — they never shipped a `presets.h`
       either); speech now correctly doesn't, matching its buttonless
       `breadboard_rp2350` target (`HAS_BUTTONS 0`) same as the groovebox.
+- [x] Display (#37, closes the former "what does the LCD show" open question):
+      `display.cpp` shows a per-voice phoneme grid (one cell per active voice,
+      `MAX_VOICES` up to 8) plus an F1/F2 formant-space plot, oriented like a
+      conventional IPA vowel chart, redrawn at ~10 Hz. Both read `SpeechVoiceUiState`
+      (`engine.h`), published once per render buffer by `audio_engine.cpp` from each
+      voice's live, ramped `F[0]`/`F[1]` — the same values the tract itself renders
+      from, not the phoneme's static target, so a plotted dot moves continuously as
+      a segment glides. Hardware-verified on real `breadboard_rp2350`: 8 simultaneous
+      phrases plus reverb hold steady at 31% Core 1 load.
 
 ---
 
@@ -768,10 +823,7 @@ Listed for completeness; no new work.
    segment targets. Proper transition rules (target undershoot, locus equations)
    need lookahead to the *following* phoneme. Deferred — but note the monophonic
    ordered-ring variant gets this almost free.
-2. **Display.** What does the LCD show for a speech module? Current phoneme and a
-   formant-space plot is the obvious answer and is cheap at ~10 Hz redraw, but it is
-   low priority.
-3. **#38 hardware verification: pending.** `make ENGINE=speech` (and `SPEECH_PROFILE=1`)
+2. **#38 hardware verification: pending.** `make ENGINE=speech` (and `SPEECH_PROFILE=1`)
    build clean and `make`/`make ENGINE=groovebox`/`make ENGINE=tracker` are confirmed
    unaffected by the `CMakeLists.txt` re-gate, but nothing in #38 has been heard on
    real `breadboard_rp2350` hardware yet: the preset table (all 9 `presets[]` entries,
@@ -780,8 +832,8 @@ Listed for completeness; no new work.
    glitching an in-flight utterance" claim (true by construction — `speech_load_
    preset()` never writes `shadow.voices[]`, so it cannot touch an already-sounding
    voice — but not yet confirmed by ear). Also pending: the effects-on cost
-   measurement for `history_subtractive.md`'s performance table (needs the
-   profiling pin, i.e. Carl at the bench, same as #31/#37's numbers).
+   measurement for `history_speech.md`'s performance table (needs the
+   profiling pin, i.e. the author at the bench, same as #31/#37's numbers).
 ## Phased Plan
 
 ### P0 — Common component extraction
@@ -806,9 +858,9 @@ keyboard, and pitch tracks note number.
 Add fricative branch, nasal pole, mixed excitation, formant shift and bandwidth
 scale as live parameters. Measure with the profiling pin.
 
-*Exit:* measured per-voice cost, and a decision on `MAX_SPEECH_VOICES` based on it
+*Exit:* measured per-voice cost, and a decision on `MAX_VOICES` based on it
 rather than on the table above. **Done (#31):** ~93.5 cycles/frame/voice measured,
-`MAX_SPEECH_VOICES = 8`.
+`MAX_VOICES = 8`.
 
 ### P3 — Segment sequencer
 
@@ -877,7 +929,7 @@ building it as part of this issue. What #38 actually added: `presets.h`
 (`SpeechPreset`, `voice_apply_preset()`, 9 presets -- one per `SpeechMode`
 (`SPEECH_HOLD` via the phoneme keyboard, `ONESHOT`, `GATED`, `LOOP`), robotic,
 breathy, tract-shift up/down, and a robot-chorus preset spreading up to
-`MAX_SPEECH_VOICES` simultaneously-held notes across the stereo field with a small
+`MAX_VOICES` simultaneously-held notes across the stereo field with a small
 per-voice detune -- see "MIDI Mapping" above for the exit criterion this closes:
 `module_speech.md`'s own "the range the parameters actually cover"), CC16 preset select
 (`midi_controller.cpp`), and a CMake fix (`CMakeLists.txt`'s VGA-board button
@@ -888,8 +940,8 @@ for the subtractive engine until this issue gave speech one too; re-gated on
 (`make`/`make ENGINE=groovebox`/`make ENGINE=tracker`/`make ENGINE=speech`, plus
 `SPEECH_PROFILE=1`). Not yet done: hardware listening confirmation of the preset
 table (particularly the robot-chorus preset's stereo spread) and the profiling-pin
-measurement of effects-on cost for `history_subtractive.md`'s performance table --
-both need Carl at the bench, same as #36's MIDI-wiring gap.
+measurement of effects-on cost for `history_speech.md`'s performance table --
+both need the author at the bench, same as #36's MIDI-wiring gap.
 
 ### P6 — LPC sibling engine (optional, later)
 

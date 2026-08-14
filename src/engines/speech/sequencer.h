@@ -4,7 +4,7 @@
 #include "tract.h"
 #include <cstdint>
 
-// Per-voice segment sequencer (#34, module_speech.md P3 "Segment sequencer"): turns
+// Per-voice segment sequencer (module_speech.md "Segment sequencer"): turns
 // a phoneme string into a sequence of tract targets, one per segment, each
 // held for its own phoneme-derived duration. Pure data/logic, no excitation
 // or pan -- render.h's speech_render_voice_seq() is the render loop that
@@ -13,25 +13,26 @@
 // either), so this is shared by the device engine and
 // tools/host_render/render_speech.cpp, same as every other speech DSP header.
 
-// #30 "Voice lifetime and note-off": what note-off means for a voice that is
-// sequencing an utterance. module_speech.md's own sketch lists a fourth SpeechMode
-// value, SPEECH_HOLD, alongside these three -- this engine represents that
-// case structurally instead (VoiceParams::utterance == SPEECH_NO_UTTERANCE
-// bypasses the sequencer entirely and renders through the #28 phoneme-
-// keyboard path, speech_render_voice() in render.h) rather than as a mode
-// this enum's logic has to branch on, since HOLD has no segments to advance
-// through at all.
+// What note-off means for a voice that is sequencing an utterance
+// (module_speech.md "Voice lifetime and note-off"). module_speech.md's own
+// sketch lists a fourth SpeechMode value, SPEECH_HOLD, alongside these
+// three -- this engine represents that case structurally instead
+// (VoiceParams::utterance == SPEECH_NO_UTTERANCE bypasses the sequencer
+// entirely and renders through the phoneme-keyboard path,
+// speech_render_voice() in render.h) rather than as a mode this enum's
+// logic has to branch on, since HOLD has no segments to advance through
+// at all.
 enum SpeechMode : uint8_t {
     SPEECH_MODE_ONESHOT,  // ignores note-off; completes when the utterance's last segment ends
-    SPEECH_MODE_GATED,    // note-off jumps to the utterance's release segment -- #30 default
+    SPEECH_MODE_GATED,    // note-off jumps to the utterance's release segment -- the default
     SPEECH_MODE_LOOP,     // repeats from segment 0 while gated; degrades to ONESHOT once gate drops
 };
 
-// Sentinel for VoiceParams::utterance (engine.h): this voice is in the #28
+// Sentinel for VoiceParams::utterance (engine.h): this voice is in the
 // phoneme-keyboard path, not sequencing one of utterance.h's SPEECH_UTTERANCES.
 static constexpr uint8_t SPEECH_NO_UTTERANCE = 0xFF;
 
-// Live `rate` CC range (#36, module_speech.md "CC map"): same tract_cc_to_q8_8()
+// Live `rate` CC range (module_speech.md "CC map"): same tract_cc_to_q8_8()
 // shape as formant_shift/bandwidth_scale (tract.h), but the target format is
 // VoiceParams::rate's Q4.4 (16 == 1.0x), not Q8.8, since speech_seg_
 // duration_samples() above already expects Q4.4. 0.25x..4x covers
@@ -51,9 +52,9 @@ inline uint8_t speech_rate_cc_to_q4_4(uint8_t cc) {
 
 // A hardcoded utterance: a phoneme string plus the segment index note-off
 // jumps to under SPEECH_MODE_GATED (defaults to the last segment when a
-// caller doesn't pick one explicitly, per #30 -- see utterance.h). Not
-// generated -- text-to-phoneme (module_speech.md "phrases.h") is P4 host-tool work;
-// #34's exit criterion only needs a hardcoded string to be intelligible.
+// caller doesn't pick one explicitly -- see utterance.h). Not generated --
+// text-to-phoneme (module_speech.md "Host Tooling") is a separate host-tool
+// pipeline; this struct only needs a hardcoded string to be intelligible.
 struct SpeechUtterance {
     const uint8_t *phonemes;
     uint16_t length;
@@ -82,7 +83,7 @@ inline uint32_t speech_seg_duration_samples(uint8_t phoneme, uint8_t rate_q4_4, 
 // TRANSITION_FAST, i.e. a plosive burst -- tract_snap_target()) vs. the
 // normal glide (tract_set_target()), and sets seg_index/seg_remaining.
 // module_speech.md "Plosives": PHONEME_FLAG_STOP_CLOSURE segments are silent
-// (av = af = 0) in phonemes.h's own data already (#32's CSV), but this
+// (av = af = 0) in phonemes.h's own generated data already, but this
 // forces it explicitly too -- belt-and-suspenders against a future CSV row
 // that forgets to zero them, since a closure that isn't silent breaks the
 // closure/burst contrast plosive intelligibility depends on.
