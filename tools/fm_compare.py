@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """fm_compare -- scores t00t's FM engine against a Dexed reference render.
 
-The signal-plane half of fm2.md §3 (F0-c). Takes two mono float32 WAVs of the
+The signal-plane half of history_fm.md §3 (F0-c). Takes two mono float32 WAVs of the
 same note -- one from tools/fm_ref/dexed_render, one from
 tools/host_render/render_fm_patch -- and reports metrics chosen to name the
 things ears reported vaguely during attempt 1:
@@ -13,7 +13,7 @@ things ears reported vaguely during attempt 1:
 
 Deliberately NOT sample-accurate. Both renders start their note at t=0 at the
 same sample rate, so no alignment search is done; the metrics are all magnitude
-envelopes over time, which is the level of agreement fm2.md targets.
+envelopes over time, which is the level of agreement history_fm.md targets.
 
 Requires numpy only (no scipy) -- see tools/fm_ref/requirements.txt.
 

@@ -4,7 +4,7 @@
 #include <cmath>
 #include <cstdint>
 
-// Glottal excitation (#28, speech.md "Excitation"): a two-slope triangular
+// Glottal excitation (#28, module_speech.md "Excitation"): a two-slope triangular
 // pulse train -- rising ramp, faster falling ramp -- driven by a bare Q32
 // phase accumulator (phase wraps at 2^32 == one glottal period, no
 // wavetable). Spectral tilt matters more than pulse shape at this fidelity
@@ -12,7 +12,7 @@
 // so this is shared by the device engine (audio_engine.cpp) and
 // tools/host_render/render_speech.cpp.
 //
-// jitter/shimmer/vibrato (speech.md P4, #36) below: perfectly periodic
+// jitter/shimmer/vibrato (module_speech.md P4, #36) below: perfectly periodic
 // (jitter == shimmer == 0, lfo_depth == 0) still reproduces "the perfectly
 // periodic, unmistakably robotic 1978 sound" from #28/#29 exactly --
 // everything here is an additive perturbation on top of the unchanged pulse
@@ -42,14 +42,14 @@ inline uint32_t glottal_phase_inc(float freq_hz, float fs) {
     return (uint32_t)(freq_hz / fs * 4294967296.0);
 }
 
-// Vibrato (#36, speech.md "Vibrato LFO"): "at sub-block rate like the
+// Vibrato (#36, module_speech.md "Vibrato LFO"): "at sub-block rate like the
 // subtractive engine's after #12" -- one sine sample per sub-block, not per
 // glottal cycle and not per output sample. Depth is 0..1 mapping onto
 // +/-VIBRATO_MAX_SEMITONES, the same "musical range, not a raw Hz knob"
 // choice tract.h's FORMANT_SHIFT_MIN/MAX made for formant_shift.
 inline constexpr float VIBRATO_MAX_SEMITONES = 2.0f;
 
-// Live `lfo_rate` CC range (#36, speech.md "CC map"): CC76 (GM's standard
+// Live `lfo_rate` CC range (#36, module_speech.md "CC map"): CC76 (GM's standard
 // "Vibrato Rate") maps its 0-127 onto 0..this, same shape as tract.h's
 // FORMANT_SHIFT_MIN/MAX. 6 Hz sits at a natural, singable vibrato rate near
 // the top of the range rather than in the middle, since most of the
@@ -76,7 +76,7 @@ inline uint32_t glottal_vibrato_inc(uint32_t base_inc, float lfo_val, float lfo_
     return (uint32_t)((float)base_inc * mult);
 }
 
-// Jitter (#36, speech.md "Jitter and shimmer"): per-cycle randomisation of
+// Jitter (#36, module_speech.md "Jitter and shimmer"): per-cycle randomisation of
 // the pitch period, drawn once per glottal cycle -- render.h's inner loop
 // detects the cycle boundary itself (phase wraparound) and calls this only
 // then, not per sample. Per-sample randomisation would read as FM noise

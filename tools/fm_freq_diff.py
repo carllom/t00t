@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""fm_freq_diff -- operator frequency conformance: t00t vs Dexed (fm2.md §4, F5).
+"""fm_freq_diff -- operator frequency conformance: t00t vs Dexed (history_fm.md §4, F5).
 
 The one conformance test that cannot be a table diff. Every other control-plane
 quantity is compared numerically by tools/fm_ctl_diff.py, but Dexed's

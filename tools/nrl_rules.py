@@ -1,4 +1,4 @@
-"""nrl_rules.py -- host-side English letter-to-sound engine (#35, speech.md
+"""nrl_rules.py -- host-side English letter-to-sound engine (#35, module_speech.md
 "Host Tooling" / Phase 3's "NRL letter-to-sound rules engine (~400 rules,
 6-8 KB)" -- kept host-only exactly as that line recommends: the device never
 links this file or any rule table, it only ever sees the phoneme bytes

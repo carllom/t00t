@@ -1,7 +1,7 @@
 """XM effect normalization (#14): map raw XM effect/volume bytes onto a
 named `Effect`/`VolEffect` enum instead of leaving the device to decode
 XM's letter-and-nibble scheme at runtime. Also serves as the "internal
-enum" tracker.md's multi-format section describes as the seam a MOD/S3M
+enum" module_tracker.md's multi-format section describes as the seam a MOD/S3M
 loader would target instead of raw XM bytes.
 
 XM already stores the pattern effect column as a small integer (0-9 map to

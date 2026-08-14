@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Fit t00t's SVF to reSID's measured filter response and emit src/chip/sid_tables.h.
 
-chip.md §5.1 asks for "a pluggable cutoff LUT instead of svf_compute_f_half's
+module_chip.md §5.1 asks for "a pluggable cutoff LUT instead of svf_compute_f_half's
 linear map", and warns:
 
     The 6581 cutoff curve varied enormously between physical chips. Any curve
@@ -26,8 +26,8 @@ Also emitted here, because they belong to the same header and have the same
 
   * the 8-bit envelope and 12-bit waveform R-2R DAC tables, derived from the
     ladder's measured resistor ratio rather than copied from reSID (see
-    r2r_vbit), which chip.md does not mention but §3's signal-path test keeps;
-  * the C64 board output network coefficients (chip.md §10's "free bonus");
+    r2r_vbit), which module_chip.md does not mention but §3's signal-path test keeps;
+  * the C64 board output network coefficients (module_chip.md §10's "free bonus");
   * the filter saturation scale.
 
 Usage:
@@ -168,7 +168,7 @@ def svf_response(f_half_q15, q_q15, mode_mask, freqs):
     # by that unit delay, but the mode *mask* sums them, and a relative delay
     # between summed terms is not a delay -- it is a different filter. Getting
     # this wrong is worth up to 18 dB on LP+BP+HP, which is precisely the
-    # combination chip.md §5.1 exists to support.
+    # combination module_chip.md §5.1 exists to support.
     out = np.zeros_like(z)
     if mode_mask & 0x1:
         out = out + z * s0
@@ -374,7 +374,7 @@ def r2r_table(bits, ratio_2r_over_r, terminated):
     #
     # Recorded here because the 6581 table looks broken and is not. Anyone who
     # later "fixes" it by sorting or smoothing will have removed the thing
-    # chip.md §3 says to keep.
+    # module_chip.md §3 says to keep.
     assert table[0] == 0, "zero code must be zero"
     if terminated:
         assert np.all(np.diff(table) >= 0), "a terminated ladder is monotonic"
@@ -524,9 +524,9 @@ def run_fit(args):
 
 def emit(args, sha, res_q, res_f, f_full, fc_ref):
     # --- 8580 ---------------------------------------------------------------
-    # chip.md §13.6: "6581 first, LUT-based, so 8580 is a table swap plus a
+    # module_chip.md §13.6: "6581 first, LUT-based, so 8580 is a table swap plus a
     # saturation bypass." The 8580 table is NOT measured here -- P6 owns that
-    # (chip.md §1). What is emitted is reSID's own closed-form 8580 mapping,
+    # (module_chip.md §1). What is emitted is reSID's own closed-form 8580 mapping,
     # w0 = 2*pi*12500*(fc+1)/2048 (filter.h's set_w0), converted into this
     # SVF's units. It is a placeholder with a correct shape, not a fit, and is
     # labelled as such in the header so P6 does not mistake it for measured.
@@ -555,7 +555,7 @@ def emit(args, sha, res_q, res_f, f_full, fc_ref):
 //                   --out out/probe_res_lp.f32 --meta out/probe_res_lp.json
 //     cd ../.. && tools/sid_ref/.venv/bin/python tools/fit_6581_filter.py
 //
-// PROVENANCE. chip.md §5.1: "The 6581 cutoff curve varied enormously between
+// PROVENANCE. module_chip.md §5.1: "The 6581 cutoff curve varied enormously between
 // physical chips. Any curve is *a* 6581, not *the* 6581. The LUT must be
 // documented as sampled from a named reference, never presented as canonical."
 //
@@ -584,7 +584,7 @@ def emit(args, sha, res_q, res_f, f_full, fc_ref):
     body.append("")
     body.append(fmt_table(
         "SID_8580_FC_Q15", "uint16_t", f_8580, 16,
-        "// 8580 cutoff. PLACEHOLDER, not measured -- chip.md §1 puts the 8580 model\n"
+        "// 8580 cutoff. PLACEHOLDER, not measured -- module_chip.md §1 puts the 8580 model\n"
         "// at P6. This is reSID's own closed-form 8580 mapping (filter.h's set_w0:\n"
         "// cutoff = 12.5 kHz * (fc+1)/2048) converted into this SVF's units, so the\n"
         "// shape is right and the model switch is exercisable. Refit at P6."))
@@ -602,7 +602,7 @@ def emit(args, sha, res_q, res_f, f_full, fc_ref):
         "SID_ENV_DAC_6581", "uint8_t", dac8_6581, 16,
         "// 6581 envelope DAC: 8-bit R-2R ladder, 2R/R = 2.20, bit-0 termination\n"
         "// missing. Emitted from reSID's own dac.h rather than reimplemented.\n"
-        "// chip.md does not mention the DACs; §3's test (does it operate inside the\n"
+        "// module_chip.md does not mention the DACs; §3's test (does it operate inside the\n"
         "// signal path?) puts them on the keep side, and this one costs 256 bytes."))
     body.append("")
     body.append(fmt_table(
@@ -618,7 +618,7 @@ def emit(args, sha, res_q, res_f, f_full, fc_ref):
 
     footer = f'''
 
-// C64 board output network (chip.md §10's "free bonus"): the passive RC between
+// C64 board output network (module_chip.md §10's "free bonus"): the passive RC between
 // the SID and the AV connector. Values are reSID's ExternalFilter, which names
 // the components: w0lp = 1/(10k * 1nF) = 15.9 kHz, w0hp = 1/(1k * 10uF) =
 // 15.9 Hz. The high-pass is not cosmetic here -- the 6581's 0x380
@@ -632,7 +632,7 @@ static constexpr int32_t SID_BOARD_HP_Q15 = {one_pole_q15(15.915)};
 // voice-output units of sid_voice.h ((wave12 - wave_zero) * env8). One voice at
 // full envelope peaks around {0x0c7f * 255}; this is set so a single voice stays
 // essentially linear and three summed voices do not -- which is the property
-// chip.md §5.2 depends on for shared-bus intermodulation to be real.
+// module_chip.md §5.2 depends on for shared-bus intermodulation to be real.
 static constexpr int32_t SID_FILT_SAT_SCALE_6581 = {int(0x0c7f * 255 * 1.6)};
 
 // The single scale factor between the voice contract (sid_voice.h) and the
@@ -645,7 +645,7 @@ static constexpr int32_t SID_FILT_SAT_SCALE_6581 = {int(0x0c7f * 255 * 1.6)};
 // output level (tools/sid_compare.py reports the residual as `level gap`) and
 // then left alone: the FM module's attempt 1 is the cautionary tale for what
 // happens when a chain accumulates several of these and each is free to
-// absorb the others' errors (fm2.md §1.1a).
+// absorb the others' errors (history_fm.md §1.1a).
 static constexpr int SID_MIX_SHIFT = {SID_MIX_SHIFT};
 '''
 

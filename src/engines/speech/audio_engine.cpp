@@ -8,7 +8,7 @@
 #include "pico/time.h"
 #include <arm_acle.h>
 
-// Phoneme keyboard (#28 cascade, #29 full tract, speech.md P1 "SPEECH_HOLD"):
+// Phoneme keyboard (#28 cascade, #29 full tract, module_speech.md P1 "SPEECH_HOLD"):
 // MAX_VOICES=4 independent tract voices, each driven straight from
 // VoiceParams (phase_inc = glottal pitch, phoneme = sustained vowel/
 // fricative/nasal, gate = held/released) with no segment sequencer -- one
@@ -54,7 +54,7 @@ void speech_voice_ui_state(uint32_t voice, SpeechVoiceUiState *out) {
 }
 
 // Post-mix effects (Core 1 only). Linked unconditionally, unlike the
-// tracker's skeleton -- speech.md: "Delay/reverb stay linked ... speech has
+// tracker's skeleton -- history_speech.md: "Delay/reverb stay linked ... speech has
 // no sample-RAM pressure".
 static FxDelay  fx_delay;
 static FxReverb fx_reverb;
@@ -64,10 +64,10 @@ static uint8_t  s_last_fx_type = 0xFF;
 
 // #31 P2 profiling rig: replaces the normal MIDI-driven loop below with a
 // self-cycling, pin-only measurement build -- no display, no stdio, same
-// "hands-off" shape as the tracker's #16 rig (engine.md "Tracker Engine --
+// "hands-off" shape as the tracker's #16 rig (history_tracker.md "Tracker Engine --
 // 32-Voice Mixer (#15/#16)"). Drives `voices[]` directly with synthetic
 // content instead of going through ParamExchange, so each phase isolates
-// exactly one of the costs speech.md's P2 budget table predicts and #31
+// exactly one of the costs module_speech.md's P2 budget table predicts and #31
 // asks to measure: voice count (1/2/4/8), held vowel vs. voiced fricative,
 // coefficient-recompute vs. per-sample cost, and static vs. actively-swept
 // formant_shift/bandwidth_scale. MAX_VOICES is 8 in this build (engine.h),
@@ -78,7 +78,7 @@ struct ProfilePhase {
     bool     recompute_only;  // true: call tract_advance_subblock() only --
                                // skips the per-sample tract_process_mixed()
                                // loop, isolating coefficient-recompute cost
-                               // from speech.md's "suspect line item"
+                               // from module_speech.md's "suspect line item"
     bool     sweep_tract;     // true: sweep formant_shift/bandwidth_scale
                                // across their full CC range every buffer
                                // instead of holding them at 1.0x
@@ -237,7 +237,7 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
             const VoiceParams &p = vp.voices[v];
             if (p.utterance == SPEECH_NO_UTTERANCE) {
                 // #28 phoneme keyboard: one sustained phoneme, no sequencer.
-                // speech.md: "hold the bit set until the phoneme sequence
+                // module_speech.md: "hold the bit set until the phoneme sequence
                 // completes, regardless of gate" -- this mode has no
                 // utterance to outlast the gate, so active == gate is
                 // exactly that rule applied to a single sustained phoneme.

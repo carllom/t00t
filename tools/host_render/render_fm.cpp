@@ -8,7 +8,7 @@
 // accept/reject behaviour (multi-operator cycle rejected, self-loop/
 // feedback accepted), and Goertzel-checks the spectrum against what the
 // routing predicts. Dexed is the eventual ground-truth reference for this
-// module (fm.md §7), but that's a P3+ concern -- this harness proves
+// module (module_fm.md §7), but that's a P3+ concern -- this harness proves
 // correctness the same pragmatic way render_speech.cpp's formant checks do:
 // real, predictable spectral content in the right place, not a byte-exact
 // reference render. No pico-sdk, no ARM intrinsics -- render.h/op.h/patch.h
@@ -67,7 +67,7 @@ static bool run_test_tone_check() {
     bool ok = write_wav_pcm16("fm_test_tone.wav", out, SAMPLE_RATE, 2);
 
     // Table sanity: a 4096-entry table with quarter-wave symmetric
-    // generation (fm.md §5.1) must still be an odd function about the origin
+    // generation (module_fm.md §5.1) must still be an odd function about the origin
     // and zero at phase 0 -- the actual invariant this skeleton's table
     // generation depends on, independent of anything audible.
     bool table_ok = (fm_sine_table[0] == 0);
@@ -85,7 +85,7 @@ static bool run_test_tone_check() {
 
 // #44's DAG-routing compiler (patch.h's fm_resolve_routing()): must reject a
 // cycle spanning two or more operators, and must accept a self-loop
-// (feedback) on an otherwise clean chain -- fm.md §4.2's "DAG + self-loops
+// (feedback) on an otherwise clean chain -- module_fm.md §4.2's "DAG + self-loops
 // only" constraint, exercised on FM_TEST_PATCH itself (which already has a
 // feedback operator, op3) plus one deliberately broken variant.
 static bool run_routing_checks() {
@@ -206,7 +206,7 @@ static void render_patch_note(const FmPatch &patch, float note_hz, const FmRouti
 // spectrum matches the ratios and sideband structure the routing predicts."
 // FM_TEST_PATCH's op4/op5 pair is a 1:1 modulator:carrier ratio, which
 // predicts a full harmonic series at the note's own integer multiples
-// (fm.md §4.1's routing claim made audible: the *shape* of the spectrum is
+// (module_fm.md §4.1's routing claim made audible: the *shape* of the spectrum is
 // determined entirely by note-on-resolved ratios/routing, nothing else).
 // Verified two ways: (1) real energy at 2x/3x the fundamental, clearly above
 // the noise floor at non-harmonic bins; (2) that content tracks the note --
@@ -241,7 +241,7 @@ static bool run_patch_spectrum_check() {
     render_patch_note(patch, NOTE_HIGH, routing, bus, high, peak_high);
 
     // WAV of the low note, for Carl's by-ear check against Dexed on an
-    // equivalent patch (fm.md §11 step 3).
+    // equivalent patch (module_fm.md §11 step 3).
     std::vector<int16_t> wav(low.size() * 2);
     for (size_t i = 0; i < low.size(); i++) {
         int16_t s = (int16_t)std::clamp(low[i], -32768.0f, 32767.0f);
@@ -360,7 +360,7 @@ static bool run_eg_shape_check() {
     // (2) Independence: op4 (the modulator, EG_LEVEL {99,20,15,0}) decays
     // to a much smaller fraction of its own 25ms level than op5 (the
     // carrier, {99,70,60,0}) does of its own -- the whole point of the EP
-    // patch (fm.md P2 gate). Compared as fractions, not raw gain, since
+    // patch (module_fm.md P2 gate). Compared as fractions, not raw gain, since
     // op4 and op5 have very different reference `level` magnitudes
     // (patch.h's #44 modulator-vs-carrier scale, unrelated to the EG).
     float op4_frac = std::fabs((float)g_1000ms[4] / (float)g_25ms[4]);

@@ -2,20 +2,20 @@
 
 #include <cstdint>
 
-// XM channel count is fixed in the module header, 2-32 (tracker.md "Format
+// XM channel count is fixed in the module header, 2-32 (module_tracker.md "Format
 // Decision"). voice_alloc is not used at all — channel N is voice N, fixed
 // assignment, no allocation, no stealing — so 32 is this engine's actual
 // voice count, not a headroom margin like the other two engines' MAX_VOICES.
 // The active-voice bitmap (one uint32_t, per engine_base.h) is exactly full.
 static constexpr uint32_t MAX_VOICES = 32;
-static constexpr uint32_t FILTER_BUS_COUNT = 0;   // chip module only (chip.md §5)
+static constexpr uint32_t FILTER_BUS_COUNT = 0;   // chip module only (module_chip.md §5)
 
 #include "engine_base.h"
 
 // Tracker engine skeleton (#13): proves the build seam, the MAX_VOICES=32
 // deviation, and the stereo output tail before any XM/mixer logic lands. No
 // pattern data, no sample playback, no tick handoff yet — VoiceParams here
-// only carries enough to drive a fixed test tone. tracker.md's ordered
+// only carries enough to drive a fixed test tone. module_tracker.md's ordered
 // TickBlock ring (replacing this ParamExchange's latest-wins semantics)
 // lands with the real mixer.
 struct VoiceParams {

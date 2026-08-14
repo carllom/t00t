@@ -5,7 +5,7 @@
 
 // Two-pole resonator (one complex-conjugate pole pair). Common layer: shared
 // by the groovebox (808 toms/congas/cowbell, backport pending) and the
-// speech module's formant cascade. See speech.md "Resonator and the stability
+// speech module's formant cascade. See module_speech.md "Resonator and the stability
 // rule".
 //
 // Stability rule for callers: ramp f/bw and call res2p_set() to recompute
@@ -52,7 +52,7 @@ inline float res2p_radius(float bw, float fs) {
 
 // f = resonant frequency (Hz), bw = -3dB bandwidth (Hz), fs = sample rate (Hz).
 // Unity DC gain (b0 = 1 + a1 + a2). Debug builds assert the pole stays
-// strictly inside the unit circle (speech.md "Testing": "catches the
+// strictly inside the unit circle (module_speech.md "Testing": "catches the
 // interpolation-instability class immediately") -- this only guards against
 // bw/theta values that push the pole out, not against interpolating a1/a2/b0
 // directly, which no code path in this repo does.

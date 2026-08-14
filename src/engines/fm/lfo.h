@@ -6,7 +6,7 @@
 #include <cmath>
 #include <cstdint>
 
-// FmLfo -- the DX7 voice LFO (#49, fm.md §5.5): rate/delay/waveform/PMD/AMD/
+// FmLfo -- the DX7 voice LFO (#49, module_fm.md §5.5): rate/delay/waveform/PMD/AMD/
 // key-sync, evaluated once per control block (same cadence as env_dx.h's
 // EnvDX and this engine's own pitch_eg.h). Per-sample cost: zero -- nothing
 // here ever touches op_render/op_render_first/op_render_fb (op.h) or the
@@ -16,14 +16,14 @@
 // increment-scaling and gain-multiply op.h already does for pitch_eg.h and
 // env_dx.h respectively.
 //
-// #49 also closes fm.md open question 5 (global vs. per-voice LFO):
+// #49 also closes module_fm.md open question 5 (global vs. per-voice LFO):
 // **per-voice, no global-phase mode** -- decided, not deferred. DX7
 // hardware has exactly one physical LFO shared by the whole instrument;
-// fm.md's own §5.5 already recommended per-voice with key-sync as strictly
+// module_fm.md's own §5.5 already recommended per-voice with key-sync as strictly
 // better for polyphony, keeping a patch flag for global-phase "where DX7
 // fidelity on specific patches matters" as an option. That option is
 // dropped here: #48 already made this engine genuinely multitimbral (one
-// patch pointer per voice, fm.md §6.3), and a literal single shared LFO has
+// patch pointer per voice, module_fm.md §6.3), and a literal single shared LFO has
 // no principled behavior once two simultaneously-active voices request
 // global phase with two different patches' rates -- a case that cannot
 // arise on real single-timbral hardware at all, so there is no "real DX7
@@ -48,7 +48,7 @@
 // negligible and every other block-rate/note-on computation in this engine
 // (fm_op_inc) already uses float freely.
 //
-// **F6 (fm2.md §5.14) corrected the phase ORIGIN, which that re-expression
+// **F6 (history_fm.md §5.14) corrected the phase ORIGIN, which that re-expression
 // got wrong.** The shapes above were right; where the cycle starts was not.
 // Dexed's `keydown()` syncs to `phase_ = (1<<31) - 1` -- the MIDDLE of the
 // cycle, not the start -- and its two sawtooth cases carry a compensating
@@ -87,7 +87,7 @@
 // with configured vibrato played with no vibrato at wheel 0, which is the
 // resting position. That is not a small fidelity gap, and it is invisible to
 // a scorecard run at wheel 0 -- both sides look "quiet", the way #49's own
-// dropped `am_sensitivity` looked like a well-behaved parameter (fm2.md
+// dropped `am_sensitivity` looked like a well-behaved parameter (history_fm.md
 // §5.13). The wheel now follows Dexed's real `max(pmod_1, pmod_2)` /
 // `max(amod_1, amod_2)` rule instead: the patch's own depth always plays,
 // and the wheel is a SEPARATE source that takes over once it exceeds the
@@ -169,7 +169,7 @@ inline constexpr float FM_LFO_PMD_MAX_CENTS = 1200.0f * (float)(255 * 255 * 256)
 // `25190424 / sample_rate` per sample, and the "constant is 1<<32/15.5s/11"
 // comment falls out unchanged).
 //
-// **F6 (fm2.md §5.14): this used to return a single duration in seconds and
+// **F6 (history_fm.md §5.14): this used to return a single duration in seconds and
 // the caller ramped linearly across it.** That was wrong in shape, not just
 // in constants. Dexed's delay is a two-stage accumulator, and the FIRST
 // stage is not a ramp at all -- `getdelay()` returns exactly 0 for the whole
@@ -298,7 +298,7 @@ inline float fm_lfo_delay_step(FmLfo &lfo, const FmLfoParams &p, uint32_t n) {
 //     decayed operator is tremolo'd less in dB than a loud one.
 // The second is physically odd, and Dexed's own comment on this block reads
 // "TODO: mehhh.. this needs some real tuning." It is ported anyway because it
-// is the reference this engine is being measured against; fm2.md §5.14 flags
+// is the reference this engine is being measured against; history_fm.md §5.14 flags
 // it as the one place where the reference is self-admittedly approximate, and
 // therefore the first thing to revisit if a hardware listen disagrees.
 inline float dx7_am_level_factor(float x) {

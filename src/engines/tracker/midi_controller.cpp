@@ -4,7 +4,7 @@
 
 // Tracker transport control (#18): the module plays itself (player_task.cpp
 // auto-plays on boot), so MIDI here drives play/stop/seek rather than notes
-// -- there's no live-note path in this engine at all (tracker.md
+// -- there's no live-note path in this engine at all (module_tracker.md
 // non-goals: "Live editing or pattern entry on-device"). Modeled directly
 // on src/engines/groovebox/midi_controller.cpp's MIDI_START/MIDI_STOP
 // handling of its own sequencer's seq_clock_running flag: same MidiParser,

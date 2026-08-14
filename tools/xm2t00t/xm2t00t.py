@@ -15,7 +15,7 @@
         (see blob_format.py:generate_cpp_header). Not wired into
         CMakeLists.txt yet — #14 is host-only.
 
-See tracker.md for the design background and blob_format.py for the wire
+See module_tracker.md for the design background and blob_format.py for the wire
 format itself (the source of truth this tool packs against).
 """
 
@@ -131,7 +131,7 @@ def main(argv=None) -> None:
     p_convert.add_argument("input")
     p_convert.add_argument("output", help="output path prefix; writes <output>_blob.h")
     p_convert.add_argument("--budget-kb", type=int, default=bf.DEFAULT_SRAM_BUDGET_BYTES // 1024,
-                            help="SRAM sample-data budget in KB (default: %(default)s, per tracker.md)")
+                            help="SRAM sample-data budget in KB (default: %(default)s, per module_tracker.md)")
     p_convert.add_argument("--raw-blob", metavar="PATH", default=None,
                             help="also write the raw binary blob to PATH (#17: consumed at runtime "
                                  "by tools/host_render's reference-diff harness, which loads an "

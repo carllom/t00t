@@ -12,7 +12,7 @@
 // Speech status display (Core 0, low priority). Mirrors the groovebox
 // display's chrome (buttonless breadboard, no presets.h) with a per-voice
 // phoneme grid and F1/F2 formant-space plot in place of the old single MODE
-// row -- #37 / speech.md's Open Question #4 ("current phoneme plus a
+// row -- #37 / module_speech.md's Open Question 2 ("current phoneme plus a
 // formant-space plot ... genuinely useful ... the same F1/F2 view the vowel-
 // chart verification in #32 uses"). This supersedes #28's single PHON row
 // (last note-on's channel program, useful only for "did PC land at all"):

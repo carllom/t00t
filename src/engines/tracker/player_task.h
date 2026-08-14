@@ -7,7 +7,7 @@
 // player_produce_tick(), player.h) runs here rather than on Core 1 because
 // it's a pure function of song state and needs nothing Core 1 owns, and
 // because it keeps pattern-data flash reads off Core 1's SRAM-only working
-// set (tracker.md "Core Split") -- see tracker_apply_tick()'s doc comment
+// set (module_tracker.md "Core Split") -- see tracker_apply_tick()'s doc comment
 // in player.h for why that boundary matters for the resident sample table
 // below too.
 
@@ -44,7 +44,7 @@ void tracker_transport_seek(uint32_t order_idx);  // rewind to an order, clamped
 
 // Read-only playback snapshot for the display (#24). Taken from the row/tick
 // that produced the most recently *pushed* TickBlock, not live PlayerState --
-// tracker.md "Display": Core 0 already holds this, no reverse channel from
+// module_tracker.md "Display": Core 0 already holds this, no reverse channel from
 // Core 1 needed, and it runs one tick ahead of what's audible (invisible at
 // 20ms). `active_mask` bit c is set when channel c was actually audible on
 // that tick -- nonzero pitch increment *and* nonzero post-pan target volume

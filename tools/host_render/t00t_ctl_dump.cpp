@@ -1,4 +1,4 @@
-// t00t_ctl_dump -- t00t's control-plane trajectories as CSV (fm2.md §3.1, F1).
+// t00t_ctl_dump -- t00t's control-plane trajectories as CSV (history_fm.md §3.1, F1).
 //
 // The t00t side of the exact harness. Emits the same columns, in the same
 // units, as tools/fm_ref/dexed_dump; tools/fm_ctl_diff.py runs both and

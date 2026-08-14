@@ -6,7 +6,7 @@
 #include <cmath>
 #include <cstdint>
 
-// EnvDX -- the DX7 envelope, rewritten by F3 (fm2.md §2/§5.7) as a direct
+// EnvDX -- the DX7 envelope, rewritten by F3 (history_fm.md §2/§5.7) as a direct
 // port of Dexed's `Env` (Source/msfa/env.cc, Apache-2.0) rather than a
 // re-derivation of its shape.
 //
@@ -14,7 +14,7 @@
 // stepped linearly in a log domain, with the operator's output level added
 // separately as a static offset. F1's conformance harness measured what that
 // cost, and the numbers are why this file was replaced rather than adjusted
-// (fm2.md §5.4):
+// (history_fm.md §5.4):
 //
 //   * an "instant" attack (rate 99) took 16.3 ms to reach -1 dB, against
 //     Dexed's 0.0 ms -- because a linear ramp in the log domain has to
@@ -48,7 +48,7 @@
 
 // ---------------------------------------------------------------------------
 // DX7 parameter tables. All four of these were verified byte-identical to
-// Dexed's by F1's conformance suite (fm2.md §5.4) and are unchanged by F3 --
+// Dexed's by F1's conformance suite (history_fm.md §5.4) and are unchanged by F3 --
 // they were the parts of the old file that were already right.
 // ---------------------------------------------------------------------------
 
@@ -217,7 +217,7 @@ inline void env_dx_advance(EnvDX &eg, int newix) {
 
     int newlevel = eg.levels[eg.ix];
 
-    // The level composition F1 found missing (fm2.md §5.4). Output level is
+    // The level composition F1 found missing (history_fm.md §5.4). Output level is
     // folded into the stage target here, with a bias of 4256 and a floor of
     // 16 -- NOT added separately afterwards. The floor is what stops a
     // "silent" stage from being infinitely quiet: 16 microsteps is about

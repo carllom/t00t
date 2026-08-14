@@ -3,7 +3,7 @@
 #include <cstdint>
 
 static constexpr uint32_t MAX_VOICES = 16;
-static constexpr uint32_t FILTER_BUS_COUNT = 0;   // chip module only (chip.md §5)
+static constexpr uint32_t FILTER_BUS_COUNT = 0;   // chip module only (module_chip.md §5)
 
 #include "engine_base.h"
 #include "envelope.h"       // EnvConfig (pre-baked per note by Core 0)
@@ -12,7 +12,7 @@ static constexpr uint32_t FILTER_BUS_COUNT = 0;   // chip module only (chip.md �
 // machine sharing one 16-voice render pass. Unlike the subtractive engine
 // (all voices identical, dispatched by waveform), voices here are
 // heterogeneous: each carries a VoiceType and the render loop dispatches per
-// voice. See groovebox.md for the full design.
+// voice. See module_groovebox.md for the full design.
 //
 // Voice slots are assigned statically by the controller (fixed drum map + a
 // mono 303), not by the dynamic allocator.

@@ -12,7 +12,7 @@
 //                   --out out/probe_res_lp.f32 --meta out/probe_res_lp.json
 //     cd ../.. && tools/sid_ref/.venv/bin/python tools/fit_6581_filter.py
 //
-// PROVENANCE. chip.md §5.1: "The 6581 cutoff curve varied enormously between
+// PROVENANCE. module_chip.md §5.1: "The 6581 cutoff curve varied enormously between
 // physical chips. Any curve is *a* 6581, not *the* 6581. The LUT must be
 // documented as sampled from a named reference, never presented as canonical."
 //
@@ -166,7 +166,7 @@ static const uint16_t SID_6581_FC_Q15[2048] = {
 
 
 
-// 8580 cutoff. PLACEHOLDER, not measured -- chip.md §1 puts the 8580 model
+// 8580 cutoff. PLACEHOLDER, not measured -- module_chip.md §1 puts the 8580 model
 // at P6. This is reSID's own closed-form 8580 mapping (filter.h's set_w0:
 // cutoff = 12.5 kHz * (fc+1)/2048) converted into this SVF's units, so the
 // shape is right and the model switch is exercisable. Refit at P6.
@@ -322,7 +322,7 @@ static const uint16_t SID_8580_RES_Q15[16] = {
 
 // 6581 envelope DAC: 8-bit R-2R ladder, 2R/R = 2.20, bit-0 termination
 // missing. Emitted from reSID's own dac.h rather than reimplemented.
-// chip.md does not mention the DACs; §3's test (does it operate inside the
+// module_chip.md does not mention the DACs; §3's test (does it operate inside the
 // signal path?) puts them on the keep side, and this one costs 256 bytes.
 static const uint8_t SID_ENV_DAC_6581[256] = {
     0, 2, 3, 4, 5, 6, 7, 9, 9, 11, 11, 13, 13, 15, 16, 18,
@@ -716,7 +716,7 @@ static const uint16_t SID_WAVE_DAC_6581[4096] = {
     4090, 4092, 4093, 4095,
 };
 
-// C64 board output network (chip.md §10's "free bonus"): the passive RC between
+// C64 board output network (module_chip.md §10's "free bonus"): the passive RC between
 // the SID and the AV connector. Values are reSID's ExternalFilter, which names
 // the components: w0lp = 1/(10k * 1nF) = 15.9 kHz, w0hp = 1/(1k * 10uF) =
 // 15.9 Hz. The high-pass is not cosmetic here -- the 6581's 0x380
@@ -730,7 +730,7 @@ static constexpr int32_t SID_BOARD_HP_Q15 = 74;
 // voice-output units of sid_voice.h ((wave12 - wave_zero) * env8). One voice at
 // full envelope peaks around 815745; this is set so a single voice stays
 // essentially linear and three summed voices do not -- which is the property
-// chip.md §5.2 depends on for shared-bus intermodulation to be real.
+// module_chip.md §5.2 depends on for shared-bus intermodulation to be real.
 static constexpr int32_t SID_FILT_SAT_SCALE_6581 = 1305192;
 
 // The single scale factor between the voice contract (sid_voice.h) and the
@@ -743,5 +743,5 @@ static constexpr int32_t SID_FILT_SAT_SCALE_6581 = 1305192;
 // output level (tools/sid_compare.py reports the residual as `level gap`) and
 // then left alone: the FM module's attempt 1 is the cautionary tale for what
 // happens when a chain accumulates several of these and each is free to
-// absorb the others' errors (fm2.md §1.1a).
+// absorb the others' errors (history_fm.md §1.1a).
 static constexpr int SID_MIX_SHIFT = 7;

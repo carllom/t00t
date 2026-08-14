@@ -2,10 +2,10 @@
 
 #include <cstdint>
 
-// FM patch data + note-on-time routing compiler (#44, fm.md §4/§5.6/§7):
+// FM patch data + note-on-time routing compiler (#44, module_fm.md §4/§5.6/§7):
 // the runtime FmOpParams/FmPatch shape the eventual tools/syx2patch.py
 // converter (P3) will emit, plus the DAG-routing resolver that turns one of
-// those patches into per-operator order/bus/kernel decisions -- fm.md §4.1's
+// those patches into per-operator order/bus/kernel decisions -- module_fm.md §4.1's
 // central claim, "an operator's routing IS its in/out bus pointers plus its
 // position in the processing order, both resolved once at note-on," lives
 // here. No pico-sdk dependency (plain cstdint), so this header is shared by
@@ -15,11 +15,11 @@
 
 static constexpr uint8_t FM_NUM_OPS = 6;
 
-// Bus id space (fm.md §4.3): 0-5 are the six operator-indexed modulation
+// Bus id space (module_fm.md §4.3): 0-5 are the six operator-indexed modulation
 // buses (bus b is "the bus operator b reads as its own modulation input"),
 // FM_TARGET_OUT is the shared voice output bus that carriers sum into, and
 // FM_BUS_ZERO is a read-only all-zero source for operators nothing
-// modulates (fm.md §5.2: "pure carriers pointing at a zero bus"). The same
+// modulates (module_fm.md §5.2: "pure carriers pointing at a zero bus"). The same
 // numeric value doubles as FmOpParams::mod_target's "this op is a carrier"
 // sentinel and as the routing compiler's output-bus id -- a carrier's
 // output IS the thing being routed to bus FM_TARGET_OUT, so one constant
@@ -28,7 +28,7 @@ static constexpr uint8_t FM_TARGET_OUT = FM_NUM_OPS;      // 6
 static constexpr uint8_t FM_BUS_ZERO   = FM_NUM_OPS + 1;  // 7
 
 // One operator's patch data -- what tools/syx2patch.py emits per DX7
-// operator (fm.md §7's table): ratio/detune/fixed-frequency mode resolve to
+// operator (module_fm.md §7's table): ratio/detune/fixed-frequency mode resolve to
 // the Q32 increment (§5.6), and `mod_target`/`feedback_level` together are
 // the entire routing input: which operator (or FM_TARGET_OUT) this op's
 // output feeds, and how strongly (0-7, DX7 units) its own last two outputs
@@ -37,7 +37,7 @@ static constexpr uint8_t FM_BUS_ZERO   = FM_NUM_OPS + 1;  // 7
 // note-on/block-rate-resolved pieces that produce the actual, time-varying
 // `gain` op_render sees.
 //
-// F2 removed this struct's `level` field (fm2.md §2). It was a per-operator
+// F2 removed this struct's `level` field (history_fm.md §2). It was a per-operator
 // "reference gain" that syx2patch.py filled in with one of two hand-tuned
 // constants depending on whether the operator happened to be a carrier, and
 // it is exactly the thing that gave every patch its own private idea of what
@@ -57,7 +57,7 @@ struct FmOpParams {
     // fm_op_base_inc() applies both rules at note-on.
     int8_t  detune_offset;
     uint8_t mod_target;    // 0..FM_NUM_OPS-1 (another operator), or FM_TARGET_OUT (carrier)
-    // F7 (fm2.md §5.20): the operators BESIDES mod_target that this operator
+    // F7 (history_fm.md §5.20): the operators BESIDES mod_target that this operator
     // also modulates, as a bitmask of operator indices. 0 for all but 7 of the
     // 32 DX7 algorithms.
     //
@@ -79,7 +79,7 @@ struct FmOpParams {
     // flag bytes the way F1's `table/algorithms` does). So an extra target's
     // `in_bus` can point straight at its single source's bus with no ambiguity.
     uint8_t extra_target_mask;
-    // Self-modulation depth, DX7 units (0-7; 0 = off). Was a bool (fm.md
+    // Self-modulation depth, DX7 units (0-7; 0 = off). Was a bool (module_fm.md
     // §5.2's original "no-op-or-full" self-feedback) until real Dexed source
     // (dx7note.cc's `fb_shift_ = feedback ? 8-feedback : 16`, fm_op_kernel.cc's
     // `compute_fb`) showed real hardware spans a 64x (2^6) depth range across
@@ -115,7 +115,7 @@ struct FmOpParams {
     uint8_t am_sensitivity;
 };
 
-// #49 (fm.md §5.5): one LFO per VOICE (not per operator) -- rate/delay/
+// #49 (module_fm.md §5.5): one LFO per VOICE (not per operator) -- rate/delay/
 // waveform/depths/sensitivity are shared by all six operators, only each
 // operator's own `am_sensitivity` (FmOpParams, above) varies how much the
 // shared tremolo reaches it. Field values and ranges match DX7 exactly
@@ -132,7 +132,7 @@ struct FmLfoParams {
     uint8_t pms;         // 0-7, pitch mod sensitivity (voice-wide; separate from each op's own am_sensitivity)
 };
 
-// #49 (fm.md §5.4): one 4-stage (rate, level) pitch envelope per VOICE, same
+// #49 (module_fm.md §5.4): one 4-stage (rate, level) pitch envelope per VOICE, same
 // shape as EnvDX (env_dx.h) but in a cents domain and shared by all six
 // operators (pitch_eg.h scales every non-fixed-frequency operator's `inc`
 // by the same ratio each control block). **level 50 is "no deviation" (DX7
@@ -159,14 +159,14 @@ struct FmPatch {
     FmPitchEgParams  pitch_eg;  // #49 -- voice-wide, shared by all six operators
 };
 
-// Note-on-time routing decisions (fm.md §5.6): everything the per-sample
+// Note-on-time routing decisions (module_fm.md §5.6): everything the per-sample
 // kernel needs, with nothing in it that depends on note/velocity/bend --
 // only on the patch. `order` is the topological processing order;
 // `in_bus`/`out_bus` are per-operator bus ids (0-5, FM_TARGET_OUT, or
 // FM_BUS_ZERO for in_bus only); `kernel` selects one of op.h's three
 // variants; `clear_bus_mask` (bit b = bus b, b in 0..FM_TARGET_OUT) flags
 // the rare bus whose only writer is a feedback operator -- op_render_fb
-// always accumulates (fm.md §5.2), so if that's the *first* write to a bus
+// always accumulates (module_fm.md §5.2), so if that's the *first* write to a bus
 // it must be pre-zeroed rather than relying on the usual "no bus ever needs
 // clearing" first-writer optimization (§4.3).
 enum FmKernel : uint8_t { FM_KERNEL_FIRST, FM_KERNEL_PLAIN, FM_KERNEL_FEEDBACK };
@@ -196,7 +196,7 @@ struct FmRouting {
 // Resolves `patch` into `r`. Returns false (r.valid = false) if the patch's
 // mod_target graph contains a cycle spanning two or more operators -- the
 // one routing shape block-inner rendering can't evaluate without a
-// block-length delay (fm.md §4.2). Self-modulation (`feedback_level` > 0) is
+// block-length delay (module_fm.md §4.2). Self-modulation (`feedback_level` > 0) is
 // accepted unconditionally: it never enters this graph at all, because it's
 // satisfied entirely inside op_render_fb's own per-sample fb1/fb2 history,
 // not by bus-write ordering -- so there is nothing for a cycle check to
@@ -319,7 +319,7 @@ inline bool fm_resolve_routing(const FmPatch &patch, FmRouting &r) {
 // assignment and kernel selection (op0/op1/op4/op5 first-writer, op2 plain
 // accumulate, op3 self-feedback accumulate, no bus ever needs clearing) --
 // so this patch's per-voice cost is directly comparable to the already-
-// measured 100.05 c/f/voice baseline (fm.md §3.4), and the "is the emitted
+// measured 100.05 c/f/voice baseline (module_fm.md §3.4), and the "is the emitted
 // inner loop identical to #42's" acceptance criterion is checking real
 // kernel reuse, not a coincidence of similar shape.
 //
@@ -327,7 +327,7 @@ inline bool fm_resolve_routing(const FmPatch &patch, FmRouting &r) {
 // modulator gives a full harmonic series); op1/op2/op3 (ratios 2/3/1,
 // op3 self-fed) pile three more modulators onto op4 for a denser,
 // EP/bell-adjacent timbre; op0 (ratio 0.5) sub-modulates op2. Not a literal
-// DX7 algorithm number -- fm.md P1 only asks for "a simple stack or a
+// DX7 algorithm number -- module_fm.md P1 only asks for "a simple stack or a
 // 2-carrier pair, not something exotic" -- but every ratio is a small
 // integer (or 0.5), so the spectrum is a predictable harmonic/sideband set,
 // not an inharmonic bell.
@@ -356,7 +356,7 @@ inline bool fm_resolve_routing(const FmPatch &patch, FmRouting &r) {
 // electric-piano shape: both attack instantly (R1=99), but op4 (the
 // modulator, i.e. the *brightness*) decays much faster and further than
 // op5 (the carrier, i.e. the *loudness*) -- a bright pluck that settles
-// into a mellower sustained tone, the P2 gate in fm.md §1 ("A
+// into a mellower sustained tone, the P2 gate in module_fm.md §1 ("A
 // DX-recognisable electric piano or bell"). Velocity sensitivity is
 // highest on op4 (brightness) and op5 (loudness), lower on the other four
 // -- harder hits play brighter AND louder, softer hits duller and quieter,

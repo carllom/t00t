@@ -3,7 +3,7 @@
 #include <cstdint>
 
 // ===========================================================================
-// The fixed-point contract (F2, fm2.md §2/§5).
+// The fixed-point contract (F2, history_fm.md §2/§5).
 //
 // ONE anchor, from which every other number here is derived:
 //
@@ -11,7 +11,7 @@
 //     FM_CYCLE units == one full cycle (2*pi) on whatever it modulates.
 //
 // That is Dexed's own contract, measured rather than assumed (tools/fm_ref;
-// fm2.md §5.6): `Sin::lookup` is full-scale 2^24, its maximum operator gain
+// history_fm.md §5.6): `Sin::lookup` is full-scale 2^24, its maximum operator gain
 // is exactly 2.0, and 24 bits is one cycle of its phase -- so a max-level
 // Dexed operator peaks at exactly TWO full cycles of deviation, and a
 // *unity*-gain one at exactly one. Carriers are not a special case there and
@@ -23,7 +23,7 @@
 // This replaces six mutually-cancelling constants (FM_OUT_SHIFT_CARRIER,
 // FM_OUT_SHIFT_MODULATOR, FM_MOD_INPUT_SHIFT, FmOpParams::level, and
 // syx2patch.py's FM_CARRIER_LEVEL_REF/FM_MODULATOR_LEVEL_REF), each of which
-// existed to compensate for another. fm2.md §5.1 measured what that cost:
+// existed to compensate for another. history_fm.md §5.1 measured what that cost:
 // per-patch level errors from -12 dB to -96 dB and brightness from 0.30x to
 // 6.31x on the same build, because with no shared anchor every patch landed
 // somewhere different.
@@ -37,7 +37,7 @@
 // headroom over the 2^27 maximum a single operator can emit (see
 // FM_GAIN_MAX), which covers both fan-in (several modulators summing onto one
 // bus) and several carriers summing into the output bus, without ever
-// approaching int32 overflow -- the failure mode fm2.md §1.1(a) found in the
+// approaching int32 overflow -- the failure mode history_fm.md §1.1(a) found in the
 // old scaling, where a max-level modulator reached 2^33.4 and wrapped the
 // phase accumulator several times per sample.
 static constexpr uint32_t FM_CYCLE_BITS = 26;

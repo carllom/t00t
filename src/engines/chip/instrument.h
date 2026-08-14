@@ -2,14 +2,14 @@
 
 #include <cstdint>
 
-// The frame-rate instrument table VM (chip.md §6): "ADSR + vibrato + three
+// The frame-rate instrument table VM (module_chip.md §6): "ADSR + vibrato + three
 // per-frame tables." This is the mechanism; engines/chip/instruments.h holds
 // hand-authored data until P4's .ins converter generates real ones.
 //
-// Format notes not fully pinned down by chip.md itself, decided here:
+// Format notes not fully pinned down by module_chip.md itself, decided here:
 //
 // - WaveRow.note is a *relative* semitone offset from the played note
-//   (arpeggios), not an absolute note -- chip.md says "note abs/rel" without
+//   (arpeggios), not an absolute note -- module_chip.md says "note abs/rel" without
 //   picking one, and relative is what every table-model editor's arpeggio
 //   row actually is. Absolute-note rows are not built.
 // - WaveRow.flags reserves 2 bits for sync/ring toggles per §6's table, but
@@ -80,7 +80,7 @@ struct Instrument {
                                     // step, not audio -- until the first frame tick
                                     // corrects it. Pick a real starting pulse width.
 
-    bool     uses_filter;        // request a bus at trigger time (chip.md §5.2 bind_filter)
+    bool     uses_filter;        // request a bus at trigger time (module_chip.md §5.2 bind_filter)
     uint16_t filter_cutoff_init;
     uint8_t  filter_resonance;
     uint8_t  filter_mode_mask;   // SID_FILT_LP|BP|HP (sid_filter.h), summed

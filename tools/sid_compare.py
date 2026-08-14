@@ -29,7 +29,7 @@ Metrics are chosen to name a defect rather than to produce a single number:
                    it means one side stopped early -- and it makes the band
                    numbers correspondingly less meaningful.
 
-That last split is the FM module's hardest-won lesson (fm2.md §3.1): scoring
+That last split is the FM module's hardest-won lesson (history_fm.md §3.1): scoring
 timbre wherever the *reference* sounds conflates timbre with envelope, because
 an engine whose envelope dies early then reads as spectrally wrong for every
 frame it is silent. Without the split, F0's baseline spectral numbers were pure

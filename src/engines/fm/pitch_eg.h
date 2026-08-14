@@ -4,13 +4,13 @@
 #include "patch.h"
 #include <cstdint>
 
-// FmPitchEg -- the DX7 pitch envelope (#49, fm.md §5.4): one PER VOICE (not
+// FmPitchEg -- the DX7 pitch envelope (#49, module_fm.md §5.4): one PER VOICE (not
 // per operator, unlike EnvDX), same 4-stage (rate, level) shape and
 // block-rate-stepping convention as env_dx.h's EnvDX, but its per-block
 // result is consumed differently: instead of handing the kernel a
 // gain/gain_step pair, op.h's fm_voice_step_pitch_and_mod() converts it (plus
 // lfo.h's own pitch-mod output) into a ratio that scales every non-fixed-
-// frequency operator's `inc` once per control block -- fm.md's own "applied
+// frequency operator's `inc` once per control block -- module_fm.md's own "applied
 // by scaling all six operator increments at each block boundary ... zero
 // per-sample cost". Nothing here ever touches op_render/op_render_first/
 // op_render_fb (op.h) or the kernel's `gain`/`gain_step` fields at all.

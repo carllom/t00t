@@ -82,7 +82,7 @@ int main() {
 
 #if HAS_TRACKER_PLAYER
     // Sample SRAM load + resident-table build + ring priming, all before
-    // Core 1's thread exists -- stricter than tracker.md's "Core 0 primes
+    // Core 1's thread exists -- stricter than module_tracker.md's "Core 0 primes
     // two blocks before Core 1 starts" requires, since Core 1 doesn't touch
     // the ring until the first DMA-triggered fill request anyway (that
     // starts even later, at i2s_output_init() below).

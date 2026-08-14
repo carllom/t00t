@@ -14,18 +14,18 @@
 #include <arm_acle.h>
 #endif
 
-// FM operator kernel (#44, fm.md §5.2): FmOp + the three per-sample
+// FM operator kernel (#44, module_fm.md §5.2): FmOp + the three per-sample
 // variants, plus the note-on/block/voice glue that turns a resolved
 // FmRouting (patch.h) into real audio. Per-sample bodies are the exact
 // #42/#43-measured kernels (rig.h's op_render/op_render_first/op_render_fb)
 // -- same table (sine_tab.h's real, hardware-verified 4096-entry table, not
 // rig.h's standalone bench copy), same fm_mul_gain convention, same
-// phase-wrap-is-free indexing. F2 (fm2.md §2) removed the per-call output
+// phase-wrap-is-free indexing. F2 (history_fm.md §2) removed the per-call output
 // shift entirely -- there is one output scale now, not a carrier one and a
 // modulator one -- which makes the loop bodies slightly *shorter* than the
 // #43-measured ones, not longer, so that measurement still bounds them. See
 // "The fixed-point contract" below for the single anchor everything now
-// derives from. fm.md §3.6's decisions are otherwise still
+// derives from. module_fm.md §3.6's decisions are otherwise still
 // baked in: SMULWB adopted (lever 4, "adopted where convenient"), plain
 // `inline` in flash, not not_in_flash_func (lever 2, SRAM measured worse),
 // no op-pair interleaving (lever 1, not adopted). No pico-sdk dependency
@@ -33,15 +33,15 @@
 // is shared by the device engine and the host render/test harness, exactly
 // like render.h/rig.h.
 
-// fm.md §3.6 lever 3 / open question 3, closed by #45: BLOCK size. #43
+// module_fm.md §3.6 lever 3 / open question 3, closed by #45: BLOCK size. #43
 // deferred the final call to here, since #43's rig has no EG/LFO to give
 // the time-resolution side of the tradeoff anything real to measure against
-// (fm.md: "confirm empirically against the fastest-attack patches"). See
-// engine.md "FM P2 BLOCK Confirmation (#45)" for the comparison and the
+// (module_fm.md: "confirm empirically against the fastest-attack patches"). See
+// `history_fm.md` §"FM Engine — EnvDX + BLOCK Confirmation (#45)" for the comparison and the
 // decision. Overridable at compile time (`-DT00T_FM_BLOCK=8/32`, wired
 // through CMakeLists.txt/Makefile the same way DMA_BUFFER_SIZE is) so that
 // comparison -- and any future one -- doesn't require hand-editing this
-// file. Also the shared per-voice bus scratch size (fm.md §4.3).
+// file. Also the shared per-voice bus scratch size (module_fm.md §4.3).
 #ifndef T00T_FM_BLOCK
 #define T00T_FM_BLOCK 16
 #endif
@@ -66,13 +66,13 @@ struct FmOp {
     // `outlevel` (env_dx.h's dx7_note_outlevel), and key rate scaling into its
     // `rate_scaling`, exactly as Dexed's Dx7Note::init does -- rather than
     // being carried alongside and added afterwards, which is what put every
-    // sustain stage ~60 dB low (fm2.md §5.4).
+    // sustain stage ~60 dB low (history_fm.md §5.4).
 };
 
 // Read-only all-zero bus, shared by every operator nothing modulates.
 inline int32_t fm_zero_bus[FM_BLOCK];
 
-// Multiply-by-gain-then-shift. fm.md §3.6 lever 4: SMULWB fuses the
+// Multiply-by-gain-then-shift. module_fm.md §3.6 lever 4: SMULWB fuses the
 // gain-scale + multiply into one M33 DSP-extension instruction --
 // (Rn * SignExtend16(Rm)) >> 16 -- measured -3.0% in #43, "adopted where
 // convenient" (real win, no correctness cost), so unlike rig.h's
@@ -91,7 +91,7 @@ inline int32_t fm_mul_gain(int32_t sample, int32_t gain) {
 }
 
 
-// Plain kernel: accumulates (+=) into `out`. fm.md §3.2's 13-instruction
+// Plain kernel: accumulates (+=) into `out`. module_fm.md §3.2's 13-instruction
 // listing (as measured by #43) is still this loop body -- F2 removed the
 // per-call `out_shift` parameter (there is one output scale now, not a
 // carrier one and a modulator one) and left the shape otherwise untouched,
@@ -106,7 +106,7 @@ inline void op_render(FmOp &op, uint32_t n) {
     for (uint32_t i = 0; i < n; i++) {
         phase += inc;
         // Phase wrap is free: the shift alone produces exactly a
-        // FM_TABLE_BITS-wide index, no mask, no modulo (fm.md §3.2).
+        // FM_TABLE_BITS-wide index, no mask, no modulo (module_fm.md §3.2).
         uint32_t idx = (phase + ((uint32_t)in[i] << FM_MOD_SHIFT)) >> FM_PHASE_SHIFT;
         int32_t sample = fm_sine_table[idx];
         out[i] += fm_mul_gain(sample, gain);
@@ -117,7 +117,7 @@ inline void op_render(FmOp &op, uint32_t n) {
 }
 
 // First-writer variant: stores instead of accumulating, so its target bus
-// never needs clearing (fm.md §4.3/§5.2).
+// never needs clearing (module_fm.md §4.3/§5.2).
 inline void op_render_first(FmOp &op, uint32_t n) {
     uint32_t phase = op.phase;
     uint32_t inc = op.inc;
@@ -179,7 +179,7 @@ inline void op_render_first(FmOp &op, uint32_t n) {
 // produces one, and the same factor of two holds all the way down to level 1.
 // Feedback is what a DX7 patch's "edge" is voiced around, so being an octave
 // deep on it reads as a general excess of brightness rather than as a
-// feedback problem, which is why ears never located it (fm2.md §1.1(c)).
+// feedback problem, which is why ears never located it (history_fm.md §1.1(c)).
 inline void op_render_fb(FmOp &op, uint32_t n, int32_t fb_shift) {
     uint32_t phase = op.phase;
     uint32_t inc = op.inc;
@@ -204,7 +204,7 @@ inline void op_render_fb(FmOp &op, uint32_t n, int32_t fb_shift) {
     op.fb2 = fb2;
 }
 
-// One voice's shared bus scratch (fm.md §4.3: "one shared scratch for the
+// One voice's shared bus scratch (module_fm.md §4.3: "one shared scratch for the
 // whole engine, not per-voice" -- callers reuse the same arrays across
 // every voice, sequentially).
 struct FmVoiceBuses {
@@ -215,7 +215,7 @@ struct FmVoiceBuses {
 // Renders one sub-block (<= FM_BLOCK samples) of all six operators,
 // following the routing resolved once at note-on (patch.h's FmRouting) --
 // nothing here depends on note/velocity/bend, only on `r` and each op's
-// already-set phase/inc/gain. This is fm.md §4.1's claim in code: `r.order`
+// already-set phase/inc/gain. This is module_fm.md §4.1's claim in code: `r.order`
 // plus `r.in_bus`/`r.out_bus`/`r.kernel` (bus *pointers* and a processing
 // *position*, both resolved at note-on) are the entire routing
 // implementation -- nothing about which patch is playing appears inside
@@ -303,7 +303,7 @@ inline uint32_t fm_op_base_inc(const FmOpParams &p, uint32_t note_inc,
 // note's base increment (already pitch-bent by Core 0), triggers its EG
 // (env_dx.h's env_dx_init() -- stage 0 from silence), which also folds in
 // output level, key level scaling, velocity and key rate scaling -- the
-// note-on-time-only pieces of #45/#48's level/rate chain (fm.md §5.6: all
+// note-on-time-only pieces of #45/#48's level/rate chain (module_fm.md §5.6: all
 // of it is "resolved once per note-on and never touched again"). `midinote`
 // (raw MIDI 0-127) is the one piece those two DX7 features need that
 // `note_inc` alone can't give back -- see engine.h's VoiceParams::note.
@@ -353,7 +353,7 @@ inline void fm_voice_note_on(FmOp ops[FM_NUM_OPS], const FmPatch &patch,
 // Note-off: releases every operator's EG (env_dx.h's env_dx_release() --
 // jump to stage 4 from wherever it currently is). Every operator releases,
 // not just carriers -- a modulator's own decay shapes the carrier's timbre
-// for as long as the carrier is still sounding (fm.md's EP patch: op4's
+// for as long as the carrier is still sounding (module_fm.md's EP patch: op4's
 // fast decay is what makes the carrier's tone dim after the attack).
 inline void fm_voice_note_off(FmOp ops[FM_NUM_OPS], FmPitchEg *peg = nullptr) {
     for (uint8_t i = 0; i < FM_NUM_OPS; i++) {
@@ -382,7 +382,7 @@ inline bool fm_voice_active(const FmOp ops[FM_NUM_OPS], const FmRouting &r) {
 // operator's `inc` from the note's current (possibly re-bent) base
 // increment, same as before, but now ALSO steps the voice's pitch EG
 // (pitch_eg.h) and LFO (lfo.h) by this control block and folds their
-// combined cents output into the same increment recompute (fm.md §5.4/§5.5:
+// combined cents output into the same increment recompute (module_fm.md §5.4/§5.5:
 // "applied by scaling all six operator increments at each block
 // boundary"). Called once per control block from fm_render_voice() below
 // (previously fm_voice_update_pitch() ran once per whole audio buffer from
@@ -421,18 +421,18 @@ inline float fm_voice_step_pitch_and_mod(FmOp ops[FM_NUM_OPS], const FmPatch &pa
 
 // Steps every operator's EG by one control block (env_dx.h's
 // env_dx_step_block()) and sets `gain`/`gain_step` from the result --
-// fm.md §5.3's "the kernel is handed gain (start) and gain_step (per-sample
+// module_fm.md §5.3's "the kernel is handed gain (start) and gain_step (per-sample
 // delta) for that block". Everything here runs once per block, not once
 // per sample: this is the only place outside note-on that touches `gain`,
 // and op_render/op_render_first/op_render_fb (unchanged since #44) never
 // see any of env_dx.h -- from the kernel's point of view this could be a
 // fixed gain, a hand-set ramp, or an EG, and it wouldn't know the
-// difference (fm.md §4.1's routing claim, restated for the EG).
+// difference (module_fm.md §4.1's routing claim, restated for the EG).
 //
 // #49 took `amp_atten` (0..1) and multiplied it into the already-computed
 // LINEAR gain, reasoning that "a multiplicative tremolo on top of the EG's
 // own linear gain is the natural place for it (no interaction with EnvDX's
-// own state at all)". F6 (fm2.md §5.14) moved it: Dexed subtracts amp mod
+// own state at all)". F6 (history_fm.md §5.14) moved it: Dexed subtracts amp mod
 // from the operator's LOG-domain level, BEFORE the exp lookup that turns it
 // into a gain. That is not the same curve rescaled -- a fixed linear factor
 // is a fixed dB attenuation, whereas Dexed's is proportional to the current

@@ -52,7 +52,7 @@
         utterances).
 
 Same host-side-authoring-and-validation split as tools/xm2t00t (keeping the
-letter-to-sound rules engine host-side, per speech.md "Host Tooling", is the
+letter-to-sound rules engine host-side, per module_speech.md "Host Tooling", is the
 same decision for the same reason): the device ships a table, all the
 authoring smarts stay on the host where a CSV row typo fails a Python script
 instead of turning into a pole outside the unit circle at runtime.
@@ -67,11 +67,11 @@ CSV schema (see tools/speech_phonemes.csv for the full ~48-row set):
                 0-1020 Hz representable)
     fric_F, fric_B, nasal_F, nasal_B -- parallel-branch targets, same units
                 as F/B above (#29's fricative/nasal resonators; not part of
-                speech.md's original PhonemeDef sketch -- see phoneme_def.h)
+                module_speech.md's original PhonemeDef sketch -- see phoneme_def.h)
     av, af, an -- excitation mix, 0.0-1.0 (quantized to a 0-255 byte)
     duration_ms -- 0-255, unread by anything yet (P3 sequencer)
     flags    -- '|'-separated names from PLOSIVE, STOP_CLOSURE,
-                TRANSITION_FAST, SUSTAINABLE (speech.md / #30), or empty
+                TRANSITION_FAST, SUSTAINABLE (module_speech.md / #30), or empty
     notes    -- free text, not emitted, for the human maintainer's citation
 """
 

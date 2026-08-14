@@ -1,7 +1,7 @@
 // Host-side proof of src/engines/speech/render.h. Two independent checks,
 // both calling the exact functions the device's audio_engine.cpp calls from
 // its Core 1 render loop -- there is no openmpt123 equivalent for a formant
-// synth (speech.md "Testing"), so this harness *is* the reference from here
+// synth (module_speech.md "Testing"), so this harness *is* the reference from here
 // on: same source, host compiler, WAV out, diffable against a device
 // capture to separate DSP bugs from embedded bugs. No pico-sdk, no ARM
 // intrinsics -- render.h only touches header-only common-layer DSP (see its
@@ -39,7 +39,7 @@
 //     measurably contributes energy at nasal_F, by comparing against the
 //     same cascade target with an forced to zero (the acoustic difference
 //     between a nasal and its cognate stop's closure -- P2 has no plosive
-//     closure/burst mechanism yet, that's speech.md P3).
+//     closure/burst mechanism yet, that's module_speech.md P3).
 //   - test_cc_sweep_stability() (#29): sweeps formant_shift and
 //     bandwidth_scale across their full CC range at every phoneme target
 //     and checks every resonator's pole (cascade, fricative, nasal) stays
@@ -516,7 +516,7 @@ static bool run_voiced_fricative_checks() {
 
 // #29 acceptance: "A nasal (/m/ or /n/) is distinguishable from the
 // corresponding voiced stop." P2 has no plosive closure/burst mechanism yet
-// (speech.md P3), so the closest objective proxy available here is the
+// (module_speech.md P3), so the closest objective proxy available here is the
 // nasal pole's own contribution: the acoustic difference between a nasal
 // and its cognate stop's closure interval is entirely whether the velum is
 // lowered (nasal pole active) or the nasal port is sealed too (an=0, same
@@ -765,7 +765,7 @@ static bool run_rate_checks() {
 }
 
 // #34 acceptance: "Plosives are distinguishable from the corresponding
-// fricatives by ear." speech.md's own claim about *why* is specific: a
+// fricatives by ear." module_speech.md's own claim about *why* is specific: a
 // plosive's closure (silence) immediately followed by a burst (transient)
 // is the acoustic shape a continuous fricative doesn't have -- "without
 // this, plosives sound like fricatives and intelligibility collapses."

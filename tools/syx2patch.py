@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""syx2patch.py -- DX7 32-voice .syx bulk dump -> patches.h (#47/#48, fm.md P3).
+"""syx2patch.py -- DX7 32-voice .syx bulk dump -> patches.h (#47/#48, module_fm.md P3).
 
     syx2patch.py convert <in.syx> <out.h>
         Parse a 4104-byte DX7 32-voice bulk dump (F0 43 0n 09 20 00 + 4096
@@ -9,7 +9,7 @@
         (`enum FmPatchId`, `FM_PATCH_COUNT`, `const FmPatch FM_PATCHES[]`,
         `const char *FM_PATCH_NAMES[]`). Never wired into CMakeLists.txt or
         committed -- see the file's own generated-header comment and
-        engine.md's xm2t00t precedent (copyrighted third-party patch/song
+        history_tracker.md's "xm2t00t Host Converter (#14)" precedent (copyrighted third-party patch/song
         data stays local, gitignored, user-populated).
 
     syx2patch.py dump <in.syx>
@@ -31,7 +31,7 @@ FM_TEST_PATCH. This converter's real job is almost entirely structural:
 unpack the bit-packed sysex format correctly, and turn one of 32 DX7
 algorithm numbers into this engine's mod_target-per-operator shape.
 
-v1 scope (#47, fm.md P3): algorithm routing, EG rates/levels, output level,
+v1 scope (#47, module_fm.md P3): algorithm routing, EG rates/levels, output level,
 velocity sensitivity, coarse/fine ratio, feedback on/off, and interleaved-
 feedback (algorithm 4/6) detection.
 
@@ -52,7 +52,7 @@ frequency mode is wired via `op_fixed_hz()` (a closed-form Hz formula
 derived from Dexed's own `osc_freq()`) -- patches using it are no longer
 skipped.
 
-v3 scope (#49, fm.md P4): the voice-wide pitch EG (4 rate/level bytes each,
+v3 scope (#49, module_fm.md P4): the voice-wide pitch EG (4 rate/level bytes each,
 bulk offset 102-109) and LFO (speed/delay/PMD/AMD/waveform/key-sync/PMS,
 bulk offset 112-116) blocks -- both copied straight through as raw DX7
 bytes, same "no host-side DSP math needed, env_dx.h/pitch_eg.h/lfo.h
@@ -64,7 +64,7 @@ needed either. Transpose remains deliberately unwired -- it affects what
 MIDI note maps to what pitch, a Core 0/MIDI-controller-layer concern this
 patch-data-only converter has no way to apply.
 
-This converter emits no gain/level constants at all (F2, fm2.md §2). It
+This converter emits no gain/level constants at all (F2, history_fm.md §2). It
 used to fill in an `FmOpParams::level` per operator from one of two
 hand-tuned references -- FM_CARRIER_LEVEL_REF / FM_MODULATOR_LEVEL_REF --
 divided by the carrier count or the modulator fan-in. All of that is gone.
@@ -205,7 +205,7 @@ def decode_algorithm(flags: List[int]) -> AlgorithmDecode:
     genuine second, operator-spanning loop closed only across block/sample
     processing order (a one-render-block delay), not the ordinary forward
     DAG this decode already reconstructs. That shape needs a block-length
-    delay to break -- exactly the multi-operator-cycle case fm.md §4.2 and
+    delay to break -- exactly the multi-operator-cycle case module_fm.md §4.2 and
     patch.h's fm_resolve_routing() rule out entirely. Detected generically
     here (not by hardcoding "algorithm == 4 or 6"): build a test graph
     adding a tentative edge from every such secondary operator to the
@@ -232,7 +232,7 @@ def decode_algorithm(flags: List[int]) -> AlgorithmDecode:
     primary_op = primaries[0]
     secondary = [j for j in range(n) if fb_out_bit[j] and not fb_full[j]]
 
-    # F7 (fm2.md §5.20): a bus is NOT emptied when it is read. Dexed's
+    # F7 (history_fm.md §5.20): a bus is NOT emptied when it is read. Dexed's
     # `FmCore::render` only ever replaces a bus's contents on a write without
     # the add flag, so two or three consecutive operators can read the same
     # modulator -- which is exactly how algorithms 19-25 drive several carriers
@@ -339,7 +339,7 @@ def _range_check(value: int, lo: int, hi: int, field_name: str, ctx: str) -> int
     return value
 
 
-# F7 (fm2.md §5.18): the EG rate/level fields are checked against the 7-bit
+# F7 (history_fm.md §5.18): the EG rate/level fields are checked against the 7-bit
 # byte range, not the 0-99 range the DX7's front panel can enter.
 #
 # ROM3A voice 19 (TIMPANI) really does ship with OP2 L3 = 127, and the bank's
@@ -611,7 +611,7 @@ def convert_voice(idx: int, voice: DX7Voice, warnings: List[str]) -> Optional[Fm
         # approximation, so no warning needed for this branch.
         feedback_level = voice.feedback_level if r.feedback_capable else 0
 
-        # F6 (fm2.md §5.16) removed a rule that used to force a carrier's L4 to
+        # F6 (history_fm.md §5.16) removed a rule that used to force a carrier's L4 to
         # 0 here. Its stated reason was that "a nonzero carrier L4 never reaches
         # env_dx.h's EG_IDLE, so the voice could never be reclaimed by the
         # allocator (the tracker's #21 bug shape)". That reason does not hold:
@@ -655,7 +655,7 @@ def convert_voice(idx: int, voice: DX7Voice, warnings: List[str]) -> Optional[Fm
         warnings.append(
             f"voice {idx} ({voice.name!r}): algorithm {voice.algorithm + 1} has a second, "
             f"operator-spanning feedback loop this engine can't represent yet (#54, "
-            f"fm.md open question 6) -- collapsed to single self-feedback on the primary "
+            f"module_fm.md open question 6) -- collapsed to single self-feedback on the primary "
             f"operator only; the secondary loop is dropped, explicitly, not silently"
         )
 
@@ -692,7 +692,7 @@ def _make_unique(base: str, used: Dict[str, int]) -> str:
 def render_header(patches: List[FmPatchOut], syx_path: str) -> str:
     lines = [
         f"// GENERATED by tools/syx2patch.py convert from {os.path.basename(syx_path)} -- do not hand-edit.",
-        "// v1 (#47, fm.md P3): algorithm routing, EG rates/levels, output level,",
+        "// v1 (#47, module_fm.md P3): algorithm routing, EG rates/levels, output level,",
         "// velocity sensitivity, coarse/fine ratio, feedback depth (0-7), algorithm 4/6",
         "// interleaved-feedback detection (collapsed to single self-feedback, see the",
         "// per-patch comment below where it applies). v2 (#48): key level scaling,",
@@ -706,7 +706,7 @@ def render_header(patches: List[FmPatchOut], syx_path: str) -> str:
         "// Every number below is DX7 patch data. There is no gain or level constant",
         "// here: op.h defines one engine-wide ceiling (FM_GAIN_MAX) and the whole",
         "// per-operator balance comes from output_level and the EG, exactly as it",
-        "// does on real hardware (F2, fm2.md \u00a72).",
+        "// does on real hardware (F2, history_fm.md \u00a72).",
         "#pragma once",
         "",
         '#include "patch.h"',
@@ -764,7 +764,7 @@ def render_header(patches: List[FmPatchOut], syx_path: str) -> str:
 # padding) and FmPitchEgParams (rate[4]+level[4], 8 bytes exactly) -- once
 # per patch, not once per operator. Plus one 4-byte name pointer per patch.
 # Not a compiled sizeof() (no device toolchain invoked here), just a
-# documented estimate -- fm.md §8's flash budget should be revisited
+# documented estimate -- module_fm.md §8's flash budget should be revisited
 # against the real number once available.
 _BYTES_PER_OP_ESTIMATE = 37
 _BYTES_PER_VOICE_LFO_PEG_ESTIMATE = 16
@@ -807,7 +807,7 @@ def cmd_convert(args: argparse.Namespace) -> None:
 
     table_bytes = len(patches) * _BYTES_PER_PATCH_ESTIMATE
     print(f"Wrote {args.header} ({len(patches)}/{len(patches) + skipped} voices converted, "
-          f"{skipped} skipped, ~{table_bytes} bytes in flash -- estimate, see fm.md §8)")
+          f"{skipped} skipped, ~{table_bytes} bytes in flash -- estimate, see module_fm.md §8)")
     for w in warnings:
         print(f"  note: {w}")
 

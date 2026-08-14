@@ -17,7 +17,7 @@
 
 // Groovebox render engine (Core 1). Per-voice VoiceType dispatch: each voice
 // runs a focused inner loop for its instrument. The dispatch happens once per
-// voice per buffer, not per sample. See groovebox.md.
+// voice per buffer, not per sample. See module_groovebox.md.
 
 // --- Telemetry for the Core 0 UI ---
 static volatile uint8_t s_load_pct = 0;

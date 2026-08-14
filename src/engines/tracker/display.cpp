@@ -5,12 +5,12 @@
 #include "pico/time.h"
 #include <cstdio>
 
-// Playback position display (#24, tracker.md "Display"): order/pattern/row,
+// Playback position display (#24, module_tracker.md "Display"): order/pattern/row,
 // per-channel activity, and song title/tracker name/channel count. Reads
 // tracker_player_ui_state()/tracker_player_song() -- both Core-0-local state
 // the player task already holds, so no reverse channel from Core 1 is
 // needed; the snapshot is one tick ahead of what's audible, invisible at
-// 20ms (tracker.md, player_task.h's TrackerUiState comment).
+// 20ms (module_tracker.md, player_task.h's TrackerUiState comment).
 //
 // No persistent framebuffer: every primitive here goes through gfx.cpp's
 // existing tile/DMA path, whose only backing storage is its shared
@@ -18,7 +18,7 @@
 // engine's display). This file adds no buffer of its own -- static state
 // below is a handful of uint32_t change-detection latches, well under 100 B
 // -- so the SRAM cost of this display path is that shared 1,152 B, a small
-// fraction of the sample budget (tracker.md: "350-400 KB of SRAM").
+// fraction of the sample budget (module_tracker.md: "350-400 KB of SRAM").
 
 static const uint16_t COL_BG    = gfx_rgb(0, 0, 0);
 static const uint16_t COL_TITLE = gfx_rgb(30, 90, 160);

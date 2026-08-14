@@ -7,7 +7,7 @@
 
 // One SID voice: oscillator x envelope, through the two DACs.
 //
-// TOPOLOGY-FREE (chip.md §4). No bus index, no voice index, no neighbour. Sync
+// TOPOLOGY-FREE (module_chip.md §4). No bus index, no voice index, no neighbour. Sync
 // and ring arrive as values the caller computed; where they came from is the
 // caller's business, which is what lets CHIP_STRICT's adjacency wiring and the
 // engine's per-voice sub-oscillator (§4.4) share this code.
@@ -23,7 +23,7 @@
 // the reference's scale rather than inventing one is deliberate. The FM
 // module's attempt 1 had no such anchor -- carriers and modulators on two
 // unrelated scales, a global shift to paper over it, and per-operator magic
-// constants to paper over that (fm2.md §1.1a). Six free parameters that
+// constants to paper over that (history_fm.md §1.1a). Six free parameters that
 // existed only to cancel each other out, and no way to tell which was wrong.
 // Here there is exactly one scale and it is the reference's, so any level
 // disagreement with reSID is a bug in a specific curve rather than a tuning
@@ -42,7 +42,7 @@
 #define CHIP_WAVE_DAC 1
 #endif
 
-// Velocity scaling. chip.md §13.7: applied *before* the bus sum, not after the
+// Velocity scaling. module_chip.md §13.7: applied *before* the bus sum, not after the
 // filter, "a quiet note then drives the 6581 nonlinearity less hard, which is
 // both physically right and what makes velocity feel like dynamics rather
 // than a volume knob". §11.1: it must compile out under CHIP_STRICT, "or the
@@ -101,7 +101,7 @@ struct SidVoice {
         int32_t out = (w - wave_zero()) * amp;
 
 #if !CHIP_STRICT
-        // Digital scaling, ahead of any filter. ~2-3 c/f, per chip.md §9.
+        // Digital scaling, ahead of any filter. ~2-3 c/f, per module_chip.md §9.
         uint8_t v = velocity ? velocity : 127;
         if (v != 127) out = (int32_t)(((int64_t)out * v) >> 7);
 #endif

@@ -2,7 +2,7 @@
 
 #include <cstdint>
 
-// Chip module engine skeleton (chip.md §1 P1/P2/P3, §14 item 2).
+// Chip module engine skeleton (module_chip.md §1 P1/P2/P3, §14 item 2).
 //
 // "engines/chip/, VoiceType dispatch, static MIDI-channel->voice map,
 // register-stream playback path" -- P0's rig (rig.h) proved the primitives
@@ -13,7 +13,7 @@
 // Core 0 only supplies note/gate/instrument-select, per §7.1's ParamExchange
 // note ("the VM lives on Core 1").
 //
-// chip.md §13.3, confirmed by P0 (§9, §14a.9): MAX_VOICES = 32 (allocation
+// module_chip.md §13.3, confirmed by P0 (§9, history_chip.md §14a.9): MAX_VOICES = 32 (allocation
 // pool / active-voice bitmap width -- a separate concern from the ~20-voice
 // CPU budget target); FILTER_BUS_COUNT = 4, confirmed by the same
 // measurement. Both are needed before #include "engine_base.h", which sizes
@@ -23,7 +23,7 @@ static constexpr uint32_t FILTER_BUS_COUNT = 4;
 
 #include "engine_base.h"
 
-// chip.md §7.3: "Chip" survives only as a per-voice tonal-profile tag,
+// module_chip.md §7.3: "Chip" survives only as a per-voice tonal-profile tag,
 // dispatched in the render loop exactly like the groovebox's VoiceType --
 // not a container, not an allocation unit. VT_SILENT = 0 so a zero-inited
 // (unused) voice slot is silent by construction, same convention as every
@@ -31,7 +31,7 @@ static constexpr uint32_t FILTER_BUS_COUNT = 4;
 enum VoiceType : uint8_t {
     VT_SILENT = 0,
     VT_SID,          // 6581/8580 voice
-    VT_AY,           // AY-3-8910/YM2149 voice (chip.md §12.1, AY-P1) -- one
+    VT_AY,           // AY-3-8910/YM2149 voice (module_chip.md §12.1, AY-P1) -- one
                       // AyTone + one AyNoise + one AyEnvelope per voice, not
                       // the real chip's shared-noise/shared-envelope-across-
                       // 3-channels topology (§12.1's own design note: full
@@ -39,7 +39,7 @@ enum VoiceType : uint8_t {
     // later: VT_SN76489, VT_NES_PULSE, VT_NES_TRI, VT_NES_NOISE, VT_GB_WAVE
 };
 
-// chip.md §5: "VoiceParams carries only uint8_t filter_bus, with BUS_NONE as
+// module_chip.md §5: "VoiceParams carries only uint8_t filter_bus, with BUS_NONE as
 // sentinel." 0xff rather than -1 since filter_bus is unsigned (matching
 // FILTER_BUS_COUNT's own type) and is compared with `< FILTER_BUS_COUNT`
 // everywhere, which already excludes it without a separate check.
@@ -53,7 +53,7 @@ struct VoiceParams {
                            // frequency-proportional). Bend already applied. For VT_SID
                            // the frame VM layers wave-table arpeggio + vibrato on top of
                            // this on Core 1, per note-on, not per sample; VT_AY has no
-                           // frame VM yet (AY-P1, chip.md §12.1) so this is the whole story.
+                           // frame VM yet (AY-P1, module_chip.md §12.1) so this is the whole story.
     uint8_t  instrument;   // index into INSTRUMENTS[] (VT_SID, engines/chip/instruments.h)
                            // or AY_INSTRUMENTS[] (VT_AY, ay_instruments.h) -- which table
                            // depends on type, resolved by midi_controller.cpp at note-on
@@ -65,7 +65,7 @@ struct VoiceParams {
                            // set by Core 0's bind_filter() at note-on, from the
                            // selected instrument's uses_filter flag. Always BUS_NONE
                            // for VT_AY -- this chip has no filter model.
-    uint8_t  speaker_preset;   // chip.md §1 P5, §10: SpeakerPreset (speaker_sim.h).
+    uint8_t  speaker_preset;   // module_chip.md §1 P5, §10: SpeakerPreset (speaker_sim.h).
                            // A single global choice, not really per-voice, but
                            // VoiceParams is the only Core0->Core1 channel and
                            // this is one byte -- replicated identically to
@@ -75,12 +75,12 @@ struct VoiceParams {
                            // every other engine to carry unused.
 };
 
-// chip.md §1 P5 open question 3 ("telemetry struct contents for the LCD"):
+// module_chip.md §1 P5 open question 3 ("telemetry struct contents for the LCD"):
 // current table row + active instrument, same shape as speech's per-voice
 // phoneme display -- enough for the display to show what each voice is
 // actually doing without widening the reverse channel bitmap itself.
 struct ChipVoiceUiState {
-    VoiceType type;        // chip.md §12.3: VT_SILENT/VT_SID/VT_AY -- display.cpp
+    VoiceType type;        // module_chip.md §12.3: VT_SILENT/VT_SID/VT_AY -- display.cpp
                             // needs this to know which instrument table `instrument`
                             // indexes and how to label the voice (was implicitly
                             // VT_SID-only through P2, when AY voices always reported

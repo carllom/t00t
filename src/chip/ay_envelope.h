@@ -7,7 +7,7 @@
 //
 // TOPOLOGY-FREE (see ay_osc.h's header comment -- same file, same rule).
 //
-// chip.md §12: "envelope generator at audio rate as a 'buzzer' bass
+// module_chip.md §12: "envelope generator at audio rate as a 'buzzer' bass
 // source -- the signature Spectrum sound, and the AY does not sound like
 // an AY without it." This is that generator: a 5-bit (0-31) ramp counter,
 // not the 4-bit ADSR shape SID needed EnvSid for -- a different enough

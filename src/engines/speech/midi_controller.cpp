@@ -7,7 +7,7 @@
 #include "presets.h"
 #include <cmath>
 
-// Phoneme keyboard (#28, speech.md MIDI Mapping Phase 1 "SPEECH_HOLD"): one
+// Phoneme keyboard (#28, module_speech.md MIDI Mapping Phase 1 "SPEECH_HOLD"): one
 // MIDI note is one sustained phoneme. Note number sets glottal pitch, gate
 // sustains the phoneme; the phoneme new notes on a channel use is selectable
 // two ways -- Program Change, or CC20 (banded into PHONEME_COUNT zones, same
@@ -26,12 +26,12 @@
 // formant_shift (CC21) and bandwidth_scale (CC22, #29) sit right after
 // CC20 in that same BSP bank. Unlike pan/phoneme -- which only take effect
 // on the *next* note-on, matching every other engine's "next note" CCs --
-// these two are genuinely live (speech.md: "the field that makes this an
+// these two are genuinely live (module_speech.md: "the field that makes this an
 // instrument"): the CC handler pushes the new value into every voice
 // currently held on that channel, not just the per-channel default used by
 // future notes, so sweeping the knob is audible mid-note.
 //
-// #36 (speech.md P4 "MIDI Mapping"/"Utterances and MIDI integration") fills
+// #36 (module_speech.md P4 "MIDI Mapping"/"Utterances and MIDI integration") fills
 // out the rest of the BSP block (CC24-28) plus GM's own standard vibrato
 // CCs (1, 76), and changes what Program Change means:
 //
@@ -60,11 +60,11 @@
 //   - CC1 (mod wheel) / CC76 (GM "Vibrato Rate"): lfo_depth/lfo_rate. CC1
 //     is the same "mod wheel -> vibrato depth" convention the shared
 //     src/midi/midi_controller.cpp and subtractive engine already use
-//     (speech.md: "following the existing CC1/CC10 pattern in the
+//     (module_speech.md: "following the existing CC1/CC10 pattern in the
 //     subtractive engine"); CC76 is GM's own standard vibrato-rate
 //     controller, not a project-specific choice.
 //
-// #38 (speech.md P5 "Preset table") adds CC16: preset select
+// #38 (module_speech.md P5 "Preset table") adds CC16: preset select
 // (presets.h SpeechPreset / voice_apply_preset()), banded into
 // SPEECH_PRESET_COUNT zones same shape as CC20/CC23. CC16 sits in the same
 // BSP absolute-encoder bank (CC16-31) as CC20-28 and was the first free slot

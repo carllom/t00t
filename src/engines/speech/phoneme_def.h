@@ -3,7 +3,7 @@
 #include "tract.h"
 #include <cstdint>
 
-// Packed, flash-resident phoneme table entry (#32, speech.md "Host Tooling").
+// Packed, flash-resident phoneme table entry (#32, module_speech.md "Host Tooling").
 // Byte-quantized so a 64-phoneme table stays negligible in flash: F is Hz
 // (fits every formant this engine will ever target), B/fric_B/nasal_B are
 // Hz/4 (0-1020 Hz representable in a uint8_t -- the bandwidths this engine
@@ -13,7 +13,7 @@
 // unbuilt) -- reserved the same way #30 reserved the SUSTAINABLE bit ahead
 // of a CSV existing at all.
 //
-// This is speech.md's "Generated data" PhonemeDef struct, extended with
+// This is module_speech.md's "Generated data" PhonemeDef struct, extended with
 // fric_F/fric_B/nasal_F/nasal_B: that struct predates #29's parallel
 // fricative/nasal branches, which need a per-phoneme fricative/nasal pole
 // (e.g. /s/ vs /sh/'s fric_F is their entire distinguishing feature) that
@@ -34,7 +34,7 @@ struct PhonemeDef {
     uint8_t  flags;
 };
 
-// speech.md "Plosives" / "Singing mode (#30 decision)": bit meanings fixed
+// module_speech.md "Plosives" / "Singing mode (#30 decision)": bit meanings fixed
 // by the doc, not by this generator -- speechgen.py validates CSV flag
 // names against these same constants so a typo fails the build instead of
 // silently clearing a bit.

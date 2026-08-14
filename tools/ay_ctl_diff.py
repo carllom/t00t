@@ -2,7 +2,7 @@
 """Exact control-plane conformance: t00t's AY-3-8910/YM2149 primitives
 against ayumi.
 
-Mirrors tools/sid_ctl_diff.py's role (chip.md §11.1's control-plane/signal-
+Mirrors tools/sid_ctl_diff.py's role (module_chip.md §11.1's control-plane/signal-
 plane split) for the second chip in this module. Unlike SID's envelope,
 AY's is a plain ramp counter with no piecewise-exponential segments, so
 every domain here is bit-exact -- there is no sample-quantisation tolerance
