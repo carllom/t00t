@@ -304,7 +304,7 @@ static FxReverb fx_reverb;
 static uint8_t  s_last_fx_type = 0xFF;
 static SidSpeakerStage speaker;   // module_chip.md §1 P5, §10
 
-// AY-3-8910/YM2149 voices (module_chip.md §12.1, AY-P1). One AyTone/AyNoise/
+// AY-3-8910/YM2149 voices (module_chip.md §12.1, AY-P0). One AyTone/AyNoise/
 // AyEnvelope trio per slot, independent -- not the real chip's shared-
 // noise/shared-envelope-across-3-channels topology (§12.1's design note,
 // same file). VT_AY reuses the same MAX_VOICES pool and voice_alloc as
@@ -317,7 +317,7 @@ static uint32_t   ay_tick_phase = 0;  // shared across every AY voice -- same cl
                                         // same sample rate, so the tick-count sequence
                                         // for a given sample is identical for all of them
 
-// Per-voice AY frame-VM state (module_chip.md §12.2, AY-P2), same role ChipVm
+// Per-voice AY frame-VM state (module_chip.md §12.3, AY-P2), same role ChipVm
 // plays for SID.
 struct AyVm {
     uint8_t  tone_pos, volume_pos;
@@ -394,8 +394,8 @@ static void ay_vm_frame_tick(uint32_t v, const AyInstrument &ins, uint16_t base_
         period = (uint32_t)(((uint64_t)period << 16) / semitone_ratio_q16[off + 24]);
     }
     // Vibrato: proportional to the *current* period, not a fixed offset on
-    // it -- Carl heard why the first version was wrong on real hardware:
-    // "the arpeggio deteriorates after a couple of laps [vibrato_delay's
+    // it -- the author heard why the first version was wrong on real
+    // hardware: "the arpeggio deteriorates after a couple of laps [vibrato_delay's
     // own 30-frame onset, ~3-4 laps of AY_INS_ARP's 8-row table], more
     // pronounced ... the higher the base pitch." A fixed absolute delta
     // subtracted from period is a *tiny* relative pitch shift at a large
@@ -580,7 +580,7 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
             const VoiceParams &p = vp.voices[v];
 
             if (p.type == VT_AY) {
-                // AY-P2 (module_chip.md §12.2): apply the instrument once on a
+                // AY-P2 (module_chip.md §12.3): apply the instrument once on a
                 // fresh trigger, raw base period immediately -- exactly
                 // SID's own P3 pattern (this file's SID trigger block,
                 // below), for exactly the same reason: ay_vm_frame_tick()
@@ -614,7 +614,7 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
                 // would still see p.gate true and never re-arm renders.
                 bool renders = p.gate && !ay_vm[v].gate_off_fired;
                 if (renders) { active_mask |= (1u << v); render_mask |= (1u << v); }
-                // module_chip.md §12.3: AY voices now report real telemetry --
+                // module_chip.md §12.4: AY voices now report real telemetry --
                 // tone_pos doubles as wave_pos (ChipVoiceUiState's own
                 // comment: "same field, same meaning either way").
                 s_voice_ui[v] = renders ? ChipVoiceUiState{VT_AY, p.gate, ins_idx, ay_vm[v].tone_pos}
@@ -757,7 +757,7 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
                     dry[base + i] += bus_filter[b].tick(bus_acc[b][i], f_half, q, ins.filter_mode_mask, /*saturate=*/true);
             }
 
-            // AY voices (module_chip.md §12.1, AY-P1): no filter bus, straight to
+            // AY voices (module_chip.md §12.1, AY-P0): no filter bus, straight to
             // dry[]. Tick-phase is shared across every AY voice -- same
             // clock, same sample rate, so the tick-count sequence for a
             // given sample is identical for all of them (ay_tick_scale_g,
@@ -812,7 +812,7 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
                         // starting value, so this one read covers both.
                         int8_t level = ins.use_envelope ? ay_env[v].level
                                                          : (int8_t)(ay_vm[v].volume_cur * 2 + 1);
-                        float amp = ay_dac_table(ins.model)[level];   // module_chip.md §12.3: per-instrument model
+                        float amp = ay_dac_table(ins.model)[level];   // module_chip.md §12.4: per-instrument model
                         float bipolar = gate ? 1.0f : -1.0f;
 
                         // Scale to roughly a SID voice's own raw dry[] peak

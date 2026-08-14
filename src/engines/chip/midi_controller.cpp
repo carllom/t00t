@@ -7,7 +7,7 @@
 #include "speaker_sim.h"
 #include <cmath>
 
-// module_chip.md §12.1, AY-P1: one combined instrument-selection space spans both
+// module_chip.md §12.2, AY-P1: one combined instrument-selection space spans both
 // chip types (SID instruments first, then AY's) so CC_INSTRUMENT/PC stay a
 // single "pick a patch" list rather than needing a separate chip-type
 // selector -- a player thinks in patches, not in which silicon a patch

@@ -39,7 +39,7 @@ enum AyInstrumentId : uint8_t {
     AY_INSTRUMENT_COUNT,
 };
 
-// module_chip.md §12.3: display.cpp names, same role chipgen.py's generated
+// module_chip.md §12.4: display.cpp names, same role chipgen.py's generated
 // INSTRUMENT_NAMES[] plays for SID -- hand-written here since this table
 // is hand-written too (no generator to emit it from yet, ay_instruments.h's
 // own header comment).

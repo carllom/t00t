@@ -887,7 +887,7 @@ reverse lookup, which speech's controller doesn't need since it has no
 pitch-bend handling at all. `CMakeLists.txt` now links `voice_alloc.cpp` for
 chip like every engine except tracker.
 
-**Hardware-observed bug (Carl, first P4 by-ear/by-scope pass): CPU duty
+**Hardware-observed bug (the author, first P4 by-ear/by-scope pass): CPU duty
 cycle never comes back down after release.** Hold 8 keys and release all of
 them -- the duty cycle stays pegged at the 8-voice level. Press and hold new
 keys one at a time afterward and it stays exactly where it was, only rising
@@ -970,7 +970,7 @@ constructs that don't map onto chip's model:
   lives in the `.sng`, not the `.ins`, so it can't be reconstructed from an
   instrument file alone regardless of engine differences.
 
-**Carl pushed back on the first version of this section** ("how do we know
+**The author pushed back on the first version of this section** ("how do we know
 we can import goattracker instruments? Have we tried with proper community
 instruments?") -- rightly: the only verification at that point was two real
 files (both correctly refused, proving nothing about the positive path) and
@@ -1086,7 +1086,7 @@ before.
 **`BYPASS` was first built as corners pushed outside the audible-effect
 range (20 Hz HP, 20 kHz LP, a deliberately wide-bandwidth peak) rather than
 a conditional skip, on the reasoning that it should exercise the same DSP
-as every other preset. Carl heard it anyway** -- "a tiny bit dull" against
+as every other preset. The author heard it anyway** -- "a tiny bit dull" against
 the pre-P5 build. Real cause: `res2p_radius()` (res2p.h) clamps to its LUT's
 last entry rather than extrapolating past `RES2P_RADIUS_X_MAX`, so the
 intended ~4 kHz peak bandwidth silently became ~1.1 kHz at 44.1 kHz -- a

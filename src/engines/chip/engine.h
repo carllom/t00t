@@ -31,7 +31,7 @@ static constexpr uint32_t FILTER_BUS_COUNT = 4;
 enum VoiceType : uint8_t {
     VT_SILENT = 0,
     VT_SID,          // 6581/8580 voice
-    VT_AY,           // AY-3-8910/YM2149 voice (module_chip.md §12.1, AY-P1) -- one
+    VT_AY,           // AY-3-8910/YM2149 voice (module_chip.md §12.1, AY-P0) -- one
                       // AyTone + one AyNoise + one AyEnvelope per voice, not
                       // the real chip's shared-noise/shared-envelope-across-
                       // 3-channels topology (§12.1's own design note: full
@@ -50,10 +50,12 @@ struct VoiceParams {
     uint16_t freq;        // The target chip's own pitch register, already converted by
                            // Core 0 (note_freq.h) -- SID's freq_reg for VT_SID (§4.1),
                            // AY's 12-bit tone period for VT_AY (inverted: period, not
-                           // frequency-proportional). Bend already applied. For VT_SID
-                           // the frame VM layers wave-table arpeggio + vibrato on top of
-                           // this on Core 1, per note-on, not per sample; VT_AY has no
-                           // frame VM yet (AY-P1, module_chip.md §12.1) so this is the whole story.
+                           // frequency-proportional). Bend already applied. Each type's
+                           // own frame VM layers arpeggio + vibrato on top of this on
+                           // Core 1: SID's wave table multiplies/adds a ratio onto
+                           // freq_reg (§6); AY's tone table divides period by the same
+                           // ratio instead, since AY's period is inversely proportional
+                           // to pitch (module_chip.md §12.2, note_freq.h).
     uint8_t  instrument;   // index into INSTRUMENTS[] (VT_SID, engines/chip/instruments.h)
                            // or AY_INSTRUMENTS[] (VT_AY, ay_instruments.h) -- which table
                            // depends on type, resolved by midi_controller.cpp at note-on
@@ -80,7 +82,7 @@ struct VoiceParams {
 // phoneme display -- enough for the display to show what each voice is
 // actually doing without widening the reverse channel bitmap itself.
 struct ChipVoiceUiState {
-    VoiceType type;        // module_chip.md §12.3: VT_SILENT/VT_SID/VT_AY -- display.cpp
+    VoiceType type;        // module_chip.md §12.4: VT_SILENT/VT_SID/VT_AY -- display.cpp
                             // needs this to know which instrument table `instrument`
                             // indexes and how to label the voice (was implicitly
                             // VT_SID-only through P2, when AY voices always reported
