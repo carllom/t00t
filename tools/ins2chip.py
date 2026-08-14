@@ -64,6 +64,7 @@ SID_SYNC = 0x02
 SID_RING = 0x04
 SID_TEST = 0x08
 
+WAVEDELAY = 0x01
 WAVEDELAY_MAX = 0x0F
 WAVESILENT, WAVELASTSILENT = 0xE0, 0xEF
 WAVECMD, WAVELASTCMD = 0xF0, 0xFE
@@ -154,6 +155,14 @@ def parse_ins(path):
 
 
 def decode_wave_table(ltab, rtab, optr_w, path):
+    # gplay.c's WAVEEXEC, traced tick-by-tick (verified against a real
+    # "arp minor 7" instrument's actual note sequence, not just the source):
+    # a delay row (w in 1..15) holds the *previous* row's pitch for w ticks,
+    # then on tick w+1 falls through and, only if note != 0x80, applies its
+    # own note as a new one-tick event. So note == 0x80 extends the previous
+    # emitted row by w+1 ticks (nothing ever changes); a real note extends
+    # it by w ticks of pure hold, then a separate new one-tick row (waveform
+    # untouched -- a delay row never sets cptr->wave, so "hold" is exact).
     rows = []          # list of [wave_bits_or_None(hold), note_offset, repeat]
     raw_to_emitted = {}
     i = 0
@@ -163,25 +172,58 @@ def decode_wave_table(ltab, rtab, optr_w, path):
         where = f"wave row {i}"
 
         if w == WAVE_JUMP:
-            # Loop marker -- must be the last row.
+            # Loop marker -- must be the last row. A raw target of exactly 0
+            # is GT's own "no table" null pointer (gplay.c: `if
+            # (cptr->ptr[WTBL])`), not row 0 -- loadinstrument() skips the
+            # relocation arithmetic entirely when the raw value is 0
+            # (`if (rtable[c][d]) rtable[c][d] = ...`). It means "table ends
+            # here, don't loop", same as chip's own wave_loop being omitted.
             if i != n - 1:
                 raise ConvertError(path, where, "wave-table jump row before end of table -- not supported")
-            target = note - optr_w
-            if target < 0 or target >= len(rows):
-                raise ConvertError(path, where, f"loop target resolves outside emitted table ({target})")
-            return rows, target
+            if note == 0:
+                return rows, None
+            raw_target = note - optr_w
+            if raw_target not in raw_to_emitted:
+                raise ConvertError(path, where, f"loop target resolves outside emitted table (raw row {raw_target})")
+            return rows, raw_to_emitted[raw_target]
         elif WAVECMD <= w <= WAVELASTCMD:
             cmd = WAVECMD_NAMES.get(w & 0xF, f"cmd 0x{w:x}")
             raise ConvertError(path, where, f"wavetable command row ({cmd}) -- not supported")
-        elif w <= WAVEDELAY_MAX:
-            # Delay-continuation row: extends the previous emitted row.
+        elif WAVEDELAY <= w <= WAVEDELAY_MAX:
+            # Note w == 0 is deliberately NOT in this range -- see below,
+            # it's a real (if waveform-less) row of its own, not a delay.
             if not rows:
                 raise ConvertError(path, where, "delay row with no preceding row to extend")
-            if note != 0x80:
-                raise ConvertError(path, where, "delay row also changes note -- not representable as a plain repeat")
+            if note == 0x80:
+                # Pure hold: this raw row contributes nothing new, a jump
+                # landing here is indistinguishable from landing on the row
+                # it's extending.
+                rows[-1][2] += w + 1
+                raw_to_emitted[i] = len(rows) - 1
+                i += 1
+                continue
+            if note >= 0x80:
+                raise ConvertError(path, where, f"absolute-pitch note byte 0x{note:x} -- chip's WaveRow is always relative to the played note")
+            # Hold-then-transition. A jump landing exactly on this raw row
+            # would, in real GT, restart its own w-frame hold (at whatever
+            # pitch is playing then) before transitioning -- chip's model
+            # can't express "hold at whatever's current" as a fixed target,
+            # so a loop here maps straight to the transition row instead,
+            # dropping up to w frames (<=15, 300ms) of hold on repeat
+            # passes only. Approximation, not exact -- see sid.md §14e.3.
             rows[-1][2] += w
+            raw_to_emitted[i] = len(rows)
+            rows.append([None, note, 1])
             i += 1
             continue
+        elif w == 0:
+            # gplay.c's WAVEEXEC: wave <= WAVELASTDELAY(15) is the "delay"
+            # branch, but wavetime(0) != wave(0) is false for w == 0, so it
+            # never actually holds -- it falls straight through to applying
+            # this row's own note this same tick. A real, single-frame row
+            # that changes note without changing waveform, i.e. chip's own
+            # "hold" keyword used deliberately rather than as a repeat-fold.
+            wave_bits = None
         elif WAVESILENT <= w <= WAVELASTSILENT:
             wave_bits = None  # "hold" -- keep current waveform, silent variant collapses to same slot
         else:
@@ -202,10 +244,21 @@ def decode_wave_table(ltab, rtab, optr_w, path):
 
 
 def decode_pulse_table(ltab, rtab, optr_p, path):
+    # A mid-table absolute-set row (real GT: legitimately resets the pulse
+    # register to a fixed value partway through a sweep, not just at the
+    # start) has no chip equivalent -- there's one pulse_init, not a
+    # reseekable pointer. But since we're statically decoding the whole
+    # table anyway, we can simulate the running pulse value through every
+    # prior delta/duration row (chip's own vm_frame_tick clamps [0, 4095]
+    # every frame, replicated frame-by-frame below) and synthesize an exact
+    # one-frame delta row that lands on the same absolute value instead of
+    # refusing outright.
     if not ltab:
         return None, [], None
     pulse_init = None
     rows = []
+    raw_to_emitted = {}
+    running = 2048  # matches emit_block's own fallback if row 0 never sets one
     i = 0
     n = len(ltab)
     while i < n:
@@ -213,15 +266,29 @@ def decode_pulse_table(ltab, rtab, optr_p, path):
         if ltab[i] == WAVE_JUMP:
             if i != n - 1:
                 raise ConvertError(path, where, "pulse-table jump row before end of table -- not supported")
-            target = rtab[i] - optr_p
-            if target < 0 or target >= len(rows):
-                raise ConvertError(path, where, f"loop target resolves outside emitted table ({target})")
-            return pulse_init, rows, target
+            if rtab[i] == 0:  # raw 0 = GT's null pointer, "stop", not "loop to row 0"
+                return pulse_init, rows, None
+            raw_target = rtab[i] - optr_p
+            if raw_target == 0 and pulse_init is not None and 0 not in raw_to_emitted:
+                # Loops back to the initial absolute-set row itself -- not a
+                # `rows` entry (pulse_init is a scalar, applied once at
+                # trigger, not a table row), so synthesize the equivalent
+                # one-frame snap back to that value instead of refusing.
+                delta = pulse_init - running
+                raw_to_emitted[0] = len(rows)
+                rows.append((delta, 1))
+            if raw_target not in raw_to_emitted:
+                raise ConvertError(path, where, f"loop target resolves outside emitted table (raw row {raw_target})")
+            return pulse_init, rows, raw_to_emitted[raw_target]
         if ltab[i] >= 0x80:
             value = ((ltab[i] & 0xF) << 8) | rtab[i]
-            if i != 0:
-                raise ConvertError(path, where, "pulse absolute-set row after the first row -- chip only has one pulse_init")
-            pulse_init = value
+            if i == 0:
+                pulse_init = value
+            else:
+                delta = value - running
+                raw_to_emitted[i] = len(rows)
+                rows.append((delta, 1))
+            running = value
             i += 1
             continue
         if ltab[i] == 0:
@@ -229,6 +296,9 @@ def decode_pulse_table(ltab, rtab, optr_p, path):
         duration = ltab[i]
         raw = rtab[i]
         delta = raw - 0x100 if raw >= 0x80 else raw
+        for _ in range(duration):
+            running = max(0, min(4095, running + delta))
+        raw_to_emitted[i] = len(rows)
         rows.append((delta, duration))
         i += 1
     return pulse_init, rows, None
@@ -256,24 +326,51 @@ def decode_filter_table(ltab, rtab, optr_f, path):
     resonance = (rtab[0] >> 4) & 0xF
     cutoff = rtab[1]
 
+    # Same reasoning as decode_pulse_table's mid-table absolute-set case: a
+    # later cutoff-set row (ltab == 0) has no direct chip equivalent, but we
+    # can simulate the running cutoff through every prior delta/duration row
+    # (chip's own vm_frame_tick clamps [0, 2047] every frame) and synthesize
+    # an exact one-frame delta landing on the same value.
     rows = []
+    raw_to_emitted = {}
+    running = cutoff
     i = 2
     while i < n:
         where = f"filter row {i}"
         if ltab[i] == WAVE_JUMP:
             if i != n - 1:
                 raise ConvertError(path, where, "filter-table jump row before end of table -- not supported")
-            target = rtab[i] - optr_f
-            if target < 0 or target >= len(rows):
-                raise ConvertError(path, where, f"loop target resolves outside emitted table ({target})")
-            return {"mode": mode, "cutoff": cutoff, "resonance": resonance, "rows": rows, "loop": target}
+            if rtab[i] == 0:  # raw 0 = GT's null pointer, "stop", not "loop to row 0"
+                return {"mode": mode, "cutoff": cutoff, "resonance": resonance, "rows": rows, "loop": None}
+            raw_target = rtab[i] - optr_f
+            if raw_target in (0, 1) and raw_target not in raw_to_emitted:
+                # Loops back to the type or cutoff header row -- neither is
+                # a `rows` entry (both fold into the static cutoff/resonance
+                # this function returns, applied once at trigger), so
+                # synthesize the equivalent one-frame snap back to the
+                # initial cutoff instead of refusing.
+                delta = cutoff - running
+                raw_to_emitted[raw_target] = len(rows)
+                rows.append((delta, 1))
+            if raw_target not in raw_to_emitted:
+                raise ConvertError(path, where, f"loop target resolves outside emitted table (raw row {raw_target})")
+            return {"mode": mode, "cutoff": cutoff, "resonance": resonance, "rows": rows, "loop": raw_to_emitted[raw_target]}
         if ltab[i] >= 0x80:
             raise ConvertError(path, where, "filter type/ctrl row after the first row -- not supported")
         if ltab[i] == 0:
-            raise ConvertError(path, where, "cutoff-set row after row 0 -- not supported")
+            value = rtab[i]
+            delta = value - running
+            raw_to_emitted[i] = len(rows)
+            rows.append((delta, 1))
+            running = value
+            i += 1
+            continue
         duration = ltab[i]
         raw = rtab[i]
         delta = raw - 0x100 if raw >= 0x80 else raw
+        for _ in range(duration):
+            running = max(0, min(2047, running + delta))
+        raw_to_emitted[i] = len(rows)
         rows.append((delta, duration))
         i += 1
     return {"mode": mode, "cutoff": cutoff, "resonance": resonance, "rows": rows, "loop": None}

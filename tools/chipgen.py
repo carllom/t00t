@@ -119,12 +119,18 @@ def parse_file(path):
         elif kw == "pulse_init":
             cur["pulse_init"] = parse_int(parts[1], path, lineno, 0, 4095, "pulse_init")
             section = None
-        elif kw == "wave":
+        elif kw == "wave" and len(parts) == 1:
             section = "wave"
         elif kw == "wave_loop":
             cur["wave_loop"] = parse_int(parts[1], path, lineno, 0, 255, "wave_loop")
             section = None
-        elif kw == "pulse":
+        elif kw == "pulse" and len(parts) == 1:
+            # The len(parts) == 1 guard matters: "pulse" alone opens the
+            # pulse-sweep section, but "pulse" is also a valid WAVE_BITS
+            # name, so a wave row using it (e.g. "pulse 15") has the same
+            # parts[0] -- without the guard this branch would wrongly steal
+            # it as a bare section header instead of falling through to the
+            # `section == "wave"` row parser below.
             section = "pulse"
         elif kw == "pulse_loop":
             cur["pulse_loop"] = parse_int(parts[1], path, lineno, 0, 255, "pulse_loop")
