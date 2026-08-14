@@ -1,0 +1,56 @@
+# Host build of render_fm_patch + t00t_ctl_dump (fm2.md §3.1). Plain g++,
+# deliberately separate from CMakeLists.txt. The cmake targets in this
+# directory are untouched.
+#
+#   python3 ../syx2patch.py convert ../fm_ref/banks/rom1a.syx ../../src/engines/fm/patches.h
+#   make -f Makefile.fm
+#
+# patches.h is generated and gitignored, so the T00T_FM_HAS_PATCHES gate below
+# mirrors the one in CMakeLists.txt: without it the binary still builds, and
+# says what to run.
+
+CXX      ?= g++
+CXXFLAGS ?= -O2 -std=c++17 -Wall
+INCLUDES  = -I. -I../../src
+
+PATCHES = ../../src/engines/fm/patches.h
+ifneq ($(wildcard $(PATCHES)),)
+CXXFLAGS += -DT00T_FM_HAS_PATCHES=1
+endif
+
+# The engine is header-only, so without these both targets happily relink
+# nothing after an engine change and the harness silently measures a stale
+# binary. That is not hypothetical: F4's feedback fix first "landed" with a
+# scorecard byte-identical to F3's, because make saw no reason to rebuild.
+# A wildcard rather than a list, so a new header (fm_scale.h was one) cannot
+# be forgotten here.
+ENGINE_HEADERS = $(wildcard ../../src/engines/fm/*.h) \
+                 $(wildcard ../../src/osc/*.h) \
+                 ../../src/audio_common.h ../../src/pan.h
+SHARED_HEADERS = ../fm_ref/wav32.h
+
+all: render_fm_patch t00t_ctl_dump render_fm
+
+render_fm_patch: render_fm_patch.cpp ../../src/osc/sine.cpp $(ENGINE_HEADERS) $(SHARED_HEADERS)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -o $@ render_fm_patch.cpp ../../src/osc/sine.cpp -lm
+
+# F1 control-plane dump. Needs no patches.h -- it drives env_dx.h/lfo.h/
+# pitch_eg.h directly with synthetic parameters.
+t00t_ctl_dump: t00t_ctl_dump.cpp ../../src/osc/sine.cpp $(ENGINE_HEADERS)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -o $@ t00t_ctl_dump.cpp ../../src/osc/sine.cpp -lm
+
+# The pre-existing engine self-check suite (predates fm2.md's harness; asserts
+# invariants the Dexed diff does not, e.g. the pitch EG's per-operator
+# increment scaling and the int32 overflow bound). It had no target here, so
+# `make -f Makefile.fm render_fm` silently fell through to make's *implicit*
+# rule -- which drops $(INCLUDES) and so cannot compile at all, while a stale
+# binary from a previous manual build sat there passing. That is the same
+# failure that cost F4 a phase (see ENGINE_HEADERS above) and it nearly cost
+# F5 one; listing it here is the fix for the whole class.
+render_fm: render_fm.cpp ../../src/osc/sine.cpp $(ENGINE_HEADERS) wav_writer.h
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -o $@ render_fm.cpp ../../src/osc/sine.cpp -lm
+
+clean:
+	rm -f render_fm_patch t00t_ctl_dump render_fm
+
+.PHONY: all clean

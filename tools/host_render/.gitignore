@@ -1,6 +1,9 @@
-# render_sid / t00t_chip_dump are build products. sid_compare.py and
-# sid_ctl_diff.py expect them at these bare paths (same convention as
-# tools/sid_ref/.gitignore's resid_render/resid_dump/resid_probe) --
-# build with: cmake --build build --target <name> && cp build/<name> <name>
+# render_sid / t00t_chip_dump / render_ay / t00t_ay_dump are build products.
+# sid_compare.py, sid_ctl_diff.py and ay_ctl_diff.py expect them at these
+# bare paths (same convention as tools/sid_ref/.gitignore's resid_render/
+# resid_dump/resid_probe) -- build with:
+#   cmake --build build --target <name> && cp build/<name> <name>
 render_sid
 t00t_chip_dump
+render_ay
+t00t_ay_dump
