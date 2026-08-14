@@ -1,6 +1,6 @@
 # Chip module reference rig (F0)
 
-Ground-truth comparison harness for the chip (SID) module. See [sid.md](../../sid.md)
+Ground-truth comparison harness for the chip (SID) module. See [chip.md](../../chip.md)
 §11 for why it exists and §1 for how it gates the phases.
 
 The short version: this module's primitives are a chain of small, exact,
@@ -99,7 +99,7 @@ frames 200
 ```
 
 Writes land on frame boundaries only. That is a statement about what this module
-*is* rather than a limitation: sid.md §6.2 makes the frame the chip's control
+*is* rather than a limitation: chip.md §6.2 makes the frame the chip's control
 clock, and it is also the only timebase a cycle-accurate reference and a
 44.1 kHz engine can both honour exactly.
 

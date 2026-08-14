@@ -1,4 +1,4 @@
-// resid_render -- the reference side of the F0 comparison (sid.md §11.1).
+// resid_render -- the reference side of the F0 comparison (chip.md §11.1).
 //
 // Consumes a register stream (see sidreg.h) and renders it through reSID at
 // 44.1 kHz. tools/host_render/render_sid.cpp takes the identical CLI and
@@ -63,7 +63,7 @@ int main(int argc, char **argv) {
     sid.set_chip_model(st.model_8580 ? reSID::MOS8580 : reSID::MOS6581);
     sid.enable_filter(true);
     // The external filter is the C64 *board's* passive output network, not the
-    // chip's -- sid.md §10 calls it out separately as a near-zero-cost one-pole
+    // chip's -- chip.md §10 calls it out separately as a near-zero-cost one-pole
     // that is "genuinely part of the SID sound". It is deliberately left ON
     // here so the reference includes it: the t00t side models it too, and
     // taking it out of the reference would make the comparison measure a stage

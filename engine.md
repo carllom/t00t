@@ -851,9 +851,9 @@ check above; all convert well under the default SRAM budget (93-241 KB of a
 
 ## Chip Module F0 — Primitives + reSID Reference Rig
 
-`sid.md` P0/F0. Host side complete and green; the hardware measurement is
-outstanding, so **the P0 gate is still closed** and none of `sid.md` §9's CPU
-budget is trusted. Full results in `sid.md` §14a; this section records the
+`chip.md` P0/F0. Host side complete and green; the hardware measurement is
+outstanding, so **the P0 gate is still closed** and none of `chip.md` §9's CPU
+budget is trusted. Full results in `chip.md` §14a; this section records the
 shape of the build and the numbers `engine.md` is the home for.
 
 **Layout.** `src/chip/` holds the topology-free primitives — `sid_osc.h`
@@ -863,7 +863,7 @@ rate-counter envelope with its piecewise-exponential segments), `sid_filter.h`
 the C64 board's output network), `sid_voice.h` (the fixed-point contract),
 `sid_tables.h` (generated, committed). `sid_chip.h` is the only file that knows
 the real chip's three-voice/one-filter/adjacency-sync topology; it exists for
-the `CHIP_STRICT` harness and for `sid.md` P1's register-stream playback path.
+the `CHIP_STRICT` harness and for `chip.md` P1's register-stream playback path.
 
 **The rig is host-first.** `tools/sid_ref/` fetches reSID 1.0-pre1 at a pinned
 SHA (not vendored — GPL-2, host-only, never linked into firmware) and builds
@@ -897,7 +897,7 @@ anywhere in it, so `tools/fit_6581_filter.py` fits `sid_filter.h`'s *actual*
 two-pass SVF recurrence — via its exact z-domain transfer function — to reSID's
 measured response at each of 129 cutoff and 16 resonance grid points, then
 interpolates to a 2048-entry table (4 KB flash, no per-sample arithmetic on the
-device). Provenance is stamped into the generated header, as `sid.md` §5.1
+device). Provenance is stamped into the generated header, as `chip.md` §5.1
 requires: this is reSID `ef7873fc`'s 6581, itself a model of one measured chip.
 
 Two limits found by the fit, both carried into P2:
@@ -909,15 +909,15 @@ Two limits found by the fit, both carried into P2:
 - The LUT is fitted on lowpass. Per-mode error on the resonance stream: LP
   5.21 dB, BP 3.39 dB, HP 7.92 dB, LP+HP 4.35 dB.
 
-**Aliasing is the largest residual and is not in `sid.md` at all.** On a
+**Aliasing is the largest residual and is not in `chip.md` at all.** On a
 sustained C4 sawtooth the harmonics match reSID within 0.4 dB up to 6 kHz;
 above that t00t's non-harmonic floor is −48 dBc against reSID's −74 dBc. reSID
 clocks at 985 kHz and resamples through an FIR, t00t generates at 44.1 kHz with
-no band-limiting. `sid.md` §9's oversampling watch item is written as
+no band-limiting. `chip.md` §9's oversampling watch item is written as
 conditional on hard sync; it is the oscillator's general problem.
 
 **Measurement build.** `make ENGINE=chip` builds `src/engines/chip/rig.h` — N
-voices with fixed parameters through `sid.md` §7.2's two-phase bus render, no
+voices with fixed parameters through `chip.md` §7.2's two-phase bus render, no
 MIDI, no VM, no display, PROFILE_PIN (GPIO 22) high for exactly the render. It
 steps through 0/1/4/8/16/24 voices on a 4 s hold so one capture gives the slope,
 which is the per-voice cost; taking it from two builds' intercepts instead would

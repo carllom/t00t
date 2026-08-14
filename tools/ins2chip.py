@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """ins2chip.py -- GoatTracker .ins instrument file -> chip_instruments.txt block
-(sid.md §1 P4, §11.2 ".ins compatibility").
+(chip.md §1 P4, §11.2 ".ins compatibility").
 
     ins2chip.py <file.ins> [file2.ins ...] [-o out.txt]
 
@@ -24,7 +24,7 @@ gplay.c's actual playback code, not documented in the repo's own readme or
 ChiptuneSAK's docs).
 
 What this converter refuses to guess at, and errors out on instead of
-silently mis-translating (sid.md §11.2's "what is actually lost" already
+silently mis-translating (chip.md §11.2's "what is actually lost" already
 flags most of this at the design level):
 
   * WAVECMD rows (wavetable-embedded portamento/vibrato/set-AD/set-SR/
@@ -210,7 +210,7 @@ def decode_wave_table(ltab, rtab, optr_w, path):
             # can't express "hold at whatever's current" as a fixed target,
             # so a loop here maps straight to the transition row instead,
             # dropping up to w frames (<=15, 300ms) of hold on repeat
-            # passes only. Approximation, not exact -- see sid.md §14e.3.
+            # passes only. Approximation, not exact -- see chip.md §14e.3.
             rows[-1][2] += w
             raw_to_emitted[i] = len(rows)
             rows.append([None, note, 1])

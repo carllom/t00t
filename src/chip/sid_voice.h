@@ -7,7 +7,7 @@
 
 // One SID voice: oscillator x envelope, through the two DACs.
 //
-// TOPOLOGY-FREE (sid.md §4). No bus index, no voice index, no neighbour. Sync
+// TOPOLOGY-FREE (chip.md §4). No bus index, no voice index, no neighbour. Sync
 // and ring arrive as values the caller computed; where they came from is the
 // caller's business, which is what lets CHIP_STRICT's adjacency wiring and the
 // engine's per-voice sub-oscillator (§4.4) share this code.
@@ -42,7 +42,7 @@
 #define CHIP_WAVE_DAC 1
 #endif
 
-// Velocity scaling. sid.md §13.7: applied *before* the bus sum, not after the
+// Velocity scaling. chip.md §13.7: applied *before* the bus sum, not after the
 // filter, "a quiet note then drives the 6581 nonlinearity less hard, which is
 // both physically right and what makes velocity feel like dynamics rather
 // than a volume knob". §11.1: it must compile out under CHIP_STRICT, "or the
@@ -101,7 +101,7 @@ struct SidVoice {
         int32_t out = (w - wave_zero()) * amp;
 
 #if !CHIP_STRICT
-        // Digital scaling, ahead of any filter. ~2-3 c/f, per sid.md §9.
+        // Digital scaling, ahead of any filter. ~2-3 c/f, per chip.md §9.
         uint8_t v = velocity ? velocity : 127;
         if (v != 127) out = (int32_t)(((int64_t)out * v) >> 7);
 #endif

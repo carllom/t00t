@@ -43,7 +43,7 @@ struct EffectParams {
     uint8_t p2;     // CC75: delay time  / reverb damping
 };
 
-// Filter bus model (chip module, sid.md §5/§7.1) — a small typed pool of
+// Filter bus model (chip module, chip.md §5/§7.1) — a small typed pool of
 // filters voices can share, sized to bound worst-case CPU load by
 // construction rather than by what the player happens to play. FB_SVF is a
 // plain two-pole filter any engine could reuse; FB_6581/FB_8580 select a
@@ -105,7 +105,7 @@ struct ParamExchangeT {
             // (p1=55), fully dry (mix=0) so it's silent until CC73 opens it.
             blocks[b].fx = { FX_DELAY, 0, 55, 36 };
             // bus[] is left zero-init: FB_OFF == 0, so every bus starts
-            // unbound — the correct default (sid.md §5.2: "most voices in
+            // unbound — the correct default (chip.md §5.2: "most voices in
             // real tunes ran unfiltered, because the filter was scarce").
         }
     }
