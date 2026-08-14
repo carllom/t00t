@@ -6,7 +6,7 @@
 #include "pico/multicore.h"
 #include "pico/time.h"
 
-// Core 1: the real-time mixer (#18, module_tracker.md "Core Split"). Consumes
+// Core 1: the real-time mixer (module_tracker.md "Core Split"). Consumes
 // TickBlocks from g_tracker_tick_ring (produced on Core 0 by player_task.cpp)
 // and renders them via mixer.h's tracker_render_buffer(), cut short at
 // whatever tick boundary falls inside a DMA buffer. Never touches
