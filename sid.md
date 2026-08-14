@@ -1479,26 +1479,89 @@ constructs that don't map onto chip's model:
   lives in the `.sng`, not the `.ins`, so it can't be reconstructed from an
   instrument file alone regardless of engine differences.
 
-Verified three ways: (1) both real `.ins` files parse their header and all
-three tables exactly, and are correctly refused for the absolute-pitch
-reason above; (2) a hand-built synthetic `GTI5` file exercising the full
-positive path -- wavetable delay-rows folded into repeat counts, a loop
-jump, pulse absolute-init + signed delta/duration sweep + loop, filter
-type/resonance + cutoff + delta/duration sweep -- round-trips through
-`chipgen.py` to field values matching the hand-authored `ARP_LEAD`/
-`FILTER_PAD` shape exactly; (3) three deliberate negative constructs
-(a WAVECMD row, a delay row with nothing preceding it, a filter table
-missing its required cutoff row) all produce clear, correctly-attributed
-errors and non-zero exit.
+**Carl pushed back on the first version of this section** ("how do we know
+we can import goattracker instruments? Have we tried with proper community
+instruments?") -- rightly: the only verification at that point was two real
+files (both correctly refused, proving nothing about the positive path) and
+a hand-built synthetic file checked against *my own* understanding of the
+spec, which is circular -- it can confirm the code does what I think it
+should, not that what I think it should do is right. Real testing required
+real community content.
 
-**Honestly still open:** neither real example file available for testing
-was a melodic/tonal instrument using only relative-note rows -- both were
-absolute-pitch SFX, which is the one case the converter is built to refuse.
-The positive path is verified against a hand-built file matching the
-documented byte layout, not against a real relative-note `.ins` pulled from
-the wild. Worth running against a real melodic patch (e.g. from a `.sng`'s
-instrument table, if one can be isolated) before trusting the converter on
-an arbitrary user-supplied file.
+`leafo/goattracker2`'s `examples/*.sng` are real GoatTracker songs (demo
+tunes with named, played instruments -- `dojo`, `hyperspace`,
+`cabrinigreen`, `sixpack`, and others). A throwaway script
+(`gettablepartlen()`'s own algorithm, gtable.c: scan forward from an
+instrument's table pointer to the first `0xff` row, inclusive) extracted
+every instrument from 9 of these songs as standalone `.ins` blobs, byte-
+identical in shape to what GoatTracker's own "export instrument" would
+produce -- **200 real, community-authored instruments**, not two SFX files
+and a synthetic guess.
+
+First pass: 7/200 converted. Investigating the failures found two real bugs
+in `ins2chip.py` itself, not scope limitations:
+
+- **The wave-table delay-row fold was wrong.** A raw row with `wave` in
+  1-15 holds the *previous* row's pitch, but a `note` byte on that same row
+  still gets applied -- on the *last* tick of the hold, once it expires. My
+  first pass required delay rows to carry no note at all (`note == 0x80`),
+  which is only the "pure repeat" case; a delay row *with* a real note is
+  an ordinary, common authoring pattern (arpeggios overwhelmingly use it --
+  every `cabrinigreen` instrument literally named "arp minor/major
+  7/9" hit this). Traced tick-by-tick against `gplay.c`'s `WAVEEXEC` and
+  cross-checked against `16_arp_minor_7.ins`'s actual decoded note sequence
+  (0, +3, +7, +10, +12, +10, +7, +3, 0, loop) -- a real, musically correct
+  minor-7 arpeggio, which a wrong reading would not have produced by
+  coincidence. Fixed: `note == 0x80` extends the previous row by `w+1`
+  ticks (nothing changes); a real note extends it by `w` ticks then emits
+  a separate one-tick transition row (waveform untouched, since a delay
+  row never sets `cptr->wave`).
+- **Loop-jump targets were resolved as if "raw row index" and "emitted row
+  index" were the same number.** They aren't once any row folds (delay
+  rows, or a pulse/filter table's leading absolute-set row, don't produce
+  their own `rows` entry) -- a jump could resolve to the wrong row, or to
+  a "row" that was folded away entirely. Fixed with an explicit
+  raw-index → emitted-index map built while decoding, so a jump's target
+  is looked up rather than assumed. Also found and fixed: a raw jump target
+  of exactly `0` is GT's own null-pointer convention ("stop, don't loop",
+  same as `loadinstrument()`'s own `if (rtable[c][d])` guard skips
+  relocating it) -- not literally row 0, which the first pass had backwards
+  often enough to matter.
+
+Second pass: 53/200. Two more *legitimate* patterns turned up as the
+dominant remaining failure, not bugs but also not un-fixable: a pulse or
+filter table resetting its absolute value **partway through** a sweep (16
+files), and a loop jumping back to the table's own initial absolute-set
+row (7 files) -- both real GT features with no direct chip equivalent
+(one `pulse_init`/`filter_cutoff_init`, not a reseekable pointer), but both
+staticly computable: since the converter already walks the whole table, it
+can simulate the running pulse/cutoff value through every prior
+delta/duration row (clamped exactly as `vm_frame_tick` clamps it) and
+synthesize a one-frame delta row landing on the same absolute value,
+instead of refusing. Third pass: **89/200 (44.5%)**, all 89 also verified
+through `chipgen.py` end-to-end with zero further failures.
+
+That last check caught a real bug in **`chipgen.py`**, not `ins2chip.py`:
+its keyword dispatch treated a bare `pulse` line as *always* opening a new
+pulse-sweep section, even when it was actually a wave row's own first
+token (`pulse` is a valid `WAVE_BITS` name too) -- `wave` / `pulse 15` /
+`pulse 12` / ... silently mis-parsed the second and third rows as a
+section header instead of a waveform. None of the four original hand-
+authored instruments ever happened to start a wave row with `pulse`, so
+this was invisible until real content (an "echo arp" instrument using a
+pulse-then-tri wave sequence) exercised it. Fixed with a `len(parts) == 1`
+guard so the bare-keyword and wave-row-content cases are distinguished by
+token count, the same way `filter`'s multi-token header line already had
+to be. `instruments.h` re-verified byte-identical after the fix.
+
+The remaining 111/200 failures are, on inspection, overwhelmingly correct
+refusals rather than gaps: 58 absolute-pitch wavetable rows and 36 sync/
+ring/test-bit instruments (both documented as out of scope above), plus a
+handful of table-sharing tricks (an instrument's table segment is *itself*
+just a jump into a differently-owned region of the original song's shared
+table -- not reconstructable from that one instrument alone, and arguably
+not "self-contained" even inside GoatTracker, the same point §11.2 already
+makes about sync).
 
 ---
 
