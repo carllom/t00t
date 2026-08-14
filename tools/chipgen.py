@@ -242,6 +242,11 @@ def emit(instruments, out_path, src_path):
     lines.append("    INSTRUMENT_COUNT,")
     lines.append("};")
     lines.append("")
+    lines.append("static const char *const INSTRUMENT_NAMES[INSTRUMENT_COUNT] = {")
+    for ins in instruments:
+        lines.append(f"    \"{ins['name']}\",")
+    lines.append("};")
+    lines.append("")
     lines.append("static const Instrument INSTRUMENTS[INSTRUMENT_COUNT] = {")
     for ins in instruments:
         lines.append(f"    // INS_{ins['name']}")

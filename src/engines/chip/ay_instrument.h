@@ -1,6 +1,7 @@
 #pragma once
 
-#include "instrument.h"   // SweepRow/SweepTable -- reused verbatim, see below
+#include "instrument.h"     // SweepRow/SweepTable -- reused verbatim, see below
+#include "chip/ay_envelope.h"   // AyModel
 #include <cstdint>
 
 // AY-3-8910/YM2149 instrument format -- P2 adds the frame table (chip.md
@@ -38,6 +39,13 @@ struct AyToneRow {
 struct AyToneTable { const AyToneRow *rows; uint8_t len; uint8_t loop; };
 
 struct AyInstrument {
+    AyModel  model;              // AY_MODEL_AY8910 or AY_MODEL_YM2149 (ay_envelope.h) --
+                                 // selects the DAC table (ay_dac_table()), the one
+                                 // real, documented difference between the two chips
+                                 // this format models. Per-instrument, not per-song or
+                                 // per-build: real tunes were authored for one specific
+                                 // chip, so a patch says which it wants, same as it
+                                 // already says its own mixer/envelope settings.
     uint8_t  initial_volume;    // 0-15, applied at trigger before the volume
                                  // table's row 0 (if any) takes effect at the
                                  // first frame tick; the whole story if there

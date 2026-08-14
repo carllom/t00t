@@ -34,7 +34,7 @@ still the last hardware-verified state.
 | **P4** | Instrument import: GoatTracker `.ins` host converter; hand-authored text format → header. Dynamic voice allocation. *(Built — §14e. Not yet heard on hardware.)* |
 | **P5** | Speaker simulation output stage (§10). LCD UI. *(Built — §14f. Not yet heard on hardware.)* |
 | **P6** | 8580 model (table swap). Combined-waveform LUTs. *(Deferred by Carl's call — the combined-waveform LUT's only available source data is reSID's own sampled tables (`tools/sid_ref/resid/wave*.h`, GPL-2, deliberately gitignored/not vendored, same reasoning as the DAC tables at §14a.7). Unlike the DAC ladder, combined-waveform behavior has no known clean closed-form derivation to independently re-derive from — reSID's own tables come from resistor/leakage-level SPICE modeling, not a formula. Raised as a licensing question rather than guessed at; Carl chose to defer P6 entirely rather than resolve it now. AND stays the 6581/8580 combined-waveform approximation, with §14a.4's documented ~200 dB error on the pulse combinations unchanged.)* |
-| **later** | Other chips (§12): AY/YM2149, SN76489, NES 2A03, GB DMG. *(AY-3-8910/YM2149 P0 (§12.1), P1 (§12.2) and P2 (§12.3, frame table: arpeggio, software volume envelope, vibrato, gate-off timer) built, hardware-verified. P2's vibrato had a real bug (fixed on-hardware report, §12.3) -- see it before trusting vibrato elsewhere in this doc's own uncalibrated-depth caveats.)* |
+| **later** | Other chips (§12): AY/YM2149, SN76489, NES 2A03, GB DMG. *(AY-3-8910/YM2149 P0-P3 (§12.1-§12.4) built, all hardware-verified -- P2's vibrato had a real bug, found and fixed from an on-hardware report (§12.3). First real AY CPU measurement: ~44 c/f/voice (§9, §12.4), retiring the old 10-25 c/f estimate.)* |
 
 **P0 was a hard gate.** Nothing in §9's budget was trusted until it cleared, and
 `FILTER_BUS_COUNT` was provisional until then (`MAX_VOICES = 32` is a separate,
@@ -459,10 +459,16 @@ voices at a loss. Frame VM (~0.2%, P3, not built) isn't in either number; at
 config this replaced (99.9%, effectively zero margin before the frame VM was
 even added — see §14a.9).
 
-**Comparison for context:** a PSG voice (AY/SN/NES, est. 10–25 c/f, 0.3–0.7%) is
-roughly a third of a SID voice's *estimated* cost — now that the real SID voice
-number is ~108 c/f, PSG voices are a smaller fraction still. SID remains the
-most expensive chip in the family; later chips are strictly easier to fit.
+**Comparison for context:** ~~a PSG voice (AY/SN/NES, est. 10–25 c/f,
+0.3–0.7%) is roughly a third of a SID voice's *estimated* cost~~ —
+**measured, not estimated, as of AY-P3 (§12.4): ~44 c/f (~1.3%), from real
+breadboard_rp2350 duty-cycle sweeps of `AY_INS_LEAD` at 1/4/8/16 voices.**
+Higher than the struck-through guess by roughly 2–4×, the same shape of
+miss (both directions, "up to 3.7×") §14a.9 already found for SID's own
+voice cost — not a fluke specific to one chip's estimate. Still
+comfortably cheaper than the measured SID voice (~108 c/f) by a wide
+margin, so SID remains the most expensive chip in the family; only the
+specific multiple was wrong, not the conclusion.
 
 ---
 
@@ -822,6 +828,87 @@ after the fix: both now show a bounded, comparable *proportional* wobble
 `vibrato_depth`'s scale is unchanged (still "raw, not cents," same
 uncalibrated status as before) -- only the structural bug is fixed, not
 promoted to a claim of precision it doesn't have.
+
+### 12.4 AY-3-8910/YM2149 P3 (YM2149 model, named display)
+
+Two of §12.2/§12.3's own "not built" gaps, both small and well-understood
+enough not to need their own phase name: YM2149 model selection, and AY
+voices actually appearing in the LCD.
+
+**`AyInstrument` grows a `model` field** (`AyModel`, `ay_envelope.h`) --
+per-instrument, not per-song or per-build, since a patch already owns its
+mixer/envelope settings and a real tune was authored for one specific
+chip. `AY_INS_LEAD_YM` (`AY_INS_LEAD`, byte-for-byte, model swapped) exists
+to prove the one real, documented AY8910-vs-YM2149 difference (the DAC
+tables) is actually reachable through an instrument, not just declared in
+a struct nothing reads. `audio_engine.cpp`'s mix loop reads `ins.model`
+instead of the P1/P2 hardcoded `AY_MODEL_AY8910`.
+
+**Display: Carl's own ask** ("improve the display with proper instrument
+names ... instrument # as well as name, preferably on the same line") --
+the INSTR row (the *currently selected* instrument, one line) was a bare
+combined index before this. First pass also renamed the per-voice grid's
+cells to names; Carl's own correction: names for the one-line INSTR row
+only, the grid stays numeric -- a name doesn't fit eight cells at once the
+way it fits one summary line, and that was never the ask. The grid also
+now shows `VT_AY` voices (still SID-only through P2, chip.md §12.2's own
+flagged gap), same numeric `voice:instrument/table-row` shape as before,
+just able to report an AY voice's own state instead of always reporting
+inactive.
+
+- `chipgen.py` now emits `INSTRUMENT_NAMES[]` alongside the existing
+  `ChipInstrumentId` enum -- it already parses each `instrument NAME`
+  block's name, this just also writes it out. `ay_instruments.h` gets the
+  hand-written equivalent (`AY_INSTRUMENT_NAMES[]`), same reasoning
+  `ay_instruments.h`'s own header comment already gives for staying
+  hand-written rather than generated. (Named lookup is currently only
+  exercised by the INSTR row, per the correction above -- the tables stay,
+  ready for wherever a name is actually wanted next.)
+- `ChipVoiceUiState` grows a `type` field -- without it, display.cpp had
+  no way to know whether a voice's `instrument` index meant `INSTRUMENTS[]`
+  or `AY_INSTRUMENTS[]`, which is exactly why AY voices reported the
+  all-zero/inactive state through P1 and P2 rather than real telemetry.
+- Every instrument number shown anywhere on the screen -- the INSTR row,
+  every grid cell -- is the *combined* CC16/Program Change number
+  (chip.md §12.2), not either table's own per-chip index. One number means
+  one thing everywhere on this screen, the same principle the combined
+  selection space itself was built on.
+
+**Hardware-verified.** Carl: "sounds fine. Very similar to [AY_INS_LEAD],
+but I think the differences are subtle" -- comparing `AY_INS_LEAD` against
+`AY_INS_LEAD_YM`, exactly the outcome the real, documented AY8910-vs-
+YM2149 difference should produce (a real but subtle DAC-curve difference,
+not a night-and-day one -- ayumi.c's own two tables, `ay_envelope.h`,
+never claimed more than that).
+
+**First real AY duty-cycle measurement, `AY_INS_LEAD`, no speaker filter,
+no FX:**
+
+| Voices | Duty cycle |
+|---|---|
+| idle | 2.8% |
+| 1 | 4.5% |
+| 4 | 8.6% |
+| 8 | 14.1% |
+| 16 | 23.7% |
+| 24 | not enough keys to hold at once to measure |
+
+Per-voice slope (idle -> 16v, the widest span, least sensitive to single-
+measurement rounding): (23.7 - 2.8) / 16 = **1.31 pp/voice**, ~**44 c/f**
+at the 3401 c/f = 100% (150 MHz / 44.1 kHz) baseline §9 already uses.
+Narrower pairs agree within a few c/f (8v->16v: 40.8 c/f; 4v->8v: 46.8
+c/f; 1v->4v: 46.5 c/f) -- consistent, not just a two-point average.
+
+This retires §9's placeholder: "a PSG voice (AY/SN/NES, est. 10-25 c/f...)
+is roughly a third of a SID voice's cost" was a guess made before any PSG
+existed in this codebase to measure. The real number, ~44 c/f, is higher
+than that estimate by roughly 2-4x -- the same shape of miss (estimates
+wrong in both directions, "up to 3.7x", §9's own words) SID's own P0
+already found for itself, now confirmed to not have been a fluke specific
+to SID. Real AY is still cheaper than the measured SID voice (~108 c/f,
+§9) by a wide margin, so the qualitative conclusion the estimate was
+guessing at -- "SID remains the most expensive chip in the family" --
+holds; only the specific multiple was wrong.
 
 ---
 

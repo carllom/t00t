@@ -40,7 +40,7 @@ static constexpr uint32_t BUF_PERIOD_US = 1000000u * SAMPLES_PER_BUFFER / SAMPLE
 static ChipVoiceUiState s_voice_ui[MAX_VOICES];
 
 void chip_voice_ui_state(uint32_t voice, ChipVoiceUiState *out) {
-    *out = (voice < MAX_VOICES) ? s_voice_ui[voice] : ChipVoiceUiState{false, 0, 0};
+    *out = (voice < MAX_VOICES) ? s_voice_ui[voice] : ChipVoiceUiState{VT_SILENT, false, 0, 0};
 }
 
 #if defined(T00T_CHIP_PROFILE) && T00T_CHIP_PROFILE
@@ -614,9 +614,11 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
                 // would still see p.gate true and never re-arm renders.
                 bool renders = p.gate && !ay_vm[v].gate_off_fired;
                 if (renders) { active_mask |= (1u << v); render_mask |= (1u << v); }
-                s_voice_ui[v] = ChipVoiceUiState{false, 0, 0};   // AY voices don't appear
-                                                                  // in the per-voice grid yet
-                                                                  // (SID-only, a known gap)
+                // chip.md §12.3: AY voices now report real telemetry --
+                // tone_pos doubles as wave_pos (ChipVoiceUiState's own
+                // comment: "same field, same meaning either way").
+                s_voice_ui[v] = renders ? ChipVoiceUiState{VT_AY, p.gate, ins_idx, ay_vm[v].tone_pos}
+                                         : ChipVoiceUiState{VT_SILENT, false, 0, 0};
                 continue;
             }
             if (p.type != VT_SID) continue;
@@ -681,8 +683,8 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
             bool renders = p.gate || voice[v].env.counter > 0;
             if (renders) render_mask |= (1u << v);
 
-            s_voice_ui[v] = renders ? ChipVoiceUiState{p.gate, ins_idx, vm[v].wave_pos}
-                                     : ChipVoiceUiState{false, 0, 0};
+            s_voice_ui[v] = renders ? ChipVoiceUiState{VT_SID, p.gate, ins_idx, vm[v].wave_pos}
+                                     : ChipVoiceUiState{VT_SILENT, false, 0, 0};
         }
 
         for (uint32_t i = 0; i < SAMPLES_PER_BUFFER; i++) dry[i] = 0;
@@ -810,7 +812,7 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
                         // starting value, so this one read covers both.
                         int8_t level = ins.use_envelope ? ay_env[v].level
                                                          : (int8_t)(ay_vm[v].volume_cur * 2 + 1);
-                        float amp = ay_dac_table(AY_MODEL_AY8910)[level];
+                        float amp = ay_dac_table(ins.model)[level];   // chip.md §12.3: per-instrument model
                         float bipolar = gate ? 1.0f : -1.0f;
 
                         // Scale to roughly a SID voice's own raw dry[] peak
