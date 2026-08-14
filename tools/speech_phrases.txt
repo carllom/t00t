@@ -1,5 +1,5 @@
 # speech_phrases.txt -- plain-text phrase list for tools/speechgen.py's
-# `gen-phrases` command (#35, speech.md "Host Tooling"). Generates
+# `gen-phrases` command (#35, module_speech.md "Host Tooling"). Generates
 # src/engines/speech/phrases.h.
 #
 # Format: one phrase per line, `NAME: word word word`. NAME becomes enum

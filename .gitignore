@@ -9,7 +9,7 @@ __pycache__/
 assets/
 syx/
 src/engines/fm/patches.h
-# FM reference rig (tools/fm_ref, fm2.md) -- host-only build products
+# FM reference rig (tools/fm_ref, history_fm.md) -- host-only build products
 tools/host_render/render_fm_patch
 tools/host_render/t00t_ctl_dump
 # F6: render_fm became a real Makefile.fm target, so its binary and the WAVs

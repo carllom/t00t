@@ -676,7 +676,7 @@ def voice_count_profile() -> bytes:
     envelope, that reaches 0 almost instantly, so the channel goes silent,
     but `v->active` stays true and mix_voice() keeps fully interpolating and
     accumulating it forever at zero output. Measured on real hardware
-    (Carl, 2026-08-07): the profiling pin stays pinned at the 32-voice duty
+    (the author, 2026-08-07): the profiling pin stays pinned at the 32-voice duty
     cycle straight through the "silent" idle phase after the first lap --
     display/UI correctly shows the channels as off (its active_mask reads
     target volume, not v->active), but the mixer was still doing full

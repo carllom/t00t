@@ -9,7 +9,7 @@
 # --- which is all the F0 reference rig needs. Nothing here is ever linked into
 # the device firmware; it is host-only development tooling.
 #
-# See fm2.md §3.1 (F0-a).
+# See history_fm.md §3.1 (F0-a).
 set -euo pipefail
 
 # Pinned so a reference render is reproducible. Bump deliberately, never

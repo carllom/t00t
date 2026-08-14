@@ -11,7 +11,7 @@
 # needs. Same reasoning, and the same shape, as the FM module's
 # tools/fm_ref/fetch_dexed.sh.
 #
-# See sid.md §11.1 (CHIP_STRICT) and §14 item 1 (P0/F0).
+# See module_chip.md §11.1 (CHIP_STRICT) and §14 item 1 (P0/F0).
 set -euo pipefail
 
 # Pinned so a reference render is reproducible. Bump deliberately, never
@@ -22,7 +22,7 @@ set -euo pipefail
 # ef7873f is reSID 1.0-pre1 ("Corrected samples for 6581 pulse + sawtooth",
 # 2023-05-20), the tip of daglem/reSID master. 1.0's filter model is the
 # newer one (dac.h + spline.h + the measured 6581 distortion model), not
-# 0.16's -- which matters, because sid.md §5.1's cutoff LUT is sampled from
+# 0.16's -- which matters, because module_chip.md §5.1's cutoff LUT is sampled from
 # it and §5.1 requires the provenance be named rather than presented as
 # canonical.
 RESID_SHA=ef7873fc8c8379dc14cef8d9ccf9b3d34d0cc439

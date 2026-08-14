@@ -3,7 +3,7 @@
 # A C major triad, all three voices routed into the shared filter, with
 # the cutoff swept.
 #
-# sid.md §3's summing-node intermodulation, and §5.2's reason for binding
+# module_chip.md §3's summing-node intermodulation, and §5.2's reason for binding
 # a chord of one instrument to one bus: the three voices sum *before* the
 # 6581 nonlinearity, so this is the only stream in the corpus where
 # sid_filter.h's saturation does anything audible. Against a linear

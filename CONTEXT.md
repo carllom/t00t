@@ -11,12 +11,12 @@ when switching):
 
 | `BOARD` | Hardware | Buttons | DAC | Notes |
 |---|---|---|---|---|
-| `breadboard_rp2350` **(default)** | Pico 2 on breadboard | none (MIDI only) | PCM5122, I2S GPIO 16(BCK)/17(LRCK)/18(DIN) | Carl's actual rig |
+| `breadboard_rp2350` **(default)** | Pico 2 on breadboard | none (MIDI only) | PCM5122, I2S GPIO 16(BCK)/17(LRCK)/18(DIN) | the author's actual rig |
 | `vgaboard_rp2350` | Pimoroni VGA Demo + Pico 2 | A/B/C on GPIO 0/6/11 | PCM5100A | |
 
 - Board headers live in [src/boards/](src/boards/); they are also included by the assembler,
   so they must contain **only preprocessor directives**.
-- **Carl runs the breadboard board.** Build with plain `make`. Do NOT flash a vgaboard UF2
+- **The author runs the breadboard board.** Build with plain `make`. Do NOT flash a vgaboard UF2
   to it — it produces silence.
 - Profiling pin: GPIO 22 (scope probe; high while Core 1 renders a buffer).
 - **LCD (breadboard only):** Waveshare 1.83" 240×284 IPS, Rev2 = **ST7789P**, on

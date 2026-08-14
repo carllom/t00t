@@ -1,4 +1,4 @@
-# Chip module instrument definitions (sid.md §6, §11.2 "hand-authored text ->
+# Chip module instrument definitions (module_chip.md §6, §11.2 "hand-authored text ->
 # generator script", same pattern as speechgen.py's phoneme CSV). chipgen.py
 # parses this file and writes engines/chip/instruments.h -- edit this file,
 # not the generated header.

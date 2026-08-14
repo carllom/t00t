@@ -46,7 +46,7 @@ if(T00T_ENGINE STREQUAL "subtractive")
 endif()
 
 # The tracker engine has no dynamic voice allocation — channel N is voice N,
-# fixed, per tracker.md's "Deviation From the Existing Layer Model" — so
+# fixed, per module_tracker.md's "Deviation From the Existing Layer Model" — so
 # voice_alloc.cpp is left out of that build entirely (#13). main.cpp's calls
 # into it are compiled out via HAS_VOICE_ALLOC below.
 # The chip module used to be the same case (P0's rig is self-cycling and
@@ -127,7 +127,7 @@ if(DEFINED FM_PROFILE AND NOT FM_PROFILE STREQUAL "0")
     target_compile_definitions(t00t PRIVATE T00T_FM_PROFILE=1)
 endif()
 
-# fm.md §3.6 tuning levers on the #42 rig — each "default"/unset leaves
+# module_fm.md §3.6 tuning levers on the #42 rig — each "default"/unset leaves
 # rig.h's own #ifndef default in place, same convention as DMA_BUFFER_SIZE.
 foreach(_lever FM_RIG_VOICES FM_RIG_BLOCK FM_RIG_TABLE_BITS FM_RIG_INTERLEAVE FM_RIG_NOT_IN_FLASH FM_RIG_SMULWB FM_RIG_FB)
     if(DEFINED ${_lever} AND NOT ${_lever} STREQUAL "default")
@@ -145,7 +145,7 @@ endif()
 
 # #47 P3 patch bank (FM engine only): patches.h is generated locally by
 # tools/syx2patch.py from a real DX7 .syx dump and gitignored, same as xm/'s
-# handling of copyrighted .xm songs (engine.md's xm2t00t precedent) — a real
+# handling of copyrighted .xm songs (history_tracker.md's "xm2t00t Host Converter (#14)" precedent) — a real
 # DX7 bank's patch data is Yamaha's commercial sound-design work, not
 # something to check into git history. Guarded here so the build still
 # succeeds (FM_TEST_PATCH only) when nobody has generated it locally yet.

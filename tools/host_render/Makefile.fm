@@ -1,4 +1,4 @@
-# Host build of render_fm_patch + t00t_ctl_dump (fm2.md §3.1). Plain g++,
+# Host build of render_fm_patch + t00t_ctl_dump (history_fm.md §3.1). Plain g++,
 # deliberately separate from CMakeLists.txt. The cmake targets in this
 # directory are untouched.
 #
@@ -39,7 +39,7 @@ render_fm_patch: render_fm_patch.cpp ../../src/osc/sine.cpp $(ENGINE_HEADERS) $(
 t00t_ctl_dump: t00t_ctl_dump.cpp ../../src/osc/sine.cpp $(ENGINE_HEADERS)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -o $@ t00t_ctl_dump.cpp ../../src/osc/sine.cpp -lm
 
-# The pre-existing engine self-check suite (predates fm2.md's harness; asserts
+# The pre-existing engine self-check suite (predates history_fm.md's harness; asserts
 # invariants the Dexed diff does not, e.g. the pitch EG's per-operator
 # increment scaling and the int32 overflow bound). It had no target here, so
 # `make -f Makefile.fm render_fm` silently fell through to make's *implicit*
