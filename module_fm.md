@@ -261,8 +261,8 @@ Measured #43 (`history_fm.md` §"FM P0 Measurement (#43)"), decisions in §3.4:
    loop-unrolling threshold** (confirmed: `audio_engine_run()` compiles to
    5,568 bytes at BLOCK=16 vs. 1,336 at BLOCK=32, and BLOCK=32 alone
    compiles the per-operator loop as a real branch). **Closed, #45:
-   BLOCK=16 confirmed (not changed)** — see `history_fm.md` §"FM P2 BLOCK
-   Confirmation (#45)" for the host-rendered rate-99 attack-transient
+   BLOCK=16 confirmed (not changed)** — see `history_fm.md` §"FM Engine —
+   EnvDX + BLOCK Confirmation (#45)" for the host-rendered rate-99 attack-transient
    comparison. BLOCK=32 loses on both axes now measured (10.8% more
    expensive kernel *and* the coarsest, least accurate attack transient: 9
    steps and an 8% timing overshoot vs. BLOCK=8's 34 steps and BLOCK=16's
@@ -991,7 +991,7 @@ possibly the 4096-entry table.
    Carl's to do.
 4. ~~**P2** — `EnvDX`. Confirm BLOCK choice against fastest-attack patches.~~
    **Implemented, #45** (4-stage log-domain EG, DX7 level table, velocity
-   sensitivity, BLOCK=16 confirmed — `history_fm.md` §"FM P2 BLOCK Confirmation
+   sensitivity, BLOCK=16 confirmed — `history_fm.md` §"FM Engine — EnvDX + BLOCK Confirmation
    (#45)"). By-ear EP/bell check on real hardware still Carl's to do.
 5. ~~**P3** — the converter.~~ **Implemented, #47 (v1) + #48 (v2)**
    (`tools/syx2patch.py`: 32-voice .syx unpack, all 32 algorithms mapped to
@@ -1040,7 +1040,7 @@ possibly the 4096-entry table.
 |---|---|---|
 | 1 | ~~Measured cycles/operator, and therefore the real voice count~~ **Closed, #43: 100.05 c/f/voice measured (kernel only), `MAX_VOICES=16` confirmed** — `history_fm.md` §"FM P0 Measurement (#43)". Raising past 16 deferred to a P2 bench pass once EG/LFO exist to measure. | **P0 — done** |
 | 2 | ~~FX insert cost in isolation; is Freeverb worth ~4% in an FM context?~~ **Closed, #43: 268.7 c/f / 7.9% (reused from the subtractive engine's identical shared FX code), not ~4%. Freeverb stays** — the 16-voice budget clears with ~27% margin even at the corrected cost. | **P0 — done** |
-| 3 | ~~BLOCK size — 16 assumed; confirm against rate-99 attacks~~ **Closed, #45: BLOCK=16 confirmed, not raised to 32 or lowered to 8** — `history_fm.md` §"FM P2 BLOCK Confirmation (#45)". | **P2 — done** |
+| 3 | ~~BLOCK size — 16 assumed; confirm against rate-99 attacks~~ **Closed, #45: BLOCK=16 confirmed, not raised to 32 or lowered to 8** — `history_fm.md` §"FM Engine — EnvDX + BLOCK Confirmation (#45)". | **P2 — done** |
 | 4 | ~~Extract a shared `BlockClock` for FM and speech, or keep them separate?~~ **Closed, #46: reject — common pattern, no common code.** Compared the real `EnvDX` (§5.3) against speech's segment sequencer: per-operator vs. per-voice instancing, fixed 4-stage log2 vs. variable-length float segments, exact per-sample `gain_step` interpolation vs. per-sub-block-constant IIR smoothing. See §5.3's cross-module note and `architecture.md` "Settled Decisions". Speech's sequencer (#34/#36/#37) untouched. | **P2 — done** |
 | 5 | ~~Global vs. per-voice LFO default~~ **Closed, #49: per-voice, global-phase mode dropped (not built), by design.** #48's multitimbrality (one patch pointer per voice) leaves a literal shared LFO with no principled behavior once two active voices with *different* patches both request global phase — a case that can't arise on real single-timbral hardware, so there's no real DX7 behavior to match. Per-voice-with-key-sync already covers the common "block chord" fidelity case. See §5.5's own writeup. | **P4 — done** |
 | 6 | Algorithms 4 and 6: interleaved fallback (X1) or documented limitation? **Partially closed, #47**: v1 documents the limitation and applies a collapse-to-single-self-feedback fallback (detected generically via cycle analysis, logged, never silent) — real X1 interleaved rendering (the actual two-operator loop) is `#54`, still open. | P4 |
