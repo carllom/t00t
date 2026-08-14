@@ -19,31 +19,24 @@
 // LFO shared by the whole instrument, but this engine is genuinely
 // multitimbral (one patch pointer per voice, patch.h) -- a literal single
 // shared LFO has no principled behavior once two simultaneously-active
-// voices with *different* patches both request global phase, a case that
-// cannot arise on real single-timbral hardware, so there is no real DX7
-// behavior to fall back on. Per-voice-with-key-sync already gives every note
-// struck at the same instant identical LFO phase (the common "block chord"
-// case DX7 fidelity cares about); the residual gap -- notes of the *same*
-// patch struck at different times drifting slightly out of phase -- is
-// small and patch-dependent.
+// voices with *different* patches both request global phase. Per-voice with
+// key-sync already gives every note struck at the same instant identical
+// LFO phase, the common "block chord" case DX7 fidelity cares about.
 //
 // Waveform math is NOT a bit-exact port of Dexed's own `Lfo::getsample()`
 // (Source/msfa/lfo.cc, Apache-2.0) -- that function's bit tricks
 // (`phase_>>7`, `phase_>>8` into `Sin::lookup`, etc.) are tuned to Dexed's
 // own internal phase/table Q-format, not a property of the DX7's real
 // waveform *shapes* that needs replicating for this engine to sound right.
-// Reasoned through by hand against Dexed's real bit operations (documented
-// per-waveform below) and re-expressed against this file's own phase
-// convention (uint32_t Q32, one cycle = 2^32 -- same convention as op.h's
-// own FmOp::phase) in plain float, since this all runs at control rate
-// (~2756 Hz at BLOCK=16, not per audio sample) where float cost is
-// negligible. Dexed's key-sync point is the MIDDLE of the cycle
-// (`phase_ = (1<<31) - 1`, not the start), and its two sawtooth cases carry
-// a compensating half-cycle rotation (`^ (1U << 31)`) -- both halves of that
-// pair matter together (fm_lfo_trigger()'s sync point and each saw case's
-// rotation below); dropping either alone desyncs every waveform but the
-// sawtooths, which is why that shape of bug hides so well. See
-// history_fm.md §5.14 for how this was found.
+// Re-expressed against this file's own phase convention (uint32_t Q32, one
+// cycle = 2^32 -- same convention as op.h's own FmOp::phase) in plain float,
+// since this all runs at control rate (~2756 Hz at BLOCK=16, not per audio
+// sample) where float cost is negligible. Dexed's key-sync point is the
+// MIDDLE of the cycle (`phase_ = (1<<31) - 1`, not the start), and its two
+// sawtooth cases carry a compensating half-cycle rotation (`^ (1U << 31)`)
+// -- both halves of that pair matter together (fm_lfo_trigger()'s sync
+// point and each saw case's rotation below); dropping either alone desyncs
+// every waveform but the sawtooths.
 //
 // Rate table (`lfoSource`) IS ported verbatim (real hardware-calibrated
 // data, same "port the table, don't re-derive" rule pitch_eg.h's own tables
@@ -57,11 +50,9 @@
 // `(pmd*lfo_delay * pms*(lfo_val-center)) >> 39` is exactly four
 // independent multiplicative factors (pmd, pms, delay, and the centered
 // LFO value) with no cross-term, so re-deriving it as plain fractions times
-// a single calibration constant (`FM_LFO_PMD_MAX_CENTS`, derived below and
-// cross-checked against a standalone calibration harness running Dexed's
-// real integer formula) is exact, not approximate, just without the
-// Q24/Q32/`>>39` bit-shift plumbing that was only ever there to keep Dexed
-// itself integer-only.
+// a single calibration constant (`FM_LFO_PMD_MAX_CENTS`, derived below) is
+// exact, not approximate, just without the Q24/Q32/`>>39` bit-shift
+// plumbing that was only ever there to keep Dexed itself integer-only.
 //
 // **Mod wheel is a separate modulation source, not a multiplier on the
 // patch's own depth.** A patch's configured PMD/AMD always plays at its own
@@ -128,10 +119,7 @@ inline constexpr float DX7_AMP_MOD_SENS[4] = {
 // `(pmd*lfo_delay * pms*(lfo_val-center)) >> 39` collapses (both raw-scale
 // factors at their own max, 255) to `1200 * (255*255*256) / 2^24` cents --
 // exact given the real formula's four-independent-factors shape (see this
-// file's header comment), not a fit. Cross-checked by running the real
-// integer formula in a standalone calibration harness: 16,646,400 raw Q24-
-// octave units at PMD=99/PMS=7/lfo_val=0, matching this expression's own
-// 255*255*256 = 16,646,400 exactly. 1190.6 cents ~= just under an octave --
+// file's header comment), not a fit. 1190.6 cents ~= just under an octave --
 // a real, dramatic vibrato depth at the DX7's own extreme settings, not a
 // subtle one; ordinary vibrato patches use far less than PMD=99/PMS=7.
 inline constexpr float FM_LFO_PMD_MAX_CENTS = 1200.0f * (float)(255 * 255 * 256) / (float)(1u << 24);
@@ -167,12 +155,10 @@ inline void dx7_lfo_delay_incs(int delay_raw, uint32_t &inc1, uint32_t &inc2) {
     inc2 = (uint32_t)(FM_LFO_DELAY_UNIT * (float)a2);
 }
 
-// Canonical unipolar (0..1) waveform sample from a Q32 phase -- reasoned
-// through against Dexed's real per-waveform bit tricks and cross-checked
-// shape-by-shape (see each case below), but expressed against this file's
-// own phase convention rather than replicating Dexed's own >>7/>>8 shifts,
-// which are calibrated to Dexed's internal table/Q-format, not the DX7's
-// real waveform shape. Waveform 5 (sample & hold) needs mutable state
+// Canonical unipolar (0..1) waveform sample from a Q32 phase, expressed
+// against this file's own phase convention rather than replicating Dexed's
+// own >>7/>>8 shifts, which are calibrated to Dexed's internal table/Q-format,
+// not the DX7's real waveform shape. Waveform 5 (sample & hold) needs mutable state
 // (last-held value, wrap detection) a pure function of `phase` alone can't
 // carry -- handled directly in fm_lfo_step_block() instead.
 inline float fm_lfo_waveform_unipolar(uint32_t phase, uint8_t waveform) {
@@ -225,8 +211,7 @@ inline void fm_lfo_trigger(FmLfo &lfo, bool key_sync) {
     lfo.delay_progress = 0.0f;
 }
 
-// Dexed's `Lfo::getdelay()`, ported whole (Source/msfa/lfo.cc, Apache-2.0)
-// -- the two-stage accumulator F6 found the old float ramp had flattened.
+// Dexed's `Lfo::getdelay()`, ported whole (Source/msfa/lfo.cc, Apache-2.0).
 // Kept as the real integer accumulator rather than re-expressed in seconds
 // because the shape *is* the arithmetic here: the "closed" stage is
 // `delaystate_ < 2^31` and the ramp is literally the accumulator's own top
@@ -262,9 +247,8 @@ inline float fm_lfo_delay_step(FmLfo &lfo, const FmLfoParams &p, uint32_t n) {
 //     decayed operator is tremolo'd less in dB than a loud one.
 // The second is physically odd, and Dexed's own comment on this block reads
 // "TODO: mehhh.. this needs some real tuning." It is ported anyway because it
-// is the reference this engine is being measured against; history_fm.md §5.14 flags
-// it as the one place where the reference is self-admittedly approximate, and
-// therefore the first thing to revisit if a hardware listen disagrees.
+// is the reference this engine is being measured against, and is the first
+// thing to revisit if a hardware listen disagrees.
 inline float dx7_am_level_factor(float x) {
     return expf(4.48f * x + 12.2f) * (1.0f / 16777216.0f);
 }
@@ -323,6 +307,6 @@ inline void fm_lfo_step_block(FmLfo &lfo, const FmLfoParams &p, uint32_t n, floa
     // 256 here where the pitch side has 255: Dexed's amp path loses one more
     // bit than its pitch path (`>>8` then `>>24` against a single `>>39`), so
     // full AMD reaches 255/256 of the scale, not 255/255. Deliberate, not a
-    // copy-paste slip -- F6 measured it.
+    // copy-paste slip.
     amp_mod_out = (amp_units / 256.0f) * amp_signal;
 }

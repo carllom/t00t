@@ -7,42 +7,35 @@
 #include "speaker_sim.h"
 #include <cmath>
 
-// module_chip.md §12.2, AY-P1: one combined instrument-selection space spans both
-// chip types (SID instruments first, then AY's) so CC_INSTRUMENT/PC stay a
-// single "pick a patch" list rather than needing a separate chip-type
-// selector -- a player thinks in patches, not in which silicon a patch
-// happens to come from. Index < INSTRUMENT_COUNT is VT_SID (sub-index
-// unchanged); >= INSTRUMENT_COUNT is VT_AY (sub-index = combined -
-// INSTRUMENT_COUNT).
+// One combined instrument-selection space spans both chip types
+// (module_chip.md §12.2; SID instruments first, then AY's) so
+// CC_INSTRUMENT/PC stay a single "pick a patch" list rather than needing a
+// separate chip-type selector -- a player thinks in patches, not in which
+// silicon a patch happens to come from. Index < INSTRUMENT_COUNT is VT_SID
+// (sub-index unchanged); >= INSTRUMENT_COUNT is VT_AY (sub-index =
+// combined - INSTRUMENT_COUNT).
 static constexpr uint8_t TOTAL_INSTRUMENT_COUNT = INSTRUMENT_COUNT + AY_INSTRUMENT_COUNT;
 
-// Chip module MIDI routing (Core 0), module_chip.md §1 P4 / §8: dynamic voice
-// allocation. voice_alloc.* (existing three-tier steal policy: silent ->
-// released -> oldest active) reused unmodified, per §8's "P4: dynamic
-// allocation ... applies unmodified." MIDI channel no longer maps to a fixed
-// voice; midi_note_voice[128] maps note number -> allocated voice across the
-// whole MAX_VOICES pool, same shape as the speech engine's controller (which
-// got there first, #36). Channels 16..31 of the pool are reachable now that
-// allocation isn't tied to channel number at all.
+// Chip module MIDI routing (Core 0), module_chip.md §1 / §8: dynamic voice
+// allocation. voice_alloc.* (the existing three-tier steal policy: silent
+// -> released -> oldest active) is reused unmodified. MIDI channel does
+// not map to a fixed voice; midi_note_voice[128] maps note number ->
+// allocated voice across the whole MAX_VOICES pool, same shape as the
+// speech engine's controller. Channels 16..31 of the pool are reachable
+// since allocation isn't tied to channel number at all.
 //
 // Filter-bus binding stays per-channel (chan_bus[]), not per-voice: §5.2's
-// "bus already owned by this instrument -> share it" rule, extended from
-// P1-P3's monophonic-per-channel model to real polyphony, means multiple
+// "bus already owned by this instrument -> share it" rule means multiple
 // simultaneous notes on one channel (a chord) share that channel's one
-// bound bus -- exactly the "chord of one filtered instrument sums into one
-// bus" behaviour §5.2 describes, just no longer limited to one note at a
-// time to demonstrate it.
+// bound bus.
 //
-// Pitch bend is now genuinely per-channel (channel_bend[]), not a single
-// global ratio like P1-P3 had -- the monophonic-per-channel model never had
-// two different channels sounding at once to expose that as wrong; dynamic
-// allocation does. Live-pushed to every currently-held voice on that
-// channel, same shape as speech's live CCs (its own header comment's
-// "pushes the new value into every voice currently held on that channel").
+// Pitch bend is genuinely per-channel (channel_bend[]), not a single
+// global ratio. Live-pushed to every currently-held voice on that channel,
+// same shape as speech's live CCs.
 
 enum ChipCC : uint8_t {
     CC_INSTRUMENT = 16,   // per-channel, next-note instrument select, banded 0..INSTRUMENT_COUNT-1
-    CC_SPEAKER    = 17,   // module_chip.md §1 P5: speaker sim preset, banded 0..SPEAKER_PRESET_COUNT-1.
+    CC_SPEAKER    = 17,   // module_chip.md §1: speaker sim preset, banded 0..SPEAKER_PRESET_COUNT-1.
                            // Global (not per-channel/next-note like CC_INSTRUMENT) -- applies
                            // immediately, same as CC_FX_TYPE below.
     CC_FX_TYPE  = 74,     // effect select (engine_base.h EffectParams convention)
@@ -57,7 +50,7 @@ static constexpr uint8_t  NUM_CHANNELS = 16;
 
 static MidiParser midi_parser;
 static MidiUiState ui_state;
-static uint8_t s_speaker_preset_ui = SPEAKER_1702;   // module_chip.md §1 P5: display-only mirror of
+static uint8_t s_speaker_preset_ui = SPEAKER_1702;   // module_chip.md §1: display-only mirror of
                                                        // shadow.voices[*].speaker_preset --
                                                        // not in MidiUiState, which is shared
                                                        // across every engine and has no
@@ -75,7 +68,7 @@ static float   channel_bend[NUM_CHANNELS];     // per-channel pitch-bend ratio, 
 // --- Filter bus binding (module_chip.md §5.2), per channel -------------------------
 // Tonal params (cutoff/resonance/mode) live in the selected instrument
 // itself and are read directly by Core 1 from the feeding voice's own
-// instrument -- see audio_engine.cpp's P3 comment for why FilterBusParams
+// instrument -- see audio_engine.cpp's comment for why FilterBusParams
 // goes unused by chip. This is routing only.
 static int8_t chan_bus[NUM_CHANNELS];        // bus this channel owns, -1 = none
 static int8_t bus_owner[FILTER_BUS_COUNT];   // channel owning this bus, -1 = free
@@ -87,11 +80,11 @@ static void release_bus(uint8_t ch) {
     }
 }
 
-// bind_filter(module_chip.md §5.2): 1. already owns a bus -> share/reuse it.
-// 2. any free bus -> bind it. 3. none free -> BUS_NONE, render unfiltered
-// (graceful degradation, and period-correct: "most voices in real tunes ran
-// unfiltered, because the filter was scarce"). Driven by the selected
-// instrument's uses_filter flag, not a manual toggle.
+// bind_filter (module_chip.md §5.2): 1. already owns a bus -> share/reuse
+// it. 2. any free bus -> bind it. 3. none free -> BUS_NONE, render
+// unfiltered (graceful degradation, and period-correct -- most voices in
+// real tunes ran unfiltered, since the filter was scarce). Driven by the
+// selected instrument's uses_filter flag, not a manual toggle.
 static void bind_filter(VoiceParamBlock &shadow, uint32_t voice, uint8_t ch, const Instrument &ins) {
     if (!ins.uses_filter) {
         release_bus(ch);
@@ -162,7 +155,7 @@ void midi_controller_process(const uint8_t *data, uint32_t len, ParamExchange *p
                 // Retrigger: release whatever voice this note number already
                 // owns before reallocating -- may or may not land on the
                 // same physical voice, same as any dynamic allocator
-                // revoicing a repeat (matches speech's controller, #36).
+                // revoicing a repeat.
                 if (midi_note_voice[note] >= 0) {
                     int8_t old = midi_note_voice[note];
                     shadow.voices[old].gate = false;

@@ -6,10 +6,9 @@
 //
 // TOPOLOGY-FREE (module_chip.md §4). Knows nothing above itself.
 //
-// module_chip.md §4.3: the SID envelope is a rate-counter design with a piecewise-
-// exponential decay, that shape is a large part of the character, and it is
-// "not substitutable with the existing EnvConfig ADSR -- this module needs a
-// dedicated EnvSID type, for the same reason the FM module needs EnvDX".
+// module_chip.md §4.3: the SID envelope is a rate-counter design with a
+// piecewise-exponential decay; that shape is a large part of the character,
+// so it gets its own EnvSID type rather than reusing EnvConfig's ADSR.
 //
 // The hardware runs two cascaded counters at the master clock:
 //
@@ -27,9 +26,8 @@
 // cycle without approximating anything: a Q24 phase accumulator ticking at
 // (cycles per sample) / (rate_period x exp_period) steps per sample produces
 // the same 8-bit staircase, quantised to the sample grid instead of the cycle
-// grid. module_chip.md §4.3 calls for "precomputed per-sample increments that
-// replicate the segment shape"; this is that, with the segment structure kept
-// rather than fitted.
+// grid: precomputed per-sample increments that replicate the segment shape,
+// with the segment structure kept rather than fitted (module_chip.md §4.3).
 //
 // Ground truth is reSID 1.0-pre1's EnvelopeGenerator, dumped as
 // cycles-to-each-level by tools/sid_ref/resid_dump.cpp --domain env.
@@ -141,14 +139,10 @@ struct EnvSid {
     void gate_on()  { if (!gate) { gate = 1; state = ENV_SID_ATTACK; } }
     void gate_off() { if (gate)  { gate = 0; state = ENV_SID_RELEASE; } }
 
-    // Hard restart.
-    //
-    // module_chip.md §4.3 and §13.10: on hardware this exists to dodge the 6581 ADSR
-    // delay bug and costs 1-2 frames (20-40 ms) of pre-gate, "a direct hit to
-    // this project's latency priority". Since the ADSR bug is not modelled,
-    // there is nothing to dodge, and the settled decision is an instantaneous
-    // reset at zero latency. An imported GoatTracker instrument carrying a
-    // hard-restart ADSR value simply lands here.
+    // Hard restart: an instantaneous reset at zero latency. On hardware this
+    // exists to dodge the 6581 ADSR delay bug, which this envelope does not
+    // model, so there is nothing to dodge. An imported GoatTracker instrument
+    // carrying a hard-restart ADSR value simply lands here.
     void hard_restart() {
         counter = 0;
         phase = 0;

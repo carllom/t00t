@@ -3,31 +3,27 @@
 #include "ay_instrument.h"
 
 // Hand-authored AY instruments (module_chip.md §12.1/§12.2/§12.3) -- one
-// documented feature each, same pattern SID's own P3 instruments used
-// (history_chip.md §14d.5). LEAD/BUZZ_BASS/NOISE_PERC are P1's hardware-verified
-// static trio; ARP and PLUCK are P2's frame-table additions (ARP's
-// vibrato bug found and fixed on real hardware, module_chip.md §12.3); LEAD_YM
-// is P3's YM2149 demonstration.
+// documented feature each. LEAD/BUZZ_BASS/NOISE_PERC are a static trio;
+// ARP and PLUCK use the frame table; LEAD_YM demonstrates YM2149 vs
+// AY8910.
 //
-// Not generated: same reasoning as before -- a chipgen.py-style text
-// format is premature for six static patches. Revisit once real-world
-// authoring volume justifies the tooling, same threshold SID crossed at P4.
+// Not generated: a chipgen.py-style text format is premature for six
+// static patches. Revisit once real-world authoring volume justifies the
+// tooling.
 
 enum AyInstrumentId : uint8_t {
     AY_INS_LEAD,        // tone only, static volume -- plain square-wave lead
     AY_INS_BUZZ_BASS,   // tone + envelope shape 8 (slide_down/slide_down --
-                         // a repeating sawtooth decay): module_chip.md §12's own
-                         // "envelope generator at audio rate as a buzzer
-                         // bass source", period tuned for a ~50 Hz buzz
+                         // a repeating sawtooth decay), period tuned for
+                         // a ~50 Hz buzz
     AY_INS_NOISE_PERC,   // noise only + envelope shape 9 (slide_down/
                          // hold_bottom -- one decay then silent): the
                          // envelope's natural one-shot shape stands in for
                          // a percussive release with no frame table needed
     AY_INS_ARP,          // tone table: major-triad arpeggio (0, +4, +7),
-                         // plus light vibrato -- AY-P2's tone table and
-                         // vibrato, same "one row = one frame, xN to hold"
-                         // authoring convention SID's own tables use.
-                         // Hardware-verified after the §12.3 vibrato fix.
+                         // plus light vibrato -- same "one row = one
+                         // frame, xN to hold" authoring convention SID's
+                         // own tables use.
     AY_INS_PLUCK,        // tone + a software volume table (SweepTable, the
                          // real AY answer to "no hardware release"): quick
                          // ramp down to silence, then gate_off_timer ends
@@ -35,7 +31,6 @@ enum AyInstrumentId : uint8_t {
     AY_INS_LEAD_YM,      // AY_INS_LEAD, byte-for-byte, except model --
                          // demonstrates the one real, documented AY8910 vs
                          // YM2149 difference (ay_envelope.h's DAC tables)
-                         // is actually reachable and audible, not just declared
     AY_INSTRUMENT_COUNT,
 };
 

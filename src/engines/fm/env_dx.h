@@ -26,8 +26,7 @@
 // on the very first control block); a falling stage ramps linearly in the
 // same log domain. Output level (TL) composes into each stage's own target
 // (`env_dx_advance()`'s bias + floor clamp) rather than being carried
-// separately and added afterwards. See history_fm.md §5.7 for the design
-// history and what this replaced.
+// separately and added afterwards.
 
 // ---------------------------------------------------------------------------
 // DX7 parameter tables. Verified byte-identical to Dexed's own by a
@@ -241,8 +240,7 @@ inline void env_dx_advance(EnvDX &eg, int newix) {
 
     // Per EG_DEXED_N samples. Note there is no `step < 1` clamp anywhere in
     // this file: the smallest possible inc (qrate 0) is 4 << 8 = 1024, which
-    // over the full 15-octave span works out to roughly six minutes -- the
-    // genuinely slow envelopes the old formulation could not express.
+    // over the full 15-octave span works out to roughly six minutes.
     eg.inc = (4 + (qrate & 3)) << (2 + EG_DEXED_LG_N + (qrate >> 2));
 }
 
@@ -262,7 +260,7 @@ inline void env_dx_reset(EnvDX &eg) {
 }
 
 // Dexed's `Env::init()`. Note `level` restarts at 0 (silence) on every
-// note-on, matching both Dexed and the old file's trigger convention.
+// note-on, matching Dexed's own convention.
 inline void env_dx_init(EnvDX &eg, const uint8_t rates[4], const uint8_t levels[4],
                         int32_t outlevel, int32_t rate_scaling) {
     for (int i = 0; i < 4; i++) { eg.rates[i] = rates[i]; eg.levels[i] = levels[i]; }

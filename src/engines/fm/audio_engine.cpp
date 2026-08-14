@@ -91,9 +91,9 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
 // held/released) with routing resolved once per note-on (patch.h's
 // fm_resolve_routing()), envelopes stepped once per control block (op.h's
 // fm_voice_step_envelopes(), env_dx.h), and rendered through op.h's
-// kernels. #45 supersedes #44's fixed-gain/hard-cutoff behavior: gate=false
-// now releases through each operator's EG instead of cutting the voice
-// immediately, and a voice keeps rendering (and keeps its active_mask bit)
+// kernels. gate=false releases through each operator's EG rather than
+// cutting the voice immediately, and a voice keeps rendering (and keeps its
+// active_mask bit)
 // until its carriers' envelopes actually finish (fm_voice_active()) --
 // mirroring the subtractive engine's trigger/gate/envelope-active idiom.
 
@@ -116,8 +116,8 @@ static bool     voice_gated[MAX_VOICES];  // Core 1's own gate-edge tracking, fo
 static FmPitchEg voice_peg[MAX_VOICES];   // #49: one pitch EG per voice (not per operator -- pitch_eg.h)
 static FmLfo    voice_lfo[MAX_VOICES];    // #49: one LFO per voice (not per operator -- lfo.h)
 
-// Shared bus scratch (module_fm.md §4.3: "one shared scratch for the whole engine,
-// not per-voice" -- reused across every voice, sequentially, within a pass).
+// Shared bus scratch (module_fm.md §4.3) -- reused across every voice,
+// sequentially, within a pass.
 static int32_t bus_mod0[FM_BLOCK], bus_mod1[FM_BLOCK], bus_mod2[FM_BLOCK];
 static int32_t bus_mod3[FM_BLOCK], bus_mod4[FM_BLOCK], bus_mod5[FM_BLOCK];
 static int32_t bus_out[FM_BLOCK];
@@ -197,10 +197,8 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
             // avoiding the tracker's #21 "key-off never frees a voice" bug).
             if (!p.gate && !fm_voice_active(voice_ops[v], voice_routing[v])) continue;
 
-            // #49: pitch bend, pitch EG, and LFO increment recompute all
-            // happen inside fm_render_voice() now, once per control block
-            // (finer-grained than #44's old once-per-buffer
-            // fm_voice_update_pitch() call).
+            // Pitch bend, pitch EG, and LFO increment recompute all happen
+            // inside fm_render_voice(), once per control block.
             fm_render_voice(voice_ops[v], *p.patch, voice_routing[v], bus, p.pan, dry_l, dry_r, SAMPLES_PER_BUFFER,
                              &voice_peg[v], &voice_lfo[v], p.phase_inc, p.mod_wheel);
             active_mask |= (1u << v);

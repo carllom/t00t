@@ -11,17 +11,16 @@
 #include "pico/time.h"
 #include <cstdio>
 
-// Chip status display (Core 0, low priority). module_chip.md §1 P5's "LCD UI" --
-// same chrome/status-row shape as subtractive's and speech's display.cpp
+// Chip status display (Core 0, low priority), module_chip.md §1. Same
+// chrome/status-row shape as subtractive's and speech's display.cpp
 // (VOICES/CPU/NOTE), plus chip-specific rows: the active speaker preset
-// (speaker_sim.h), the current instrument (module_chip.md §12.4: by name *and*
-// number now, the author's own ask, after the number-only version read as
-// opaque), and a compact per-voice grid (engine.h's ChipVoiceUiState, §15
-// open question 3's "current table row, active instrument").
+// (speaker_sim.h), the current instrument by name and number
+// (module_chip.md §12.4), and a compact per-voice grid (engine.h's
+// ChipVoiceUiState) showing current table row and active instrument.
 //
-// The name treatment is INSTR-row only, by the author's own call: the grid
-// stays numeric (voice:instrument/table-row) -- a name doesn't fit eight
-// cells at once the way it fits one summary line.
+// The name treatment is INSTR-row only: the grid stays numeric
+// (voice:instrument/table-row) -- a name doesn't fit eight cells at once
+// the way it fits one summary line.
 //
 // MAX_VOICES here is 32, not speech's 8 -- too many for a full one-cell-
 // per-voice grid on this panel, so the grid below is fixed to voices 0-7
@@ -63,9 +62,8 @@ static constexpr int CBAR_X = 4, CBAR_Y = 96, CBAR_W = 232, CBAR_H = 12;
 // slot instead of introducing a second value column.
 static constexpr int INSTR_X = 0, INSTR_CH = 30;
 
-// 4 columns x 2 rows, same layout P5 shipped -- the author's own call: names
-// are for the one-line INSTR row only, the grid stays numeric (voice:instrument
-// number/table row).
+// 4 columns x 2 rows. Names are for the one-line INSTR row only; the grid
+// stays numeric (voice:instrument number/table row).
 static constexpr int GRID_ROW0 = 210, GRID_ROW_H = 12, GRID_W = 240 / 4, GRID_CH = 9;
 static constexpr int GRID_VOICES = 8;
 
@@ -124,9 +122,8 @@ void display_init() {
 }
 
 void display_task() {
-    // Redraws at ~10 Hz -- same rate every other engine's display settled
-    // on (speech's #37 acceptance criterion); Core 0 wall-clock only, no
-    // effect on Core 1's render deadline.
+    // Redraws at ~10 Hz, same rate every other engine's display uses;
+    // Core 0 wall-clock only, no effect on Core 1's render deadline.
     static absolute_time_t next = {0};
     if (!time_reached(next)) return;
     next = make_timeout_time_ms(100);

@@ -7,19 +7,15 @@
 //
 // TOPOLOGY-FREE (see ay_osc.h's header comment -- same file, same rule).
 //
-// module_chip.md §12: "envelope generator at audio rate as a 'buzzer' bass
-// source -- the signature Spectrum sound, and the AY does not sound like
-// an AY without it." This is that generator: a 5-bit (0-31) ramp counter,
-// not the 4-bit ADSR shape SID needed EnvSid for -- a different enough
-// mechanism (one period register, one 4-bit shape select, no attack/decay/
-// sustain/release nibbles) that it earns its own type rather than trying
-// to force-fit EnvSid's shape.
+// A 5-bit (0-31) ramp counter, not the 4-bit ADSR shape SID needed EnvSid
+// for -- a different enough mechanism (one period register, one 4-bit
+// shape select, no attack/decay/sustain/release nibbles) that it earns its
+// own type rather than trying to force-fit EnvSid's shape.
 //
 // Ground truth is ayumi.c's Envelopes[16][2] table and its
 // update_envelope()/reset_segment() pair, ported into this project's
 // enum-and-switch style rather than ayumi's function-pointer table (same
-// information, no functional difference) -- see ay_osc.h's header for the
-// licensing/vendoring note this shares.
+// information, no functional difference).
 
 // ---------------------------------------------------------------------------
 // Envelope shape: two "segments" (0 then 1, alternating every time the ramp
@@ -43,11 +39,7 @@ static const AyEnvSegment AY_ENVELOPE_SEGMENTS[16][2] = {
 
 // ---------------------------------------------------------------------------
 // DAC tables -- re-typed directly from ayumi.c's AY_dac_table/YM_dac_table
-// (Peter Sovietov, MIT, see ay_osc.h's provenance note). Unlike
-// sid_tables.h's filter LUTs, these are NOT independently fitted: MIT
-// permits reuse outright, so there is no licensing reason to re-derive them,
-// only to attribute them, which this comment and tools/ay_ref/ayumi/LICENSE
-// both do.
+// (Peter Sovietov, MIT; attributed here and in tools/ay_ref/ayumi/LICENSE).
 //
 // 32 entries, not 16: index is `envelope_level` (0-31, the ramp's own unit)
 // when the envelope drives a channel, or `volume*2 + 1` (landing on odd
