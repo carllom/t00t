@@ -4,9 +4,9 @@
 
 // EnvSID -- the SID envelope generator, at sample rate.
 //
-// TOPOLOGY-FREE (sid.md §4). Knows nothing above itself.
+// TOPOLOGY-FREE (chip.md §4). Knows nothing above itself.
 //
-// sid.md §4.3: the SID envelope is a rate-counter design with a piecewise-
+// chip.md §4.3: the SID envelope is a rate-counter design with a piecewise-
 // exponential decay, that shape is a large part of the character, and it is
 // "not substitutable with the existing EnvConfig ADSR -- this module needs a
 // dedicated EnvSID type, for the same reason the FM module needs EnvDX".
@@ -27,7 +27,7 @@
 // cycle without approximating anything: a Q24 phase accumulator ticking at
 // (cycles per sample) / (rate_period x exp_period) steps per sample produces
 // the same 8-bit staircase, quantised to the sample grid instead of the cycle
-// grid. sid.md §4.3 calls for "precomputed per-sample increments that
+// grid. chip.md §4.3 calls for "precomputed per-sample increments that
 // replicate the segment shape"; this is that, with the segment structure kept
 // rather than fitted.
 //
@@ -143,7 +143,7 @@ struct EnvSid {
 
     // Hard restart.
     //
-    // sid.md §4.3 and §13.10: on hardware this exists to dodge the 6581 ADSR
+    // chip.md §4.3 and §13.10: on hardware this exists to dodge the 6581 ADSR
     // delay bug and costs 1-2 frames (20-40 ms) of pre-gate, "a direct hit to
     // this project's latency priority". Since the ADSR bug is not modelled,
     // there is nothing to dodge, and the settled decision is an instantaneous

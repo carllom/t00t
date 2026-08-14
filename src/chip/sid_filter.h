@@ -6,12 +6,12 @@
 // SID filter primitive -- a two-integrator-loop SVF with a chip-specific
 // cutoff table and an optional saturating feedback path.
 //
-// TOPOLOGY-FREE (sid.md §4). No bus index, no voice list, no routing. A
+// TOPOLOGY-FREE (chip.md §4). No bus index, no voice list, no routing. A
 // caller hands it a summed input and gets a filtered sample back; whether that
 // sum came from a filter bus (§5) or from the strict harness's one-shared-
 // filter topology (§11.1) is not this file's business.
 //
-// sid.md §2's key claim -- "The SID filter *is* a two-integrator-loop SVF" --
+// chip.md §2's key claim -- "The SID filter *is* a two-integrator-loop SVF" --
 // is confirmed by the reference: reSID's own 8580 path is
 //     dVbp = w0*(Vhp>>4)>>16;  dVlp = w0*(Vbp>>4)>>16;
 //     Vhp  = (Vbp*_1024_div_Q>>10) - Vlp - Vi;
@@ -21,7 +21,7 @@
 // What is *not* reusable is reSID's 6581. That path is a transistor-level
 // model: op-amp transfer curves, a VCR gate-voltage solver, and three
 // 2^16-entry tables. It cannot run on an RP2350 and it does not need to --
-// sid.md §5.1 asks for a cutoff LUT plus saturation, and the LUT is measured
+// chip.md §5.1 asks for a cutoff LUT plus saturation, and the LUT is measured
 // off reSID by tools/sid_ref/resid_probe.cpp and fitted by
 // tools/fit_6581_filter.py. See sid_tables.h for the provenance, which
 // §5.1 requires be named rather than presented as canonical.
@@ -29,7 +29,7 @@
 // ---------------------------------------------------------------------------
 // Mode mask.
 //
-// sid.md §5.1 change 1: FilterMode becomes a 3-bit *mask*, because the SID
+// chip.md §5.1 change 1: FilterMode becomes a 3-bit *mask*, because the SID
 // sums LP, BP and HP simultaneously -- $D418 bits 4/5/6 are independent
 // enables, not a selector. The existing FilterMode enum in engine_base.h stays
 // as it is for the subtractive engine; this is the chip module's own type.
@@ -43,7 +43,7 @@ enum SidFilterMode : uint8_t {
 enum SidFilterModel : uint8_t { SID_MODEL_6581 = 0, SID_MODEL_8580 = 1 };
 
 // Cutoff register (11 bits, 0..2047) -> the SVF's Q15 half-frequency
-// coefficient, via the model's own table. sid.md §5.1 change 2: "pluggable
+// coefficient, via the model's own table. chip.md §5.1 change 2: "pluggable
 // cutoff LUT instead of svf_compute_f_half's linear map, so 6581 vs 8580 is a
 // table swap rather than a code fork."
 inline int16_t sid_filter_f_half(uint8_t model, uint16_t fc) {
@@ -62,7 +62,7 @@ inline int32_t sid_filter_q(uint8_t model, uint8_t res) {
 // ---------------------------------------------------------------------------
 // Saturation.
 //
-// sid.md §5.1 change 3 and §3: the 6581's filter nonlinearity is signal-path,
+// chip.md §5.1 change 3 and §3: the 6581's filter nonlinearity is signal-path,
 // so it is kept. It is also what makes §5.2's shared-bus intermodulation a
 // real tonal property rather than a claim -- voices summed before a *linear*
 // filter do not intermodulate at all.
@@ -90,8 +90,8 @@ inline int32_t sid_filter_saturate(int32_t x) {
     // has no hardware 64-bit divide, so each divide there was a software
     // __aeabi_ldivmod call; with this called once per filter bus per sample
     // (CHIP_RIG_SAT default on), that measured as ~200 c/f across 4 buses
-    // on the P0 rig (sid.md P0 gate) -- most of the "filter bus cost" being
-    // ~3.5x sid.md §9's 50-75 c/f/bus estimate. Verified against the
+    // on the P0 rig (chip.md P0 gate) -- most of the "filter bus cost" being
+    // ~3.5x chip.md §9's 50-75 c/f/bus estimate. Verified against the
     // original divide-based formula across the full input range: max |err|
     // 180 out of a ~870k peak (0.02%), only right at the clamp edge -- this
     // curve is a cheap qualitative approximation already, not a reSID-fitted
@@ -116,7 +116,7 @@ inline int32_t sid_filter_saturate(int32_t x) {
 // a mask that sums outputs, and the input can be saturated first. Kept as its
 // own type rather than as flags on SVFilter because the subtractive engine's
 // filter is on the hot path of a different engine and should not grow a branch
-// for this one's benefit; sid.md §5.1 notes all three changes "backport
+// for this one's benefit; chip.md §5.1 notes all three changes "backport
 // usefully", and that backport is a separate decision from this module.
 // ---------------------------------------------------------------------------
 struct SidFilter {
@@ -153,7 +153,7 @@ struct SidFilter {
 // ---------------------------------------------------------------------------
 // The C64 board's output network.
 //
-// sid.md §10's "free bonus": the passive RC network between the SID and the AV
+// chip.md §10's "free bonus": the passive RC network between the SID and the AV
 // connector is a one-pole low-pass and "is genuinely part of 'the SID sound'".
 // It sits before the speaker simulation stage and after the chip. reSID models
 // it as ExternalFilter, a high-pass at ~16 Hz and a low-pass at ~16 kHz; the

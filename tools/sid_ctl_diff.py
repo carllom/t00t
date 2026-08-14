@@ -151,7 +151,7 @@ def diff_env(model, verbose):
 def diff_lfsr(model, verbose, count):
     """The noise sequence. Bit-exact; there is no tolerance to argue about.
 
-    This is the domain that catches sid.md §4.2's tap error. The doc lists
+    This is the domain that catches chip.md §4.2's tap error. The doc lists
     eight taps (22/20/16/13/11/7/4/2); the reference feeds back bit22 ^ bit17
     and those eight positions are the output scatter. A wrong tap pair gives a
     different sequence with a different spectrum, and nothing but a listening
@@ -179,7 +179,7 @@ def diff_wave(model, verbose):
       * pure waveforms (triangle, sawtooth, pulse, and ring's MSB
         substitution) are combinational logic and must match exactly;
       * combined waveforms are a nonlinear analog artifact that reSID models
-        with tables sampled from real chips, and sid.md §13.5 deliberately
+        with tables sampled from real chips, and chip.md §13.5 deliberately
         defers t00t to a bitwise AND until P6.
 
     The second is therefore reported, not gated. Reporting it is the point:
@@ -207,7 +207,7 @@ def diff_wave(model, verbose):
                 elif verbose:
                     r.note(line)
             else:
-                r.note(line + "   (AND approximation, sid.md §13.5 -- not gated)")
+                r.note(line + "   (AND approximation, chip.md §13.5 -- not gated)")
     return r
 
 

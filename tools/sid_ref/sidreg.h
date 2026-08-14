@@ -2,7 +2,7 @@
 
 // The register stream format that both sides of the F0 comparison consume.
 //
-// sid.md §11.1: "A register stream is $D400-$D418: three voices, one shared
+// chip.md §11.1: "A register stream is $D400-$D418: three voices, one shared
 // filter, adjacency-wired sync." This header is that stream's parser, shared
 // verbatim by tools/sid_ref/resid_render.cpp (reSID) and
 // tools/host_render/render_sid.cpp (t00t/CHIP_STRICT) so the two renderers
@@ -20,7 +20,7 @@
 //                          (reg and val are hex, reg 00-1c)
 //
 // Writes are applied at frame boundaries only. That is not a limitation of
-// the format so much as a statement of what this module *is*: sid.md §6.2
+// the format so much as a statement of what this module *is*: chip.md §6.2
 // makes the frame the chip control clock, and a driver that wrote registers
 // mid-frame would be doing something no instrument table can express. It also
 // keeps the two renderers comparable -- reSID is cycle-accurate and t00t runs

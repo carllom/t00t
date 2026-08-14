@@ -1,6 +1,6 @@
 #pragma once
 
-// WAV writers for the chip module's F0 comparison (sid.md §11.1). Shared by
+// WAV writers for the chip module's F0 comparison (chip.md §11.1). Shared by
 // tools/sid_ref/resid_render.cpp and tools/host_render/render_sid.cpp -- both
 // sides of the comparison must write byte-identical container formats or
 // sid_compare.py is comparing readers as much as engines.

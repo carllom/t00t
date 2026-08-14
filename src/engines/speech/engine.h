@@ -19,7 +19,7 @@ static constexpr uint32_t MAX_VOICES = 8;
 // real 8th slot -- now redundant since the decision above already set it to
 // 8, kept only as the define audio_engine.cpp's alternate render loop is
 // still gated on.
-static constexpr uint32_t FILTER_BUS_COUNT = 0;   // chip module only (sid.md §5)
+static constexpr uint32_t FILTER_BUS_COUNT = 0;   // chip module only (chip.md §5)
 
 #include "engine_base.h"
 

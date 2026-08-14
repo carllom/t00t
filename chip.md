@@ -1026,7 +1026,7 @@ this OSC3 quantisation might matter and isn't obviously flagged.
 [PASS] env    0 of 12288 points exceed 3 samples and 0.5% (both required)
 [PASS] lfsr   200000 shifts compared, 0 mismatches
 [PASS] wave   pure waveforms exact; AND-combined waveforms reported, not
-              gated (sid.md §13.5) -- mean |err| 1012/1423/1971/1020,
+              gated (chip.md §13.5) -- mean |err| 1012/1423/1971/1020,
               max 2720/3840/4080/2720, an exact match to §4.2's own
               already-quoted numbers for saw+tri / pulse+tri / pulse+saw /
               all-three
@@ -1615,7 +1615,7 @@ free and sits inside the BeatStep Pro's absolute-CC encoder range
 
 ### 14f.2 LCD UI
 
-`display.cpp` (previously a stub -- "no display yet, sid.md §1 P5 owns
+`display.cpp` (previously a stub -- "no display yet, chip.md §1 P5 owns
 this") now shows VOICES/CPU/NOTE (same shape as subtractive's and speech's
 displays), the active speaker preset name, the current instrument index,
 and a fixed 8-voice grid (of `MAX_VOICES = 32`) showing each voice's

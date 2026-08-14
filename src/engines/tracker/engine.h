@@ -8,7 +8,7 @@
 // voice count, not a headroom margin like the other two engines' MAX_VOICES.
 // The active-voice bitmap (one uint32_t, per engine_base.h) is exactly full.
 static constexpr uint32_t MAX_VOICES = 32;
-static constexpr uint32_t FILTER_BUS_COUNT = 0;   // chip module only (sid.md §5)
+static constexpr uint32_t FILTER_BUS_COUNT = 0;   // chip module only (chip.md §5)
 
 #include "engine_base.h"
 

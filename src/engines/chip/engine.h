@@ -2,7 +2,7 @@
 
 #include <cstdint>
 
-// Chip module engine skeleton (sid.md §1 P1/P2/P3, §14 item 2).
+// Chip module engine skeleton (chip.md §1 P1/P2/P3, §14 item 2).
 //
 // "engines/chip/, VoiceType dispatch, static MIDI-channel->voice map,
 // register-stream playback path" -- P0's rig (rig.h) proved the primitives
@@ -13,7 +13,7 @@
 // Core 0 only supplies note/gate/instrument-select, per §7.1's ParamExchange
 // note ("the VM lives on Core 1").
 //
-// sid.md §13.3, confirmed by P0 (§9, §14a.9): MAX_VOICES = 32 (allocation
+// chip.md §13.3, confirmed by P0 (§9, §14a.9): MAX_VOICES = 32 (allocation
 // pool / active-voice bitmap width -- a separate concern from the ~20-voice
 // CPU budget target); FILTER_BUS_COUNT = 4, confirmed by the same
 // measurement. Both are needed before #include "engine_base.h", which sizes
@@ -23,7 +23,7 @@ static constexpr uint32_t FILTER_BUS_COUNT = 4;
 
 #include "engine_base.h"
 
-// sid.md §7.3: "Chip" survives only as a per-voice tonal-profile tag,
+// chip.md §7.3: "Chip" survives only as a per-voice tonal-profile tag,
 // dispatched in the render loop exactly like the groovebox's VoiceType --
 // not a container, not an allocation unit. VT_SILENT = 0 so a zero-inited
 // (unused) voice slot is silent by construction, same convention as every
@@ -34,7 +34,7 @@ enum VoiceType : uint8_t {
     // later: VT_AY, VT_SN76489, VT_NES_PULSE, VT_NES_TRI, VT_NES_NOISE, VT_GB_WAVE
 };
 
-// sid.md §5: "VoiceParams carries only uint8_t filter_bus, with BUS_NONE as
+// chip.md §5: "VoiceParams carries only uint8_t filter_bus, with BUS_NONE as
 // sentinel." 0xff rather than -1 since filter_bus is unsigned (matching
 // FILTER_BUS_COUNT's own type) and is compared with `< FILTER_BUS_COUNT`
 // everywhere, which already excludes it without a separate check.
@@ -54,7 +54,7 @@ struct VoiceParams {
     uint8_t  filter_bus;   // index into VoiceParamBlock::bus[], or BUS_NONE (§5) --
                            // set by Core 0's bind_filter() at note-on, from the
                            // selected instrument's uses_filter flag
-    uint8_t  speaker_preset;   // sid.md §1 P5, §10: SpeakerPreset (speaker_sim.h).
+    uint8_t  speaker_preset;   // chip.md §1 P5, §10: SpeakerPreset (speaker_sim.h).
                            // A single global choice, not really per-voice, but
                            // VoiceParams is the only Core0->Core1 channel and
                            // this is one byte -- replicated identically to
@@ -64,7 +64,7 @@ struct VoiceParams {
                            // every other engine to carry unused.
 };
 
-// sid.md §1 P5 open question 3 ("telemetry struct contents for the LCD"):
+// chip.md §1 P5 open question 3 ("telemetry struct contents for the LCD"):
 // current table row + active instrument, same shape as speech's per-voice
 // phoneme display -- enough for the display to show what each voice is
 // actually doing without widening the reverse channel bitmap itself.

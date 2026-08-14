@@ -9,7 +9,7 @@
 #include "pico/time.h"
 #include <cstdio>
 
-// Chip status display (Core 0, low priority). sid.md §1 P5's "LCD UI" --
+// Chip status display (Core 0, low priority). chip.md §1 P5's "LCD UI" --
 // same chrome/status-row shape as subtractive's and speech's display.cpp
 // (VOICES/CPU/NOTE), plus two chip-specific rows P5 introduced: the active
 // speaker preset (speaker_sim.h) and current instrument, and a compact

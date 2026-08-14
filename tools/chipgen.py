@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""chipgen.py -- chip instrument text format -> instruments.h (sid.md §6, §11.2).
+"""chipgen.py -- chip instrument text format -> instruments.h (chip.md §6, §11.2).
 
     chipgen.py gen <chip_instruments.txt> <instruments.h>
 
@@ -214,7 +214,7 @@ def emit(instruments, out_path, src_path):
     lines.append("// GENERATED FILE -- do not edit by hand.")
     lines.append(f"// Source: tools/{src_path.split('/')[-1] if '/' in src_path else src_path}")
     lines.append("// Regenerate: tools/chipgen.py gen <source.txt> <this file>")
-    lines.append("// (sid.md §6, §11.2 \"hand-authored text -> generator script\")")
+    lines.append("// (chip.md §6, §11.2 \"hand-authored text -> generator script\")")
     lines.append("")
 
     for ins in instruments:

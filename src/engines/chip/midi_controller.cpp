@@ -6,7 +6,7 @@
 #include "speaker_sim.h"
 #include <cmath>
 
-// Chip module MIDI routing (Core 0), sid.md §1 P4 / §8: dynamic voice
+// Chip module MIDI routing (Core 0), chip.md §1 P4 / §8: dynamic voice
 // allocation. voice_alloc.* (existing three-tier steal policy: silent ->
 // released -> oldest active) reused unmodified, per §8's "P4: dynamic
 // allocation ... applies unmodified." MIDI channel no longer maps to a fixed
@@ -32,7 +32,7 @@
 
 enum ChipCC : uint8_t {
     CC_INSTRUMENT = 16,   // per-channel, next-note instrument select, banded 0..INSTRUMENT_COUNT-1
-    CC_SPEAKER    = 17,   // sid.md §1 P5: speaker sim preset, banded 0..SPEAKER_PRESET_COUNT-1.
+    CC_SPEAKER    = 17,   // chip.md §1 P5: speaker sim preset, banded 0..SPEAKER_PRESET_COUNT-1.
                            // Global (not per-channel/next-note like CC_INSTRUMENT) -- applies
                            // immediately, same as CC_FX_TYPE below.
     CC_FX_TYPE  = 74,     // effect select (engine_base.h EffectParams convention)
@@ -47,7 +47,7 @@ static constexpr uint8_t  NUM_CHANNELS = 16;
 
 static MidiParser midi_parser;
 static MidiUiState ui_state;
-static uint8_t s_speaker_preset_ui = SPEAKER_1702;   // sid.md §1 P5: display-only mirror of
+static uint8_t s_speaker_preset_ui = SPEAKER_1702;   // chip.md §1 P5: display-only mirror of
                                                        // shadow.voices[*].speaker_preset --
                                                        // not in MidiUiState, which is shared
                                                        // across every engine and has no
@@ -62,7 +62,7 @@ static uint8_t voice_note[MAX_VOICES];       // which note number this voice is 
 static uint8_t chan_instrument[NUM_CHANNELS];  // next-note instrument select (PC or CC16)
 static float   channel_bend[NUM_CHANNELS];     // per-channel pitch-bend ratio, live
 
-// --- Filter bus binding (sid.md §5.2), per channel -------------------------
+// --- Filter bus binding (chip.md §5.2), per channel -------------------------
 // Tonal params (cutoff/resonance/mode) live in the selected instrument
 // itself and are read directly by Core 1 from the feeding voice's own
 // instrument -- see audio_engine.cpp's P3 comment for why FilterBusParams
@@ -77,7 +77,7 @@ static void release_bus(uint8_t ch) {
     }
 }
 
-// bind_filter(sid.md §5.2): 1. already owns a bus -> share/reuse it.
+// bind_filter(chip.md §5.2): 1. already owns a bus -> share/reuse it.
 // 2. any free bus -> bind it. 3. none free -> BUS_NONE, render unfiltered
 // (graceful degradation, and period-correct: "most voices in real tunes ran
 // unfiltered, because the filter was scarce"). Driven by the selected
