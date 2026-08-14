@@ -711,8 +711,8 @@ array class of bug) but not heard, before it was heard:
    duration field (unlike pulse/filter's `SweepRow`) -- one row is one
    frame, so the original 4-row table (one row per note) cycled at
    50/4 = 12.5 Hz, 20 ms/note. Reported as the instruments sounding "rough"
-   and "grainy." Fixed by repeating each note's row 6x (120 ms/note,
-   480 ms/cycle, ~2.1 Hz) -- the standard tracker convention for "hold" in a
+   and "grainy." Fixed by repeating each note's row 2x (40 ms/note,
+   160 ms/cycle, ~6.25 Hz) -- the standard tracker convention for "hold" in a
    1-frame-per-row table, an authoring fix, not a VM one.
 2. **Vibrato depth was miscalibrated by ~4 bits, not just "uncalibrated."**
    The `>>8` shift this section already flagged as a by-ear item put
