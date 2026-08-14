@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
-# #43 bench prep: builds every voice-count/lever combination engine.md's
-# "FM P0 Measurement (#43)" bench procedure calls for, one UF2 per
-# combination, so the only thing left at the bench is reflash + read GPIO 22
-# for each file in order. Run from anywhere; paths are resolved relative to
-# this script's location.
+# Builds every voice-count/lever combination for the FM engine's benchmark
+# procedure, one UF2 per combination, so the only thing left at the bench is
+# reflash + read GPIO 22 for each file in order. Run from anywhere; paths are
+# resolved relative to this script's location.
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

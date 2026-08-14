@@ -1,12 +1,9 @@
 #!/usr/bin/env python3
 """Exact control-plane conformance: t00t's chip primitives against reSID.
 
-The FM module's attempt 1 failed because every check ran through ears on
-hardware, and a composite sound cannot tell you which of a dozen chained curves
-is wrong (history_fm.md §1). Attempt 2's fix, adopted here from the first commit
-rather than retrofitted: split verification into a control plane compared
-*exactly* and a signal plane compared spectrally, because a spectral score can
-go green with two errors cancelling and an exact diff cannot.
+Verification is split into a control plane compared *exactly* and a signal
+plane compared spectrally, because a spectral score can go green with two
+errors cancelling and an exact diff cannot.
 
 Most of a SID voice lands on the exact side. The envelope is a two-counter
 state machine, the noise register is a deterministic bit sequence, the waveform
@@ -179,12 +176,11 @@ def diff_wave(model, verbose):
       * pure waveforms (triangle, sawtooth, pulse, and ring's MSB
         substitution) are combinational logic and must match exactly;
       * combined waveforms are a nonlinear analog artifact that reSID models
-        with tables sampled from real chips, and module_chip.md §13.5 deliberately
-        defers t00t to a bitwise AND until P6.
+        with tables sampled from real chips, and module_chip.md §13.5
+        deliberately defers t00t to a bitwise AND approximation.
 
-    The second is therefore reported, not gated. Reporting it is the point:
-    "roughly TinySID grade" is an adjective, and this turns it into a number
-    that P6 can be argued from.
+    The second is therefore reported, not gated: it turns a qualitative
+    approximation into a number instead of an adjective.
     """
     r = Result("wave")
     ref = {(int(a), int(b), int(c)): int(d) for a, b, c, d in run(REF, "wave", model)}

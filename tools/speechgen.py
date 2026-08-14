@@ -51,10 +51,8 @@
         note-off jumps to, same convention as utterance.h's hand-picked
         utterances).
 
-Same host-side-authoring-and-validation split as tools/xm2t00t (keeping the
-letter-to-sound rules engine host-side, per module_speech.md "Host Tooling", is the
-same decision for the same reason): the device ships a table, all the
-authoring smarts stay on the host where a CSV row typo fails a Python script
+The device ships a table; all the authoring smarts stay on the host
+(module_speech.md "Host Tooling") where a CSV row typo fails a Python script
 instead of turning into a pole outside the unit circle at runtime.
 
 CSV schema (see tools/speech_phonemes.csv for the full ~48-row set):
@@ -69,7 +67,7 @@ CSV schema (see tools/speech_phonemes.csv for the full ~48-row set):
                 as F/B above (#29's fricative/nasal resonators; not part of
                 module_speech.md's original PhonemeDef sketch -- see phoneme_def.h)
     av, af, an -- excitation mix, 0.0-1.0 (quantized to a 0-255 byte)
-    duration_ms -- 0-255, unread by anything yet (P3 sequencer)
+    duration_ms -- 0-255 (parsed and validated, not yet consumed by device code)
     flags    -- '|'-separated names from PLOSIVE, STOP_CLOSURE,
                 TRANSITION_FAST, SUSTAINABLE (module_speech.md / #30), or empty
     notes    -- free text, not emitted, for the human maintainer's citation

@@ -1,11 +1,11 @@
-// Host-side correctness check of src/engines/fm/rig.h (#42): renders the P0
+// Host-side correctness check of src/engines/fm/rig.h (#42): renders the
 // measurement rig's fixed 6-operator x N-voice topology through the exact
 // same fm_rig_render_buffer() the device's audio_engine.cpp calls (under
 // FM_PROFILE=1) from its Core 1 render loop, and writes it to WAV. This rig
-// doesn't decide anything about performance (that's the bench session this
-// issue is blocked ahead of) — its only correctness obligation is "produces
-// real, finite, non-clipping audio for every kernel path and every §3.6
-// lever combination," checked here before anyone straps a scope to it.
+// doesn't decide anything about performance -- its only correctness
+// obligation is producing real, finite, non-clipping audio for every kernel
+// path and every §3.6 lever combination, checked here before anyone straps
+// a scope to it.
 //
 // Run from the build directory (tools/host_render/build):
 //   cmake -S .. -B . && cmake --build . && ./render_fm_rig

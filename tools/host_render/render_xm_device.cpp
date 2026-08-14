@@ -242,12 +242,6 @@ static bool test_note_trigger_and_retrigger() {
     // instrument, and is not applied at all without one -- an instrument
     // with no envelope cuts (almost) instantly at key-off regardless of its
     // fadeout field's value, rather than fading over 32768/fadeout ticks.
-    // (An earlier version of this comment claimed the opposite -- that
-    // fadeout alone, sans envelope, produces a gradual release -- based on
-    // a literal reading of FT2's own replayer source; that IS how real FT2
-    // behaves, but it is not what openmpt123 (this harness's oracle) does
-    // for a module lacking FT2's own compatibility markers, so the device
-    // player follows the oracle.)
     looped |= player_produce_tick(st, song, tb);
     for (int i = 0; i < 2; i++) looped |= player_produce_tick(st, song, tb2);  // ticks 1-2, discarded
     if (!(tb.ch[0].flags & TICK_KEY_OFF)) { printf("  FAIL: ch0 row3 tick0 missing TICK_KEY_OFF\n"); ok = false; }
@@ -455,11 +449,9 @@ static bool test_arpeggio_tick0_exclusion_and_cycle() {
 }
 
 // Position jump (Bxx) and pattern break (Dxx), separately and combined on
-// the same row across two different channels -- the acceptance criterion
-// this issue calls out by name ("B and D interact correctly, including
-// break-with-jump on the same row"). ch0 carries an audible, distinct note
-// per landing point; ch1 carries the transport effects, so neither ever
-// shares a cell with a note.
+// the same row across two different channels. ch0 carries an audible,
+// distinct note per landing point; ch1 carries the transport effects, so
+// neither ever shares a cell with a note.
 static bool test_position_jump_and_pattern_break() {
     auto row = [](uint8_t note, uint8_t fx0, uint8_t p0, uint8_t fx1, uint8_t p1) -> std::vector<Event> {
         Event a{note, (uint8_t)(note ? 1 : 0), 0, 0, fx0, p0};

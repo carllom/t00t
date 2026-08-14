@@ -1,8 +1,6 @@
-// Host-side proof of src/res2p.h: renders it to WAV and checks its behaviour
-// objectively (pole stability, resonant frequency, decay) before it gets
-// wired into any real-time engine. See issue #5 phase 2 — "the right place
-// to prove res2p.h objectively, instead of rewriting working 808 sounds to
-// do it."
+// Host-side proof of src/res2p.h: renders it to WAV and checks its
+// behaviour objectively (pole stability, resonant frequency, decay) before
+// it gets wired into any real-time engine (#5).
 //
 // Run from the build directory (tools/host_render/build) so the WAVs land
 // next to the binary, in the git-ignored build/ tree:
@@ -17,9 +15,9 @@
 
 static constexpr float FS = 44100.0f;
 
-// #28: res2p_radius() moved from expf() to a LUT + linear interpolation.
-// Proves the LUT matches expf() to an inaudible margin across every (bw, fs)
-// this codebase uses before relying on it in the speech formant cascade.
+// Proves res2p_radius()'s LUT + linear interpolation approximation matches
+// expf() to an inaudible margin across every (bw, fs) this codebase uses
+// before relying on it in the speech formant cascade.
 static bool test_radius_lut_accuracy() {
     bool all_ok = true;
     float max_err = 0.0f;
