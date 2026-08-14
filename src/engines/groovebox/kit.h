@@ -133,8 +133,8 @@ struct Tb303Preset {
     float    drive;         // ladder overdrive, 1.0 = clean (accent adds on top)
 };
 
-// Default acid bass. Uses the existing 2-pole SVF LP for now (P0); the 4-pole
-// ladder filter lands in a later phase for the authentic squelch.
+// Default acid bass. Runs through the dedicated 4-pole ladder filter
+// (ladder.h) for the authentic squelch, not the shared 2-pole SVF.
 static const Tb303Preset tb303_default = {
     WAVE_SAW, 500, 28000, 5000, 300,
     3, 200, 80, 120, 1.0f
