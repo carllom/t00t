@@ -34,7 +34,7 @@ still the last hardware-verified state.
 | **P4** | Instrument import: GoatTracker `.ins` host converter; hand-authored text format → header. Dynamic voice allocation. *(Built — §14e. Not yet heard on hardware.)* |
 | **P5** | Speaker simulation output stage (§10). LCD UI. *(Built — §14f. Not yet heard on hardware.)* |
 | **P6** | 8580 model (table swap). Combined-waveform LUTs. *(Deferred by Carl's call — the combined-waveform LUT's only available source data is reSID's own sampled tables (`tools/sid_ref/resid/wave*.h`, GPL-2, deliberately gitignored/not vendored, same reasoning as the DAC tables at §14a.7). Unlike the DAC ladder, combined-waveform behavior has no known clean closed-form derivation to independently re-derive from — reSID's own tables come from resistor/leakage-level SPICE modeling, not a formula. Raised as a licensing question rather than guessed at; Carl chose to defer P6 entirely rather than resolve it now. AND stays the 6581/8580 combined-waveform approximation, with §14a.4's documented ~200 dB error on the pulse combinations unchanged.)* |
-| **later** | Other chips (§12): AY/YM2149, SN76489, NES 2A03, GB DMG. |
+| **later** | Other chips (§12): AY/YM2149, SN76489, NES 2A03, GB DMG. *(AY-3-8910/YM2149 P0 built — §12.1. Primitives only; not yet an engine, not yet heard.)* |
 
 **P0 was a hard gate.** Nothing in §9's budget was trusted until it cleared, and
 `FILTER_BUS_COUNT` was provisional until then (`MAX_VOICES = 32` is a separate,
@@ -576,6 +576,100 @@ additional `VoiceType`s in *this* module, not new modules.
 
 **Explicitly out of scope:** FM (OPL/OPN) belongs with the DX7 module; Amiga Paula
 and other sample chips belong with the tracker; SP0256/TMS5220 belong with speech.
+
+### 12.1 AY-3-8910/YM2149 P0 (measurement gate, primitives only)
+
+Carl picked AY as the next chip: simple (3 tone + noise, no filter model),
+and — unlike SID's combined-waveform problem (§14a.4), which needed real
+chip-measurement data under a GPL license that couldn't be vendored — no
+equivalent licensing wall. The best available reference,
+[ayumi](https://github.com/true-grue/ayumi) (Peter Sovietov), is
+**MIT-licensed**, confirmed via GitHub's API and its own `LICENSE` file
+directly, not recalled. Unlike `tools/sid_ref/resid/` (GPL-2, gitignored,
+never shipped — §14a.7), `tools/ay_ref/ayumi/` vendors `ayumi.c`/`ayumi.h`
+outright, `LICENSE` committed alongside.
+
+**Read in full before writing anything.** Three facts came directly out of
+`ayumi.c`, not out of memory or a datasheet paraphrase:
+
+- **Noise LFSR**: 17-bit, feedback `bit0 = bit0 XOR bit3` of the pre-shift
+  register, fed into the vacated bit 16. Confirmed against ayumi's own
+  `update_noise()`, the same "read the reference, don't guess the taps"
+  discipline that caught SID's own tap error at F0 (`sid_osc.h`'s own
+  header comment).
+- **Envelope shape table**: ayumi's `Envelopes[16][2]` — 16 raw 4-bit codes,
+  10 musically distinct shapes — ported verbatim into an enum/switch
+  (`AY_ENVELOPE_SEGMENTS`, `src/chip/ay_envelope.h`) rather than
+  ayumi's function-pointer table. Same information, this project's style.
+- **Internal tick rate**: real hardware documents a clock/16 divider for the
+  tone generator and clock/256 for the envelope generator (two different
+  base rates) — but reconciling that prose against ayumi's own calibration
+  did not resolve cleanly by hand (see `ay_osc.h`'s header comment for the
+  arithmetic that didn't add up). Rather than trust a derivation that
+  wouldn't close, this went with what could be *proven*: ayumi ticks every
+  generator (tone, noise, envelope) once per call to its own internal
+  `update_mixer()`, at a rate of clock/8 — derived directly from
+  `ayumi_configure()`'s own `step` calibration, cross-checked against the
+  textbook tone-frequency formula (clock/16/period) with no unaccounted
+  factor, and then actually proven correct empirically rather than argued
+  for: `tools/ay_ctl_diff.py` compares every tick of t00t's own primitives
+  against ayumi's, bit-exact.
+
+**Files**: `src/chip/ay_osc.h` (`AyTone`, `AyNoise`), `src/chip/ay_envelope.h`
+(`AyEnvelope`, DAC tables, `ay_mix()`) — topology-free per §4's rule, same
+as `sid_osc.h`/`env_sid.h`. Real hardware has 3 tone channels sharing *one*
+noise generator and *one* envelope generator; these primitives don't assume
+that sharing, so a future engine can give each dynamically-allocated voice
+its own noise + envelope instead (trading the real chip's shared-envelope
+trick for full 32-voice independence) — the same kind of topology
+reinterpretation the SID engine already does versus its own `CHIP_STRICT`
+harness. The **validation harness** (below) wires the real shared topology,
+since that's what ayumi itself models and what a bit-exact diff needs.
+
+**Host validation** (`tools/ay_ref/`, `tools/ay_ctl_diff.py`,
+`tools/host_render/render_ay.cpp` + `t00t_ay_dump.cpp`) mirrors §11.1's
+`CHIP_STRICT` split exactly:
+
+| Domain | Result |
+|---|---|
+| tone (toggle sequence, 6 periods) | **PASS**, 4624/4624 ticks exact |
+| noise (LFSR sequence) | **PASS**, 200000/200000 shifts exact |
+| envelope (all 16 shape codes) | **PASS**, 2048/2048 points exact |
+| dac (AY + YM tables) | **PASS**, 64/64 entries within float32 precision (1e-6) |
+
+Every domain here is bit-exact — no sample-quantisation tolerance the way
+SID's `env` domain needs one (§14a's `diff_env`), because this is a plain
+ramp counter, not a piecewise-exponential one.
+
+**Spectral comparison** (`tools/sid_compare.py`, reused unmodified — it's
+generic over any two float32 WAVs) against `ayumi_render`'s real oversampled/
+decimated/DC-filtered output shows the same *category* of gap SID's own P0
+found and accepted (§14a.4): `render_ay.cpp` generates directly at 44.1 kHz
+with no band-limiting, same as `render_sid.cpp` always has, so a `centroid_
+ratio` around 2.0-2.4 across every stream is aliasing, not a logic bug —
+the control-plane table above already proves the logic. Not yet priced in
+dBc the way §14a.4 did for SID; worth doing before treating the number as
+settled, same "measure it, don't assume it's fine" standard the rest of
+this doc holds itself to.
+
+**One real, non-aliasing gap, found not assumed**: the `mixer_combos`
+stream (tone-disabled + noise-disabled at once — a documented AY quirk that
+outputs a constant level, not silence) scored far worse than every other
+stream (`coactive_frac` 0.61 against 1.0 everywhere else, `envelope_mae_db`
+28.4 against ~1). Cause: `ayumi_remove_dc()` is a DC-blocking filter ayumi's
+own reference renderer applies, which drives a sustained constant level
+toward silence over time; `render_ay.cpp` has no equivalent stage, so its
+output for that combo stays flat where ayumi's decays. Real AY-3-8910
+hardware is very likely AC-coupled at its actual analog output the same
+way — this is closer to "a free-bonus stage the primitives don't have yet"
+(chip.md §10's SidBoardFilter precedent) than an error in the digital logic
+itself, but it is a real difference and a future engine integration should
+know about it rather than rediscover it by ear.
+
+**Not built**: any engine integration (`VoiceType`, `VoiceParams`, MIDI
+routing, an instrument format for envelope shape/period + mixer state), any
+device-side wiring at all, and no hardware listen -- this is P0, the
+measurement gate, same scope SID's own P0 had.
 
 ---
 

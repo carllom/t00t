@@ -72,3 +72,23 @@ target_include_directories(t00t_chip_dump PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}
     ${CMAKE_CURRENT_LIST_DIR}/../../src
 )
+
+# AY_STRICT reference-diff harness (chip.md, AY-P0) -- the second chip in
+# this module, same shape as render_sid above. Takes the same CLI as
+# tools/ay_ref/ayumi_render.cpp; tools/sid_compare.py (reused unmodified,
+# it is generic over any two float32 WAVs) scores the difference.
+add_executable(render_ay render_ay.cpp)
+target_include_directories(render_ay PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}
+    ${CMAKE_CURRENT_LIST_DIR}/../../src
+    ${CMAKE_CURRENT_LIST_DIR}/../ay_ref
+)
+
+# Control-plane counterpart to render_ay, above: exact CSV dumps of
+# src/chip/ay_osc.h / ay_envelope.h, diffed by tools/ay_ctl_diff.py against
+# tools/ay_ref/ayumi_dump.cpp's reference dumps. Header-only.
+add_executable(t00t_ay_dump t00t_ay_dump.cpp)
+target_include_directories(t00t_ay_dump PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}
+    ${CMAKE_CURRENT_LIST_DIR}/../../src
+)
