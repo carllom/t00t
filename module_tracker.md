@@ -349,7 +349,7 @@ than per sample.
 
 ## Performance Budget
 
-Measured baseline from `engine.md`: Voice A (Fairlight 8-bit sample, linear
+Measured baseline from `history_subtractive.md`: Voice A (Fairlight 8-bit sample, linear
 interpolated) = **5.9%**, i.e. ~200 cycles/frame. **32 of those is 190% of
 Core 1** — this is the trap.
 
@@ -545,6 +545,60 @@ wrapped from a stale position instead. Invisible to #15/#16's own tests
 `test_full_mix()` only asserts aggregate stats), caught immediately by a
 waveform-accurate reference diff. Fixed in `mixer.h`.
 
+### xm2t00t converter (#14)
+
+`tools/xm2t00t/` — a pure-Python, stdlib-only tool (no CMake project, unlike
+`host_render/`) that turns a `.xm` module into a t00t-native binary blob. Per
+this document, the device never parses XM: this runs once, offline, at build
+time. This document's "Multi-format support" section (above) is why this is Python and
+not C++ — it says adding MOD/S3M later is "mostly host-side Python", which
+only makes sense if the XM loader already is.
+
+```
+xm2t00t.py convert <in.xm> <out_prefix>   # writes <out_prefix>_blob.h (a linkable
+                                            # `static const uint8_t ..._blob_data[]`
+                                            # array, same convention as samples/*.h),
+                                            # prints the song-structure dump, applies
+                                            # the Q18.14 + SRAM checks below
+xm2t00t.py dump <in.xm>                    # prints the dump only, writes nothing
+xm2t00t.py gen-header <out.h>              # (re)generate blob_format.h from
+                                            # blob_format.py, the format's source of truth
+```
+
+#### Blob format
+
+Single flat blob, fixed-size headers, every offset a byte offset from blob
+start (never a pointer) — `blob_format.py` declares every struct once and is
+used both to pack the blob and to generate `blob_format.h`, its C++ mirror,
+so the two views of the layout can't drift apart.
+`SongHeader -> order_table, PatternHeader[]+Event[] (6 bytes/cell), InstrumentHeader[]
+(keymap, envelopes in tick units, vibrato) -> SampleHeader[]`, each sample
+carrying a precomputed 96-entry Q8.24 note -> increment table (`periods.py`,
+linear and Amiga frequency modes) so the device never runs period math. XM
+effects (including the `Exy`/`Xxy`/`Fxx` commands that overload one letter for
+several meanings) are normalized into named `Effect`/`VolEffect` enums
+(`effects.py`) rather than left as raw nibbles for the device to switch on.
+`sample_data_offset`/`sample_data_bytes` mark one uninterrupted PCM+guard-byte
+region (guard = loop-start value if looped, last value if one-shot) meant for
+a straight `memcpy` into SRAM — nothing else is interleaved into it.
+
+v1 hard limits, both enforced at convert time with an actionable message and
+a non-zero exit (no blob written): any single sample over the Q18.14 cap
+(262,144 frames), or total sample data over an SRAM budget (`--budget-kb`,
+default 380 KB — this document's stated 350-400 KB after code/stacks/DMA/mixer
+scratch). No dynamic-loading simulator yet (this document: phase 2) — just a
+static sum, per this document's own "v1 requires the module to fit in SRAM".
+
+Not wired into `CMakeLists.txt` — #14 is host-only by design; a later mixer
+issue links `blob_format.h`/a converted song into the tracker engine build.
+
+**Caveat**: the Amiga-mode period table and both modes' finetune handling are
+implemented from XM/FT2's public, well-documented formulas and sanity-checked
+(note C-4, finetune 0 -> exactly 8363 Hz, the XM reference; one octave up
+doubles the frequency) — not verified bit-exact against a real FT2 period
+dump. That precision matters once something plays these increments back (the
+mixer issue), not for a v1 loader.
+
 ---
 
 ## Display
@@ -562,7 +616,7 @@ one tick ahead of what is audible; at 20 ms this is invisible.
 
 ## Feedback to the Existing Engines
 
-From `engine.md`: 2–3% per voice without LFO, 5–6% with. **The LFO roughly doubles
+From `history_subtractive.md`: 2–3% per voice without LFO, 5–6% with. **The LFO roughly doubles
 voice cost** — a 0.1–20 Hz signal evaluated 44,100 times a second with a float
 phase accumulator and a sine-table lookup. Three orders of magnitude of
 oversampling.
@@ -607,7 +661,7 @@ engine first — where the voice loop is simple enough to get right in an aftern
       **~31.5 cycles/frame** (0.92% of Core 1), inside the 25-40 predicted
       range and comfortably under the ≤50%-of-Core-1 goal — 32 voices leaves
       ~20 points of headroom for a limiter or a global effect send. See
-      `engine.md`'s tracker performance table for the full numbers.
+      `history_tracker.md`'s tracker performance table for the full numbers.
 - [x] **Interpolation: linear, no nearest-neighbour build flag** (#16).
       Nearest-neighbour measured 20.1% at 32 voices vs linear's 30.1% —
       ~20.8 cycles/frame/voice vs ~31.5, a real 33% saving — and does audibly

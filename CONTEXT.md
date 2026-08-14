@@ -114,9 +114,19 @@ parses raw bytes and maps notes to voices; fed by pluggable transports:
 ## Docs
 
 - [architecture.md](architecture.md) — full system design (detailed).
-- [engine.md](engine.md) — synthesis engine deep-dive.
+- [engine.md](engine.md) — cross-module dual-core architecture (pin allocation, buffer
+  flow, IPC, voice allocation, MIDI input) shared by every synthesis module.
 - [building.md](building.md) — toolchain, SDK setup, build/flash steps.
 - [migration.md](migration.md) — porting notes.
+- **Per-module docs** — one `module_<name>.md` (current spec/usage) and, where the module
+  has development history worth keeping, a `history_<name>.md` (dated build/measurement
+  narrative, kept separate so it doesn't clutter the spec):
+  [module_subtractive.md](module_subtractive.md) / [history_subtractive.md](history_subtractive.md),
+  [module_chip.md](module_chip.md) / [history_chip.md](history_chip.md),
+  [module_fm.md](module_fm.md) / [history_fm.md](history_fm.md),
+  [module_groovebox.md](module_groovebox.md),
+  [module_speech.md](module_speech.md) / [history_speech.md](history_speech.md),
+  [module_tracker.md](module_tracker.md) / [history_tracker.md](history_tracker.md).
 
 ## Notes / gotchas
 

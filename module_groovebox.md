@@ -5,8 +5,18 @@ A design document for a "groovebox" variant of the t00t engine: a mono/duo
 hybrid drum machine**. It is a *mode* — a build-time engine variant that replaces
 the general subtractive engine, not something that runs in parallel with it.
 
-Status: **design draft.** No code written yet. Numbers for CPU are estimates
-derived from the measured figures in `engine.md`.
+Status: **P0–P2 built** (`src/engines/groovebox/`, `make ENGINE=groovebox`) —
+engine skeleton, the TB-303 voice (ladder filter, glide, accent, overdrive),
+and the 808 drum voices (BD, snare, clap, toms, cowbell, hats, crash via a
+metal oscillator bank). **P3** (909-style sample-based hats/cymbals,
+`VT_DRUM_SAMPLE`) is not yet built. A basic MIDI-clock-driven step sequencer
+(`patterns.h`) also exists, ahead of §9's "future, out of scope" framing
+below — that section is stale. The rest of this document is still written in
+design-draft voice throughout (unlike `module_fm.md`/`module_chip.md`, it was
+never annotated phase-by-phase against what actually shipped), so treat
+specific claims below as the original plan, not a verified as-built
+description. Numbers for CPU are estimates derived from the measured figures
+in `history_subtractive.md`, not from measuring this module directly.
 
 ---
 
@@ -24,8 +34,8 @@ derived from the measured figures in `engine.md`.
 
 **Start with plain instrument MIDI control** — no sequencer. The sequencer is a
 Core-0 input source added later that calls the same voice-trigger entry points
-MIDI uses (this is already how the architecture is designed; see `engine.md` §
-"Adding a Sequencer").
+MIDI uses (this is already how the architecture is designed; see `architecture.md` §
+"Input Layer: Adding a Sequencer / Mod Source").
 
 ---
 
@@ -343,7 +353,7 @@ change is a groovebox-specific note-routing table instead of the poly allocator.
 
 ## 7. CPU budget
 
-Baseline anchors from `engine.md`: RP2350, 1 voice+LFO ≈ 6%, filter ≈ 1–2%/voice,
+Baseline anchors from `history_subtractive.md`: RP2350, 1 voice+LFO ≈ 6%, filter ≈ 1–2%/voice,
 16-voice max ≈ 75–80%. Estimated groovebox costs:
 
 | Voice | Est. cost | Notes |
