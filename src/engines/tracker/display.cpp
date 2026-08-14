@@ -16,9 +16,7 @@
 // existing tile/DMA path, whose only backing storage is its shared
 // s_glyph scratch (8*3 x 8*3 x uint16_t = 1,152 B, already paid for by every
 // engine's display). This file adds no buffer of its own -- static state
-// below is a handful of uint32_t change-detection latches, well under 100 B
-// -- so the SRAM cost of this display path is that shared 1,152 B, a small
-// fraction of the sample budget (module_tracker.md: "350-400 KB of SRAM").
+// below is a handful of uint32_t change-detection latches, well under 100 B.
 
 static const uint16_t COL_BG    = gfx_rgb(0, 0, 0);
 static const uint16_t COL_TITLE = gfx_rgb(30, 90, 160);
@@ -136,6 +134,5 @@ void display_task() {
     first = false;
 }
 
-// No bring-up test pattern for this engine yet (unused by the live UI on
-// every engine, groovebox leaves it empty too -- see wslcd/display.h).
+// No bring-up test pattern for this engine -- unused by the live UI.
 void display_bringup_test() {}

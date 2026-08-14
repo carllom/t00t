@@ -3,8 +3,7 @@
 #include "phonemes.h"
 #include "sequencer.h"
 
-// Hardcoded test utterances (module_speech.md "Segment sequencer" exit
-// criterion: "a hardcoded phoneme string is intelligible as a word"). Not
+// Hardcoded test utterances (module_speech.md "Segment sequencer"). Not
 // generated -- the CSV/host-tool phrase pipeline (phrases.h) produces real
 // phrase content separately; these two are hand-picked from phonemes.h's
 // 48-phoneme set (tools/speech_phonemes.csv) to exercise specific claims:

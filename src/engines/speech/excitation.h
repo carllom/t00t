@@ -13,11 +13,10 @@
 // tools/host_render/render_speech.cpp.
 //
 // jitter/shimmer/vibrato below (module_speech.md "Vibrato LFO"/"Jitter and
-// shimmer"): perfectly periodic
-// (jitter == shimmer == 0, lfo_depth == 0) still reproduces "the perfectly
-// periodic, unmistakably robotic 1978 sound" exactly --
-// everything here is an additive perturbation on top of the unchanged pulse
-// train above, not a replacement for it.
+// shimmer"): perfectly periodic (jitter == shimmer == 0, lfo_depth == 0)
+// still reproduces the same robotic pulse train exactly -- everything here
+// is an additive perturbation on top of the unchanged pulse train above,
+// not a replacement for it.
 
 // Fraction of the period spent on the rising ramp. > 0.5 makes the fall
 // faster than the rise, which is what gives the pulse train its buzzy,
@@ -43,11 +42,10 @@ inline uint32_t glottal_phase_inc(float freq_hz, float fs) {
     return (uint32_t)(freq_hz / fs * 4294967296.0);
 }
 
-// Vibrato (module_speech.md "Vibrato LFO"): sub-block rate, like the
-// subtractive engine's own LFO -- one sine sample per sub-block, not per
-// glottal cycle and not per output sample. Depth is 0..1 mapping onto
-// +/-VIBRATO_MAX_SEMITONES, the same "musical range, not a raw Hz knob"
-// choice tract.h's FORMANT_SHIFT_MIN/MAX made for formant_shift.
+// Vibrato (module_speech.md "Vibrato LFO"): sub-block rate -- one sine
+// sample per sub-block, not per glottal cycle and not per output sample.
+// Depth is 0..1 mapping onto +/-VIBRATO_MAX_SEMITONES, a musical range
+// rather than a raw Hz knob.
 inline constexpr float VIBRATO_MAX_SEMITONES = 2.0f;
 
 // Live `lfo_rate` CC range (module_speech.md "CC map"): CC76 (GM's standard

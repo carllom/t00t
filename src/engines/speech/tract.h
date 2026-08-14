@@ -8,9 +8,9 @@
 // two-pole resonators in series get relative formant amplitudes right
 // automatically from the bandwidths -- what makes vowels sound natural
 // without per-formant amplitude data. A single parallel resonator each for
-// frication and the nasal pole, mixed into the cascade output, is "the
-// Klatt split, reduced" -- covers everything the SC-01 could do without a
-// full Klatt implementation. res2p.h is pure math with no pico-sdk
+// frication and the nasal pole, mixed into the cascade output, covers
+// everything the SC-01 could do without a full Klatt implementation.
+// res2p.h is pure math with no pico-sdk
 // dependency, so this header is shared by the device engine
 // (audio_engine.cpp) and tools/host_render/render_speech.cpp.
 inline constexpr uint32_t SPEECH_FORMANTS = 5;
@@ -106,8 +106,7 @@ inline void tract_retrigger(SpeechVoice &sv, const FormantTarget &t) {
     sv.bandwidth_scale = sv.bandwidth_scale_tgt;
     sv.glottal_phase = 0;
     sv.cur_amp = 0.0f;
-    // Vibrato restarts at phase 0 (sine == 0, no pitch jump on
-    // trigger, same reasoning the subtractive engine's LFO retrigger uses);
+    // Vibrato restarts at phase 0 (sine == 0, no pitch jump on trigger);
     // shimmer's multiplier resets to unity. glot_cycle_inc is deliberately
     // left to the caller (render.h sets it from the note's actual phase_inc
     // on the same trigger edge) -- tract.h has no phase_inc to seed it with.
@@ -157,7 +156,7 @@ inline void tract_snap_target(SpeechVoice &sv, const FormantTarget &t) {
 
 // ~4-5 sub-blocks (~12-15 ms at SPEECH_SUBBLOCK/SPEECH_RATE) to settle on a
 // new target -- enough to avoid a click on a mid-note phoneme change, short
-// enough that P1's static, unchanging target reaches it well within a note.
+// enough that a static, unchanging target reaches it well within a note.
 inline constexpr float TRACT_RAMP_COEFF = 0.25f;
 
 // Safety floor/ceiling applied to every resonator's *final* (post
@@ -168,8 +167,8 @@ inline constexpr float TRACT_RAMP_COEFF = 0.25f;
 // formant_shift would fold back rather than sound "shifted". Neither the
 // phoneme table nor the CC range (FORMANT_SHIFT_MIN/MAX,
 // BANDWIDTH_SCALE_MIN/MAX above) should ever reach these, but the floor/
-// ceiling is what the P2 acceptance criterion ("a CC sweep must never be
-// able to push a pole outside the unit circle") actually rests on.
+// ceiling is what guarantees a CC sweep can never push a pole outside the
+// unit circle.
 inline constexpr float TRACT_MIN_BANDWIDTH_HZ = 20.0f;
 inline constexpr float TRACT_MAX_FREQ_FRACTION = 0.45f;   // of fs
 

@@ -26,7 +26,6 @@ enum VoiceType : uint8_t {
     VT_DRUM_HAT,     // noise -> high-pass + decay (closed/open via decay time)
     VT_DRUM_METAL,   // six-square metal bank -> band-pass -> high-pass (808 hats/cymbal)
     VT_DRUM_CLAP,    // band-passed noise + multi-burst clap envelope
-    // Future: VT_DRUM_SAMPLE (909).
 };
 
 // Per-voice parameters. Written by Core 0, read by Core 1. A flat struct

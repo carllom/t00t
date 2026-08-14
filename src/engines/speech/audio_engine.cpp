@@ -52,22 +52,18 @@ void speech_voice_ui_state(uint32_t voice, SpeechVoiceUiState *out) {
     *out = (voice < MAX_VOICES) ? s_voice_ui[voice] : SpeechVoiceUiState{0, 0, PHONEME_COUNT, false};
 }
 
-// Post-mix effects (Core 1 only). Linked unconditionally, unlike the
-// tracker's skeleton -- history_speech.md: "Delay/reverb stay linked ... speech has
-// no sample-RAM pressure".
+// Post-mix effects (Core 1 only), linked unconditionally.
 static FxDelay  fx_delay;
 static FxReverb fx_reverb;
 static uint8_t  s_last_fx_type = 0xFF;
 
 #if defined(T00T_SPEECH_PROFILE) && T00T_SPEECH_PROFILE
 
-// P2 profiling rig: replaces the normal MIDI-driven loop below with a
-// self-cycling, pin-only measurement build -- no display, no stdio, same
-// "hands-off" shape as the tracker's own rig (history_tracker.md "Tracker
-// Engine -- 32-Voice Mixer"). Drives `voices[]` directly with synthetic
-// content instead of going through ParamExchange, so each phase isolates
-// exactly one of the costs module_speech.md's P2 budget table predicts:
-// voice count (1/2/4/8), held vowel vs. voiced fricative,
+// Profiling rig (T00T_SPEECH_PROFILE build): replaces the normal
+// MIDI-driven loop below with a self-cycling, pin-only measurement build --
+// no display, no stdio. Drives `voices[]` directly with synthetic content
+// instead of going through ParamExchange, so each phase isolates exactly
+// one cost: voice count (1/2/4/8), held vowel vs. voiced fricative,
 // coefficient-recompute vs. per-sample cost, and static vs. actively-swept
 // formant_shift/bandwidth_scale. MAX_VOICES is 8 in this build (engine.h),
 // so the 8-voice phase has a real 8th slot.
@@ -77,7 +73,7 @@ struct ProfilePhase {
     bool     recompute_only;  // true: call tract_advance_subblock() only --
                                // skips the per-sample tract_process_mixed()
                                // loop, isolating coefficient-recompute cost
-                               // from module_speech.md's "suspect line item"
+                               // from per-sample cost
     bool     sweep_tract;     // true: sweep formant_shift/bandwidth_scale
                                // across their full CC range every buffer
                                // instead of holding them at 1.0x
@@ -95,8 +91,7 @@ static constexpr ProfilePhase PROFILE_PHASES[] = {
 };
 static constexpr uint32_t PROFILE_PHASE_COUNT = sizeof(PROFILE_PHASES) / sizeof(PROFILE_PHASES[0]);
 
-// ~4s per phase, same hold time as the tracker's own profiling rig, long enough for a stable scope/logic
-// analyzer reading.
+// ~4s per phase, long enough for a stable scope/logic analyzer reading.
 static constexpr uint32_t PROFILE_HOLD_BUFFERS = (4000000u / BUF_PERIOD_US) + 1;
 
 // Fixed ~110 Hz glottal pitch -- pitch is irrelevant to render cost, so one
@@ -234,11 +229,9 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
         for (uint32_t v = 0; v < MAX_VOICES; v++) {
             const VoiceParams &p = vp.voices[v];
             if (p.utterance == SPEECH_NO_UTTERANCE) {
-                // Phoneme keyboard: one sustained phoneme, no sequencer.
-                // module_speech.md: "hold the bit set until the phoneme sequence
-                // completes, regardless of gate" -- this mode has no
-                // utterance to outlast the gate, so active == gate is
-                // exactly that rule applied to a single sustained phoneme.
+                // Phoneme keyboard: one sustained phoneme, no sequencer --
+                // active mirrors gate directly, since there's no utterance
+                // to outlast it.
                 speech_render_voice(voices[v], p.phase_inc, (float)SPEECH_RATE, p.trigger,
                                      p.amplitude, p.gate, p.phoneme, p.pan,
                                      p.formant_shift, p.bandwidth_scale,
@@ -273,11 +266,10 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
             }
         }
 
-        // Post-mix effect (delay / reverb, selected by CC74) — identical
-        // shape to the subtractive/groovebox chain. Mono send / stereo
-        // return: downmix the stereo dry mix to mono, run the (still-mono)
-        // effect on it, then add its wet output identically to both
-        // channels. Clear the newly selected effect's buffer on a type
+        // Post-mix effect (delay / reverb, selected by CC74). Mono send /
+        // stereo return: downmix the stereo dry mix to mono, run the
+        // (still-mono) effect on it, then add its wet output identically to
+        // both channels. Clear the newly selected effect's buffer on a type
         // switch so a stale tail can't leak.
         bool has_fx = (vp.fx.type == FX_DELAY || vp.fx.type == FX_REVERB);
         if (vp.fx.type != s_last_fx_type) {

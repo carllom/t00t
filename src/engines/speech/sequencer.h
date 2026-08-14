@@ -63,10 +63,9 @@ struct SpeechUtterance {
 
 // Segment duration for `phoneme`, scaled by the voice's `rate` (Q4.4, 16 =
 // 1.0x -- VoiceParams::rate, engine.h) and rendered at native rate `fs`.
-// Despite the field's name, this is module_speech.md's literal "Q4.4 scale on all
-// segment durations, 1.0 = nominal": a *larger* rate value means *longer*
-// segments, i.e. slower speech -- not "higher = faster" as the name alone
-// would suggest. Floored to 1 sample so rate == 0 (or a very short phoneme
+// Despite the field's name, a *larger* rate value means *longer* segments,
+// i.e. slower speech -- not "higher = faster" as the name alone would
+// suggest. Floored to 1 sample so rate == 0 (or a very short phoneme
 // at a very fast rate) can never produce a zero-duration segment, which
 // would make the sequencer re-advance every single iteration of the render
 // loop below without ever consuming a sample.
