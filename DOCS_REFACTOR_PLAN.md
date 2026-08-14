@@ -363,3 +363,27 @@ to fix.
   to do the deferred renumbering pass for chip/fm (could be its own step
   before Phase 5, or folded into chip/fm's Phase 4 pass as originally
   discussed).
+- 2026-08-14 (same day, later session): Started Phase 4. Read
+  `module_groovebox.md` directly and spot-checked it against
+  `src/engines/groovebox/engine.h` — confirmed the doc is genuinely stale as
+  its own intro admits: §5.2 describes a `union` `VoiceParams` with
+  `VT_TB303/VT_DRUM_BD/VT_DRUM_SNARE/VT_DRUM_TOM/VT_DRUM_CLAP/VT_DRUM_METAL/
+  VT_DRUM_SAMPLE/VT_DRUM_RIM` and per-type param structs; actual code is a
+  **flat struct** with `VT_SILENT/VT_TB303/VT_DRUM_BD/VT_DRUM_TOM/
+  VT_DRUM_SNARE/VT_DRUM_HAT/VT_DRUM_METAL/VT_DRUM_CLAP` — no `VT_DRUM_SAMPLE`,
+  no `VT_DRUM_RIM`, no per-type structs, and an undocumented `VT_DRUM_HAT`.
+  Confirmed no `history_groovebox.md` exists (groovebox never went through
+  the old single-file split other modules did — as-built notes for it belong
+  inline in `module_groovebox.md`, not a history-file cross-reference).
+  Launched 2 parallel background agents (groovebox, subtractive — smallest
+  modules first per the stated order) to do the actual 4a validation + 4b
+  comment-cleanup passes. **Both were killed mid-flight by the account
+  session rate limit** (resets 17:40 Europe/Stockholm) — neither had made
+  any file edits yet (confirmed via `git status`/`git diff`, clean), each
+  had only gotten as far as the "Carl" hit-count sanity grep (0 hits
+  confirmed for both `module_groovebox.md` and `module_subtractive.md`,
+  matching the prior audit). **No corruption, no partial edits to review —
+  safe to just re-launch fresh agents for groovebox and subtractive next
+  session with the same brief.** Next session: retry Phase 4 starting with
+  groovebox + subtractive, then speech → tracker → chip → fm per the
+  existing order.
