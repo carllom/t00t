@@ -102,9 +102,13 @@ headers onto it would invent structure it doesn't have.
 12. Open questions
 13. Recommended build order, then Summary — new-code list if both exist
 14. Glossary (chip only, last — it's an appendix)
-- [ ] **Phase 3** — anonymize "Carl" → "the author"
-  - [ ] Folded into each module's Phase 4 pass (see per-module table below)
-- [ ] **Phase 4** — per-module deep validation + comment cleanup (see table)
+- [x] **Phase 3** — anonymize "Carl" → "the author"
+  - [x] Folded into each module's Phase 4 pass (see per-module table below);
+        all 6 modules done, including source-comment hits a repo-wide grep
+        found beyond the original `.md`-only baseline audit
+- [x] **Phase 4** — per-module deep validation + comment cleanup (see table) —
+      all 6 modules done (commits `9720744`, `1d2d3b1`, `5f743f1`,
+      `420a762`, `a3f022b`)
 - [ ] **Phase 5** — wrap-up: final grep sweep, delete this file, hand off for
       merge review
 
@@ -121,7 +125,7 @@ simplest first). Each module has two sub-deliverables, tracked separately.
 | speech | done (commit `1d2d3b1`) | done (commit `1d2d3b1`) | done (commit `1d2d3b1`, 3/3 hits) |
 | tracker | done (commit `5f743f1`) | done (commit `5f743f1`) | done (commit `5f743f1`, 2/2 hits in module_tracker.md; 1 hit remains in tracker_song_blob.h, out of scope, see session log) |
 | chip | done (commit `420a762`) | done (commit `420a762`) | done (commit `420a762`, 9+3 doc hits + 6 newly-found source hits, all 18) |
-| fm | not started | not started | not started (module_fm.md 4, history_fm.md 9) |
+| fm | done (commit `a3f022b`) | done (commit `a3f022b`) | done (commit `a3f022b`, 4+9 doc hits + 2 newly-found source hits, all 15) |
 
 `CONTEXT.md`'s 2 "Carl" hits (hardware-ownership: "Carl's actual rig" /
 "Carl runs the breadboard board") aren't module-doc content — handle in
@@ -493,3 +497,53 @@ to fix.
   silently in a docs-cleanup pass. Next: fm (the last module — also carries
   1 more discovered source-comment Carl hit in `tools/host_render/render_fm.cpp`,
   outside `src/engines/`, per the scope-discovery note above).
+- 2026-08-14 (same day, continued): fm done — the last of the six modules,
+  and by far the largest single pass (400k agent tokens, 819-line
+  `module_fm.md` diff). Real drift found was structural, not incidental:
+  `module_fm.md`'s technical sections still described the engine as it
+  stood after issues #41-#59 ("Attempt 1"), but the source has since been
+  substantially rewritten by an F0-F8 Dexed-conformance evaluation (fully
+  narrated in `history_fm.md` §§1-7, never folded back into the module
+  doc) — `FM_OUT_SHIFT_CARRIER`/`FM_OUT_SHIFT_MODULATOR`/
+  `FM_MOD_INPUT_SHIFT`/`FmOpParams::level` don't exist anymore (replaced by
+  a new `fm_scale.h` fixed-point contract), `env_dx.h` is now a wholesale
+  Dexed `Env` port rather than hand-fit curves, 3 of 6 LFO waveforms were
+  phase-inverted until F6, detune is genuinely note-dependent not "fixed
+  ±7 cents", and the `VoiceParams` doc sketch had a nonexistent `bend`
+  field. Closed open question 6 (the algorithms-4/6 second feedback loop)
+  as "not needed" — confirmed Dexed itself never implements it either.
+  Verified every new `history_fm.md` §5.x citation against real heading
+  text before accepting (spot-checked ~13 of them myself — all correct).
+  104 issue-ref comment lines cleaned (highest density of any module), and
+  caught two more outright-wrong-behavior comments (the by-now-familiar
+  pattern every module pass has hit at least once): a feedback-shift
+  formula comment describing the pre-F4 2x-too-hot math, and a mod-wheel
+  comment describing the pre-F6 "0 = silent" convention F6 reversed. All
+  15 Carl hits reworded (4+9 doc + 2 newly-found source). Verified
+  `make ENGINE=fm`, `make host`, and `render_fm`'s own test suite
+  (routing compiler, EG shape, release timing) all pass; cleaned up two
+  stray `.wav` test-artifact files the agent's own verification run left
+  untracked before committing. Commit `a3f022b`.
+
+  **Phase 4 (and the Phase-3 anonymization folded into it) is now
+  complete for all six modules.** Cumulative: 5 commits
+  (`9720744` groovebox+subtractive, `1d2d3b1` speech, `5f743f1` tracker,
+  `420a762` chip, `a3f022b` fm), every module's doc validated against its
+  actual source and every source-narrated-history comment either trimmed
+  or moved into its `history_X.md`, all "Carl" mentions this session could
+  find (both the original `.md`-only audit's 33 and the 9 more a
+  repo-wide grep turned up) reworded to "the author". **Two items need
+  Carl's input before Phase 5, not something to resolve unilaterally:**
+  (1) the ARP_LEAD arpeggio-timing discrepancy flagged in the chip entry
+  above (`history_chip.md` §14d.5 vs. shipped data), and (2) whether to
+  do the deferred chip/fm `§`-renumbering pass (deferred back at Phase 2)
+  before or separately from Phase 5. Also still open for Phase 5 sweep,
+  not blocking: `CMakeLists.txt`/`Makefile` may carry more stray
+  `tracker.md`/`fm.md`/`engine.md` refs beyond what chip's pass fixed
+  (flagged, not fully swept); `CONTEXT.md`'s 2 Carl hits and
+  `src/engines/tracker/tracker_song_blob.h`'s 1 hit (flagged in the
+  tracker entry, didn't cleanly match a cataloged pattern) are still
+  outstanding. Next: Phase 5 wrap-up (final grep sweep, resolve the two
+  flagged items with Carl, delete this file, hand off for merge review) —
+  or address the two open items first if Carl wants to weigh in before
+  wrap-up starts.
