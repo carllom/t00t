@@ -402,6 +402,45 @@ allocator's needs. The allocator only needs to know when a voice has gone fully
 silent so it can be reclaimed — not the current envelope level. No richer feedback
 channel is needed at this stage.
 
+### No shared `BlockClock` for FM and speech (#46)
+
+`fm.md` §5.3 flagged a possible shared abstraction: FM's `EnvDX` (#45) and
+speech's per-voice segment sequencer (#34) both looked like *N independent
+control-rate clocks per voice, stepped at block boundaries, driving
+per-sample interpolated values* — a shape the tracker's single ordered
+`TickBlock` ring doesn't serve either of. #46 compared the two as they
+actually exist in the tree, once both were built and hardware-verified,
+rather than against the sketch:
+
+| | FM `EnvDX` (`fm/env_dx.h`, `fm/op.h`) | Speech sequencer (`speech/sequencer.h`, `speech/tract.h`) |
+|---|---|---|
+| Instances per voice | one **per operator** (6 independent stage machines) | one **per voice**, shared by every parameter |
+| Stage shape | fixed 4 × (rate, level), direction-agnostic | variable-length, N phonemes, data-driven duration |
+| Value domain | log2 fixed-point (Q iiii.8), exp2 table at block boundary | plain float, no log domain |
+| Step cadence | every `T00T_FM_BLOCK` (16 samples) | every `SPEECH_SUBBLOCK` (64 samples) |
+| What the kernel gets | exact `gain` + `gain_step`; true per-sample linear ramp, kernel cost = one add | the smoothed value itself (one-pole IIR toward target), held constant for the whole sub-block — no per-sample interpolation at all |
+| "Done" | per-operator terminal `EG_IDLE`, aggregated in `fm_voice_active()` | one `seq_done` bool per voice, set when the last segment finishes |
+
+The only thing genuinely in common is "check a countdown at a block
+boundary, then update state something downstream reads." Everything below
+that — instancing, stage shape, math domain, and what a per-sample read
+actually does — is different because the two problems are different: FM
+needs an exact, cheap, zipper-free amplitude ramp per operator; speech needs
+continuous smoothing across many simultaneous scalar targets (10 formant
+pairs plus fricative/nasal/excitation) with a phoneme table driving variable
+segment lengths. A shared `BlockClock` would have to be a lowest-common-
+denominator template — it would cost FM cycles it doesn't pay today (giving
+up the exact `gain_step` add for something generic enough to also drive
+speech's IIR smoothing) and would hand speech an interpolation mechanism it
+has no use for.
+
+**Decision: reject.** No shared code. This is a case of a common pattern at
+the design-sketch level that turned out not to be common code once both
+sides were real. `fm.md` open question 4 is closed on this basis. Speech's
+sequencer (#34/#36/#37, all hardware-verified) was not touched — this
+question should not be reopened by a future module without a similarly
+concrete comparison against real trees, not sketches.
+
 ---
 
 ## Open Questions

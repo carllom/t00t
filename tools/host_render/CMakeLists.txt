@@ -54,6 +54,39 @@ target_include_directories(render_speech PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}/../../src
 )
 
+# Host build of src/engines/fm/render.h (#41): the FM engine skeleton's
+# shared device/host test-tone renderer, proving the FM-specific 4096-entry
+# sine table (sine_tab.h, phase >> 20, no interpolation) before any operator
+# kernel exists. Pulls in osc/sine.cpp only for pan_gains_q15's wavetable
+# (pan.h) -- fm_sine_table itself is a header-only inline variable, no extra
+# source needed (sine_tab.h).
+add_executable(render_fm
+    render_fm.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/../../src/osc/sine.cpp
+)
+target_include_directories(render_fm PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}
+    ${CMAKE_CURRENT_LIST_DIR}/../../src
+)
+
+# #47 P3 patch bank: patches.h is generated locally by tools/syx2patch.py
+# and gitignored (see the top-level CMakeLists.txt's matching gate) --
+# render_fm.cpp's patch-bank render only compiles in when it's present.
+if(EXISTS ${CMAKE_CURRENT_LIST_DIR}/../../src/engines/fm/patches.h)
+    target_compile_definitions(render_fm PRIVATE T00T_FM_HAS_PATCHES=1)
+endif()
+
+# Host build of src/engines/fm/rig.h (#42): the P0 measurement rig's
+# stripped 6-operator x N-voice mixer, checked here for correctness (real,
+# finite, non-clipping audio through all three kernel variants) before the
+# actual cycle-count bench session. Fully self-contained -- rig.h has its own
+# table and doesn't touch osc/sine.h or pan.h -- so no extra source needed.
+add_executable(render_fm_rig render_fm_rig.cpp)
+target_include_directories(render_fm_rig PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}
+    ${CMAKE_CURRENT_LIST_DIR}/../../src
+)
+
 # CHIP_STRICT reference-diff harness (chip.md §11.1, P0/P1). Takes the same
 # CLI as tools/sid_ref/resid_render.cpp; tools/sid_compare.py runs both and
 # scores the difference. Header-only against src/chip/, no extra .cpp inputs.

@@ -23,6 +23,40 @@ DMA_BUFFER_SIZE ?= default
 #   make ENGINE=speech SPEECH_PROFILE=1
 SPEECH_PROFILE ?= 0
 
+# #42 P0 rig: replaces the FM engine's normal test-tone build with the
+# stripped N-voice x 6-operator mixer (src/engines/fm/rig.h). No effect on
+# other engines. See engine.md "FM P0 Rig (#42)".
+#   make ENGINE=fm FM_PROFILE=1
+FM_PROFILE ?= 0
+
+# fm.md §3.6 tuning levers, each a compile-time switch on the #42 rig (only
+# meaningful with FM_PROFILE=1) — "default" leaves rig.h's own #ifndef
+# default in place, same sentinel convention as MIDI_USB/DMA_BUFFER_SIZE above.
+#   make ENGINE=fm FM_PROFILE=1 FM_RIG_VOICES=32
+#   make ENGINE=fm FM_PROFILE=1 FM_RIG_BLOCK=32
+#   make ENGINE=fm FM_PROFILE=1 FM_RIG_TABLE_BITS=10       # 1024-entry table
+#   make ENGINE=fm FM_PROFILE=1 FM_RIG_INTERLEAVE=1        # interleave op0/op1
+#   make ENGINE=fm FM_PROFILE=1 FM_RIG_NOT_IN_FLASH=1      # kernels in SRAM (noinline)
+#   make ENGINE=fm FM_PROFILE=1 FM_RIG_NOT_IN_FLASH=2      # kernels noinline, still flash (control)
+#   make ENGINE=fm FM_PROFILE=1 FM_RIG_SMULWB=1             # M33 smulwb fusion
+#   make ENGINE=fm FM_PROFILE=1 FM_RIG_FB=0                 # op3 plain, not self-feedback
+FM_RIG_VOICES      ?= default
+FM_RIG_BLOCK        ?= default
+FM_RIG_TABLE_BITS   ?= default
+FM_RIG_INTERLEAVE   ?= default
+FM_RIG_NOT_IN_FLASH ?= default
+FM_RIG_SMULWB       ?= default
+FM_RIG_FB           ?= default
+
+# #45 BLOCK confirmation: the FM engine's real EG control-rate block size
+# (op.h's FM_BLOCK) — distinct from FM_RIG_BLOCK above, which only affects
+# the #42 profiling rig, not real MIDI-driven playback. "default" leaves
+# op.h's own #ifndef default (16) in place. See engine.md "FM P2 BLOCK
+# Confirmation (#45)".
+#   make ENGINE=fm FM_BLOCK=8
+#   make ENGINE=fm FM_BLOCK=32
+FM_BLOCK ?= default
+
 # Chip module P0 measurement rig (rig.h), preserved behind a flag once P1's
 # real MIDI-driven engine became the default (sid.md §1, §14a.9). Same idiom
 # as SPEECH_PROFILE above -- lets sid.md §9's hardware numbers stay
@@ -55,7 +89,12 @@ CHIP_RIG_SPEAKER    ?= default
 CMAKE_FLAGS = -DPICO_BOARD=$(BOARD) -DPICO_PLATFORM=rp2350 \
               -DMIDI_USB=$(MIDI_USB) -DMIDI_UART=$(MIDI_UART) \
               -DT00T_ENGINE=$(ENGINE) -DDMA_BUFFER_SIZE=$(DMA_BUFFER_SIZE) \
-              -DSPEECH_PROFILE=$(SPEECH_PROFILE) -DCHIP_PROFILE=$(CHIP_PROFILE) \
+              -DSPEECH_PROFILE=$(SPEECH_PROFILE) -DFM_PROFILE=$(FM_PROFILE) \
+              -DFM_RIG_VOICES=$(FM_RIG_VOICES) -DFM_RIG_BLOCK=$(FM_RIG_BLOCK) \
+              -DFM_RIG_TABLE_BITS=$(FM_RIG_TABLE_BITS) -DFM_RIG_INTERLEAVE=$(FM_RIG_INTERLEAVE) \
+              -DFM_RIG_NOT_IN_FLASH=$(FM_RIG_NOT_IN_FLASH) -DFM_RIG_SMULWB=$(FM_RIG_SMULWB) \
+              -DFM_RIG_FB=$(FM_RIG_FB) -DFM_BLOCK=$(FM_BLOCK) \
+              -DCHIP_PROFILE=$(CHIP_PROFILE) \
               -DCHIP_RIG_VOICES=$(CHIP_RIG_VOICES) -DCHIP_RIG_BUSES=$(CHIP_RIG_BUSES) \
               -DCHIP_RIG_FILTERED=$(CHIP_RIG_FILTERED) \
               -DCHIP_RIG_OVERSAMPLE=$(CHIP_RIG_OVERSAMPLE) \

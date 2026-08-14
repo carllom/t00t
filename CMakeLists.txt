@@ -122,6 +122,37 @@ if(DEFINED SPEECH_PROFILE AND NOT SPEECH_PROFILE STREQUAL "0")
     target_compile_definitions(t00t PRIVATE T00T_SPEECH_PROFILE=1)
 endif()
 
+# #42 P0 rig override (FM engine only, see src/engines/fm/rig.h/audio_engine.cpp).
+if(DEFINED FM_PROFILE AND NOT FM_PROFILE STREQUAL "0")
+    target_compile_definitions(t00t PRIVATE T00T_FM_PROFILE=1)
+endif()
+
+# fm.md §3.6 tuning levers on the #42 rig — each "default"/unset leaves
+# rig.h's own #ifndef default in place, same convention as DMA_BUFFER_SIZE.
+foreach(_lever FM_RIG_VOICES FM_RIG_BLOCK FM_RIG_TABLE_BITS FM_RIG_INTERLEAVE FM_RIG_NOT_IN_FLASH FM_RIG_SMULWB FM_RIG_FB)
+    if(DEFINED ${_lever} AND NOT ${_lever} STREQUAL "default")
+        target_compile_definitions(t00t PRIVATE ${_lever}=${${_lever}})
+    endif()
+endforeach()
+
+# #45 BLOCK confirmation (FM engine's real EG control-rate block size, op.h's
+# FM_BLOCK — distinct from FM_RIG_BLOCK above, which only affects the #42
+# profiling rig). Unset/"default" leaves op.h's own #ifndef default (16) in
+# place, same convention as DMA_BUFFER_SIZE.
+if(DEFINED FM_BLOCK AND NOT FM_BLOCK STREQUAL "default")
+    target_compile_definitions(t00t PRIVATE T00T_FM_BLOCK=${FM_BLOCK})
+endif()
+
+# #47 P3 patch bank (FM engine only): patches.h is generated locally by
+# tools/syx2patch.py from a real DX7 .syx dump and gitignored, same as xm/'s
+# handling of copyrighted .xm songs (engine.md's xm2t00t precedent) — a real
+# DX7 bank's patch data is Yamaha's commercial sound-design work, not
+# something to check into git history. Guarded here so the build still
+# succeeds (FM_TEST_PATCH only) when nobody has generated it locally yet.
+if(EXISTS ${CMAKE_CURRENT_LIST_DIR}/src/engines/fm/patches.h)
+    target_compile_definitions(t00t PRIVATE T00T_FM_HAS_PATCHES=1)
+endif()
+
 # Chip P0 rig override (chip engine only, see src/engines/chip/audio_engine.cpp).
 if(DEFINED CHIP_PROFILE AND NOT CHIP_PROFILE STREQUAL "0")
     target_compile_definitions(t00t PRIVATE T00T_CHIP_PROFILE=1)
@@ -131,8 +162,6 @@ endif()
 # it would otherwise fail to link against on the tracker build.
 if(T00T_ENGINE STREQUAL "tracker")
     target_compile_definitions(t00t PRIVATE HAS_VOICE_ALLOC=0)
-endif()
-if(T00T_ENGINE STREQUAL "tracker")
     # See ENGINE_TRACKER_PLAYER above — tells main.cpp to call into
     # player_task.cpp's Core 0 song load / ring / transport hooks.
     target_compile_definitions(t00t PRIVATE HAS_TRACKER_PLAYER=1)
