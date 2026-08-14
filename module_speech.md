@@ -539,132 +539,6 @@ against the tracker's sample RAM pressure.
 
 ---
 
-## Phased Plan
-
-### P0 — Common component extraction
-
-Land `res2p.h` and `noise.h` in the common layer. Wire `res2p.h` into the groovebox
-first (see Backporting) — it is independently verifiable there and it means the
-resonator is proven before any speech code exists.
-
-*Exit:* 808 toms and congas rebuilt on `res2p.h`, output diffed against previous
-build, no audible change.
-
-### P1 — Phoneme keyboard (`SPEECH_HOLD`)
-
-Static formant targets, no sequencer, no transitions. One note = one sustained
-phoneme. Cascade + excitation only; skip the fricative and nasal branches.
-
-*Exit:* the five cardinal vowels are recognisable as vowels when played from a
-keyboard, and pitch tracks note number.
-
-### P2 — Full tract + profiling
-
-Add fricative branch, nasal pole, mixed excitation, formant shift and bandwidth
-scale as live parameters. Measure with the profiling pin.
-
-*Exit:* measured per-voice cost, and a decision on `MAX_SPEECH_VOICES` based on it
-rather than on the table above. **Done (#31):** ~93.5 cycles/frame/voice measured,
-`MAX_SPEECH_VOICES = 8`.
-
-### P3 — Segment sequencer
-
-Per-voice segment clock inside the sub-block loop. Variable per-segment duration.
-Linear F/B ramping. Plosive closure/burst handling. Host tool generating `phonemes.h`
-from a CSV.
-
-*Exit:* a hardcoded phoneme string is intelligible as a word. **Done (#34):**
-`sequencer.h` implements the per-voice segment clock exactly as sketched above
-(`k = min3(frames left, seg_remaining, SPEECH_SUBBLOCK)`, moved inside
-`speech_render_voice_seq()`'s per-voice loop, render.h). Two hand-picked utterances
-("HELLO", "CAT" — `utterance.h`, not generated; text-to-phoneme stays P4) exercise
-variable per-segment duration, F/B ramping across a phoneme boundary, and the
-plosive closure/burst pair. See "Settled Decisions" below for the scope this
-landed with vs. the full sketch in "Data Structures".
-
-### P4 — Utterances and MIDI integration
-
-Phrase table, `SpeechMode` policies, program change selection, CC map, vibrato LFO,
-jitter/shimmer. Host tool generating `phrases.h` from text.
-
-*Exit:* a MIDI sequence plays a sung phrase at correct pitch. **Done (#36):**
-`audio_engine.cpp` now sequences `phrases.h`'s generated `SPEECH_PHRASES[]` (#35)
-instead of `utterance.h`'s two P3 fixtures; Program Change and CC23 both select a
-phrase, and CC28's phrase-bank mode maps note number to phrase directly ("playing the
-words themselves" vs. Program Change's "playing a line"). `SpeechMode`'s three values
-were already implemented by #34; #36 adds a live CC27 mode select so all three (plus
-the structurally-represented `SPEECH_HOLD`, unchanged from #28) are reachable without a
-rebuild. `rate`/`jitter`/`shimmer` (CC24-26) and the vibrato LFO (CC1/CC76) are new --
-see "MIDI Mapping"'s CC table above for the full settled map and `excitation.h` for the
-DSP (vibrato resampled once per sub-block; jitter/shimmer drawn once per glottal cycle,
-detected by phase-accumulator wraparound, not per sample). `utterance.h`'s HELLO/CAT
-fixtures stay in place for `tools/host_render/render_speech.cpp`'s #34-era regression
-checks, which need their exact known phoneme strings, not whatever `speech_phrases.txt`
-currently says. Host-verified (`render_speech.cpp`): jitter/shimmer at zero measure as
-exactly periodic (0.0 coefficient of variation on both cycle period and peak amplitude)
-and visibly perturbed at max; vibrato produces a measurable, sub-block-rate F0 swing;
-a generated phrase's measured pitch tracks three notes spanning two octaves. MIDI-layer
-correctness (Program Change/CC parsing, phrase-bank note mapping) has no host-side
-harness -- `midi_controller.cpp` *does* have a pico-sdk dependency (`voice_alloc`/
-`midi_parser`), unlike `render.h` -- so it is compile-verified (both `ENGINE=speech`
-and `ENGINE=speech SPEECH_PROFILE=1` build clean) but not yet confirmed by ear on real
-`breadboard_rp2350` hardware, including the four-`SpeechMode` "verified by ear" bullet
-this issue's acceptance criteria call for. `PHONEME_FLAG_SUSTAINABLE` (#30) stays
-reserved but unread -- true singing mode (holding a vowel segment open under gate
-instead of advancing at its nominal duration) is a real gap against the sketch's
-"Singing mode" note, but it isn't in #36's own acceptance criteria, so it's deferred
-rather than silently dropped.
-
-### P5 — Effects and polish
-
-Route through the existing delay/reverb/overdrive chain. Stereo placement per voice.
-Preset table.
-
-*Exit:* module is playable and ships. **Landed (#38):** delay/reverb linking and
-per-voice pan (`pan` field) turned out to already be in place -- both shipped with
-the #27 skeleton and #11's stereo-output work respectively, before any P3/P4
-sequencer or MIDI-mapping code existed, and both are already hardware-verified (#28's
-closing note: "notes, pan, vowel select, both delay and reverb" confirmed on
-`breadboard_rp2350`). Overdrive was never actually part of "the existing effects
-chain" anywhere in the codebase -- checked: `EffectType` (`engine_base.h`) only ever
-had `FX_DELAY`/`FX_REVERB`; "delay/reverb/overdrive" traces back to an *Open
-Question* in `module_tracker.md`, not a built feature -- so it's explicitly deferred rather
-than implemented here; see "Settled Decisions" below for the reasoning against
-building it as part of this issue. What #38 actually added: `presets.h`
-(`SpeechPreset`, `voice_apply_preset()`, 9 presets -- one per `SpeechMode`
-(`SPEECH_HOLD` via the phoneme keyboard, `ONESHOT`, `GATED`, `LOOP`), robotic,
-breathy, tract-shift up/down, and a robot-chorus preset spreading up to
-`MAX_SPEECH_VOICES` simultaneously-held notes across the stereo field with a small
-per-voice detune -- see "MIDI Mapping" above for the exit criterion this closes:
-`module_speech.md`'s own "the range the parameters actually cover"), CC16 preset select
-(`midi_controller.cpp`), and a CMake fix (`CMakeLists.txt`'s VGA-board button
-controller was gated on "does this engine ship a presets.h" -- true only by accident
-for the subtractive engine until this issue gave speech one too; re-gated on
-`T00T_ENGINE STREQUAL "subtractive"`, what the controller's actual `VoicePreset`/
-`WAVE_SAMPLE` dependency always required). Builds clean on all four engines
-(`make`/`make ENGINE=groovebox`/`make ENGINE=tracker`/`make ENGINE=speech`, plus
-`SPEECH_PROFILE=1`). Not yet done: hardware listening confirmation of the preset
-table (particularly the robot-chorus preset's stereo spread) and the profiling-pin
-measurement of effects-on cost for `history_subtractive.md`'s performance table --
-both need Carl at the bench, same as #36's MIDI-wiring gap.
-
-### P6 — LPC sibling engine (optional, later)
-
-New tract filter only: a 10-stage lattice replacing the resonator cascade. Excitation,
-sequencer, resampler and control plane are unchanged. Native rate drops to 8 kHz,
-which introduces the fractional resampler.
-
-Note the convergence: the TMS5220 interpolated its reflection coefficients eight times
-per 25 ms frame — every 25 samples at 8 kHz. That is literally sub-block rendering,
-decided in 1978 for the same reasons. The lattice is also unconditionally stable under
-coefficient interpolation as long as |k| < 1, which is *why* TI used it, and means the
-P3 ramping code can interpolate lattice coefficients directly where it could not
-interpolate biquad coefficients.
-
-Data pipeline is the real work here, not DSP. Encode own recordings; do not lift ROMs.
-
----
-
 ## Testing
 
 There is no `openmpt123` equivalent — no canonical reference renderer for a formant
@@ -908,3 +782,129 @@ Listed for completeness; no new work.
    voice — but not yet confirmed by ear). Also pending: the effects-on cost
    measurement for `history_subtractive.md`'s performance table (needs the
    profiling pin, i.e. Carl at the bench, same as #31/#37's numbers).
+## Phased Plan
+
+### P0 — Common component extraction
+
+Land `res2p.h` and `noise.h` in the common layer. Wire `res2p.h` into the groovebox
+first (see Backporting) — it is independently verifiable there and it means the
+resonator is proven before any speech code exists.
+
+*Exit:* 808 toms and congas rebuilt on `res2p.h`, output diffed against previous
+build, no audible change.
+
+### P1 — Phoneme keyboard (`SPEECH_HOLD`)
+
+Static formant targets, no sequencer, no transitions. One note = one sustained
+phoneme. Cascade + excitation only; skip the fricative and nasal branches.
+
+*Exit:* the five cardinal vowels are recognisable as vowels when played from a
+keyboard, and pitch tracks note number.
+
+### P2 — Full tract + profiling
+
+Add fricative branch, nasal pole, mixed excitation, formant shift and bandwidth
+scale as live parameters. Measure with the profiling pin.
+
+*Exit:* measured per-voice cost, and a decision on `MAX_SPEECH_VOICES` based on it
+rather than on the table above. **Done (#31):** ~93.5 cycles/frame/voice measured,
+`MAX_SPEECH_VOICES = 8`.
+
+### P3 — Segment sequencer
+
+Per-voice segment clock inside the sub-block loop. Variable per-segment duration.
+Linear F/B ramping. Plosive closure/burst handling. Host tool generating `phonemes.h`
+from a CSV.
+
+*Exit:* a hardcoded phoneme string is intelligible as a word. **Done (#34):**
+`sequencer.h` implements the per-voice segment clock exactly as sketched above
+(`k = min3(frames left, seg_remaining, SPEECH_SUBBLOCK)`, moved inside
+`speech_render_voice_seq()`'s per-voice loop, render.h). Two hand-picked utterances
+("HELLO", "CAT" — `utterance.h`, not generated; text-to-phoneme stays P4) exercise
+variable per-segment duration, F/B ramping across a phoneme boundary, and the
+plosive closure/burst pair. See "Settled Decisions" below for the scope this
+landed with vs. the full sketch in "Data Structures".
+
+### P4 — Utterances and MIDI integration
+
+Phrase table, `SpeechMode` policies, program change selection, CC map, vibrato LFO,
+jitter/shimmer. Host tool generating `phrases.h` from text.
+
+*Exit:* a MIDI sequence plays a sung phrase at correct pitch. **Done (#36):**
+`audio_engine.cpp` now sequences `phrases.h`'s generated `SPEECH_PHRASES[]` (#35)
+instead of `utterance.h`'s two P3 fixtures; Program Change and CC23 both select a
+phrase, and CC28's phrase-bank mode maps note number to phrase directly ("playing the
+words themselves" vs. Program Change's "playing a line"). `SpeechMode`'s three values
+were already implemented by #34; #36 adds a live CC27 mode select so all three (plus
+the structurally-represented `SPEECH_HOLD`, unchanged from #28) are reachable without a
+rebuild. `rate`/`jitter`/`shimmer` (CC24-26) and the vibrato LFO (CC1/CC76) are new --
+see "MIDI Mapping"'s CC table above for the full settled map and `excitation.h` for the
+DSP (vibrato resampled once per sub-block; jitter/shimmer drawn once per glottal cycle,
+detected by phase-accumulator wraparound, not per sample). `utterance.h`'s HELLO/CAT
+fixtures stay in place for `tools/host_render/render_speech.cpp`'s #34-era regression
+checks, which need their exact known phoneme strings, not whatever `speech_phrases.txt`
+currently says. Host-verified (`render_speech.cpp`): jitter/shimmer at zero measure as
+exactly periodic (0.0 coefficient of variation on both cycle period and peak amplitude)
+and visibly perturbed at max; vibrato produces a measurable, sub-block-rate F0 swing;
+a generated phrase's measured pitch tracks three notes spanning two octaves. MIDI-layer
+correctness (Program Change/CC parsing, phrase-bank note mapping) has no host-side
+harness -- `midi_controller.cpp` *does* have a pico-sdk dependency (`voice_alloc`/
+`midi_parser`), unlike `render.h` -- so it is compile-verified (both `ENGINE=speech`
+and `ENGINE=speech SPEECH_PROFILE=1` build clean) but not yet confirmed by ear on real
+`breadboard_rp2350` hardware, including the four-`SpeechMode` "verified by ear" bullet
+this issue's acceptance criteria call for. `PHONEME_FLAG_SUSTAINABLE` (#30) stays
+reserved but unread -- true singing mode (holding a vowel segment open under gate
+instead of advancing at its nominal duration) is a real gap against the sketch's
+"Singing mode" note, but it isn't in #36's own acceptance criteria, so it's deferred
+rather than silently dropped.
+
+### P5 — Effects and polish
+
+Route through the existing delay/reverb/overdrive chain. Stereo placement per voice.
+Preset table.
+
+*Exit:* module is playable and ships. **Landed (#38):** delay/reverb linking and
+per-voice pan (`pan` field) turned out to already be in place -- both shipped with
+the #27 skeleton and #11's stereo-output work respectively, before any P3/P4
+sequencer or MIDI-mapping code existed, and both are already hardware-verified (#28's
+closing note: "notes, pan, vowel select, both delay and reverb" confirmed on
+`breadboard_rp2350`). Overdrive was never actually part of "the existing effects
+chain" anywhere in the codebase -- checked: `EffectType` (`engine_base.h`) only ever
+had `FX_DELAY`/`FX_REVERB`; "delay/reverb/overdrive" traces back to an *Open
+Question* in `module_tracker.md`, not a built feature -- so it's explicitly deferred rather
+than implemented here; see "Settled Decisions" below for the reasoning against
+building it as part of this issue. What #38 actually added: `presets.h`
+(`SpeechPreset`, `voice_apply_preset()`, 9 presets -- one per `SpeechMode`
+(`SPEECH_HOLD` via the phoneme keyboard, `ONESHOT`, `GATED`, `LOOP`), robotic,
+breathy, tract-shift up/down, and a robot-chorus preset spreading up to
+`MAX_SPEECH_VOICES` simultaneously-held notes across the stereo field with a small
+per-voice detune -- see "MIDI Mapping" above for the exit criterion this closes:
+`module_speech.md`'s own "the range the parameters actually cover"), CC16 preset select
+(`midi_controller.cpp`), and a CMake fix (`CMakeLists.txt`'s VGA-board button
+controller was gated on "does this engine ship a presets.h" -- true only by accident
+for the subtractive engine until this issue gave speech one too; re-gated on
+`T00T_ENGINE STREQUAL "subtractive"`, what the controller's actual `VoicePreset`/
+`WAVE_SAMPLE` dependency always required). Builds clean on all four engines
+(`make`/`make ENGINE=groovebox`/`make ENGINE=tracker`/`make ENGINE=speech`, plus
+`SPEECH_PROFILE=1`). Not yet done: hardware listening confirmation of the preset
+table (particularly the robot-chorus preset's stereo spread) and the profiling-pin
+measurement of effects-on cost for `history_subtractive.md`'s performance table --
+both need Carl at the bench, same as #36's MIDI-wiring gap.
+
+### P6 — LPC sibling engine (optional, later)
+
+New tract filter only: a 10-stage lattice replacing the resonator cascade. Excitation,
+sequencer, resampler and control plane are unchanged. Native rate drops to 8 kHz,
+which introduces the fractional resampler.
+
+Note the convergence: the TMS5220 interpolated its reflection coefficients eight times
+per 25 ms frame — every 25 samples at 8 kHz. That is literally sub-block rendering,
+decided in 1978 for the same reasons. The lattice is also unconditionally stable under
+coefficient interpolation as long as |k| < 1, which is *why* TI used it, and means the
+P3 ramping code can interpolate lattice coefficients directly where it could not
+interpolate biquad coefficients.
+
+Data pipeline is the real work here, not DSP. Encode own recordings; do not lift ROMs.
+
+---
+
