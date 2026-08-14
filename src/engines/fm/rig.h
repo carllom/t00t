@@ -39,11 +39,11 @@
 //                            correctness, not the real instruction
 //   FM_RIG_FB             -- 0/1 (default 1): op3 uses op_render_fb
 //                            (self-feedback) when 1, or plain op_render when
-//                            0 -- lets #43's bench session diff self-feedback
+//                            0 -- lets a bench session diff self-feedback
 //                            against a plain operator on an otherwise
-//                            identical topology (module_fm.md §3.3's 22-vs-17-cycle
-//                            budget), which the fixed topology alone can't
-//                            isolate since op3 was always op_render_fb.
+//                            identical topology (module_fm.md §3.3), which
+//                            the fixed topology alone can't isolate since
+//                            op3 was always op_render_fb.
 
 #ifndef FM_RIG_VOICES
 #define FM_RIG_VOICES 24
@@ -116,12 +116,11 @@ inline uint32_t fm_rig_phase_inc(float freq_hz, float sample_rate_hz) {
 #define __noinline
 #endif
 
-// #43 finding: plain __not_in_flash_func() has NO effect here, because
-// op_render() etc. are `inline` and fully inline into audio_engine_run() at
-// -O3 -- the attribute places an *out-of-line* function's code in SRAM, and
-// inlining erases the separate symbol before that ever applies (confirmed
-// via objdump: FM_RIG_NOT_IN_FLASH=0 and =1 produced byte-identical .text).
-// The pico-sdk documents this exact trap and ships the fix:
+// Plain __not_in_flash_func() has NO effect here, because op_render() etc.
+// are `inline` and fully inline into audio_engine_run() at -O3 -- the
+// attribute places an *out-of-line* function's code in SRAM, and inlining
+// erases the separate symbol before that ever applies. The pico-sdk
+// documents this exact trap and ships the fix:
 // __no_inline_not_in_flash_func() adds noinline so there's a real symbol for
 // the section-placement attribute to act on.
 //
@@ -157,8 +156,7 @@ struct FmRigOp {
 };
 
 // Read-only all-zero bus, shared by every "no external modulation" operator
-// (module_fm.md §5.2: "points at a zero bus for pure carriers"). Sized to the
-// largest configured BLOCK; never written.
+// (module_fm.md §5.2). Sized to the largest configured BLOCK; never written.
 inline int32_t fm_rig_zero_bus[FM_RIG_BLOCK];
 
 // Multiply-by-gain-then-shift, shared by every kernel below. FM_RIG_SMULWB
@@ -291,11 +289,10 @@ inline void FM_RIG_HOT(op_render_pair)(FmRigOp &a, FmRigOp &b, uint32_t n) {
     b.phase = pb; b.gain = gb;
 }
 
-// One voice's shared bus scratch (module_fm.md §4.3: "6 modulation buses + 1 output
-// bus ... one shared scratch for the whole engine, not per-voice"). Callers
-// own these and reuse the same arrays across every voice, sequentially --
-// this struct just names the pointers so fm_rig_render_voice_block() doesn't
-// take seven separate arguments.
+// One voice's shared bus scratch (module_fm.md §4.3). Callers own these and
+// reuse the same arrays across every voice, sequentially -- this struct just
+// names the pointers so fm_rig_render_voice_block() doesn't take seven
+// separate arguments.
 struct FmRigBuses {
     int32_t *mod[6];
     int32_t *out;
@@ -352,8 +349,8 @@ inline void fm_rig_render_voice_block(FmRigOp ops[6], const FmRigBuses &bus, uin
     op_render_first(ops[5], n);
 }
 
-// Fixed increments/gains/gain-steps (module_fm.md P0: "fixed phase increments,
-// fixed gains" -- no EG, no patch data). Each operator in the chain gets a
+// Fixed increments/gains/gain-steps (module_fm.md P0 -- no EG, no patch
+// data). Each operator in the chain gets a
 // harmonic-multiple frequency purely so the rendered tone isn't a plain
 // sine (worth something for the host WAV's by-eye/by-ear sanity check);
 // gain is a flat mid-scale modulation depth for every operator except the

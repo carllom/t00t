@@ -19,15 +19,10 @@
 //
 //     voice output = (waveform_dac12(wave) - wave_zero) * envelope_dac8(env)
 //
-// which is reSID's own Voice::output(), range [-2048*255, 2047*255]. Adopting
-// the reference's scale rather than inventing one is deliberate. The FM
-// module's attempt 1 had no such anchor -- carriers and modulators on two
-// unrelated scales, a global shift to paper over it, and per-operator magic
-// constants to paper over that (history_fm.md §1.1a). Six free parameters that
-// existed only to cancel each other out, and no way to tell which was wrong.
-// Here there is exactly one scale and it is the reference's, so any level
-// disagreement with reSID is a bug in a specific curve rather than a tuning
-// opportunity.
+// which is reSID's own Voice::output(), range [-2048*255, 2047*255].
+// Adopting the reference's scale rather than inventing one means there is
+// exactly one scale, and it is the reference's, so any level disagreement
+// with reSID is a bug in a specific curve rather than a tuning opportunity.
 // ---------------------------------------------------------------------------
 
 // The 12-bit waveform DAC is 8 KB of flash (sid_tables.h). The 8-bit envelope
@@ -35,18 +30,17 @@
 // missing bit-0 termination is most of what makes a quiet note sound like a
 // 6581 rather than like an attenuated square wave.
 //
-// F0 prices the 12-bit one; P1 decides. Default on, so the default build is
-// the accurate one and turning it off is a deliberate act with a number
-// attached (tools/sid_compare.py reports the difference).
+// Default on, so the default build is the accurate one and turning it off
+// is a deliberate act with a number attached (tools/sid_compare.py reports
+// the difference).
 #ifndef CHIP_WAVE_DAC
 #define CHIP_WAVE_DAC 1
 #endif
 
-// Velocity scaling. module_chip.md §13.7: applied *before* the bus sum, not after the
-// filter, "a quiet note then drives the 6581 nonlinearity less hard, which is
-// both physically right and what makes velocity feel like dynamics rather
-// than a volume knob". §11.1: it must compile out under CHIP_STRICT, "or the
-// reSID diff fails for reasons unrelated to the primitives".
+// Velocity scaling is applied *before* the bus sum, not after the filter
+// (module_chip.md §13.7): a quiet note then drives the 6581 nonlinearity
+// less hard. It compiles out entirely under CHIP_STRICT (§11.1), so the
+// reSID diff stays isolated to the primitives.
 #ifndef CHIP_STRICT
 #define CHIP_STRICT 0
 #endif
@@ -101,7 +95,7 @@ struct SidVoice {
         int32_t out = (w - wave_zero()) * amp;
 
 #if !CHIP_STRICT
-        // Digital scaling, ahead of any filter. ~2-3 c/f, per module_chip.md §9.
+        // Digital scaling, ahead of any filter.
         uint8_t v = velocity ? velocity : 127;
         if (v != 127) out = (int32_t)(((int64_t)out * v) >> 7);
 #endif

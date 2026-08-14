@@ -13,14 +13,14 @@
 // for the engine proper -- filter buses instead of one filter, a per-voice
 // sub-oscillator instead of adjacency, a flat pool of 32 instead of 3.
 //
-// It exists because of §11.1: a register stream is $D400-$D418, free-routing
-// mode cannot consume one, and "without a strict mode there is no way to prove
-// the oscillator, envelope, LFSR and filter are correct at all". Validation
-// targets the primitives; the routing above them is what differs between the
-// two modes, and free mode inherits the primitives' correctness.
+// It exists because free-routing mode cannot consume a register stream
+// ($D400-$D418), and register-stream playback is how the primitives here
+// get validated (module_chip.md §11.1). Validation targets the primitives;
+// the routing above them is what differs between the two modes, and free
+// mode inherits the primitives' correctness.
 //
-// Its second job is module_chip.md's P1 register-stream playback path, which is why
-// this lives in src/chip/ rather than in the host harness.
+// Its second job is register-stream playback, which is why this lives in
+// src/chip/ rather than in the host harness.
 
 struct SidChip {
     SidVoice voice[3];

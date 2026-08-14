@@ -19,7 +19,7 @@ static constexpr uint8_t FM_NUM_OPS = 6;
 // buses (bus b is "the bus operator b reads as its own modulation input"),
 // FM_TARGET_OUT is the shared voice output bus that carriers sum into, and
 // FM_BUS_ZERO is a read-only all-zero source for operators nothing
-// modulates (module_fm.md §5.2: "pure carriers pointing at a zero bus"). The same
+// modulates (module_fm.md §5.2). The same
 // numeric value doubles as FmOpParams::mod_target's "this op is a carrier"
 // sentinel and as the routing compiler's output-bus id -- a carrier's
 // output IS the thing being routed to bus FM_TARGET_OUT, so one constant
@@ -47,10 +47,10 @@ struct FmOpParams {
     float   fixed_hz;      // absolute frequency in Hz, used only when fixed_freq is true
     bool    fixed_freq;
     // Raw DX7 detune, offset so 0 == neutral (DX7 byte 0-14 minus 7, so
-    // -7..+7). F5 changed this from a baked cents value: real DX7 detune is
-    // note-dependent in ratio mode and a different, sharpen-only rule in fixed
-    // mode, so it cannot be resolved by a note-independent converter. op.h's
-    // fm_op_base_inc() applies both rules at note-on.
+    // -7..+7). Real DX7 detune is note-dependent in ratio mode and a
+    // different, sharpen-only rule in fixed mode, so it cannot be resolved
+    // by a note-independent converter. op.h's fm_op_base_inc() applies both
+    // rules at note-on.
     int8_t  detune_offset;
     uint8_t mod_target;    // 0..FM_NUM_OPS-1 (another operator), or FM_TARGET_OUT (carrier)
     // The operators BESIDES mod_target that this operator also modulates, as
@@ -306,19 +306,15 @@ inline bool fm_resolve_routing(const FmPatch &patch, FmRouting &r) {
 // fm_resolve_routing() on this patch reproduces the rig's exact bus
 // assignment and kernel selection (op0/op1/op4/op5 first-writer, op2 plain
 // accumulate, op3 self-feedback accumulate, no bus ever needs clearing) --
-// so this patch's per-voice cost is directly comparable to the already-
-// measured 100.05 c/f/voice baseline (module_fm.md §3.4), and the "is the emitted
-// inner loop identical to #42's" acceptance criterion is checking real
-// kernel reuse, not a coincidence of similar shape.
+// so this patch's per-voice cost is directly comparable to already-measured
+// baselines (module_fm.md §3.4).
 //
 // Ratios: op4/op5 both ratio 1.0 is a classic 2-op FM pair (1:1 carrier:
 // modulator gives a full harmonic series); op1/op2/op3 (ratios 2/3/1,
 // op3 self-fed) pile three more modulators onto op4 for a denser,
 // EP/bell-adjacent timbre; op0 (ratio 0.5) sub-modulates op2. Not a literal
-// DX7 algorithm number -- module_fm.md P1 only asks for "a simple stack or a
-// 2-carrier pair, not something exotic" -- but every ratio is a small
-// integer (or 0.5), so the spectrum is a predictable harmonic/sideband set,
-// not an inharmonic bell.
+// DX7 algorithm number, but every ratio is a small integer (or 0.5), so the
+// spectrum is a predictable harmonic/sideband set, not an inharmonic bell.
 //
 // Levels: loudness is `output_level` alone, in real DX7 units, against
 // op.h's single engine-wide ceiling -- a modulator at output_level 99 with
@@ -336,16 +332,15 @@ inline bool fm_resolve_routing(const FmPatch &patch, FmRouting &r) {
 // electric-piano shape: both attack instantly (R1=99), but op4 (the
 // modulator, i.e. the *brightness*) decays much faster and further than
 // op5 (the carrier, i.e. the *loudness*) -- a bright pluck that settles
-// into a mellower sustained tone, the P2 gate in module_fm.md §1 ("A
-// DX-recognisable electric piano or bell"). Velocity sensitivity is
-// highest on op4 (brightness) and op5 (loudness), lower on the other four
-// -- harder hits play brighter AND louder, softer hits duller and quieter,
-// exactly the DX7 EP's signature touch response.
+// into a mellower sustained tone (module_fm.md §1's P2 gate). Velocity
+// sensitivity is highest on op4 (brightness) and op5 (loudness), lower on
+// the other four -- harder hits play brighter AND louder, softer hits
+// duller and quieter, exactly the DX7 EP's signature touch response.
 inline constexpr FmPatch FM_TEST_PATCH = {
     "P1 Test Stack",
     {
-        // F7 added `extra_target_mask` after `mod_target`; it is 0 for every
-        // operator here, since this patch is a plain single-target chain.
+        // `extra_target_mask` (after `mod_target`) is 0 for every operator
+        // here, since this patch is a plain single-target chain.
         /* op0 */ { 0.5f, 0.0f, false,  0, 2, 0, false,
                      75, 2, {99, 50, 20, 60}, {90, 50, 40, 0} },
         /* op1 */ { 2.0f, 0.0f, false,  0, 4, 0, false,

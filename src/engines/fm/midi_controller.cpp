@@ -11,21 +11,19 @@
 
 // FM MIDI controller (#44, module_fm.md P1): note on/off + pitch bend + velocity,
 // mirroring the shared src/midi/midi_controller.cpp's channel-bend/pan
-// pattern. Own controller (not the shared one) for the same reason the #41
-// skeleton stub gave: this engine's VoiceParams carries a patch pointer, not
-// a VoicePreset the shared controller's presets.h shape expects.
+// pattern. Own controller (not the shared one): this engine's VoiceParams
+// carries a patch pointer, not a VoicePreset the shared controller's
+// presets.h shape expects.
 //
-// Patch select (#47, module_fm.md P3): every note-on used FM_TEST_PATCH
-// unconditionally until tools/syx2patch.py gave this engine more than one
-// patch to choose from. patches.h is generated locally and gitignored (a
-// real DX7 bank's patch data, not something to check into git history --
-// see CMakeLists.txt's T00T_FM_HAS_PATCHES gate), so patch select itself is
-// conditionally compiled: Program Change and CC30 (data2, same range) both
-// pick `patches[value % FM_PATCH_COUNT]` -- CC30 exists because the
-// BeatStep Pro's encoders are absolute CC (16-31) and can't reliably send a
-// real Program Change, same reasoning #36 gave speech's phrase-bank CCs.
-// Without patches.h, every voice still plays FM_TEST_PATCH, exactly as
-// before #47.
+// Patch select (#47, module_fm.md P3): patches.h is generated locally and
+// gitignored (a real DX7 bank's patch data, not something to check into git
+// history -- see CMakeLists.txt's T00T_FM_HAS_PATCHES gate), so patch
+// select is conditionally compiled. When patches.h is present, Program
+// Change and CC30 (data2, same range) both pick
+// `patches[value % FM_PATCH_COUNT]` -- CC30 exists because the BeatStep
+// Pro's encoders are absolute CC (16-31) and can't reliably send a real
+// Program Change, same reasoning #36 gave speech's phrase-bank CCs. Without
+// patches.h, every voice plays FM_TEST_PATCH.
 
 static MidiParser midi_parser;
 static int8_t midi_note_voice[128];

@@ -16,32 +16,21 @@
 
 // FM operator kernel (#44, module_fm.md §5.2): FmOp + the three per-sample
 // variants, plus the note-on/block/voice glue that turns a resolved
-// FmRouting (patch.h) into real audio. Per-sample bodies are the exact
-// #42/#43-measured kernels (rig.h's op_render/op_render_first/op_render_fb)
-// -- same table (sine_tab.h's real, hardware-verified 4096-entry table, not
-// rig.h's standalone bench copy), same fm_mul_gain convention, same
-// phase-wrap-is-free indexing. F2 (history_fm.md §2) removed the per-call output
-// shift entirely -- there is one output scale now, not a carrier one and a
-// modulator one -- which makes the loop bodies slightly *shorter* than the
-// #43-measured ones, not longer, so that measurement still bounds them. See
-// "The fixed-point contract" below for the single anchor everything now
-// derives from. module_fm.md §3.6's decisions are otherwise still
-// baked in: SMULWB adopted (lever 4, "adopted where convenient"), plain
-// `inline` in flash, not not_in_flash_func (lever 2, SRAM measured worse),
-// no op-pair interleaving (lever 1, not adopted). No pico-sdk dependency
+// FmRouting (patch.h) into real audio. Per-sample bodies use the same table
+// (sine_tab.h's real 4096-entry table, not rig.h's standalone bench copy),
+// the same fm_mul_gain convention, and the same phase-wrap-is-free indexing
+// as rig.h's op_render/op_render_first/op_render_fb. See "The fixed-point
+// contract" below (fm_scale.h) for the single anchor everything derives
+// from. module_fm.md §3.6 covers the tuning-lever decisions baked in here
+// (SMULWB, flash placement, no op-pair interleaving). No pico-sdk dependency
 // beyond the conditional arm_acle.h include (device only), so this header
 // is shared by the device engine and the host render/test harness, exactly
 // like render.h/rig.h.
 
-// module_fm.md §3.6 lever 3 / open question 3, closed by #45: BLOCK size. #43
-// deferred the final call to here, since #43's rig has no EG/LFO to give
-// the time-resolution side of the tradeoff anything real to measure against
-// (module_fm.md: "confirm empirically against the fastest-attack patches"). See
-// `history_fm.md` §"FM Engine — EnvDX + BLOCK Confirmation (#45)" for the comparison and the
-// decision. Overridable at compile time (`-DT00T_FM_BLOCK=8/32`, wired
-// through CMakeLists.txt/Makefile the same way DMA_BUFFER_SIZE is) so that
-// comparison -- and any future one -- doesn't require hand-editing this
-// file. Also the shared per-voice bus scratch size (module_fm.md §4.3).
+// BLOCK size (module_fm.md §3.6, closed by #45). Overridable at compile time
+// (`-DT00T_FM_BLOCK=8/32`, wired through CMakeLists.txt/Makefile the same
+// way DMA_BUFFER_SIZE is) so comparisons don't require hand-editing this
+// file. Also sets the shared per-voice bus scratch size (module_fm.md §4.3).
 #ifndef T00T_FM_BLOCK
 #define T00T_FM_BLOCK 16
 #endif
@@ -70,16 +59,15 @@ struct FmOp {
 // Read-only all-zero bus, shared by every operator nothing modulates.
 inline int32_t fm_zero_bus[FM_BLOCK];
 
-// Multiply-by-gain-then-shift. module_fm.md §3.6 lever 4: SMULWB fuses the
+// Multiply-by-gain-then-shift. SMULWB (module_fm.md §3.6 lever 4) fuses the
 // gain-scale + multiply into one M33 DSP-extension instruction --
-// (Rn * SignExtend16(Rm)) >> 16 -- measured -3.0% in #43, "adopted where
-// convenient" (real win, no correctness cost), so unlike rig.h's
-// FM_RIG_SMULWB toggle (a bench A/B lever) this is just how the real
-// kernel works. Host builds get the portable 64-bit-multiply equivalent --
-// same numeric result, not the real instruction (arm_acle.h doesn't exist
-// off-target). __smlawb (multiply-accumulate, third operand forced to 0)
-// stands in for SMULWB because this GCC's arm_acle.h has no standalone
-// SMULWB wrapper -- same rig.h finding.
+// (Rn * SignExtend16(Rm)) >> 16 -- adopted because it's a real win with no
+// correctness cost; unlike rig.h's FM_RIG_SMULWB toggle (a bench A/B lever),
+// this is just how the real kernel works. Host builds get the portable
+// 64-bit-multiply equivalent -- same numeric result, not the real
+// instruction (arm_acle.h doesn't exist off-target). __smlawb
+// (multiply-accumulate, third operand forced to 0) stands in for SMULWB
+// because this GCC's arm_acle.h has no standalone SMULWB wrapper.
 inline int32_t fm_mul_gain(int32_t sample, int32_t gain) {
 #if defined(__ARM_FEATURE_DSP)
     return __smlawb(gain, sample, 0);
@@ -89,11 +77,10 @@ inline int32_t fm_mul_gain(int32_t sample, int32_t gain) {
 }
 
 
-// Plain kernel: accumulates (+=) into `out`. module_fm.md §3.2's 13-instruction
-// listing (as measured by #43) is still this loop body -- F2 removed the
-// per-call `out_shift` parameter (there is one output scale now, not a
-// carrier one and a modulator one) and left the shape otherwise untouched,
-// so #43's measured cost still stands.
+// Plain kernel: accumulates (+=) into `out`. F2 removed the per-call
+// `out_shift` parameter -- there is one output scale now, not a carrier one
+// and a modulator one -- and left the shape otherwise unchanged
+// (module_fm.md §3.2).
 inline void op_render(FmOp &op, uint32_t n) {
     uint32_t phase = op.phase;
     uint32_t inc = op.inc;
@@ -176,9 +163,8 @@ inline void op_render_fb(FmOp &op, uint32_t n, int32_t fb_shift) {
     op.fb2 = fb2;
 }
 
-// One voice's shared bus scratch (module_fm.md §4.3: "one shared scratch for the
-// whole engine, not per-voice" -- callers reuse the same arrays across
-// every voice, sequentially).
+// One voice's shared bus scratch (module_fm.md §4.3) -- callers reuse the
+// same arrays across every voice, sequentially.
 struct FmVoiceBuses {
     int32_t *mod[FM_NUM_OPS];
     int32_t *out;
@@ -232,10 +218,8 @@ inline void fm_voice_render_block(FmOp ops[FM_NUM_OPS], const FmRouting &r,
 //
 // The load-bearing word is *note*. Real DX7 detune is not a fixed cents
 // offset: it falls off as the note rises, from 2.46 cents/unit at C1 to
-// 0.68 at C6. F5 measured what assuming otherwise cost -- tools/fm_freq_diff.py
-// found up to 11.9 cents of error at C1 against a flat 1.0 cents/unit, which
-// is a quarter of the way to a semitone and audible as the wrong beating rate
-// between two operators sharing a ratio (the entire point of detune).
+// 0.68 at C6 -- getting this wrong changes the beating rate between two
+// operators sharing a ratio, which is the entire point of detune.
 //
 // Depends only on the note, so it is computed once per note-on and shared by
 // all six operators.
@@ -249,8 +233,7 @@ inline float dx7_detune_cents_per_unit(uint8_t midinote) {
 
 // Fixed-frequency mode uses a different, much simpler detune rule that only
 // ever sharpens (Dexed: `logfreq += detune > 7 ? 13457 * (detune - 7) : 0`).
-// 13457 / 2^24 * 1200 = 0.9624 cents per unit, note-independent. t00t used to
-// drop fixed-mode detune entirely, worth up to 6.7 cents (measured, F5).
+// 13457 / 2^24 * 1200 = 0.9624 cents per unit, note-independent.
 static constexpr float DX7_FIXED_DETUNE_CENTS_PER_UNIT = 0.96244f;
 
 // The operator's Q32 phase increment at neutral pitch -- no bend, no pitch EG,
@@ -350,17 +333,13 @@ inline bool fm_voice_active(const FmOp ops[FM_NUM_OPS], const FmRouting &r) {
     return false;
 }
 
-// #49: supersedes #44's fm_voice_update_pitch() -- re-derives every
-// operator's `inc` from the note's current (possibly re-bent) base
-// increment, same as before, but now ALSO steps the voice's pitch EG
-// (pitch_eg.h) and LFO (lfo.h) by this control block and folds their
-// combined cents output into the same increment recompute (module_fm.md §5.4/§5.5:
-// "applied by scaling all six operator increments at each block
-// boundary"). Called once per control block from fm_render_voice() below
-// (previously fm_voice_update_pitch() ran once per whole audio buffer from
-// audio_engine.cpp -- strictly finer-grained now, not a behavior change for
-// plain pitch bend, since BLOCK-rate recompute can only make a held bend
-// glide MORE accurately timed, never less). Fixed-frequency operators
+// #49: re-derives every operator's `inc` from the note's current (possibly
+// re-bent) base increment, and also steps the voice's pitch EG (pitch_eg.h)
+// and LFO (lfo.h) by this control block, folding their combined cents
+// output into the same increment recompute (module_fm.md §5.4/§5.5). Called
+// once per control block from fm_render_voice() below -- BLOCK-rate
+// recompute can only make a held bend glide MORE accurately timed than a
+// once-per-buffer recompute, never less. Fixed-frequency operators
 // (`p.fixed_freq`) skip the pitch EG/LFO term entirely -- matches Dexed's
 // own `osc_freq()` fixed-mode branch, which only ever receives pitch bend
 // (`pitch_base`) and never `pitch_mod` (pitchenv + LFO): a fixed-frequency
@@ -392,14 +371,12 @@ inline float fm_voice_step_pitch_and_mod(FmOp ops[FM_NUM_OPS], const FmPatch &pa
 }
 
 // Steps every operator's EG by one control block (env_dx.h's
-// env_dx_step_block()) and sets `gain`/`gain_step` from the result --
-// module_fm.md §5.3's "the kernel is handed gain (start) and gain_step (per-sample
-// delta) for that block". Everything here runs once per block, not once
+// env_dx_step_block()) and sets `gain`/`gain_step` from the result
+// (module_fm.md §5.3). Everything here runs once per block, not once
 // per sample: this is the only place outside note-on that touches `gain`,
-// and op_render/op_render_first/op_render_fb (unchanged since #44) never
-// see any of env_dx.h -- from the kernel's point of view this could be a
-// fixed gain, a hand-set ramp, or an EG, and it wouldn't know the
-// difference (module_fm.md §4.1's routing claim, restated for the EG).
+// and op_render/op_render_first/op_render_fb never see any of env_dx.h --
+// from the kernel's point of view this could be a fixed gain, a hand-set
+// ramp, or an EG, and it wouldn't know the difference (module_fm.md §4.1).
 //
 // `amp_atten` (0..1, from lfo.h) is subtracted from each operator's
 // LOG-domain level, BEFORE the exp lookup that turns it into a gain --
@@ -471,14 +448,12 @@ inline void fm_voice_step_envelopes(FmOp ops[FM_NUM_OPS], const FmPatch &patch, 
 //
 // #49: `peg`/`lfo` are optional (default nullptr, same convention
 // fm_voice_note_on()/fm_voice_note_off() use) -- when both are given, every
-// sub-block also steps the voice's pitch EG and LFO (fm_voice_step_pitch_and_mod(),
-// superseding #44's fm_voice_update_pitch(), which ran this same increment
-// recompute once per whole buffer instead of once per control block) and
-// folds the LFO's amplitude-mod output into fm_voice_step_envelopes(). A
-// caller that omits them gets exactly #44/#45/#48's old behavior (no live
-// pitch bend recompute at all) -- every real caller (device and host) is
-// updated to pass real state; nullptr only exists for isolated kernel-only
-// tests that don't care about any of this.
+// sub-block also steps the voice's pitch EG and LFO
+// (fm_voice_step_pitch_and_mod()) and folds the LFO's amplitude-mod output
+// into fm_voice_step_envelopes(). A caller that omits them gets no live
+// pitch bend recompute at all -- every real caller (device and host) passes
+// real state; nullptr only exists for isolated kernel-only tests that don't
+// care about any of this.
 inline void fm_render_voice(FmOp ops[FM_NUM_OPS], const FmPatch &patch, const FmRouting &r,
                              const FmVoiceBuses &bus, int16_t pan,
                              int32_t *dry_l, int32_t *dry_r, uint32_t frames,

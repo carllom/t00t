@@ -12,11 +12,7 @@
 //                   --out out/probe_res_lp.f32 --meta out/probe_res_lp.json
 //     cd ../.. && tools/sid_ref/.venv/bin/python tools/fit_6581_filter.py
 //
-// PROVENANCE. module_chip.md §5.1: "The 6581 cutoff curve varied enormously between
-// physical chips. Any curve is *a* 6581, not *the* 6581. The LUT must be
-// documented as sampled from a named reference, never presented as canonical."
-//
-// These tables are sampled from reSID ef7873fc8c83
+// PROVENANCE. These tables are sampled from reSID ef7873fc8c83
 // (daglem/reSID, 1.0-pre1), whose 6581 filter is itself a transistor-level
 // model fitted to one measured chip -- Dag Lem's, with the op-amp and VCR
 // parameters in its filter.cc. A different physical 6581 would give a
@@ -166,10 +162,10 @@ static const uint16_t SID_6581_FC_Q15[2048] = {
 
 
 
-// 8580 cutoff. PLACEHOLDER, not measured -- module_chip.md §1 puts the 8580 model
-// at P6. This is reSID's own closed-form 8580 mapping (filter.h's set_w0:
-// cutoff = 12.5 kHz * (fc+1)/2048) converted into this SVF's units, so the
-// shape is right and the model switch is exercisable. Refit at P6.
+// 8580 cutoff. PLACEHOLDER, not independently measured/fitted: this is
+// reSID's own closed-form 8580 mapping (filter.h's set_w0: cutoff =
+// 12.5 kHz * (fc+1)/2048) converted into this SVF's units, so the shape is
+// right and the model switch is exercisable pending a proper fit.
 static const uint16_t SID_8580_FC_Q15[2048] = {
     20, 28, 43, 57, 71, 85, 100, 114, 128, 142, 157, 171, 185, 199, 214, 228,
     242, 256, 271, 285, 299, 313, 328, 342, 356, 370, 385, 399, 413, 427, 442, 456,
@@ -312,7 +308,7 @@ static const uint16_t SID_6581_RES_Q15[16] = {
 
 
 
-// 8580 resonance. PLACEHOLDER alongside SID_8580_FC_Q15; refit at P6.
+// 8580 resonance. PLACEHOLDER alongside SID_8580_FC_Q15, pending a proper fit.
 static const uint16_t SID_8580_RES_Q15[16] = {
     65534, 61334, 57134, 52934, 48734, 44534, 40334, 36134,
     31934, 27734, 23534, 19334, 15134, 10934, 6734, 2534,
@@ -369,8 +365,8 @@ static const uint8_t SID_ENV_DAC_8580[256] = {
 
 
 // 6581 waveform DAC: 12-bit, same ladder. 8 KB of flash, which is why it
-// is behind CHIP_WAVE_DAC in sid_voice.h rather than unconditional --
-// F0 prices it, P1 decides. The 8580's is linear and has no table.
+// is behind CHIP_WAVE_DAC in sid_voice.h rather than unconditional. The
+// 8580's is linear and has no table.
 static const uint16_t SID_WAVE_DAC_6581[4096] = {
     0, 2, 3, 5, 5, 7, 8, 10, 10, 12, 13, 15,
     15, 17, 18, 20, 19, 21, 22, 24, 25, 27, 28, 30,
@@ -716,7 +712,7 @@ static const uint16_t SID_WAVE_DAC_6581[4096] = {
     4090, 4092, 4093, 4095,
 };
 
-// C64 board output network (module_chip.md §10's "free bonus"): the passive RC between
+// C64 board output network (module_chip.md §10): the passive RC between
 // the SID and the AV connector. Values are reSID's ExternalFilter, which names
 // the components: w0lp = 1/(10k * 1nF) = 15.9 kHz, w0hp = 1/(1k * 10uF) =
 // 15.9 Hz. The high-pass is not cosmetic here -- the 6581's 0x380
@@ -739,9 +735,7 @@ static constexpr int32_t SID_FILT_SAT_SCALE_6581 = 1305192;
 // It is a right shift, and it is the *only* free gain in the whole chain --
 // which is the point. Three 6581 voices at full envelope reach 2447235,
 // and >> 7 puts that at 19119, inside int16 with
-// headroom for the resonant filter's own gain. Calibrated once against reSID's
-// output level (tools/sid_compare.py reports the residual as `level gap`) and
-// then left alone: the FM module's attempt 1 is the cautionary tale for what
-// happens when a chain accumulates several of these and each is free to
-// absorb the others' errors (history_fm.md §1.1a).
+// headroom for the resonant filter's own gain. Calibrated once against
+// reSID's output level (tools/sid_compare.py reports the residual as
+// `level gap`) and then left alone.
 static constexpr int SID_MIX_SHIFT = 7;

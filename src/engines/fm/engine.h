@@ -4,11 +4,9 @@
 
 #include "patch.h"  // FmPatch -- no pico-sdk dependency, safe ahead of engine_base.h
 
-// MAX_VOICES=16, defined ahead of engine_base.h per #10. Provisional, not
-// settled: full-engine hardware measurement (F8) came back well above the
-// projection this number was originally confirmed against, and the
-// reverb-safe count may land closer to 11-14 -- see module_fm.md §3.4/§9 for
-// the current numbers and what's still open before this changes.
+// MAX_VOICES=16, defined ahead of engine_base.h so patch.h is available
+// before it. See module_fm.md §3.4/§9 for the current voice-count
+// constraints.
 static constexpr uint32_t MAX_VOICES = 16;
 static constexpr uint32_t FILTER_BUS_COUNT = 0;   // chip module only (module_chip.md §5)
 
@@ -16,8 +14,7 @@ static constexpr uint32_t FILTER_BUS_COUNT = 0;   // chip module only (module_ch
 
 // The FM engine: a 6-operator voice whose routing is patch data (patch.h),
 // rendered by op.h's kernels, played from MIDI note on/off. Delay/reverb
-// stay linked (module_fm.md §2: FM's whole working set is small enough that
-// the shared 128 KB delay line costs it nothing it needs).
+// stay linked (module_fm.md §2).
 //
 // FM has no fixed channel->voice mapping, so the plain latest-wins
 // ParamExchange/voice_alloc that subtractive/groovebox/speech also use is

@@ -4,7 +4,7 @@
 
 // SID oscillator primitive -- accumulator, waveform logic, noise LFSR.
 //
-// TOPOLOGY-FREE (module_chip.md §4, hard rule from the first commit): this knows
+// TOPOLOGY-FREE (module_chip.md §4): this knows
 // nothing about chips, voices, buses, allocation or adjacency. Sync and ring
 // take their modulation from a value the caller supplies, so the same code
 // serves the free-routing engine (per-voice sub-oscillator, §4.4) and the
@@ -13,8 +13,8 @@
 //
 // Ground truth for every function here is reSID 1.0-pre1, dumped by
 // tools/sid_ref/resid_dump.cpp and diffed by tools/sid_ctl_diff.py. Where
-// this file departs from module_chip.md, the reference is why -- each such place is
-// commented, because the doc is otherwise the thing a reader would trust.
+// this file departs from module_chip.md, the reference is why -- each such
+// place is commented.
 
 // ---------------------------------------------------------------------------
 // Accumulator format
@@ -111,12 +111,12 @@ inline uint16_t sid_lfsr_output(uint32_t sr) {
 
 // How many times the noise register clocks over one accumulator step.
 //
-// module_chip.md §4.2: "Noise needs a clock count per sample, not a single clock: at
-// high frequencies more than one bit-19 transition occurs per 44.1 kHz sample."
-// Correct, and the bound is tight -- at the maximum frequency register the
-// accumulator advances 0x165B0000 in Q24.8 against a 0x10000000 shift period,
-// so the count is never more than 2. The mask keeps that true across the
-// uint32 wrap rather than relying on it.
+// The noise register can clock more than once per sample at high
+// frequencies -- more than one bit-19 transition per 44.1 kHz sample
+// (module_chip.md §4.2). The bound is tight -- at the maximum frequency
+// register the accumulator advances 0x165B0000 in Q24.8 against a
+// 0x10000000 shift period, so the count is never more than 2. The mask
+// keeps that true across the uint32 wrap rather than relying on it.
 inline uint32_t sid_noise_clocks(uint32_t acc_before, uint32_t acc_after) {
     // Bit 19 of the 24-bit accumulator is bit 27 here. It rises once per
     // 0x1000_0000 of advance, at phase 0x0800_0000 -- so shifting the origin
@@ -166,21 +166,11 @@ inline uint16_t sid_pulse(uint16_t top12, uint16_t pw) {
 
 // Combined waveforms.
 //
-// module_chip.md §13.5 settles this as "AND first (P1), LUTs later (P6)", on the
-// grounds that AND "gets to roughly TinySID grade and is one instruction".
-// F0 measured what that costs against reSID's sampled tables, over all 4096
-// phases (tools/sid_ctl_diff.py, domain `wave`):
-//
-//     saw+tri    mean |err| 1012 / 4095   max 2720
-//     pulse+tri  mean |err| 1423 / 4095   max 3840
-//     pulse+saw  mean |err| 1971 / 4095   max 4080
-//     all three  mean |err| 1020 / 4095   max 2720
-//
-// That is 25-48% of full scale, not a shading. The AND is kept as the default
-// because the decision to defer was made on cost, not on accuracy, and F0's
-// job is to price it rather than to relitigate it -- but "roughly TinySID
-// grade" should be read as "audibly a different waveform", and the P6 LUT is
-// the fix, not a polish item.
+// AND-combining two or three waveforms is a cheap approximation of the real
+// chip's analog combination, not a fit to reSID's sampled combined-waveform
+// tables (tools/sid_ctl_diff.py, domain `wave`): the difference from the
+// sampled tables is a substantial fraction of full scale, not a shading, so
+// this reads as an audibly different waveform, not merely an inaccurate one.
 inline uint16_t sid_combined_and(uint8_t waveform, uint16_t top12, uint16_t pw, uint16_t ring_msb_flip) {
     uint16_t out = 0xfff;
     if (waveform & SID_WAVE_TRI)   out = (uint16_t)(out & sid_tri((uint16_t)(top12 ^ ring_msb_flip)));
@@ -223,9 +213,7 @@ struct SidOsc {
     // to apply sync a sample late, which on a sync lead is not a subtlety --
     // it is the difference between a locked timbre and a beating one.
     //
-    // A modulator that is only a sync source calls advance() and nothing else,
-    // which is where module_chip.md §4.4's "5-8 c/f versus 45-65 for a whole voice"
-    // comes from.
+    // A modulator that is only a sync source calls advance() and nothing else.
 
     // Advance the accumulator and the noise register. Returns true if the MSB
     // rose on this step -- the hard sync event.
