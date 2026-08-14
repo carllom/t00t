@@ -119,7 +119,7 @@ simplest first). Each module has two sub-deliverables, tracked separately.
 | groovebox | done (commit `9720744`) | done (commit `9720744`) | n/a (0 hits, confirmed) |
 | subtractive | done (commit `9720744`) | done (commit `9720744`) | n/a (0 hits, confirmed) |
 | speech | done (commit `1d2d3b1`) | done (commit `1d2d3b1`) | done (commit `1d2d3b1`, 3/3 hits) |
-| tracker | not started | not started | not started (module_tracker.md 2 hits) |
+| tracker | done (commit `5f743f1`) | done (commit `5f743f1`) | done (commit `5f743f1`, 2/2 hits in module_tracker.md; 1 hit remains in tracker_song_blob.h, out of scope, see session log) |
 | chip | not started | not started | not started (module_chip.md 9, history_chip.md 3) |
 | fm | not started | not started | not started (module_fm.md 4, history_fm.md 9) |
 
@@ -426,3 +426,35 @@ to fix.
   spot-checked several of the agent's specific claims against source first
   (MAX_VOICES value, res2p.h header comment, phoneme count). Next: tracker
   (per the stated module order).
+- 2026-08-14 (same day, continued): tracker done (4a+4b+Carl→author, one
+  combined agent). Real drift found: a function name cited 3 times
+  (`tracker_apply_pitch_vol_effect()`) was never defined anywhere — the real
+  split is `tracker_tick_period()` + `tracker_apply_tick_volume_effects()`;
+  four stale "resolving open question N below" back-references left over
+  from earlier Open-Questions-list churn; the Display section was still
+  written in pre-build future tense despite #24 shipping it. 62 issue-ref
+  comment lines cleaned across all 10 tracker files (concentrated in
+  `player.h`/`mixer.h`); two comments stated outright wrong current behavior
+  (engine.h's `VoiceParams` "no tick handoff yet", mixer.h's
+  `TrackerTickState` "no player/TickBlock ring yet" — both false since #18).
+  Also fixed a matching stale tag in `tools/xm2t00t/blob_format.py`
+  (blob_format.h's generator) and regenerated to confirm byte-identical
+  output. 2/2 `module_tracker.md` Carl hits reworded. Verified
+  `make ENGINE=tracker` (clean rebuild), `make host`, and
+  `render_tracker_mixer`'s regression suite all pass. Commit `5f743f1`.
+
+  **Scope discovery:** a repo-wide `grep -rl Carl` (not just the 6
+  module/history docs + CONTEXT.md the original Phase 3 baseline audited)
+  turns up 9 more files with "Carl" mentions the original audit never
+  counted, because it only scoped `.md` docs: `src/engines/fm/audio_engine.cpp`,
+  `src/engines/chip/display.cpp`, `src/engines/chip/speaker_sim.h`,
+  `src/engines/chip/audio_engine.cpp`, `src/engines/tracker/tracker_song_blob.h`
+  (already flagged above, out of scope for this pass), and
+  `tools/host_render/render_fm.cpp`. All are source *comments* (testimony/
+  attribution patterns similar to the 12 already cataloged, e.g. "Carl's own
+  ask", "Carl heard the difference", "Carl's by-ear pass"), not doc prose.
+  Folding these into the chip and fm module passes below (their own files),
+  since those two modules are next; `tools/host_render/render_fm.cpp` isn't
+  under `src/engines/`, so treat it as part of fm's pass too (same reasoning
+  `module_groovebox.md`'s tooling citations get folded into a module pass —
+  it's fm's own host tool). Next: chip.
