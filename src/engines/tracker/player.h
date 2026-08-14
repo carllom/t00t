@@ -24,18 +24,17 @@
 // tools/host_render/render_xm_device.cpp (the reference-diff harness) and
 // the real Core 0 engine (player_task.cpp). `player_produce_tick()` is a
 // pure function of `PlayerState` plus the blob -- identical behaviour on
-// host or device is the whole point (module_tracker.md: "Any divergence between the
-// host and device render paths defeats the purpose").
+// host or device is the whole point.
 //
-// Still no-ops: glissando control (E3x -- tried, reverted: two reasonable
-// snap-to-semitone implementations both diverged from openmpt123 within a
-// couple of ticks, which makes this genuinely diff-driven quirk work, not
-// the bounded/mechanical case the rest of this slice is), tremolo, tremor,
-// global volume, effect-column panning slide, and the four named FT2 quirks
-// (E60 pattern loop, envelope-on-note-off, portamento-with-instrument-change,
-// arpeggio wraparound) -- deliberately deferred, module_tracker.md's "long
-// tail of FT2 quirks". Key-off (note 97) does not cut a voice directly: it
-// only marks the channel key_off, which the envelope/fadeout machinery
+// Still no-ops: glissando control (E3x -- straightforward snap-to-semitone
+// implementations diverge from openmpt123 within a couple of ticks; this is
+// diff-driven quirk work, not the bounded/mechanical case the rest of this
+// slice is), tremolo, tremor, global volume, effect-column panning slide,
+// and the four named FT2 quirks (E60 pattern loop, envelope-on-note-off,
+// portamento-with-instrument-change, arpeggio wraparound) -- deliberately
+// deferred, part of module_tracker.md's quirk tail. Key-off (note 97) does
+// not cut a voice directly: it only marks the channel key_off, which the
+// envelope/fadeout machinery
 // (tracker_resolve_envelope_volpan()) consumes every tick from then on -- an
 // instrument with an enabled volume envelope releases through it (plus
 // fadeout, once the envelope itself isn't holding sustain); one with no
@@ -64,11 +63,10 @@ enum ChannelTickFlags : uint8_t {
 };
 
 // One channel's state as of this tick. Restated every tick, not just on
-// change -- module_tracker.md's render loop pseudocode re-applies whatever the
-// latest TickBlock says unconditionally ("apply_tick(tick): latch
-// inc/targets/triggers"), so the consumer never needs its own "did this
-// change" logic. `trigger` is what lets it tell a restated-but-unchanged
-// note apart from a genuine retrigger.
+// change -- module_tracker.md's render loop pseudocode re-applies whatever
+// the latest TickBlock says unconditionally, so the consumer never needs
+// its own "did this change" logic. `trigger` is what lets it tell a
+// restated-but-unchanged note apart from a genuine retrigger.
 struct ChannelTick {
     uint32_t inc;                 // Q8.24, 0 = channel silent
     int32_t tgt_volL, tgt_volR;   // Q15, post-pan
@@ -291,9 +289,8 @@ inline int16_t tracker_xm_pan_to_q15(uint32_t xm_pan) {
 // active pitch effect still lands on exactly the note_increments table's
 // Q8.24 value -- see tracker_tick_period() and tracker_process_effects_tick0(),
 // which only ever call into this math when an effect is actually modulating
-// pitch this tick. 32 channels x a few effects x ~50Hz is nowhere near enough double
-// math to dent Core 0's budget (module_tracker.md: "three million cycles per 20ms
-// tick" against "~4000 cycles of work").
+// pitch this tick. Double-precision math for a handful of channels at tick
+// rate is nowhere near enough to dent Core 0's budget.
 static constexpr double TRACKER_XM_BASE_FREQ_HZ = 8363.0;
 static constexpr double TRACKER_LINEAR_BASE_PERIOD = 10.0 * 12.0 * 16.0;  // 1920
 static constexpr double TRACKER_LINEAR_FREQ_PERIOD = 6.0 * 12.0 * 16.0;   // 1152
@@ -409,8 +406,8 @@ enum : uint32_t {
 // need to replicate bit-for-bit: it exists in the original to avoid a
 // division on 1990s hardware, not for behavioural reasons). Equivalent for
 // well-formed envelopes, which is the overwhelming majority; loop-end/
-// sustain-point coincidence edge cases are exactly the kind of "classic FT2
-// divergence point" module_tracker.md defers to the quirk tail.
+// sustain-point coincidence edge cases are the kind of FT2 divergence
+// module_tracker.md defers to the quirk tail.
 inline double tracker_envelope_tick(const EnvelopePoint *points, uint32_t count,
                                      uint32_t flags, uint32_t sustain_idx,
                                      uint32_t loop_start_idx, uint32_t loop_end_idx,
@@ -739,8 +736,7 @@ inline void tracker_process_vol_column_tick0(const Event &ev, PlayerChannelState
 // this row -- resolved here (memory substituted) so later ticks never
 // re-touch the memory slots. An event with no effect column entry correctly
 // resets active_effect to NONE, which is what makes a continuous effect
-// require restating every row it runs on (module_tracker.md: "tick-0-vs-later-
-// tick semantics ... is where the real work is").
+// require restating every row it runs on.
 inline void tracker_process_effects_tick0(const SongHeader *song, PlayerState &st, uint32_t c,
                                            const Event &ev, ChannelTick &ct, bool linear) {
     PlayerChannelState &pcs = st.ch[c];
@@ -913,11 +909,9 @@ inline double tracker_glide_period(double period, double target, double step) {
 
 // One tick of the shared vibrato oscillator (effect-column 4xy and
 // volume-column Bx both drive this same position/speed/depth state --
-// tracker_process_vol_column_tick0()'s header comment). Empirically
-// calibrated against openmpt123 (pitch-tracked a long held vibrato run):
-// this table's "quarter cycle" (index 0 to its peak at 16) took roughly 22
-// ticks at speed 1, closer to a >>1 position-to-index shift than the >>2
-// some published FT2 pseudocode uses. Not chased to bit-exactness -- a
+// tracker_process_vol_column_tick0()'s header comment). Calibrated against
+// openmpt123: uses a >>1 position-to-index shift, not the >>2 some
+// published FT2 pseudocode uses. Not chased to bit-exactness -- a
 // continuous oscillation has no settling point to converge on the way
 // porta/tone porta do, so any small rate mismatch is permanent phase drift.
 inline double tracker_vibrato_delta(PlayerChannelState &pcs) {
@@ -1256,10 +1250,9 @@ inline bool player_produce_tick(PlayerState &st, const SongHeader *song, TickBlo
         ct.trigger = pcs.trigger;
     }
 
-    // Fxx (tick 0, above) must be visible in the block it belongs to --
-    // module_tracker.md: "Fxx tempo changes have to take effect at the tick
-    // boundary they belong to" -- so this reads st.samples_per_tick after
-    // the per-channel loop, not before it.
+    // Fxx (tick 0, above) must be visible in the block it belongs to -- so
+    // this reads st.samples_per_tick after the per-channel loop, not
+    // before it.
     out.samples_per_tick = st.samples_per_tick;
 
     bool looped = false;
@@ -1309,11 +1302,9 @@ inline bool player_produce_tick(PlayerState &st, const SongHeader *song, TickBlo
 
 // Builds a small SRAM-resident TrackerSample descriptor per song sample,
 // read once at song-load time -- the only place that ever dereferences
-// SampleHeader (flash-resident on device). module_tracker.md's rationale for
-// putting the player on Core 0 is explicitly to keep pattern-data flash
-// reads off Core 1 ("never thrashes the XIP cache"); tracker_apply_tick()
-// below only ever indexes the array this produces, never `song` itself, so
-// Core 1's hot path stays flash-free.
+// SampleHeader (flash-resident on device). tracker_apply_tick() below only
+// ever indexes the array this produces, never `song` itself, so Core 1's
+// hot path stays flash-free.
 //
 // `sample_data_base`/`sample_data_base_offset` let one function serve both
 // callers: the host harness has the whole blob resident already (base =
@@ -1372,8 +1363,7 @@ inline void tracker_apply_tick(const TickBlock &tb, const TrackerSample *residen
             // as impossible ("a silent voice is active = false, never inc ==
             // 0"): pos never reaches end_pos through a zero increment, so
             // wrap_loop() never fires either, and mix_voice()'s `while (n >
-            // 0)` spins forever on Core 1 (100% duty, frozen UI, silence --
-            // exactly what stop-then-restart reproduced).
+            // 0)` spins forever on Core 1.
             if (v.inc == 0) v.active = false;
         }
         v.tgt_volL = ct.tgt_volL;

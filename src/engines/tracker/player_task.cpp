@@ -26,8 +26,8 @@ static bool s_playing = false;
 // player_produce_tick() rather than read back from PlayerState afterwards
 // (its row/order_idx advance logic runs at the tail of that call, so reading
 // them post-call would show the next row one tick early at every row
-// boundary rather than one tick late throughout, matching module_tracker.md's "one
-// tick ahead" framing instead of jumping the gun on the row itself).
+// boundary rather than one tick late throughout, matching module_tracker.md's
+// one-tick-ahead framing instead of jumping the gun on the row itself).
 static TrackerUiState s_ui_state;
 
 // Tops the ring back up to full from the current PlayerState. Called both
@@ -65,8 +65,8 @@ static void fill_ring() {
 void tracker_player_task_init() {
     // player_produce_tick()'s note-trigger path (player.h:
     // tracker_trigger_note()) calls pan_gains_q15(), which reads this
-    // wavetable -- and that now runs here, on Core 0, not on Core 1 like
-    // the old test rig. Must happen before the first fill_ring() below.
+    // wavetable, so it must be initialized before the first fill_ring()
+    // below.
     osc_init_sine();
 
     s_song = reinterpret_cast<const SongHeader *>(tracker_song_blob_data);

@@ -5,11 +5,9 @@
 #include "phonemes.h"
 #include <cmath>
 
-// Preset table (module_speech.md "Preset table"): following the subtractive
-// engine's presets.h pattern (VoicePreset / voice_apply_preset()) -- a
-// SpeechPreset is "what a voice sounds like", applied at note-on, same as
-// presets.h there. Unlike the subtractive engine, several of the fields a
-// preset sets here (formant_shift, bandwidth_scale, jitter, shimmer, mode,
+// Preset table (module_speech.md "Preset table"): a SpeechPreset is what a
+// voice sounds like, applied at note-on. Several of the fields a preset
+// sets here (formant_shift, bandwidth_scale, jitter, shimmer, mode,
 // rate, lfo_rate/lfo_depth) also have their own live per-channel CC
 // (midi_controller.cpp CC21/22/24-27/1/76), so selecting a preset writes the
 // *channel*-level state those CCs track (midi_controller.cpp's
@@ -19,8 +17,7 @@
 // value that would just get immediately overwritten by whatever the
 // channel's CC state already was.
 
-// Robot chorus (module_speech.md Scope: "this is where the 'robot chorus'
-// preset lands: per-voice detune plus stereo spread") -- MAX_VOICES is 8, so a
+// Robot chorus (module_speech.md "Scope"): MAX_VOICES is 8, so a
 // preset with `chorus = true` spreads each simultaneously-held voice across
 // the stereo field with a small per-voice pitch offset, keyed by the
 // allocated voice slot (0..MAX_VOICES-1). Deterministic function of the
@@ -68,10 +65,10 @@ inline void speech_chorus_apply(VoiceParams &vp, uint32_t voice_index) {
 
 // Apply a preset to one voice about to sound. `voice_index` is the slot
 // voice_alloc_allocate() returned for this note-on -- only used when
-// pr.chorus is set. Does not touch trigger/gate/amplitude (caller sets those
-// from the note/velocity, same split as the subtractive engine's
-// voice_apply_preset()); phase_inc must already be set from the note's
-// pitch before calling this, since a chorus preset perturbs it further.
+// pr.chorus is set. Does not touch trigger/gate/amplitude (caller sets
+// those from the note/velocity); phase_inc must already be set from the
+// note's pitch before calling this, since a chorus preset perturbs it
+// further.
 inline void voice_apply_preset(VoiceParams &vp, const SpeechPreset &pr, uint32_t voice_index = 0) {
     vp.utterance = pr.utterance;
     vp.phoneme = pr.phoneme;
@@ -88,19 +85,18 @@ inline void voice_apply_preset(VoiceParams &vp, const SpeechPreset &pr, uint32_t
     else            vp.pan = 0;
 }
 
-// Master preset list -- single source of truth, same role as the
-// subtractive engine's `presets[]`. Covers every SpeechMode the P3/P4
-// sketch names (module_speech.md "Data Structures"): SPEECH_HOLD is represented
+// Master preset list -- single source of truth. Covers every SpeechMode
+// (module_speech.md "Data Structures"): SPEECH_HOLD is represented
 // structurally (utterance == SPEECH_NO_UTTERANCE, see engine.h), the other
 // three explicitly -- plus the robotic/breathy/tract-shift-both-directions
-// range this table covers, and the robot chorus preset the Scope section
-// calls out by name now that 8 voices makes it affordable.
+// range this table covers, and the robot chorus preset (module_speech.md
+// "Scope").
 enum SpeechPresetId : uint8_t {
     PRESET_PHONEME_KEYBOARD,  // 0: HOLD -- one note, one sustained phoneme
     PRESET_ONESHOT_ANNOUNCE,  // 1: SPEECH_MODE_ONESHOT -- ignores note-off
     PRESET_GATED_PHRASE,      // 2: SPEECH_MODE_GATED -- the default mode, note-off-aware
     PRESET_LOOP_CHANT,        // 3: SPEECH_MODE_LOOP -- repeats while held
-    PRESET_ROBOTIC,           // 4: zero jitter/shimmer, low bandwidth -- "unmistakably robotic 1978 sound"
+    PRESET_ROBOTIC,           // 4: zero jitter/shimmer, low bandwidth -- robotic, mechanical timbre
     PRESET_BREATHY,           // 5: high bandwidth, jitter/shimmer + light vibrato -- closer to human
     PRESET_TRACT_SHIFT_UP,    // 6: short tract, formant_shift near max
     PRESET_TRACT_SHIFT_DOWN,  // 7: long tract, formant_shift near min

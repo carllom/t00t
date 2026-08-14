@@ -23,9 +23,8 @@
 // the same BSP bank. Unlike pan/phoneme, which take effect on the next
 // note-on only, these two are genuinely live: the CC handler pushes the new
 // value into every voice currently held on the channel, not just the
-// per-channel default for future notes -- module_speech.md: "the field that
-// makes this an instrument". rate/jitter/shimmer/mode (CC24-27) and vibrato
-// depth/rate (CC1/CC76) are live the same way.
+// per-channel default for future notes. rate/jitter/shimmer/mode (CC24-27)
+// and vibrato depth/rate (CC1/CC76) are live the same way.
 //
 // Program Change and CC23 both select an utterance (phrases.h's
 // SPEECH_PHRASES); CC20 stays phoneme-only, since a single PC message can't

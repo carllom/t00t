@@ -5,37 +5,32 @@
 #include "sequencer.h"  // SpeechMode, SPEECH_NO_UTTERANCE -- no pico-sdk dependency, safe ahead of engine_base.h
 
 // Speech engine: MAX_VOICES, defined ahead of engine_base.h, same as every
-// other engine sets its own voice count there. Measured at ~93.5
-// cycles/frame/voice, flat from 1 to 8 voices (history_speech.md "Speech
-// Engine P2 Profiling"), so 8 voices is 22% of Core 1 -- comfortably inside
-// budget even with reverb's +8% on top -- and affordable enough to make the
-// "robot chorus" preset (presets.h) a real option.
+// other engine sets its own voice count there. 8 voices is affordable
+// enough at this engine's per-voice cost to make the "robot chorus" preset
+// (presets.h) a real option.
 static constexpr uint32_t MAX_VOICES = 8;
 
-// The P2-profiling build (T00T_SPEECH_PROFILE, `make ENGINE=speech
-// SPEECH_PROFILE=1`) reuses the same MAX_VOICES to give its 8-voice phase a
-// real 8th slot -- kept only as the define audio_engine.cpp's alternate
-// render loop is still gated on.
+// The profiling build (T00T_SPEECH_PROFILE, `make ENGINE=speech
+// SPEECH_PROFILE=1`) reuses the same MAX_VOICES so its 8-voice phase has a
+// real 8th slot -- kept only as long as audio_engine.cpp's alternate render
+// loop is gated on this define.
 static constexpr uint32_t FILTER_BUS_COUNT = 0;   // chip module only (module_chip.md §5)
 
 #include "engine_base.h"
 
-// Native render rate, per module_speech.md "Native rate: 22.05 kHz, ZOH x2" --
-// exactly SAMPLE_RATE/2, so the resample step to the shared 44.1 kHz output
-// stage is a bare integer doubling, no fractional accumulator.
+// Native render rate (module_speech.md "Native rate"): exactly
+// SAMPLE_RATE/2, so the resample step to the shared 44.1 kHz output stage
+// is a bare integer doubling, no fractional accumulator.
 static constexpr uint32_t SPEECH_RATE = SAMPLE_RATE / 2;
 
 // Per-voice note/render parameters, latest-wins through the standard
-// ParamExchange/voice_alloc path (module_speech.md "Control plane":
-// deliberately NOT the tracker's ordered TickBlock ring -- polyphonic
-// speech has N independent per-voice segment clocks, not one global tick
-// clock, so this engine keeps the same plain latest-wins model the
-// subtractive and groovebox engines use). `phoneme` drives the SPEECH_HOLD
-// phoneme keyboard (render.h's speech_render_voice()) when `utterance ==
-// SPEECH_NO_UTTERANCE` (the default); any other `utterance` value selects
-// one of utterance.h's/phrases.h's SPEECH_UTTERANCES and routes the voice
-// through speech_render_voice_seq() instead (audio_engine.cpp), which also
-// reads `mode`/`rate` -- see sequencer.h for both.
+// ParamExchange/voice_alloc path (module_speech.md "Control plane").
+// `phoneme` drives the SPEECH_HOLD phoneme keyboard (render.h's
+// speech_render_voice()) when `utterance == SPEECH_NO_UTTERANCE` (the
+// default); any other `utterance` value selects one of
+// utterance.h's/phrases.h's SPEECH_UTTERANCES and routes the voice through
+// speech_render_voice_seq() instead (audio_engine.cpp), which also reads
+// `mode`/`rate` -- see sequencer.h for both.
 struct VoiceParams {
     uint32_t phase_inc;  // fixed-point (Q32) glottal phase increment, at SPEECH_RATE
     int16_t  amplitude;  // 0-32767
@@ -72,9 +67,9 @@ inline VoiceParams voice_params_default<VoiceParams>() {
 using VoiceParamBlock = VoiceParamBlockT<VoiceParams>;
 using ParamExchange = ParamExchangeT<VoiceParams>;
 
-// Per-voice formant-space + phoneme telemetry for the display (module_speech.md
-// "Display": "current phoneme plus a formant-space plot"). F1/F2 are
-// tract.h's SpeechVoice::F[0]/F[1] -- the live, ramped values, not the
+// Per-voice formant-space + phoneme telemetry for the display
+// (module_speech.md "Display"). F1/F2 are tract.h's SpeechVoice::F[0]/F[1]
+// -- the live, ramped values, not the
 // phoneme's static target, so a plotted dot moves continuously as the
 // segment sequencer (or a mid-note phoneme change) glides between
 // targets. `phoneme` is PHONEME_COUNT when the voice has never sounded (no

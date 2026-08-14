@@ -9,14 +9,13 @@
 #include "pico/time.h"
 #include <cstdio>
 
-// Speech status display (Core 0, low priority). Mirrors the groovebox
-// display's chrome (buttonless breadboard, no presets.h), with a per-voice
-// phoneme grid and F1/F2 formant-space plot as its module-specific content
-// (module_speech.md "Display"): the same F1/F2 view the vowel-chart
-// verification in tools/host_render/render_speech.cpp uses. The grid shows
-// the current phoneme per sounding voice, which a single last-note-on row
-// can't. FX rows are dropped for now -- revisit if delay/reverb becomes a
-// real requirement for this engine.
+// Speech status display (Core 0, low priority) for a buttonless breadboard
+// (no presets.h row). Module-specific content is a per-voice phoneme grid
+// and F1/F2 formant-space plot (module_speech.md "Display") -- the same
+// F1/F2 view the vowel-chart verification in
+// tools/host_render/render_speech.cpp uses. The grid shows the current
+// phoneme per sounding voice, which a single last-note-on row can't. FX
+// rows are omitted from the display.
 
 static const uint16_t COL_BG      = gfx_rgb(0, 0, 0);
 static const uint16_t COL_TITLE   = gfx_rgb(90, 30, 160);   // violet-ish speech bar

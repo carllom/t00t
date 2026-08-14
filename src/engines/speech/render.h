@@ -16,7 +16,7 @@
 // device path (engines/speech/audio_engine.cpp, called from the Core 1
 // render loop) and the host path (tools/host_render/render_speech.cpp) call
 // this exact function, so the ZOH seam and the frame-count arithmetic around
-// it are proven identical on both before any formant DSP exists.
+// it are identical on both.
 //
 // Deliberately has no pico-sdk dependency (osc/sine.h, pan.h, excitation.h,
 // tract.h and phonemes.h are all header-only, common-layer DSP) -- pulling
@@ -41,9 +41,8 @@ inline void speech_render_test_tone(uint32_t &phase, uint32_t phase_inc, int16_t
 }
 
 // Sub-block size: how often coefficients get recomputed from ramped F/B
-// (module_speech.md "Timing Domains": "Sub-block <=64 frames (1.45 ms)"). Same
-// value as the tracker's TRACKER_SUBBLOCK, for the same reason -- a unit of
-// parameter constancy, not of output.
+// (module_speech.md "Timing Domains") -- a unit of parameter constancy, not
+// of output.
 static constexpr uint32_t SPEECH_SUBBLOCK = 64;
 
 // Headroom applied to both excitation sources (glottal pulse and LFSR
@@ -182,11 +181,10 @@ inline void speech_render_voice_seq(SpeechVoice &sv, uint32_t phase_inc, float f
     sv.formant_shift_tgt = (float)formant_shift * (1.0f / 256.0f);
     sv.bandwidth_scale_tgt = (float)bandwidth_scale * (1.0f / 256.0f);
 
-    // module_speech.md "Underrun policy", extended to malformed sequencer data: an
-    // empty/null utterance renders silence rather than dereferencing
-    // utt.phonemes[0] below -- the acceptance criterion "any inconsistency
-    // renders silence", verified by tools/host_render/render_speech.cpp
-    // deliberately constructing one.
+    // module_speech.md "Underrun policy", extended to malformed sequencer
+    // data: an empty/null utterance renders silence rather than
+    // dereferencing utt.phonemes[0] below, verified by
+    // tools/host_render/render_speech.cpp deliberately constructing one.
     bool malformed = (utt.length == 0 || utt.phonemes == nullptr);
 
     if (trigger != sv.last_trigger) {

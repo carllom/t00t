@@ -12,8 +12,7 @@
 // whatever tick boundary falls inside a DMA buffer. Never touches
 // SongHeader/flash: tracker_apply_tick() (player.h) resolves note triggers
 // purely from g_tracker_resident_samples, the SRAM table Core 0 built once
-// at song load -- exactly the "keeps pattern-data flash reads off Core 1"
-// split module_tracker.md calls for.
+// at song load.
 
 // --- Telemetry for the Core 0 UI (published by Core 1) ---
 static volatile uint8_t s_load_pct = 0;
@@ -30,10 +29,10 @@ static uint32_t s_samples_per_tick = 0;
 
 // Fills exactly `frames` stereo frames of `out`, crossing as many tick
 // boundaries as needed. Ring-empty at a tick boundary renders silence
-// (module_tracker.md "Startup and underrun": "a visible dropout on the profiling
-// pin beats a subtle timing glitch") rather than replaying stale state --
-// also doubles as the transport-stop mechanism (player_task.cpp stops
-// producing; the ring drains over its last 0-2 ticks, then this takes over).
+// (module_tracker.md "Startup and underrun") rather than replaying stale
+// state -- also doubles as the transport-stop mechanism (player_task.cpp
+// stops producing; the ring drains over its last 0-2 ticks, then this
+// takes over).
 static void __not_in_flash_func(tracker_fill_buffer)(int16_t *out, uint32_t frames) {
     uint32_t done = 0;
     while (done < frames) {
@@ -50,8 +49,9 @@ static void __not_in_flash_func(tracker_fill_buffer)(int16_t *out, uint32_t fram
             s_samples_per_tick = tb.samples_per_tick;
             s_tick_remaining = s_samples_per_tick;
             g_tracker_tick_ring.pop();
-            // Non-blocking doorbell ack (module_tracker.md: "Core 1 never stalls") --
-            // Core 0's tracker_player_task() drains this and refills the ring.
+            // Non-blocking doorbell ack: Core 1 must never stall waiting for
+            // Core 0's tracker_player_task(), which drains this and refills
+            // the ring.
             multicore_fifo_push_timeout_us(1, 0);
         }
 
