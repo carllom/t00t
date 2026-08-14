@@ -224,7 +224,7 @@ def test_lfo_and_pitch_eg_pass_through() -> None:
 
 
 def test_carrier_l4_is_preserved() -> None:
-    """A carrier's nonzero L4 survives conversion (F6, fm2.md §5.16).
+    """A carrier's nonzero L4 survives conversion (F6, history_fm.md §5.16).
 
     This test used to assert the opposite -- that the converter forced it to 0
     so the voice could always reach EG_IDLE. voice_alloc.cpp reclaims a
@@ -310,7 +310,7 @@ def test_every_op_field_is_emitted() -> None:
 
 
 def test_converter_emits_no_gain_constant() -> None:
-    # F2 (fm2.md §2): the converter has no opinion about absolute level. It
+    # F2 (history_fm.md §2): the converter has no opinion about absolute level. It
     # used to emit an FmOpParams::level per operator from one of two hand-tuned
     # references; op.h now owns the single engine-wide ceiling and this side is
     # pure translation. Asserted structurally so a reintroduced level field, or
@@ -495,7 +495,7 @@ def _voice_with_corrupt_byte(index: int, value: int) -> bytes:
 def test_out_of_range_byte_fails_loud() -> None:
     """Fail-loud still holds for fields the reference does not define past 99.
 
-    This used to use eg_rate1 = 127. F7 (fm2.md §5.18) widened the EG rate and
+    This used to use eg_rate1 = 127. F7 (history_fm.md §5.18) widened the EG rate and
     level checks to the full 7-bit byte range, because ROM3A voice 19 really
     ships with L3 = 127 in a bank whose checksum validates, and both engines
     consume it identically. So the probe moved to break_point, which is still

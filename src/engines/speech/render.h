@@ -41,7 +41,7 @@ inline void speech_render_test_tone(uint32_t &phase, uint32_t phase_inc, int16_t
 }
 
 // Sub-block size: how often coefficients get recomputed from ramped F/B
-// (speech.md "Timing Domains": "Sub-block <=64 frames (1.45 ms)"). Same
+// (module_speech.md "Timing Domains": "Sub-block <=64 frames (1.45 ms)"). Same
 // value as the tracker's TRACKER_SUBBLOCK, for the same reason -- a unit of
 // parameter constancy, not of output.
 static constexpr uint32_t SPEECH_SUBBLOCK = 64;
@@ -153,12 +153,12 @@ inline void speech_render_voice(SpeechVoice &sv, uint32_t phase_inc, float fs, u
     }
 }
 
-// Sequenced render (#34, speech.md P3 "Segment sequencer"). Unlike
+// Sequenced render (#34, module_speech.md P3 "Segment sequencer"). Unlike
 // speech_render_voice() above (#28's SPEECH_HOLD phoneme keyboard -- one
 // note, one sustained phoneme, no sequencer at all), this steps the voice
 // through SPEECH_UTTERANCES[utterance_id]'s phoneme string one segment at a
 // time, with the sub-block cut point moved *inside* the per-voice loop
-// (speech.md "Sub-block cut point moves inside the voice loop"): k =
+// (module_speech.md "Sub-block cut point moves inside the voice loop"): k =
 // min(frames left in this call, samples left in the current segment,
 // SPEECH_SUBBLOCK) -- not just min(frames left, SPEECH_SUBBLOCK), the way
 // the HOLD path above cuts, since a sequenced voice's segment boundary can
@@ -168,7 +168,7 @@ inline void speech_render_voice(SpeechVoice &sv, uint32_t phase_inc, float fs, u
 // fixture table itself, same reasoning render.h already gives for taking
 // `phase_inc`/`fs` as parameters instead of baking in a specific source.
 // `mode`/`rate` are VoiceParams::mode/rate straight through (engine.h).
-// `jitter`/`shimmer`/`lfo_rate`/`lfo_depth` (#36, speech.md P4 "Vibrato
+// `jitter`/`shimmer`/`lfo_rate`/`lfo_depth` (#36, module_speech.md P4 "Vibrato
 // LFO"/"Jitter and shimmer"): applied to the glottal excitation exactly like
 // speech_render_voice() above, independent of the sequencer -- a phoneme
 // boundary changes tract targets, not excitation character, so jitter/
@@ -182,7 +182,7 @@ inline void speech_render_voice_seq(SpeechVoice &sv, uint32_t phase_inc, float f
     sv.formant_shift_tgt = (float)formant_shift * (1.0f / 256.0f);
     sv.bandwidth_scale_tgt = (float)bandwidth_scale * (1.0f / 256.0f);
 
-    // speech.md "Underrun policy", extended to malformed sequencer data: an
+    // module_speech.md "Underrun policy", extended to malformed sequencer data: an
     // empty/null utterance renders silence rather than dereferencing
     // utt.phonemes[0] below -- the acceptance criterion "any inconsistency
     // renders silence", verified by tools/host_render/render_speech.cpp

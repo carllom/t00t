@@ -3,9 +3,9 @@
 #include "phonemes.h"
 #include "sequencer.h"
 
-// Hardcoded test utterances (#34, speech.md P3 exit criterion: "a hardcoded
+// Hardcoded test utterances (#34, module_speech.md P3 exit criterion: "a hardcoded
 // phoneme string is intelligible as a word"). Not generated -- the CSV/
-// host-tool phrase pipeline (speech.md "phrases.h") is explicitly P4 work;
+// host-tool phrase pipeline (module_speech.md "phrases.h") is explicitly P4 work;
 // these are hand-picked from #32's 48-phoneme set (tools/speech_phonemes.csv)
 // to exercise this slice's specific claims: variable per-segment duration,
 // F/B ramping across a phoneme boundary, and (CAT) an audible plosive

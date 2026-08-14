@@ -22,7 +22,7 @@
 // tools/host_render/render_xm_device.cpp (the #17 reference-diff harness)
 // and the real Core 0 engine (player_task.cpp). `player_produce_tick()` is a
 // pure function of `PlayerState` plus the blob -- identical behaviour on
-// host or device is the whole point (tracker.md: "Any divergence between the
+// host or device is the whole point (module_tracker.md: "Any divergence between the
 // host and device render paths defeats the purpose").
 //
 // #21 adds 9xx sample offset (tracker_trigger_note()) and ping-pong loops
@@ -38,7 +38,7 @@
 // of this slice is), tremolo, tremor, global volume, effect-column panning
 // slide, and the four named FT2 quirks (E60 pattern loop, envelope-on-
 // note-off, portamento-with-instrument-change, arpeggio wraparound) --
-// deliberately deferred, tracker.md's "long tail of FT2 quirks" (#25, split
+// deliberately deferred, module_tracker.md's "long tail of FT2 quirks" (#25, split
 // out of #22 2026-08-08). Key-off (note 97) does not cut a voice
 // directly: it only marks the channel key_off, which the envelope/fadeout
 // machinery (tracker_resolve_envelope_volpan()) consumes every tick from
@@ -50,8 +50,8 @@
 // Requires osc_init_sine() to have been called first (pan_gains_q15's
 // quadrature source), same precondition as mixer.h's consumers.
 
-// Ring depth: tracker.md open question 1, resolved here. 2 slots is
-// sufficient given 20ms of tick slack per tracker.md's own reasoning; a host
+// Ring depth: module_tracker.md open question 1, resolved here. 2 slots is
+// sufficient given 20ms of tick slack per module_tracker.md's own reasoning; a host
 // harness driving this synchronously doesn't need lookahead at all, and #18
 // inherits this constant as-is for the real cross-core case. This struct's
 // head/tail bookkeeping is NOT atomic/barrier-safe -- cross-core memory
@@ -72,7 +72,7 @@ enum ChannelTickFlags : uint8_t {
 };
 
 // One channel's state as of this tick. Restated every tick, not just on
-// change -- tracker.md's render loop pseudocode re-applies whatever the
+// change -- module_tracker.md's render loop pseudocode re-applies whatever the
 // latest TickBlock says unconditionally ("apply_tick(tick): latch
 // inc/targets/triggers"), so the consumer never needs its own "did this
 // change" logic. `trigger` is what lets it tell a restated-but-unchanged
@@ -144,7 +144,7 @@ struct PlayerChannelState {
     uint32_t pan_xm = 128;  // 0..255, XM convention; 128 = center
 
     // Pitch source of truth. `period` is in the song's native period units
-    // (linear or Amiga, tracker.md/periods.py convention) -- portamento and
+    // (linear or Amiga, module_tracker.md/periods.py convention) -- portamento and
     // tone portamento move it directly; arpeggio and vibrato compute a
     // *transient* offset from it each tick without writing back (they must
     // not leave the channel detuned once the effect stops). `base_note` /
@@ -241,7 +241,7 @@ struct PlayerState {
     bool pattern_delay_holding = false;
 };
 
-// tracker.md "Fxx tempo changes ... samples_per_tick": 44100 * 2.5 / bpm,
+// module_tracker.md "Fxx tempo changes ... samples_per_tick": 44100 * 2.5 / bpm,
 // rounded to nearest rather than truncated so tick length doesn't
 // systematically drift short over a long render.
 inline uint32_t tracker_samples_per_tick(uint32_t bpm) {
@@ -300,7 +300,7 @@ inline int16_t tracker_xm_pan_to_q15(uint32_t xm_pan) {
 // Q8.24 value -- see tracker_apply_pitch_vol_effect()'s callers, which only
 // ever call into this math when an effect is actually modulating pitch this
 // tick. 32 channels x a few effects x ~50Hz is nowhere near enough double
-// math to dent Core 0's budget (tracker.md: "three million cycles per 20ms
+// math to dent Core 0's budget (module_tracker.md: "three million cycles per 20ms
 // tick" against "~4000 cycles of work").
 static constexpr double TRACKER_XM_BASE_FREQ_HZ = 8363.0;
 static constexpr double TRACKER_LINEAR_BASE_PERIOD = 10.0 * 12.0 * 16.0;  // 1920
@@ -357,7 +357,7 @@ inline double tracker_period_to_freq(double period, bool linear) {
     return TRACKER_AMIGA_NTSC_CLOCK / (2.0 * period);
 }
 
-// tracker.md "Fixed-Point Formats": inc = f_note / f_mix, Q8.24, rounded to
+// module_tracker.md "Fixed-Point Formats": inc = f_note / f_mix, Q8.24, rounded to
 // nearest and clamped -- identical convention to periods.py's
 // q8_24_increment(), except the floor is 1 rather than 0. This function is
 // only ever called for a channel a pitch effect is actively driving (a
@@ -418,7 +418,7 @@ enum : uint32_t {
 // division on 1990s hardware, not for behavioural reasons). Equivalent for
 // well-formed envelopes, which is the overwhelming majority; loop-end/
 // sustain-point coincidence edge cases are exactly the kind of "classic FT2
-// divergence point" tracker.md defers to the quirk tail (#25).
+// divergence point" module_tracker.md defers to the quirk tail (#25).
 inline double tracker_envelope_tick(const EnvelopePoint *points, uint32_t count,
                                      uint32_t flags, uint32_t sustain_idx,
                                      uint32_t loop_start_idx, uint32_t loop_end_idx,
@@ -748,7 +748,7 @@ inline void tracker_process_vol_column_tick0(const Event &ev, PlayerChannelState
 // this row -- resolved here (memory substituted) so later ticks never
 // re-touch the memory slots. An event with no effect column entry correctly
 // resets active_effect to NONE, which is what makes a continuous effect
-// require restating every row it runs on (tracker.md/#19: "tick-0-vs-later-
+// require restating every row it runs on (module_tracker.md/#19: "tick-0-vs-later-
 // tick semantics ... is where the real work is").
 inline void tracker_process_effects_tick0(const SongHeader *song, PlayerState &st, uint32_t c,
                                            const Event &ev, ChannelTick &ct, bool linear) {
@@ -1113,7 +1113,7 @@ inline void tracker_apply_tick_retrigger(PlayerChannelState &pcs, ChannelTick &c
 // Runs every tick (tick 0 included, independent of any pattern effect):
 // advances the volume/panning envelopes and fadeout, and resolves the
 // result into `pcs.volL`/`pcs.volR` (Q15, post-pan) -- the FT2 formula this
-// ports is tracker.md/#20's `updateVolPanAutoVib()`. The panning envelope's
+// ports is module_tracker.md/#20's `updateVolPanAutoVib()`. The panning envelope's
 // effect is deliberately asymmetric: `pan_mul` shrinks toward 0 as the
 // channel's base pan approaches either extreme, so the envelope can't push
 // panning further out than the channel's own pan already allows -- centered
@@ -1269,7 +1269,7 @@ inline bool player_produce_tick(PlayerState &st, const SongHeader *song, TickBlo
     }
 
     // Fxx (tick 0, above) must be visible in the block it belongs to --
-    // tracker.md: "Fxx tempo changes have to take effect at the tick
+    // module_tracker.md: "Fxx tempo changes have to take effect at the tick
     // boundary they belong to" -- so this reads st.samples_per_tick after
     // the per-channel loop, not before it.
     out.samples_per_tick = st.samples_per_tick;
@@ -1321,7 +1321,7 @@ inline bool player_produce_tick(PlayerState &st, const SongHeader *song, TickBlo
 
 // Builds a small SRAM-resident TrackerSample descriptor per song sample,
 // read once at song-load time -- the only place that ever dereferences
-// SampleHeader (flash-resident on device). tracker.md's rationale for
+// SampleHeader (flash-resident on device). module_tracker.md's rationale for
 // putting the player on Core 0 is explicitly to keep pattern-data flash
 // reads off Core 1 ("never thrashes the XIP cache"); tracker_apply_tick()
 // below only ever indexes the array this produces, never `song` itself, so
@@ -1347,7 +1347,7 @@ inline void tracker_build_resident_samples(const SongHeader *song, const int8_t 
 }
 
 // Consumes one produced TickBlock into the mixer's per-channel voice state
-// -- tracker.md's render-loop pseudocode calls this apply_tick(). Pure
+// -- module_tracker.md's render-loop pseudocode calls this apply_tick(). Pure
 // function of `tb` and `resident_samples` (built once by
 // tracker_build_resident_samples() above): no SongHeader/flash access, so
 // it's safe to call from Core 1's real-time render path. `voice_sample_desc`

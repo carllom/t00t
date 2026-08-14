@@ -4,7 +4,7 @@
 #include "tract.h"
 #include <cstdint>
 
-// Per-voice segment sequencer (#34, speech.md P3 "Segment sequencer"): turns
+// Per-voice segment sequencer (#34, module_speech.md P3 "Segment sequencer"): turns
 // a phoneme string into a sequence of tract targets, one per segment, each
 // held for its own phoneme-derived duration. Pure data/logic, no excitation
 // or pan -- render.h's speech_render_voice_seq() is the render loop that
@@ -14,7 +14,7 @@
 // tools/host_render/render_speech.cpp, same as every other speech DSP header.
 
 // #30 "Voice lifetime and note-off": what note-off means for a voice that is
-// sequencing an utterance. speech.md's own sketch lists a fourth SpeechMode
+// sequencing an utterance. module_speech.md's own sketch lists a fourth SpeechMode
 // value, SPEECH_HOLD, alongside these three -- this engine represents that
 // case structurally instead (VoiceParams::utterance == SPEECH_NO_UTTERANCE
 // bypasses the sequencer entirely and renders through the #28 phoneme-
@@ -31,7 +31,7 @@ enum SpeechMode : uint8_t {
 // phoneme-keyboard path, not sequencing one of utterance.h's SPEECH_UTTERANCES.
 static constexpr uint8_t SPEECH_NO_UTTERANCE = 0xFF;
 
-// Live `rate` CC range (#36, speech.md "CC map"): same tract_cc_to_q8_8()
+// Live `rate` CC range (#36, module_speech.md "CC map"): same tract_cc_to_q8_8()
 // shape as formant_shift/bandwidth_scale (tract.h), but the target format is
 // VoiceParams::rate's Q4.4 (16 == 1.0x), not Q8.8, since speech_seg_
 // duration_samples() above already expects Q4.4. 0.25x..4x covers
@@ -52,7 +52,7 @@ inline uint8_t speech_rate_cc_to_q4_4(uint8_t cc) {
 // A hardcoded utterance: a phoneme string plus the segment index note-off
 // jumps to under SPEECH_MODE_GATED (defaults to the last segment when a
 // caller doesn't pick one explicitly, per #30 -- see utterance.h). Not
-// generated -- text-to-phoneme (speech.md "phrases.h") is P4 host-tool work;
+// generated -- text-to-phoneme (module_speech.md "phrases.h") is P4 host-tool work;
 // #34's exit criterion only needs a hardcoded string to be intelligible.
 struct SpeechUtterance {
     const uint8_t *phonemes;
@@ -62,7 +62,7 @@ struct SpeechUtterance {
 
 // Segment duration for `phoneme`, scaled by the voice's `rate` (Q4.4, 16 =
 // 1.0x -- VoiceParams::rate, engine.h) and rendered at native rate `fs`.
-// Despite the field's name, this is speech.md's literal "Q4.4 scale on all
+// Despite the field's name, this is module_speech.md's literal "Q4.4 scale on all
 // segment durations, 1.0 = nominal": a *larger* rate value means *longer*
 // segments, i.e. slower speech -- not "higher = faster" as the name alone
 // would suggest. Floored to 1 sample so rate == 0 (or a very short phoneme
@@ -81,7 +81,7 @@ inline uint32_t speech_seg_duration_samples(uint8_t phoneme, uint8_t rate_q4_4, 
 // reset, tract_retrigger()) vs. snap (this segment's PHONEME_FLAG_
 // TRANSITION_FAST, i.e. a plosive burst -- tract_snap_target()) vs. the
 // normal glide (tract_set_target()), and sets seg_index/seg_remaining.
-// speech.md "Plosives": PHONEME_FLAG_STOP_CLOSURE segments are silent
+// module_speech.md "Plosives": PHONEME_FLAG_STOP_CLOSURE segments are silent
 // (av = af = 0) in phonemes.h's own data already (#32's CSV), but this
 // forces it explicitly too -- belt-and-suspenders against a future CSV row
 // that forgets to zero them, since a closure that isn't silent breaks the
@@ -105,7 +105,7 @@ inline void speech_seg_load(SpeechVoice &sv, const SpeechUtterance &utt, uint16_
 }
 
 // Advances to the next segment once the current one's seg_remaining reaches
-// zero (speech.md's per-voice equivalent of the tracker's tick-advance).
+// zero (module_speech.md's per-voice equivalent of the tracker's tick-advance).
 // Reaching the end of the utterance: SPEECH_MODE_LOOP starts a new pass if
 // still gated, otherwise (LOOP with no gate, ONESHOT, or any other mode)
 // marks the utterance complete -- sv.seq_done, which render.h's

@@ -6,7 +6,7 @@
 #include <cstdint>
 
 // MIDI note <-> chip frequency-register conversion, for every chip type
-// this module builds (chip.md §12: "additional VoiceTypes in this module").
+// this module builds (module_chip.md §12: "additional VoiceTypes in this module").
 // Shared by Core 0 (midi_controller.cpp, note-on/pitch-bend) and Core 1
 // (the SID frame VM doesn't use this directly -- it applies arpeggio/
 // vibrato as ratios on an already-converted register -- but keeping one
@@ -18,7 +18,7 @@ inline float chip_note_to_hz(uint8_t note) {
 
 inline uint16_t chip_hz_to_freq_reg(float hz) {
     // inc = freq_reg * (clock/rate*256); solving sid_freq_to_inc's contract
-    // for freq_reg directly (chip.md §4.1's "16-bit frequency register"):
+    // for freq_reg directly (module_chip.md §4.1's "16-bit frequency register"):
     // freq_reg = hz * 2^24 / clock_hz.
     float reg = hz * 16777216.0f / (float)SID_CLOCK_PAL;
     if (reg < 0.0f) reg = 0.0f;

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Reference-diff harness driver (#17): the one-command entry point tracker.md's
+"""Reference-diff harness driver (#17): the one-command entry point module_tracker.md's
 "Testing" section and issue #17 ask for.
 
     python3 tools/host_render/diff_xm.py
@@ -15,7 +15,7 @@ same convention as tools/xm2t00t/test_xm2t00t.py):
 
 Tolerance policy (see diff_wavs() for the numbers): a fixed, justified
 windowed-RMS-in-dB threshold, chosen to sit well above the noise floor our own
-lossy 8-bit conversion guarantees (tracker.md: "sample-exact equality with
+lossy 8-bit conversion guarantees (module_tracker.md: "sample-exact equality with
 openmpt123 is not achievable") but well below the level a genuinely wrong note
 or a timing slip produces -- applied AFTER correcting for a measured, global,
 roughly-constant ~11-12 dB level gap this harness turned up between our
@@ -37,7 +37,7 @@ asserted against that tolerance -- a regression there is a real bug. Real
 corpus modules almost certainly use effects/envelopes player.h doesn't
 implement yet (#19-22); those are run and reported for visibility (this is
 the "turns every subsequent correctness question into a diff" tooling
-tracker.md asks for) but never assert pass/fail here.
+module_tracker.md asks for) but never assert pass/fail here.
 """
 
 from __future__ import annotations
@@ -74,13 +74,13 @@ sys.path.insert(0, XM2T00T_DIR)
 WINDOW_FRAMES = 512
 
 # Tolerance, in dB relative to the reference track's global peak, applied
-# AFTER the gain_ratio correction in diff_wavs(). Justification (tracker.md:
+# AFTER the gain_ratio correction in diff_wavs(). Justification (module_tracker.md:
 # "choosing [a tolerance] is part of this slice") -- empirically measured,
 # not just theoretical:
 #
 # Once interpolation filter (--filter 2) and overall level (gain_ratio) are
 # both matched, what's left is dominated by *onset transients*: our sub-block
-# volume ramp (tracker.md: reach target by the end of a 64-frame sub-block)
+# volume ramp (module_tracker.md: reach target by the end of a 64-frame sub-block)
 # and libopenmpt's own internal declick ramping are two independently-
 # implemented answers to "how do we get from 0 (or the previous level) to the
 # target without a click", and they settle along different sample-by-sample
@@ -103,7 +103,7 @@ THRESHOLD_DB = -10.0
 OPENMPT_ARGS = [
     "--render", "--no-float", "--samplerate", "44100", "--channels", "2",
     # Filter taps 2 == linear interpolation (matches mixer.h's mix_voice()
-    # exactly, per tracker.md open question 2 / #16 -- the mixer never grew
+    # exactly, per module_tracker.md open question 2 / #16 -- the mixer never grew
     # a nearest/cubic/sinc build flag). Using openmpt123's own higher-quality
     # default here would make interpolation choice, not player correctness,
     # the dominant source of "divergence".

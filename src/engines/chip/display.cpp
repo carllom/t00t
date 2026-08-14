@@ -11,10 +11,10 @@
 #include "pico/time.h"
 #include <cstdio>
 
-// Chip status display (Core 0, low priority). chip.md §1 P5's "LCD UI" --
+// Chip status display (Core 0, low priority). module_chip.md §1 P5's "LCD UI" --
 // same chrome/status-row shape as subtractive's and speech's display.cpp
 // (VOICES/CPU/NOTE), plus chip-specific rows: the active speaker preset
-// (speaker_sim.h), the current instrument (chip.md §12.4: by name *and*
+// (speaker_sim.h), the current instrument (module_chip.md §12.4: by name *and*
 // number now, Carl's own ask, after the number-only version read as
 // opaque), and a compact per-voice grid (engine.h's ChipVoiceUiState, §15
 // open question 3's "current table row, active instrument").
@@ -31,7 +31,7 @@
 // sounding for anything up to 8-note polyphony -- past that, the VOICES
 // count row is still exact, only the grid stops being the full picture.
 //
-// chip.md §12.2's combined instrument-selection space (SID instruments
+// module_chip.md §12.2's combined instrument-selection space (SID instruments
 // first, then AY's) is what CC16/Program Change actually address, so
 // every instrument number shown here -- the INSTR row and each grid cell
 // alike -- is that combined number, not INSTRUMENTS[]/AY_INSTRUMENTS[]'s
@@ -72,7 +72,7 @@ static constexpr int GRID_VOICES = 8;
 static const char *NOTE_NAMES[12] =
     { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
 
-// Combined-space instrument name lookup (chip.md §12.3) -- `combined` is
+// Combined-space instrument name lookup (module_chip.md §12.3) -- `combined` is
 // whatever CC16/Program Change actually sent: < INSTRUMENT_COUNT is a SID
 // patch, the rest is AY's (midi_controller.cpp's own split).
 static const char *combined_instrument_name(uint8_t combined) {

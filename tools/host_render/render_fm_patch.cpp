@@ -1,5 +1,5 @@
 // render_fm_patch -- t00t's FM engine, rendered on the host with the same CLI
-// as tools/fm_ref/dexed_render (fm2.md §3.1, F0-b).
+// as tools/fm_ref/dexed_render (history_fm.md §3.1, F0-b).
 //
 // Deliberately argument-for-argument identical to dexed_render so that
 // tools/fm_compare.py is a thin diff rather than a translation layer:

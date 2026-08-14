@@ -4,7 +4,7 @@
 
 // SID oscillator primitive -- accumulator, waveform logic, noise LFSR.
 //
-// TOPOLOGY-FREE (chip.md §4, hard rule from the first commit): this knows
+// TOPOLOGY-FREE (module_chip.md §4, hard rule from the first commit): this knows
 // nothing about chips, voices, buses, allocation or adjacency. Sync and ring
 // take their modulation from a value the caller supplies, so the same code
 // serves the free-routing engine (per-voice sub-oscillator, §4.4) and the
@@ -13,19 +13,19 @@
 //
 // Ground truth for every function here is reSID 1.0-pre1, dumped by
 // tools/sid_ref/resid_dump.cpp and diffed by tools/sid_ctl_diff.py. Where
-// this file departs from chip.md, the reference is why -- each such place is
+// this file departs from module_chip.md, the reference is why -- each such place is
 // commented, because the doc is otherwise the thing a reader would trust.
 
 // ---------------------------------------------------------------------------
 // Accumulator format
 //
-// chip.md §4.1: the SID's 24-bit accumulator held as Q24.8 in a uint32_t, i.e.
+// module_chip.md §4.1: the SID's 24-bit accumulator held as Q24.8 in a uint32_t, i.e.
 // shifted left 8. Bits 31..20 are then the top 12 the waveform logic sees, and
 // bit 27 is the accumulator's bit 19 that clocks the noise register.
 //
 // The per-sample increment is freq_reg * (clock / sample_rate) * 256.
 //
-//   chip.md §4.1 gives "inc = freq_reg * 5805  (44.1 kHz, PAL)". 5805 is
+//   module_chip.md §4.1 gives "inc = freq_reg * 5805  (44.1 kHz, PAL)". 5805 is
 //   1000000/44100*256 -- a nominal 1 MHz clock, not PAL. The PAL C64 clock is
 //   985248 Hz, giving 5719. The difference is 1.5%, a quarter of a semitone,
 //   which is well inside what a tuned instrument makes audible, so the
@@ -68,7 +68,7 @@ enum SidWave : uint8_t {
 // the 'zero' level should ideally have been 0x800. In the measured chip, the
 // waveform output 'zero' level was found to be 0x380." The asymmetry is why a
 // 6581 voice has a DC step at gate time that an 8580 does not, and it costs
-// one constant. chip.md does not mention it; §3's test puts it firmly on the
+// one constant. module_chip.md does not mention it; §3's test puts it firmly on the
 // signal-path side, so it is kept.
 static constexpr int32_t SID_WAVE_ZERO_6581 = 0x380;
 static constexpr int32_t SID_WAVE_ZERO_8580 = 0x800;
@@ -78,7 +78,7 @@ static constexpr int32_t SID_WAVE_ZERO_8580 = 0x800;
 //
 // 23-bit, feedback bit0 = bit22 ^ bit17. TWO taps.
 //
-// chip.md §4.2 says "23-bit LFSR, taps 22/20/16/13/11/7/4/2". Those eight
+// module_chip.md §4.2 says "23-bit LFSR, taps 22/20/16/13/11/7/4/2". Those eight
 // positions are not taps; they are (near) the *output* scatter. reSID's
 // clock_shift_register() is unambiguous:
 //     bit0 = ((shift_register >> 22) ^ (shift_register >> 17)) & 0x1
@@ -111,7 +111,7 @@ inline uint16_t sid_lfsr_output(uint32_t sr) {
 
 // How many times the noise register clocks over one accumulator step.
 //
-// chip.md §4.2: "Noise needs a clock count per sample, not a single clock: at
+// module_chip.md §4.2: "Noise needs a clock count per sample, not a single clock: at
 // high frequencies more than one bit-19 transition occurs per 44.1 kHz sample."
 // Correct, and the bound is tight -- at the maximum frequency register the
 // accumulator advances 0x165B0000 in Q24.8 against a 0x10000000 shift period,
@@ -127,7 +127,7 @@ inline uint32_t sid_noise_clocks(uint32_t acc_before, uint32_t acc_after) {
 // ---------------------------------------------------------------------------
 // Hard sync
 //
-// chip.md §4.1: "Hard sync is plain uint32_t wrap detection -- carry out of bit
+// module_chip.md §4.1: "Hard sync is plain uint32_t wrap detection -- carry out of bit
 // 31 *is* the 24-bit accumulator overflow." The rate is right and the event is
 // not. reSID syncs on the source's MSB *rising* -- accumulator bit 23, which
 // is bit 31 here -- so the reset lands half an accumulator cycle away from
@@ -166,7 +166,7 @@ inline uint16_t sid_pulse(uint16_t top12, uint16_t pw) {
 
 // Combined waveforms.
 //
-// chip.md §13.5 settles this as "AND first (P1), LUTs later (P6)", on the
+// module_chip.md §13.5 settles this as "AND first (P1), LUTs later (P6)", on the
 // grounds that AND "gets to roughly TinySID grade and is one instruction".
 // F0 measured what that costs against reSID's sampled tables, over all 4096
 // phases (tools/sid_ctl_diff.py, domain `wave`):
@@ -219,12 +219,12 @@ struct SidOsc {
     // reads the waveform, and a sync source's edge must be visible to its
     // destination within the same sample. CHIP_STRICT needs that across three
     // adjacency-wired voices; the free engine needs it between a voice and its
-    // own sub-oscillator (chip.md §4.4). Fusing them would force one of the two
+    // own sub-oscillator (module_chip.md §4.4). Fusing them would force one of the two
     // to apply sync a sample late, which on a sync lead is not a subtlety --
     // it is the difference between a locked timbre and a beating one.
     //
     // A modulator that is only a sync source calls advance() and nothing else,
-    // which is where chip.md §4.4's "5-8 c/f versus 45-65 for a whole voice"
+    // which is where module_chip.md §4.4's "5-8 c/f versus 45-65 for a whole voice"
     // comes from.
 
     // Advance the accumulator and the noise register. Returns true if the MSB

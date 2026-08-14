@@ -27,8 +27,8 @@ from typing import Any, Dict, Tuple
 MAGIC = b"T00T"
 VERSION = 1
 
-# tracker.md "Fixed-Point Formats": Q18.14 position caps a sample at this
-# many frames (256 KB at 8-bit); tracker.md "Memory Strategy": realistically
+# module_tracker.md "Fixed-Point Formats": Q18.14 position caps a sample at this
+# many frames (256 KB at 8-bit); module_tracker.md "Memory Strategy": realistically
 # 350-400 KB of SRAM is available for sample data after code/stacks/DMA/mixer
 # scratch. Both are enforced by blob_writer.py, not the device.
 MAX_SAMPLE_FRAMES = 262_144

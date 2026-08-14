@@ -5,7 +5,7 @@
 #include "phonemes.h"
 #include <cmath>
 
-// Preset table (#38, speech.md P5 "Preset table"): following the subtractive
+// Preset table (#38, module_speech.md P5 "Preset table"): following the subtractive
 // engine's presets.h pattern (VoicePreset / voice_apply_preset()) -- a
 // SpeechPreset is "what a voice sounds like", applied at note-on, same as
 // presets.h there. Unlike the subtractive engine, several of the fields a
@@ -19,7 +19,7 @@
 // value that would just get immediately overwritten by whatever the
 // channel's CC state already was.
 
-// Robot chorus (speech.md Scope: "If #31's measurement allowed more than
+// Robot chorus (module_speech.md Scope: "If #31's measurement allowed more than
 // four voices, this is where the 'robot chorus' preset lands: per-voice
 // detune plus stereo spread") -- #31 raised MAX_SPEECH_VOICES to 8, so a
 // preset with `chorus = true` spreads each simultaneously-held voice across
@@ -91,7 +91,7 @@ inline void voice_apply_preset(VoiceParams &vp, const SpeechPreset &pr, uint32_t
 
 // Master preset list -- single source of truth, same role as the
 // subtractive engine's `presets[]`. Covers every SpeechMode the P3/P4
-// sketch names (speech.md "Data Structures"): SPEECH_HOLD is represented
+// sketch names (module_speech.md "Data Structures"): SPEECH_HOLD is represented
 // structurally (utterance == SPEECH_NO_UTTERANCE, see engine.h), the other
 // three explicitly -- plus the robotic/breathy/tract-shift-both-directions
 // range #38's acceptance criteria ask for, and the robot chorus preset the

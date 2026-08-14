@@ -4,22 +4,22 @@
 
 // AY-3-8910/YM2149 tone + noise primitives.
 //
-// TOPOLOGY-FREE (chip.md §4's rule, applied to the second chip in this
+// TOPOLOGY-FREE (module_chip.md §4's rule, applied to the second chip in this
 // module): these know nothing about channels, voices or which of them
 // share a noise generator. On real hardware all three tone channels share
-// one noise generator; chip.md §12's own framing ("additional VoiceTypes
+// one noise generator; module_chip.md §12's own framing ("additional VoiceTypes
 // in this module") means a future engine is free to give each
 // dynamically-allocated voice its own noise generator instead, trading the
 // real chip's shared-noise/shared-envelope character for full polyphonic
 // independence -- a deliberate deviation, not an oversight, and the same
 // kind of choice SID's engine already makes versus its own CHIP_STRICT
-// harness (chip.md §11.1).
+// harness (module_chip.md §11.1).
 //
 // Ground truth is ayumi 1.0 (Peter Sovietov, MIT -- github.com/true-grue/
 // ayumi, verified via GitHub's own API, not recalled), read in full and
 // vendored unmodified at tools/ay_ref/ayumi/ for host-side validation
 // (tools/ay_ctl_diff.py). Unlike reSID (GPL-2, kept gitignored and never
-// shipped -- chip.md §14a.7), ayumi's MIT license permits vendoring
+// shipped -- history_chip.md §14a.7), ayumi's MIT license permits vendoring
 // outright; its LICENSE file sits alongside it.
 //
 // ---------------------------------------------------------------------------

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""fm_ctl_diff -- exact control-plane conformance: t00t vs Dexed (fm2.md §3, F1).
+"""fm_ctl_diff -- exact control-plane conformance: t00t vs Dexed (history_fm.md §3, F1).
 
 The half of the harness that does not involve audio, spectra, or judgement.
 
@@ -312,7 +312,7 @@ def cmp_routing(dexed_csv, verbose):
     `cmp_algorithms` above compares the raw bus-flag bytes and has passed
     192/192 since F1 -- while `decode_algorithm()` was silently dropping two
     thirds of the modulation edges in algorithm 22. Identical inputs to a lossy
-    decoder still produce identical inputs. F7 (fm2.md §5.20) found that the
+    decoder still produce identical inputs. F7 (history_fm.md §5.20) found that the
     expensive way, so the decoder's *output* is now checked too.
 
     The reference side is Dexed's `FmCore::render` bus behaviour, re-derived
@@ -365,7 +365,7 @@ def cmp_routing(dexed_csv, verbose):
 
 
 # Representative EG configs. Chosen to exercise the shapes real patches use and
-# the ones fm2.md §1.1 predicts are broken, not to be exhaustive.
+# the ones history_fm.md §1.1 predicts are broken, not to be exhaustive.
 EG_CASES = [
     ("eg/instant-attack",  "99,99,99,99", "99,99,99,99", 99),   # reference config
     ("eg/epiano-carrier",  "95,50,35,60", "99,90,80,0",  99),   # the F0 baseline patch's shape
@@ -373,7 +373,7 @@ EG_CASES = [
     ("eg/very-slow-decay", "99,5,5,30",   "99,60,50,0",  99),   # tests §1.1(d)'s step<1 clamp
     ("eg/percussive",      "99,70,60,80", "99,50,0,0",   99),   # decay to silence while gated
     ("eg/low-outlevel",    "99,60,40,60", "99,85,75,0",  70),   # tests the TL composition
-    # F6 (fm2.md §5.15) added the last two. The six above all have L2 != L1 and
+    # F6 (history_fm.md §5.15) added the last two. The six above all have L2 != L1 and
     # all have L4 == 0, so between them they never once enter Env's
     # `targetlevel_ == level_` branch -- the ACCURATE_ENVELOPE `staticcount`
     # hold, which is the whole reason the statics[77] table exists -- and never

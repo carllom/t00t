@@ -22,7 +22,7 @@ static int32_t dry_r[SAMPLES_PER_BUFFER];
 // #42 P0 rig: replaces the normal test-tone loop below with the stripped
 // N-voice x 6-operator mixer (rig.h) -- no MIDI, no patch logic, fixed
 // increments/gains, same "hands-off, self-cycling" shape the tracker's #16
-// and speech's #31 rigs used. Every fm.md §3.6 lever is a build-time switch
+// and speech's #31 rigs used. Every module_fm.md §3.6 lever is a build-time switch
 // (rig.h's FM_RIG_* macros, set via the Makefile's FM_RIG_* variables), so
 // this file doesn't itself choose between them -- the bench session
 // (blocked on this issue, not part of it) does, by reflashing with a
@@ -85,7 +85,7 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
 #include "fx/delay.h"
 #include "fx/reverb.h"
 
-// FM engine (#44/#45, fm.md P1/P2): MAX_VOICES independent 6-operator
+// FM engine (#44/#45, module_fm.md P1/P2): MAX_VOICES independent 6-operator
 // voices, each driven straight from VoiceParams (phase_inc = bend-scaled
 // note frequency, patch = the whole timbre, amplitude = velocity, gate =
 // held/released) with routing resolved once per note-on (patch.h's
@@ -101,7 +101,7 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
 // send / stereo return).
 static int32_t fx_buf[SAMPLES_PER_BUFFER];
 
-// Post-mix effects (Core 1 only). Linked unconditionally -- fm.md §2: no
+// Post-mix effects (Core 1 only). Linked unconditionally -- module_fm.md §2: no
 // sample-RAM pressure to protect, unlike the tracker's skeleton (#13).
 static FxDelay  fx_delay;
 static FxReverb fx_reverb;
@@ -116,7 +116,7 @@ static bool     voice_gated[MAX_VOICES];  // Core 1's own gate-edge tracking, fo
 static FmPitchEg voice_peg[MAX_VOICES];   // #49: one pitch EG per voice (not per operator -- pitch_eg.h)
 static FmLfo    voice_lfo[MAX_VOICES];    // #49: one LFO per voice (not per operator -- lfo.h)
 
-// Shared bus scratch (fm.md §4.3: "one shared scratch for the whole engine,
+// Shared bus scratch (module_fm.md §4.3: "one shared scratch for the whole engine,
 // not per-voice" -- reused across every voice, sequentially, within a pass).
 static int32_t bus_mod0[FM_BLOCK], bus_mod1[FM_BLOCK], bus_mod2[FM_BLOCK];
 static int32_t bus_mod3[FM_BLOCK], bus_mod4[FM_BLOCK], bus_mod5[FM_BLOCK];
@@ -169,7 +169,7 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
 
             // Routing (order/bus pointers/kernel selection/first-writer
             // flags) is resolved once per note-on, from patch data alone
-            // (fm.md §5.6) -- a new `trigger` value is exactly that event.
+            // (module_fm.md §5.6) -- a new `trigger` value is exactly that event.
             if (p.trigger != voice_last_trigger[v]) {
                 voice_routing_valid[v] = fm_resolve_routing(*p.patch, voice_routing[v]);
                 if (voice_routing_valid[v]) {
@@ -187,13 +187,13 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
             } else {
                 voice_gated[v] = p.gate;
             }
-            if (!voice_routing_valid[v]) continue;  // patch failed DAG validation (fm.md §4.2) -- skip, don't mis-render
+            if (!voice_routing_valid[v]) continue;  // patch failed DAG validation (module_fm.md §4.2) -- skip, don't mis-render
 
             // Keep rendering through release even after gate goes false --
             // stop only once every carrier's EG has actually gone idle
             // (fm_voice_active()), never on gate alone. This is what makes
             // "a voice reports itself free only when its carriers have
-            // actually decayed" true instead of aspirational (fm.md #45,
+            // actually decayed" true instead of aspirational (module_fm.md #45,
             // avoiding the tracker's #21 "key-off never frees a voice" bug).
             if (!p.gate && !fm_voice_active(voice_ops[v], voice_routing[v])) continue;
 

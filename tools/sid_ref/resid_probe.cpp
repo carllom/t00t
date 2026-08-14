@@ -1,5 +1,5 @@
 // resid_probe -- measures reSID's filter response so the t00t 6581 model can
-// be fitted to it (chip.md §5.1).
+// be fitted to it (module_chip.md §5.1).
 //
 // Why measure rather than read a table: reSID 1.0's 6581 filter is a
 // transistor-level model -- op-amp transfer curves, a VCR gate-voltage
@@ -15,7 +15,7 @@
 // numerics in one place with the rest of the analysis, and it makes the LUT
 // regenerable rather than a magic array.
 //
-// chip.md §5.1: "The 6581 cutoff curve varied enormously between physical
+// module_chip.md §5.1: "The 6581 cutoff curve varied enormously between physical
 // chips. Any curve is *a* 6581, not *the* 6581." What this tool pins down is
 // specifically reSID 1.0-pre1's 6581, which is itself a model of one measured
 // chip. The generated header must say so.
@@ -123,7 +123,7 @@ int main(int argc, char **argv) {
         sid.set_chip_model(model_8580 ? reSID::MOS8580 : reSID::MOS6581);
         sid.enable_filter(true);
         // The board's passive output network is a separate stage in t00t
-        // (chip.md §10) and is fitted separately; leaving it in here would put
+        // (module_chip.md §10) and is fitted separately; leaving it in here would put
         // its rolloff inside the number this tool exists to produce.
         sid.enable_external_filter(false);
         if (!sid.set_sampling_parameters(clock_hz, reSID::SAMPLE_RESAMPLE, rate)) {

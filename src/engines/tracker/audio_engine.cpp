@@ -6,14 +6,14 @@
 #include "pico/multicore.h"
 #include "pico/time.h"
 
-// Core 1: the real-time mixer (#18, tracker.md "Core Split"). Consumes
+// Core 1: the real-time mixer (#18, module_tracker.md "Core Split"). Consumes
 // TickBlocks from g_tracker_tick_ring (produced on Core 0 by player_task.cpp)
 // and renders them via mixer.h's tracker_render_buffer(), cut short at
 // whatever tick boundary falls inside a DMA buffer. Never touches
 // SongHeader/flash: tracker_apply_tick() (player.h) resolves note triggers
 // purely from g_tracker_resident_samples, the SRAM table Core 0 built once
 // at song load -- exactly the "keeps pattern-data flash reads off Core 1"
-// split tracker.md calls for.
+// split module_tracker.md calls for.
 
 // --- Telemetry for the Core 0 UI (published by Core 1) ---
 static volatile uint8_t s_load_pct = 0;
@@ -30,7 +30,7 @@ static uint32_t s_samples_per_tick = 0;
 
 // Fills exactly `frames` stereo frames of `out`, crossing as many tick
 // boundaries as needed. Ring-empty at a tick boundary renders silence
-// (tracker.md "Startup and underrun": "a visible dropout on the profiling
+// (module_tracker.md "Startup and underrun": "a visible dropout on the profiling
 // pin beats a subtle timing glitch") rather than replaying stale state --
 // also doubles as the transport-stop mechanism (player_task.cpp stops
 // producing; the ring drains over its last 0-2 ticks, then this takes over).
@@ -50,7 +50,7 @@ static void __not_in_flash_func(tracker_fill_buffer)(int16_t *out, uint32_t fram
             s_samples_per_tick = tb.samples_per_tick;
             s_tick_remaining = s_samples_per_tick;
             g_tracker_tick_ring.pop();
-            // Non-blocking doorbell ack (tracker.md: "Core 1 never stalls") --
+            // Non-blocking doorbell ack (module_tracker.md: "Core 1 never stalls") --
             // Core 0's tracker_player_task() drains this and refills the ring.
             multicore_fifo_push_timeout_us(1, 0);
         }
@@ -67,7 +67,7 @@ static void __not_in_flash_func(tracker_fill_buffer)(int16_t *out, uint32_t fram
 }
 
 void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
-    (void)params;  // tracker.md: latest-wins ParamExchange isn't used here -- see the ordered TickBlock ring instead
+    (void)params;  // module_tracker.md: latest-wins ParamExchange isn't used here -- see the ordered TickBlock ring instead
 
     // Init profiling pin
     gpio_init(PROFILE_PIN);

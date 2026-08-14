@@ -16,13 +16,13 @@
 #include <arm_acle.h>
 #include <cmath>
 
-// Chip module Core 1 render (chip.md §1 P1, §14 item 2).
+// Chip module Core 1 render (module_chip.md §1 P1, §14 item 2).
 //
 // Two builds live in this file, same idiom as the speech engine's
 // SPEECH_PROFILE flag: the normal MIDI-driven engine (below, default) and
 // the P0 measurement rig (rig.h, preserved unchanged behind
 // T00T_CHIP_PROFILE=1 -- `make ENGINE=chip CHIP_PROFILE=1` -- so the
-// hardware-verified cost numbers in chip.md §9/§14a.9 stay re-measurable
+// hardware-verified cost numbers in module_chip.md §9 / history_chip.md §14a.9 stay re-measurable
 // against later changes without deleting the rig that produced them).
 
 static volatile uint8_t s_load_pct = 0;
@@ -45,7 +45,7 @@ void chip_voice_ui_state(uint32_t voice, ChipVoiceUiState *out) {
 
 #if defined(T00T_CHIP_PROFILE) && T00T_CHIP_PROFILE
 
-// --- P0 measurement rig (chip.md §1 P0, §14 item 1) -------------------------
+// --- P0 measurement rig (module_chip.md §1 P0, §14 item 1) -------------------------
 //
 // A self-cycling, pin-only rig: no MIDI, no ParamExchange, no display.
 // PROFILE_PIN (GPIO 22) is high for exactly the render, so the duty cycle
@@ -75,7 +75,7 @@ static FxReverb fx_reverb;
 #endif
 #if CHIP_RIG_FX != 0
 static int32_t fx_buf[SAMPLES_PER_BUFFER];
-// Fixed mid-range settings -- chip.md §9's FX cost lines are the fixed
+// Fixed mid-range settings -- module_chip.md §9's FX cost lines are the fixed
 // per-sample cost of the effect running, not a function of these knobs
 // (fx/delay.h, fx/reverb.h: both do the same work regardless of p1/p2/mix).
 static constexpr EffectParams CHIP_RIG_FX_PARAMS = {
@@ -88,7 +88,7 @@ static SidSpeakerStage speaker;
 #endif
 
 // Voice counts to step through. The slope across these is the per-voice cost;
-// the intercept at 0 is the fixed per-buffer overhead, which chip.md §9's
+// the intercept at 0 is the fixed per-buffer overhead, which module_chip.md §9's
 // "idle ~0.6%" line is the comparison for.
 static constexpr uint32_t PHASE_VOICES[] = { 0, 1, 4, 8, 16, CHIP_RIG_VOICES };
 static constexpr uint32_t PHASE_COUNT = sizeof(PHASE_VOICES) / sizeof(PHASE_VOICES[0]);
@@ -143,7 +143,7 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
             rig.render_n(dry, n, voices);
 
             for (uint32_t i = 0; i < n; i++) {
-                // Mono, duplicated -- chip.md §10 says the speaker stage is
+                // Mono, duplicated -- module_chip.md §10 says the speaker stage is
                 // mono and "more authentic and half the price", and a stereo
                 // pan here would measure a stage the module does not have.
                 int16_t s = (int16_t)__ssat(dry[i] >> SID_MIX_SHIFT, 16);
@@ -183,7 +183,7 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
 #else
             v >>= SID_MIX_SHIFT;
 #endif
-            // Mono, duplicated -- chip.md §10 says the speaker stage is
+            // Mono, duplicated -- module_chip.md §10 says the speaker stage is
             // mono and "more authentic and half the price", and a stereo
             // pan here would measure a stage the module does not have.
             int16_t s = (int16_t)__ssat(v, 16);
@@ -207,7 +207,7 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
 
 #else  // !T00T_CHIP_PROFILE -- the real engine
 
-// --- Engine (chip.md §1 P1/P2/P3/P4, §14 item 2) ------------------------------
+// --- Engine (module_chip.md §1 P1/P2/P3/P4, §14 item 2) ------------------------------
 //
 // One SidVoice per MAX_VOICES slot, dispatched by VoiceType exactly like the
 // groovebox (§7.3) -- VT_SILENT is skipped, VT_SID renders (render_mask, P4:
@@ -222,13 +222,13 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
 // three-tier policy's own priority 2/3), so the attack must restart even
 // though the envelope is neither idle nor freshly gated-off.
 //
-// P2 (chip.md §5, §7.2): filter buses. Rendering is sub-blocked so bus
+// P2 (module_chip.md §5, §7.2): filter buses. Rendering is sub-blocked so bus
 // accumulators are sized FILTER_BUS_COUNT x sub-block, not FILTER_BUS_COUNT
 // x SAMPLES_PER_BUFFER. CHIP_SUBBLOCK reuses P0's proven value (rig.h's
 // CHIP_RIG_SUBBLOCK default) -- and per open question 1, this is also
 // P3's frame-tick cut point (see below), not a separate sample-exact one.
 //
-// Per-bus idle skip is chip.md §5.2's "P2 TODO": a bus with zero voices
+// Per-bus idle skip is module_chip.md §5.2's "P2 TODO": a bus with zero voices
 // routed to it this sub-block skips its filter tick entirely (the ~80 c/f
 // per sample §14a.9 measured for an idle-but-bound bus), derived directly
 // from the same per-voice scan the render loop already does. bus_was_active
@@ -236,7 +236,7 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
 // state resets instead of inheriting a stale resonant tail from whatever
 // voice last fed it.
 //
-// P3 (chip.md §6): the frame table VM. Resolves open question 1 ("does the
+// P3 (module_chip.md §6): the frame table VM. Resolves open question 1 ("does the
 // VM tick get its own cut point, or ride the existing SUBBLOCK boundary")
 // as the doc's own lean predicted: rides CHIP_SUBBLOCK. ≤64 samples (1.45 ms
 // on a 20 ms frame, 7%) of jitter against a true 50 Hz grid -- "likely fine,
@@ -302,9 +302,9 @@ static int32_t fx_buf[SAMPLES_PER_BUFFER];
 static FxDelay  fx_delay;
 static FxReverb fx_reverb;
 static uint8_t  s_last_fx_type = 0xFF;
-static SidSpeakerStage speaker;   // chip.md §1 P5, §10
+static SidSpeakerStage speaker;   // module_chip.md §1 P5, §10
 
-// AY-3-8910/YM2149 voices (chip.md §12.1, AY-P1). One AyTone/AyNoise/
+// AY-3-8910/YM2149 voices (module_chip.md §12.1, AY-P1). One AyTone/AyNoise/
 // AyEnvelope trio per slot, independent -- not the real chip's shared-
 // noise/shared-envelope-across-3-channels topology (§12.1's design note,
 // same file). VT_AY reuses the same MAX_VOICES pool and voice_alloc as
@@ -317,7 +317,7 @@ static uint32_t   ay_tick_phase = 0;  // shared across every AY voice -- same cl
                                         // same sample rate, so the tick-count sequence
                                         // for a given sample is identical for all of them
 
-// Per-voice AY frame-VM state (chip.md §12.2, AY-P2), same role ChipVm
+// Per-voice AY frame-VM state (module_chip.md §12.2, AY-P2), same role ChipVm
 // plays for SID.
 struct AyVm {
     uint8_t  tone_pos, volume_pos;
@@ -408,7 +408,7 @@ static void ay_vm_frame_tick(uint32_t v, const AyInstrument &ins, uint16_t base_
     // whole pitch range instead, the same fix arpeggio's own divide-by-
     // ratio already gets right above -- still an uncalibrated "raw wobble
     // scale, not cents" depth constant (SID's own vibrato_depth has the
-    // identical caveat, chip.md §14d.5 finding 2), just proportional now
+    // identical caveat, history_chip.md §14d.5 finding 2), just proportional now
     // instead of structurally broken at one end of the keyboard.
     if (ins.vibrato_depth > 0 && s.frames_since_trigger >= ins.vibrato_delay) {
         s.vib_phase = (uint16_t)(s.vib_phase + ins.vibrato_speed * 64u);
@@ -450,7 +450,7 @@ static void vm_reset(uint32_t v, const Instrument &ins) {
     voice[v].osc.pw = (uint16_t)s.pulse_cur;
 }
 
-// One frame boundary's worth of table stepping for one voice (chip.md §6).
+// One frame boundary's worth of table stepping for one voice (module_chip.md §6).
 static void vm_frame_tick(uint32_t v, const Instrument &ins, uint32_t base_freq) {
     ChipVm &s = vm[v];
     s.frames_since_trigger++;
@@ -541,7 +541,7 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
     acc_scale_g = sid_acc_scale_q8(SID_CLOCK_PAL, SAMPLE_RATE);
     rates = env_sid_make_rates(SID_CLOCK_PAL, SAMPLE_RATE);
     init_semitone_ratios();
-    res2p_init();   // chip.md §1 P5: speaker sim's peak stage (res2p.h's LUT, must run once before any res2p_set())
+    res2p_init();   // module_chip.md §1 P5: speaker sim's peak stage (res2p.h's LUT, must run once before any res2p_set())
     for (uint32_t v = 0; v < MAX_VOICES; v++) {
         voice[v].init(SID_MODEL_6581);   // §13 item 6: 6581 first, 8580 is P6
         last_trigger[v] = 0;
@@ -580,7 +580,7 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
             const VoiceParams &p = vp.voices[v];
 
             if (p.type == VT_AY) {
-                // AY-P2 (chip.md §12.2): apply the instrument once on a
+                // AY-P2 (module_chip.md §12.2): apply the instrument once on a
                 // fresh trigger, raw base period immediately -- exactly
                 // SID's own P3 pattern (this file's SID trigger block,
                 // below), for exactly the same reason: ay_vm_frame_tick()
@@ -589,7 +589,7 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
                 // buffer here would stomp arpeggio/vibrato on every buffer
                 // that doesn't also contain a frame tick -- the precise
                 // buffer-rate-snap bug SID's own P3 by-ear pass found and
-                // fixed (chip.md §14d.5 finding 3).
+                // fixed (history_chip.md §14d.5 finding 3).
                 uint8_t ins_idx = p.instrument < AY_INSTRUMENT_COUNT ? p.instrument : 0;
                 const AyInstrument &ins = AY_INSTRUMENTS[ins_idx];
 
@@ -614,7 +614,7 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
                 // would still see p.gate true and never re-arm renders.
                 bool renders = p.gate && !ay_vm[v].gate_off_fired;
                 if (renders) { active_mask |= (1u << v); render_mask |= (1u << v); }
-                // chip.md §12.3: AY voices now report real telemetry --
+                // module_chip.md §12.3: AY voices now report real telemetry --
                 // tone_pos doubles as wave_pos (ChipVoiceUiState's own
                 // comment: "same field, same meaning either way").
                 s_voice_ui[v] = renders ? ChipVoiceUiState{VT_AY, p.gate, ins_idx, ay_vm[v].tone_pos}
@@ -659,7 +659,7 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
             if (p.gate && !vm[v].gate_off_fired) voice[v].env.gate_on();
             else if (!p.gate)                    voice[v].env.gate_off();
 
-            // chip.md §8 P4: voice_alloc's three-tier steal policy needs this
+            // module_chip.md §8 P4: voice_alloc's three-tier steal policy needs this
             // bit to mean "still audible" (counter > 0), not "this slot has
             // a VT_SID note nominally assigned" -- the latter never clears,
             // so every voice would read as permanently active and priority
@@ -667,7 +667,7 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
             // allocation to fall through to stealing the oldest held note.
             if (voice[v].env.counter > 0) active_mask |= (1u << v);
 
-            // render_mask (P4 fix, chip.md §8): p.type is never reset to
+            // render_mask (P4 fix, module_chip.md §8): p.type is never reset to
             // VT_SILENT on note-off -- dynamic allocation only ever flips
             // p.gate, reusing the same slot on its next note. Without this,
             // the `p.type != VT_SID` checks below stay true forever once a
@@ -743,7 +743,7 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
                 if (bus_hits[b] == 0) { bus_was_active[b] = false; continue; }
                 if (!bus_was_active[b]) { bus_filter[b].init(); bus_was_active[b] = true; }
 
-                // Bus binding is 1:1 (chip.md §5.2's "share" only applies to
+                // Bus binding is 1:1 (module_chip.md §5.2's "share" only applies to
                 // one channel's own repeated notes, never two different
                 // channels), so the feeding voice's own instrument is
                 // unambiguously this bus's tonal source -- see the P3
@@ -757,7 +757,7 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
                     dry[base + i] += bus_filter[b].tick(bus_acc[b][i], f_half, q, ins.filter_mode_mask, /*saturate=*/true);
             }
 
-            // AY voices (chip.md §12.1, AY-P1): no filter bus, straight to
+            // AY voices (module_chip.md §12.1, AY-P1): no filter bus, straight to
             // dry[]. Tick-phase is shared across every AY voice -- same
             // clock, same sample rate, so the tick-count sequence for a
             // given sample is identical for all of them (ay_tick_scale_g,
@@ -812,7 +812,7 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
                         // starting value, so this one read covers both.
                         int8_t level = ins.use_envelope ? ay_env[v].level
                                                          : (int8_t)(ay_vm[v].volume_cur * 2 + 1);
-                        float amp = ay_dac_table(ins.model)[level];   // chip.md §12.3: per-instrument model
+                        float amp = ay_dac_table(ins.model)[level];   // module_chip.md §12.3: per-instrument model
                         float bipolar = gate ? 1.0f : -1.0f;
 
                         // Scale to roughly a SID voice's own raw dry[] peak
@@ -830,7 +830,7 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
 
         // Post-mix effect (delay / reverb), selected by CC74 -- same shape as
         // every other engine's insert (engine_base.h's EffectParams). Chip's
-        // render is mono already (chip.md has no per-voice pan), so there is
+        // render is mono already (module_chip.md has no per-voice pan), so there is
         // no stereo downmix step before the send, unlike the stereo engines.
         bool has_fx = (vp.fx.type == FX_DELAY || vp.fx.type == FX_REVERB);
         if (vp.fx.type != s_last_fx_type) {
@@ -844,7 +844,7 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
             else                        fx_reverb.process(fx_buf, SAMPLES_PER_BUFFER, vp.fx);
         }
 
-        // chip.md §1 P5, §10: speaker sim sits downstream of the FX insert
+        // module_chip.md §1 P5, §10: speaker sim sits downstream of the FX insert
         // (delay/reverb), upstream of the final safety clamp below -- its
         // own soft clip is the cone-breakup character, not that clamp.
         // Preset is a single global choice (not per-voice), but the only
@@ -859,7 +859,7 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
         for (uint32_t i = 0; i < SAMPLES_PER_BUFFER; i++) {
             int32_t v = dry[i];
             if (has_fx) v += fx_buf[i];
-            // Mono, duplicated -- chip.md §10: the module is authentically
+            // Mono, duplicated -- module_chip.md §10: the module is authentically
             // mono (no VoiceParams.pan).
             v = (int32_t)speaker.tick((float)(v >> SID_MIX_SHIFT));
             int16_t s = (int16_t)__ssat(v, 16);

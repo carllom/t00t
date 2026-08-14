@@ -1,4 +1,4 @@
-// render_ay -- the t00t side of the AY-P0 comparison (chip.md, AY_STRICT).
+// render_ay -- the t00t side of the AY-P0 comparison (module_chip.md, AY_STRICT).
 //
 // Consumes a register stream (see ../ay_ref/ayreg.h) and renders it through
 // src/chip/ay_osc.h / ay_envelope.h at 44.1 kHz, in the strict hardware

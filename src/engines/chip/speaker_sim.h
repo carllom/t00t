@@ -3,7 +3,7 @@
 #include "res2p.h"
 #include <cmath>
 
-// Speaker simulation output stage -- chip.md §1 P5, §10 (HP cone rolloff ->
+// Speaker simulation output stage -- module_chip.md §1 P5, §10 (HP cone rolloff ->
 // resonant "boxy" peak -> LP -> soft clip). Downstream of the FX insert
 // (delay/reverb) and upstream of the final int16 __ssat -- §10's own "you
 // want delay -> speaker, or reverb -> speaker", and open question 4
@@ -56,7 +56,7 @@ struct SpeakerPresetDef {
 
 // Numbers below are a first, doc-range-respecting pass, not a hardware-
 // measured or by-ear-tuned set -- same status P3's vibrato constants had
-// before Carl's by-ear pass (chip.md §14d.5): "a better first guess, not a
+// before Carl's by-ear pass (history_chip.md §14d.5): "a better first guess, not a
 // calibrated one." Needs a real listen before it's trusted.
 static const SpeakerPresetDef SPEAKER_PRESETS[SPEAKER_PRESET_COUNT] = {
     // hp_hz  peak_hz  peak_bw  lp_hz    drive

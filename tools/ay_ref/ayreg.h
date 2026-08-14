@@ -19,7 +19,7 @@
 //                          R14/R15 are I/O ports, out of scope here)
 //
 // Writes are applied at frame boundaries only, same rationale as
-// tools/sid_ref/sidreg.h: the frame is the chip control clock (chip.md
+// tools/sid_ref/sidreg.h: the frame is the chip control clock (module_chip.md
 // §6.2), and a shared timebase coarser than either renderer is the only one
 // both can honour exactly.
 

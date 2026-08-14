@@ -479,7 +479,7 @@ def jump_and_break() -> bytes:
 def speed_tempo_basic() -> bytes:
     """One held note across a speed change (Fxx, param < 0x20) then a tempo
     change (Fxx, param >= 0x20) -- both must take effect at the tick they're
-    issued on (tracker.md: 'samples_per_tick ... MUST be per-block'), which a
+    issued on (module_tracker.md: 'samples_per_tick ... MUST be per-block'), which a
     timing-sensitive diff against openmpt123 is exactly the right check."""
     pad = SynthSample(data=_pad_sample(), loop_start=0, loop_end=len(_pad_sample()), volume=64, panning=128, name="pad")
     instruments = [SynthInstrument(pad, "pad")]
@@ -739,7 +739,7 @@ def voice_count_profile() -> bytes:
 
 # --- #22 fixtures: the remaining Exy sub-commands (E60 pattern loop and the
 # other named FT2 quirks are deliberately deferred, not covered here -- see
-# tracker.md's Open Questions / Build Order for the split). Same principle
+# module_tracker.md's Open Questions / Build Order for the split). Same principle
 # as every earlier per-effect fixture in this module: narrow enough that
 # openmpt123 and player.h's implementation should land in the same place.
 
@@ -768,7 +768,7 @@ def fine_slides_basic() -> bytes:
 # starting, which makes the exact behaviour genuinely diff-driven quirk work
 # rather than the bounded/mechanical case the rest of this module's #22
 # fixtures cover. Tracked in #25 alongside the four named FT2 quirks
-# (tracker.md's Open Questions).
+# (module_tracker.md's Open Questions).
 
 
 def retrig_basic() -> bytes:

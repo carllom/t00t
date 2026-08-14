@@ -2,11 +2,11 @@
 
 #include "ay_instrument.h"
 
-// Hand-authored AY instruments (chip.md §12.1/§12.2/§12.3) -- one
+// Hand-authored AY instruments (module_chip.md §12.1/§12.2/§12.3) -- one
 // documented feature each, same pattern SID's own P3 instruments used
-// (chip.md §14d.5). LEAD/BUZZ_BASS/NOISE_PERC are P1's hardware-verified
+// (history_chip.md §14d.5). LEAD/BUZZ_BASS/NOISE_PERC are P1's hardware-verified
 // static trio; ARP and PLUCK are P2's frame-table additions (ARP's
-// vibrato bug found and fixed on real hardware, chip.md §12.3); LEAD_YM
+// vibrato bug found and fixed on real hardware, module_chip.md §12.3); LEAD_YM
 // is P3's YM2149 demonstration.
 //
 // Not generated: same reasoning as before -- a chipgen.py-style text
@@ -16,7 +16,7 @@
 enum AyInstrumentId : uint8_t {
     AY_INS_LEAD,        // tone only, static volume -- plain square-wave lead
     AY_INS_BUZZ_BASS,   // tone + envelope shape 8 (slide_down/slide_down --
-                         // a repeating sawtooth decay): chip.md §12's own
+                         // a repeating sawtooth decay): module_chip.md §12's own
                          // "envelope generator at audio rate as a buzzer
                          // bass source", period tuned for a ~50 Hz buzz
     AY_INS_NOISE_PERC,   // noise only + envelope shape 9 (slide_down/
@@ -39,7 +39,7 @@ enum AyInstrumentId : uint8_t {
     AY_INSTRUMENT_COUNT,
 };
 
-// chip.md §12.3: display.cpp names, same role chipgen.py's generated
+// module_chip.md §12.3: display.cpp names, same role chipgen.py's generated
 // INSTRUMENT_NAMES[] plays for SID -- hand-written here since this table
 // is hand-written too (no generator to emit it from yet, ay_instruments.h's
 // own header comment).

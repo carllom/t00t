@@ -1,7 +1,7 @@
 // ayumi_dump -- control-plane ground truth from ayumi, as CSV. No audio.
 //
 // Mirrors tools/sid_ref/resid_dump.cpp's role and domain split exactly
-// (chip.md §11.1's control-plane/signal-plane distinction, applied to the
+// (module_chip.md §11.1's control-plane/signal-plane distinction, applied to the
 // second chip in this module): most of an AY-3-8910/YM2149 voice is
 // control-rate or purely combinational logic, so it compares exactly,
 // numerically, against tools/host_render/t00t_ay_dump.cpp -- no audio

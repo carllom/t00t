@@ -4,11 +4,11 @@
 #include "chip/ay_envelope.h"   // AyModel
 #include <cstdint>
 
-// AY-3-8910/YM2149 instrument format -- P2 adds the frame table (chip.md
+// AY-3-8910/YM2149 instrument format -- P2 adds the frame table (module_chip.md
 // §12.2's own "not built" list: arpeggio, software envelope/mixer
 // automation), the same P1 -> P3 gap SID's own instrument format crossed.
 //
-// Hardware-verified P1 static base (chip.md §12.2): "sounds fine, quite
+// Hardware-verified P1 static base (module_chip.md §12.2): "sounds fine, quite
 // low duty cycle." P2 builds on that confirmed-working foundation rather
 // than replacing it -- a trigger with no tone/volume table rows still
 // behaves exactly like a P1 instrument (initial_volume/use_envelope apply
@@ -28,7 +28,7 @@
 // or an 11-bit cutoff. No reason to invent a second row type for the same
 // stepping logic.
 
-// AyToneTable row: chip.md's arpeggio pattern (relative semitone offset per
+// AyToneTable row: module_chip.md's arpeggio pattern (relative semitone offset per
 // frame), simplified from SID's WaveRow -- AY has no waveform bits to hold,
 // so there is nothing here to mirror WAVE_HOLD for. Repeat by duplicating a
 // row (same authoring convention chip's own hand-written instruments used
@@ -58,13 +58,13 @@ struct AyInstrument {
                                  // instrument is simply not read
     uint16_t envelope_period;   // 16-bit register units
     uint8_t  envelope_shape;    // 4-bit raw code (ay_envelope.h's AY_ENVELOPE_SEGMENTS index) --
-                                 // chip.md §12's "buzzer bass" is this: a continuing shape
+                                 // module_chip.md §12's "buzzer bass" is this: a continuing shape
                                  // (e.g. 8 or 10) at audio rate, not silence between notes
     bool     tone_on;           // mixer: is the tone generator part of this instrument
     bool     noise_on;          // mixer: is the noise generator part of this instrument
     uint8_t  noise_period;      // 5-bit, used when noise_on is true
 
-    AyToneTable tone;            // arpeggio -- chip.md §12.2's "AY-P2" line
+    AyToneTable tone;            // arpeggio -- module_chip.md §12.2's "AY-P2" line
     SweepTable  volume;           // software envelope, ignored when use_envelope
                                     // is true (see above); clamped 0-15 same as
                                     // real hardware's volume register
@@ -72,7 +72,7 @@ struct AyInstrument {
     uint16_t vibrato_depth;      // 0 = off. Raw period-register wobble scale --
                                   // same "not yet calibrated to cents" status
                                   // SID's own vibrato_depth had before its own
-                                  // by-ear pass (chip.md §14d.5 finding 2)
+                                  // by-ear pass (history_chip.md §14d.5 finding 2)
     uint8_t  vibrato_speed;      // phase increment per frame
     uint8_t  vibrato_delay;      // frames after trigger before vibrato ramps in
     uint8_t  gate_off_timer;     // frames after trigger to force silence; 0 = never

@@ -1,4 +1,4 @@
-// dexed_dump -- ground-truth control-plane trajectories from Dexed (fm2.md §3.1, F1).
+// dexed_dump -- ground-truth control-plane trajectories from Dexed (history_fm.md §3.1, F1).
 //
 // The exact half of the harness. Everything the DX7 does except the per-sample
 // operator kernel runs at control rate and produces *numbers* -- level curves,

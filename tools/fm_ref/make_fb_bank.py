@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """make_fb_bank -- synthetic DX7 banks that sweep operator FEEDBACK depth.
 
-Built for F7 (fm2.md §5.19), and for the same reason make_freq_bank.py exists:
+Built for F7 (history_fm.md §5.19), and for the same reason make_freq_bank.py exists:
 a quantity the control-plane diff cannot reach as a table.
 
 F4 verified the 32-algorithm routing table exactly -- 192/192 (algorithm,

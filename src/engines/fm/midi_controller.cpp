@@ -9,13 +9,13 @@
 #include "patches.h"
 #endif
 
-// FM MIDI controller (#44, fm.md P1): note on/off + pitch bend + velocity,
+// FM MIDI controller (#44, module_fm.md P1): note on/off + pitch bend + velocity,
 // mirroring the shared src/midi/midi_controller.cpp's channel-bend/pan
 // pattern. Own controller (not the shared one) for the same reason the #41
 // skeleton stub gave: this engine's VoiceParams carries a patch pointer, not
 // a VoicePreset the shared controller's presets.h shape expects.
 //
-// Patch select (#47, fm.md P3): every note-on used FM_TEST_PATCH
+// Patch select (#47, module_fm.md P3): every note-on used FM_TEST_PATCH
 // unconditionally until tools/syx2patch.py gave this engine more than one
 // patch to choose from. patches.h is generated locally and gitignored (a
 // real DX7 bank's patch data, not something to check into git history --

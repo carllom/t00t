@@ -5,9 +5,9 @@
 #include "chip/sid_voice.h"
 #include "chip/sid_filter.h"
 
-// Chip module F0 measurement rig (chip.md §1 P0, §14 item 1).
+// Chip module F0 measurement rig (module_chip.md §1 P0, §14 item 1).
 //
-// chip.md §1: "P0 is a hard gate. Nothing in §9's budget is trusted until it
+// module_chip.md §1: "P0 is a hard gate. Nothing in §9's budget is trusted until it
 // clears, and MAX_VOICES / FILTER_BUS_COUNT are provisional until then. This
 // follows the FM and speech modules' precedent, and speech's #31 result is the
 // reason: its prediction ran 25-55% low against measurement."
@@ -18,7 +18,7 @@
 // reads; it decides nothing itself. Same shape as the FM module's rig.h and
 // the speech engine's SPEECH_PROFILE build.
 //
-// Every lever chip.md asks P0 to measure is a compile-time switch, so a
+// Every lever module_chip.md asks P0 to measure is a compile-time switch, so a
 // measurement session is a sequence of builds rather than a runtime menu (the
 // value being measured is cycles per frame, and a runtime switch would put a
 // branch inside the thing under test):
@@ -34,7 +34,7 @@
 //   CHIP_RIG_FX          post-mix insert: 0 off, 1 delay, 2 reverb (§10, fx/)
 //   CHIP_RIG_SPEAKER     §10 speaker sim stage on/off, downstream of FX
 //
-// The four measurements chip.md §1 gates on, and how to take them:
+// The four measurements module_chip.md §1 gates on, and how to take them:
 //
 //   per-voice cost          diff CHIP_RIG_VOICES=24 against =0 (idle), /24
 //   filtered-voice cost     diff CHIP_RIG_FILTERED=12 against =0 at the same
@@ -45,13 +45,13 @@
 //                           CHIP_RIG_MOD=1
 //   waveform DAC            diff CHIP_RIG_WAVE_DAC=1 against =0
 //
-// The last one is not in chip.md, because chip.md does not mention the DACs at
+// The last one is not in module_chip.md, because module_chip.md does not mention the DACs at
 // all. F0 found them in the reference and kept them (§3's signal-path test),
 // and the 12-bit table is 8 KB of flash -- so its cost is a P1 decision that
 // wants a number rather than an opinion.
 
 #ifndef CHIP_RIG_VOICES
-#define CHIP_RIG_VOICES 20  // P0 decision, chip.md §9: 20v/4f over 22v/2f -- a
+#define CHIP_RIG_VOICES 20  // P0 decision, module_chip.md §9: 20v/4f over 22v/2f -- a
 #endif                      // bus (~80 c/f) is cheaper than a voice (~108 c/f),
 #ifndef CHIP_RIG_BUSES      // so 22v/2f's "bigger voice budget" nets *less*
 #define CHIP_RIG_BUSES 4    // headroom (89.0% measured) than 20v/4f (86.6%).
@@ -173,7 +173,7 @@ struct ChipRig {
                 // 2x: two oscillator steps per output sample, averaged. The
                 // envelope stays at 1x -- it is a control-rate quantity and
                 // doubling it would measure the wrong thing. This is the lever
-                // chip.md §9's watch item names: "if P0 says hard sync needs 2x
+                // module_chip.md §9's watch item names: "if P0 says hard sync needs 2x
                 // oversampling, the cost lands on the largest line."
                 voice[v].osc.advance();
                 if (sync_reset) voice[v].osc.sync();

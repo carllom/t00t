@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Generate the AY-P0 register-stream corpus into tools/ay_ref/streams/.
 
-Mirrors tools/sid_ref/make_streams.py's rationale exactly (chip.md, applied
+Mirrors tools/sid_ref/make_streams.py's rationale exactly (module_chip.md, applied
 to the second chip in this module): each stream isolates one primitive or
 interaction, so a scorecard row points at a specific piece of DSP. Output is
 generated, not hand-written, for the same reason -- tone period values are a
@@ -65,7 +65,7 @@ def noise_only():
 def envelope_shapes():
     """One channel, envelope-driven, stepping through all 10 distinct
     shapes -- isolates AyEnvelope. Tone held at a mid pitch so the envelope's
-    audible effect (the "buzzer bass", chip.md's own phrase) is what's under
+    audible effect (the "buzzer bass", module_chip.md's own phrase) is what's under
     test, not silence."""
     lines = [w(0, 0x07, 0xff & ~(T_A)), w(0, 0x08, 0x10)]  # e_on=1, volume irrelevant
     p = tone_period(note(-24))   # low buzzer-bass register

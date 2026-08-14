@@ -4,7 +4,7 @@
 #include "pico/multicore.h"
 #include <cstring>
 
-// Sample data must live in SRAM, never XIP (tracker.md "Memory Strategy"):
+// Sample data must live in SRAM, never XIP (module_tracker.md "Memory Strategy"):
 // 32 voices reading scattered, non-integer-stride addresses would thrash
 // the 8 KB XIP cache and evict Core 0's code with it. 380 KB matches
 // tools/xm2t00t/blob_writer.py's DEFAULT_SRAM_BUDGET_BYTES -- the host
@@ -26,7 +26,7 @@ static bool s_playing = false;
 // player_produce_tick() rather than read back from PlayerState afterwards
 // (its row/order_idx advance logic runs at the tail of that call, so reading
 // them post-call would show the next row one tick early at every row
-// boundary rather than one tick late throughout, matching tracker.md's "one
+// boundary rather than one tick late throughout, matching module_tracker.md's "one
 // tick ahead" framing instead of jumping the gun on the row itself).
 static TrackerUiState s_ui_state;
 
@@ -43,7 +43,7 @@ static void fill_ring() {
 
         // "Active" means audible, not "has a pitch": ct.inc only reflects
         // the last-triggered note's pitch and, once a channel has ever been
-        // triggered, essentially never returns to 0 on its own (tracker.md/
+        // triggered, essentially never returns to 0 on its own (module_tracker.md/
         // player.h: pcs.inc is pitch state, not a sounding flag) -- so an
         // inc-only test lit every channel that had ever played a note and
         // never went dark again. tgt_volL/tgt_volR (Q15, post-pan) is the

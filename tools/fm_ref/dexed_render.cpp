@@ -1,4 +1,4 @@
-// dexed_render -- ground-truth DX7 reference renderer for the FM module (fm2.md §3.1, F0-a).
+// dexed_render -- ground-truth DX7 reference renderer for the FM module (history_fm.md §3.1, F0-a).
 //
 // Drives Dexed's synthesis core (Source/msfa/, fetched by fetch_dexed.sh) as a
 // standalone command-line renderer: load a DX7 32-voice .syx bank, pick a
@@ -226,7 +226,7 @@ int main(int argc, char **argv) {
     // Dexed advances in fixed N=64-sample blocks (synth.h's LG_N); the note's
     // whole control plane -- every EG, the pitch EG, the LFO -- steps exactly
     // once per block. That block size is Dexed's, not t00t's (which uses
-    // FM_BLOCK=16), and is one of the deliberate deviations listed in fm2.md §3.2.
+    // FM_BLOCK=16), and is one of the deliberate deviations listed in history_fm.md §3.2.
     for (uint32_t done = 0; done < total_frames; done += N) {
         if (!released && done >= gate_frames) { note.keyup(); released = true; }
 

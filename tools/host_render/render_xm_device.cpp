@@ -11,7 +11,7 @@
 //                                              convert --raw-blob) and drive
 //                                              the real player.h + mixer.h
 //                                              tick-by-tick, exactly as
-//                                              tracker.md's render loop
+//                                              module_tracker.md's render loop
 //                                              pseudocode describes: produce
 //                                              one TickBlock, apply it to the
 //                                              voices, render exactly that
@@ -180,7 +180,7 @@ static bool test_note_trigger_and_retrigger() {
     bool ok = true;
 
     // Expected samples_per_tick at 125 BPM: 44100*2.5/125 = 882 -- also the
-    // exact figure tracker.md's own worked timing example uses.
+    // exact figure module_tracker.md's own worked timing example uses.
     if (st.samples_per_tick != 882) {
         printf("  FAIL: samples_per_tick=%u, want 882\n", st.samples_per_tick);
         ok = false;

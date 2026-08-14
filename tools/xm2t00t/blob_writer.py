@@ -10,7 +10,7 @@ Layout mirrors blob_format.py's field order. Two kinds of regions:
 - **Sample PCM** (`sample_data_offset` .. `sample_data_offset +
   sample_data_bytes`): appended as one uninterrupted run, nothing else
   interleaved into it, so the device can `memcpy` this single span into SRAM
-  at song load — the "straight copy" tracker.md and #14 both call for.
+  at song load — the "straight copy" module_tracker.md and #14 both call for.
 """
 
 from __future__ import annotations
@@ -103,7 +103,7 @@ def build_blob(song: XmSong, sram_budget_bytes: int = bf.DEFAULT_SRAM_BUDGET_BYT
         listing = ", ".join(f"'{s.name or '<unnamed>'}'={s.length}f" for s in biggest)
         raise ConversionError(
             f"sample data is {total_sample_bytes} bytes, exceeds the "
-            f"{sram_budget_bytes}-byte SRAM budget (tracker.md: realistically "
+            f"{sram_budget_bytes}-byte SRAM budget (module_tracker.md: realistically "
             f"350-400 KB after code/stacks/DMA/mixer scratch). "
             f"Largest samples: {listing}. Reduce sample count/length or raise "
             f"--budget-kb if you're confident it still fits."

@@ -2,32 +2,32 @@
 
 #include <cstdint>
 
-// Stripped 32-voice sample mixer (#15, tracker.md "Rendering Pipeline" /
+// Stripped 32-voice sample mixer (#15, module_tracker.md "Rendering Pipeline" /
 // "Voice mixer"). Pure integer math, no pico-sdk, no ARM intrinsics — this
 // header is included by both the on-device engine (audio_engine.cpp) and
 // tools/host_render/render_tracker_mixer.cpp, which renders it to WAV for
-// objective verification off-device (tracker.md "Testing": "against a host
+// objective verification off-device (module_tracker.md "Testing": "against a host
 // build of the same mixer"). Device-only concerns (profiling pin, DMA
 // buffer handoff, __not_in_flash_func placement) stay out of this file.
 //
 // No voice_alloc, no envelopes, no LFO, no per-sample dispatch: a tracker
-// voice is interpolate + scale + accumulate, nothing else (tracker.md
+// voice is interpolate + scale + accumulate, nothing else (module_tracker.md
 // "Performance Budget"). Pattern data, effects, and the ordered TickBlock
 // ring land with the real player (build order steps 3-5); the tick cut here
 // is a stub so sub-block-vs-tick-boundary slicing can be proven now.
 
 // Sub-block size: a unit of parameter constancy, not of output. See
-// tracker.md "Sub-block size" for the cost/resolution trade that fixed this
+// module_tracker.md "Sub-block size" for the cost/resolution trade that fixed this
 // at 64.
 static constexpr uint32_t TRACKER_SUBBLOCK = 64;
 
 // Position fixed-point format: Q18.14. Distinct from, and NOT compatible
 // with, the existing engines' Q22.10 wavetable phase format (osc/common.h)
 // -- that format is ~8.9 cents out of tune for sample playback at a typical
-// tracker increment. See tracker.md "Fixed-Point Formats".
+// tracker increment. See module_tracker.md "Fixed-Point Formats".
 static constexpr uint32_t TRACKER_POS_FRAC_BITS = 14;
 
-// Increment arrives as Q8.24 (tracker.md: "stored Q8.24 in the TickBlock").
+// Increment arrives as Q8.24 (module_tracker.md: "stored Q8.24 in the TickBlock").
 static constexpr uint32_t TRACKER_INC_FRAC_BITS = 24;
 
 // Matches blob_format.h's SampleHeader::loop_type convention exactly (raw
@@ -40,7 +40,7 @@ static constexpr uint8_t TRACKER_LOOP_PINGPONG = 2;
 // One resident (SRAM) 8-bit sample. `data` must carry one guard sample
 // appended past index [num_samples - 1] -- loop-start value if looped, last
 // sample value if one-shot -- so idx+1 is always safe to read with no bounds
-// check (tracker.md: "s[idx + 1] reads one past the end at the boundary").
+// check (module_tracker.md: "s[idx + 1] reads one past the end at the boundary").
 // This still holds for a ping-pong loop: the guard is only ever reached when
 // idx+1 == num_samples (loop_end == num_samples, the loop reaching the
 // sample's physical end), and forward playback approaching that boundary
@@ -65,7 +65,7 @@ struct TrackerVoice {
     uint32_t inc;                 // Q18.14 -- pre-shifted from Q8.24 once at latch time
     int32_t cur_volL, cur_volR;   // Q15, ramped per-sample toward target
     int32_t tgt_volL, tgt_volR;   // Q15
-    // #21 ping-pong (tracker.md open question 2, "direction flag with a
+    // #21 ping-pong (module_tracker.md open question 2, "direction flag with a
     // mirrored read" -- the option chosen over host-side loop unrolling: #16
     // already measured ~20 points of Core 1 headroom at 32 voices, while
     // memory is the module's other hard limit (350-400 KB sample budget), so
@@ -76,7 +76,7 @@ struct TrackerVoice {
 };
 
 // Pre-shifts a Q8.24 increment to Q18.14 once, at (re)trigger time, so the
-// per-sample path never touches it. "the shift is free" (tracker.md).
+// per-sample path never touches it. "the shift is free" (module_tracker.md).
 inline uint32_t tracker_latch_inc(uint32_t inc_q8_24) {
     return inc_q8_24 >> (TRACKER_INC_FRAC_BITS - TRACKER_POS_FRAC_BITS);
 }
@@ -106,7 +106,7 @@ inline uint32_t samples_to_loop_start(uint32_t pos, uint32_t start_pos, uint32_t
 
 // Resolves a ping-pong voice once its position has reached or passed
 // either boundary, reflecting -- possibly more than once, for a loop
-// region shorter than one increment (tracker.md's own "short loops just
+// region shorter than one increment (module_tracker.md's own "short loops just
 // produce more run iterations" case, pushed to its ping-pong extreme) --
 // until `pos` lands strictly inside (loop_start_pos, loop_end_pos), and
 // updates v->backward to match. A no-op if `pos` is already in range (the
@@ -169,7 +169,7 @@ inline void wrap_loop(TrackerVoice *v) {
 // Renders up to `n` frames (n <= TRACKER_SUBBLOCK) of one voice into the
 // stereo int32_t accumulator (interleaved L/R, added to whatever is already
 // there). Volume ramps linearly from current to target across the call;
-// increment is held constant -- both per tracker.md's ramping rules (a
+// increment is held constant -- both per module_tracker.md's ramping rules (a
 // stepped amplitude is a click, a stepped frequency is not). Caller is
 // responsible for cutting at sub-block and tick boundaries.
 inline void mix_voice(TrackerVoice *v, int32_t *acc, uint32_t n) {
@@ -276,10 +276,10 @@ inline void mix_voice(TrackerVoice *v, int32_t *acc, uint32_t n) {
     v->cur_volR = volR;
 }
 
-// Nearest-neighbour sibling of mix_voice() (#16, tracker.md open question 2):
+// Nearest-neighbour sibling of mix_voice() (#16, module_tracker.md open question 2):
 // same loop-wrap/end-of-sample structure, but the inner sample fetch skips
 // the interpolation lerp entirely. Exists to measure whether the saving is
-// worth a build flag -- see engine.md's tracker interpolation measurement.
+// worth a build flag -- see history_tracker.md's tracker interpolation measurement.
 inline void mix_voice_nearest(TrackerVoice *v, int32_t *acc, uint32_t n) {
     if (!v->active || n == 0) return;
 
@@ -357,7 +357,7 @@ struct TrackerTickState {
 };
 
 // Saturating int32 -> int16. Device builds get the literal ARM __ssat
-// instruction (tracker.md acceptance: "clipped with __ssat on store");
+// instruction (module_tracker.md acceptance: "clipped with __ssat on store");
 // __arm__ is unset when this header is compiled for tools/host_render, which
 // gets a plain branch clamp with identical saturation semantics.
 #if defined(__arm__)
@@ -381,7 +381,7 @@ inline int16_t tracker_clip16(int32_t x) {
 #define __not_in_flash_func(func) func
 #endif
 
-// Outer render loop (tracker.md "Render loop"): cuts each buffer into
+// Outer render loop (module_tracker.md "Render loop"): cuts each buffer into
 // sub-blocks no larger than TRACKER_SUBBLOCK, also cut short at whatever
 // `tick` boundary falls inside it. `out` is interleaved stereo int16_t,
 // `frames` long in samples-per-channel. `nearest` picks mix_voice_nearest()

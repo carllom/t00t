@@ -3,7 +3,7 @@
 
 Each stream isolates one primitive or one interaction, so a scorecard row
 points at a specific piece of DSP rather than at "the sound". That is the whole
-argument of fm2.md §3 applied to this module: when the composite output is
+argument of history_fm.md §3 applied to this module: when the composite output is
 wrong, a composite test cannot tell you which curve is wrong.
 
 The streams are generated rather than hand-written because the frequency
@@ -38,7 +38,7 @@ def freq_reg(hz):
     """SID frequency register for a pitch, at the PAL clock.
 
     Fout = Fn * Fclk / 2^24, so Fn = Fout * 2^24 / Fclk. The 16-bit
-    quantisation this rounds to is kept, not smoothed: chip.md §3 lists it as a
+    quantisation this rounds to is kept, not smoothed: module_chip.md §3 lists it as a
     signal-path limitation, and it is where vibrato steppiness comes from.
     """
     return min(0xffff, max(0, int(round(hz * 16777216.0 / CLOCK_PAL))))
@@ -120,7 +120,7 @@ def build():
         Every waveform selection in turn on one voice, 25 frames each.
 
         Includes the combined waveforms, which is the point: reSID uses tables
-        sampled from real chips and chip.md §13.5 defers t00t to a bitwise AND
+        sampled from real chips and module_chip.md §13.5 defers t00t to a bitwise AND
         until P6. This stream is where that deferral gets a number instead of
         an adjective.
         """, frames=25 * 8)
@@ -156,7 +156,7 @@ def build():
     s = Stream("pulse_sweep", """
         A pulse wave with its width swept once per frame, 5% to 95% and back.
 
-        The iconic SID phasing sound, and the reason chip.md §6's pulse table is
+        The iconic SID phasing sound, and the reason module_chip.md §6's pulse table is
         a per-frame (delta, duration) list rather than an LFO. Also the most
         sensitive test of the pulse comparator's boundary condition: an
         off-by-one in `top12 >= pw` shows up here as a hard click at the turn.
@@ -178,12 +178,12 @@ def build():
     s = Stream("sync_lead", """
         Voice 2 hard-synced to voice 1, with voice 1's pitch swept per frame.
 
-        The classic sync lead. chip.md §4.4 warns that the frame VM must be able
+        The classic sync lead. module_chip.md §4.4 warns that the frame VM must be able
         to target the modulator's frequency, "omit this and sync instruments
         sound static in a way easily misdiagnosed as a synthesis bug" -- so the
         source sweeps here and the synced voice does not.
 
-        Also the stream that catches chip.md §4.1's sync error: the doc says
+        Also the stream that catches module_chip.md §4.1's sync error: the doc says
         hard sync is accumulator overflow, the reference syncs on the MSB
         *rising*, and the two differ by half an accumulator cycle. Same rate,
         different phase, audibly different timbre.
@@ -248,7 +248,7 @@ def build():
         Cutoff parked mid-range, resonance stepped 0-15, then the mode bits
         swept LP, BP, HP, LP+HP (the notch a SID makes by summing two).
 
-        chip.md §5.1's first change is that FilterMode becomes a *mask* because
+        module_chip.md §5.1's first change is that FilterMode becomes a *mask* because
         the SID sums outputs simultaneously. The LP+HP section is what proves
         it: a selector implementation renders one of the two and scores as a
         gain error rather than as the wrong filter.
@@ -271,7 +271,7 @@ def build():
         A C major triad, all three voices routed into the shared filter, with
         the cutoff swept.
 
-        chip.md §3's summing-node intermodulation, and §5.2's reason for binding
+        module_chip.md §3's summing-node intermodulation, and §5.2's reason for binding
         a chord of one instrument to one bus: the three voices sum *before* the
         6581 nonlinearity, so this is the only stream in the corpus where
         sid_filter.h's saturation does anything audible. Against a linear
@@ -301,7 +301,7 @@ def build():
         attack transient on each cycle.
 
         This is the stream that tests the frame clock rather than any
-        primitive. chip.md §6 calls the 50 Hz steppiness "the whole character"
+        primitive. module_chip.md §6 calls the 50 Hz steppiness "the whole character"
         and §6.2 makes the frame rate a module-global constant because "a
         1-frame noise click at 50 Hz and at 200 Hz are different sounds". If
         the two renderers disagree about frame length by even a fraction of a

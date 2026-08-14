@@ -24,7 +24,7 @@ uint8_t audio_engine_load() { return s_load_pct; }
 static constexpr float   MOD_VIBRATO_HZ = 5.0f;
 static constexpr int16_t MOD_VIBRATO_MAX_Q15 = 960;  // ~±50 cents at full mod
 
-// Sub-block rendering (issue #12, tracker.md's "Rendering Pipeline"): the LFO
+// Sub-block rendering (issue #12, module_tracker.md's "Rendering Pipeline"): the LFO
 // value, envelope level, and SVF filter coefficient are each computed once
 // per SUBBLOCK-sized chunk and linearly ramped across it — a unit of
 // parameter constancy, not a unit of output. Oscillator phase advance,

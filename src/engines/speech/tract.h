@@ -4,7 +4,7 @@
 #include <cstdint>
 
 // Formant cascade + parallel fricative/nasal branches (#28 cascade, #29
-// parallel branches, speech.md "Cascade vs parallel"): F1->F2->F3->F4->F5
+// parallel branches, module_speech.md "Cascade vs parallel"): F1->F2->F3->F4->F5
 // two-pole resonators in series get relative formant amplitudes right
 // automatically from the bandwidths -- what makes vowels sound natural
 // without per-formant amplitude data. A single parallel resonator each for
@@ -22,7 +22,7 @@ inline constexpr uint32_t SPEECH_FORMANTS = 5;
 //   af - frication (LFSR noise) amplitude, feeds the fricative branch
 //   an - nasal branch mix weight
 // Voiced fricatives (/z/, /v/, /ʒ/) are av>0 and af>0 simultaneously
-// (speech.md "Mixed excitation").
+// (module_speech.md "Mixed excitation").
 struct FormantTarget {
     float F[SPEECH_FORMANTS];
     float B[SPEECH_FORMANTS];
@@ -31,7 +31,7 @@ struct FormantTarget {
     float av, af, an;
 };
 
-// Live formant_shift / bandwidth_scale ranges (speech.md "MIDI Mapping":
+// Live formant_shift / bandwidth_scale ranges (module_speech.md "MIDI Mapping":
 // both on a CC by default). Shared by the device MIDI controller
 // (midi_controller.cpp) and the host CC-sweep stability test
 // (render_speech.cpp) so both use identical ranges -- picking the range in
@@ -64,7 +64,7 @@ struct SpeechVoice {
     float    cur_amp = 0.0f;          // smoothed toward gate target, declicks on/off
     uint8_t  last_trigger = 0xFF;     // forces tract_retrigger() on first render
     uint8_t  last_phoneme = 0xFF;     // forces a target load on first render
-    // #36 vibrato/jitter/shimmer state (speech.md P4, excitation.h). Reset
+    // #36 vibrato/jitter/shimmer state (module_speech.md P4, excitation.h). Reset
     // on retrigger, not on a plain segment/phoneme target change -- these
     // track the *note*, the same lifetime as glottal_phase above, not the
     // phoneme currently sounding.
@@ -72,7 +72,7 @@ struct SpeechVoice {
     uint32_t glot_cycle_inc = 0;       // this glottal cycle's jittered phase increment
     float    glot_cycle_amp = 1.0f;    // this glottal cycle's shimmer amplitude multiplier
     uint16_t jitter_lfsr = 0xF00Du;    // separate seed from noise_lfsr -- must be nonzero
-    // #34 segment sequencer state (speech.md P3). Unused by speech_render_voice()
+    // #34 segment sequencer state (module_speech.md P3). Unused by speech_render_voice()
     // (#28's SPEECH_HOLD phoneme keyboard has no segments to sequence); only
     // speech_render_voice_seq() (render.h) touches these.
     uint16_t seg_index = 0;      // position within the current utterance (sequencer.h)
@@ -133,7 +133,7 @@ inline void tract_set_target(SpeechVoice &sv, const FormantTarget &t) {
 }
 
 // Segment-advance snap for PHONEME_FLAG_TRANSITION_FAST segments (plosive
-// bursts, #34/speech.md "Plosives"): sets F/B/fric/nasal/av/af/an straight to
+// bursts, #34/module_speech.md "Plosives"): sets F/B/fric/nasal/av/af/an straight to
 // target, no glide -- but unlike tract_retrigger(), does not touch filter
 // memory (res2p_reset) or glottal/noise phase, so the snap itself doesn't
 // click by discontinuing state the preceding closure segment was still
@@ -185,7 +185,7 @@ inline void tract_apply_coeffs(Res2p &r, float f_raw, float b_raw, float shift, 
 // Ramp every F/B/fric/nasal/av/af/an and formant_shift/bandwidth_scale one
 // sub-block toward its target, and recompute every resonator's coefficients
 // from the ramped values -- never from the target directly, and never by
-// interpolating a1/a2/b0 (speech.md "Resonator and the stability rule").
+// interpolating a1/a2/b0 (module_speech.md "Resonator and the stability rule").
 inline void tract_advance_subblock(SpeechVoice &sv, float fs) {
     sv.formant_shift += (sv.formant_shift_tgt - sv.formant_shift) * TRACT_RAMP_COEFF;
     sv.bandwidth_scale += (sv.bandwidth_scale_tgt - sv.bandwidth_scale) * TRACT_RAMP_COEFF;
