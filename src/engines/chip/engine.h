@@ -2,15 +2,16 @@
 
 #include <cstdint>
 
-// Chip module engine skeleton (sid.md §1 P1/P2, §14 item 2).
+// Chip module engine skeleton (sid.md §1 P1/P2/P3, §14 item 2).
 //
 // "engines/chip/, VoiceType dispatch, static MIDI-channel->voice map,
 // register-stream playback path" -- P0's rig (rig.h) proved the primitives
-// and the CPU budget; P1 was the first build that actually played. P2 adds
-// the filter buses (§5) that budget was sized for. No frame table VM yet
-// (P3, so no vibrato/arpeggio/hard-sync sweep) -- a note is
-// freq+pw+waveform+ADSR held static for its duration, same as P1 in every
-// other engine that has one.
+// and the CPU budget; P1 was the first build that actually played. P2 added
+// the filter buses (§5) that budget was sized for. P3 adds the frame table
+// VM (§6) -- an instrument now drives waveform/pw/ADSR/filter itself, so
+// VoiceParams carries an instrument index instead of raw synthesis params;
+// Core 0 only supplies note/gate/instrument-select, per §7.1's ParamExchange
+// note ("the VM lives on Core 1").
 //
 // sid.md §13.3, confirmed by P0 (§9, §14a.9): MAX_VOICES = 32 (allocation
 // pool / active-voice bitmap width -- a separate concern from the ~20-voice
@@ -41,15 +42,18 @@ static constexpr uint8_t BUS_NONE = 0xff;
 
 struct VoiceParams {
     VoiceType type;
-    uint16_t freq;      // SID frequency register, the control-plane unit (§4.1)
-    uint16_t pw;        // 12-bit pulse width
-    uint8_t  waveform;  // SidWave bits
-    uint8_t  ad;        // ADSR attack/decay nibbles
-    uint8_t  sr;        // ADSR sustain/release nibbles
-    uint8_t  trigger;   // generation counter, incremented on each note-on
-    uint8_t  velocity;  // 1-127 (§13.7)
+    uint16_t freq;        // SID frequency register, the control-plane unit (§4.1) --
+                           // base pitch (bend already applied by Core 0); the frame
+                           // VM layers wave-table arpeggio + vibrato on top of this
+                           // on Core 1, per note-on, not per sample
+    uint8_t  instrument;   // index into INSTRUMENTS[] (engines/chip/instruments.h) --
+                           // drives waveform/pw/ADSR/filter; §6, replaces P1's raw fields
+    uint8_t  trigger;      // generation counter, incremented on each note-on
+    uint8_t  velocity;     // 1-127 (§13.7)
     bool     gate;
-    uint8_t  filter_bus;   // index into VoiceParamBlock::bus[], or BUS_NONE (§5)
+    uint8_t  filter_bus;   // index into VoiceParamBlock::bus[], or BUS_NONE (§5) --
+                           // set by Core 0's bind_filter() at note-on, from the
+                           // selected instrument's uses_filter flag
 };
 
 // Default voice is zero-init -- VoiceType 0 is VT_SILENT, so this is the
