@@ -54,7 +54,27 @@ struct VoiceParams {
     uint8_t  filter_bus;   // index into VoiceParamBlock::bus[], or BUS_NONE (§5) --
                            // set by Core 0's bind_filter() at note-on, from the
                            // selected instrument's uses_filter flag
+    uint8_t  speaker_preset;   // sid.md §1 P5, §10: SpeakerPreset (speaker_sim.h).
+                           // A single global choice, not really per-voice, but
+                           // VoiceParams is the only Core0->Core1 channel and
+                           // this is one byte -- replicated identically to
+                           // every voice by midi_controller.cpp (CC17), Core 1
+                           // reads it once from voice 0 rather than widening
+                           // the shared VoiceParamBlockT (engine_base.h) for
+                           // every other engine to carry unused.
 };
+
+// sid.md §1 P5 open question 3 ("telemetry struct contents for the LCD"):
+// current table row + active instrument, same shape as speech's per-voice
+// phoneme display -- enough for the display to show what each voice is
+// actually doing without widening the reverse channel bitmap itself.
+struct ChipVoiceUiState {
+    bool    held;         // gate currently true (note held, not just ringing out)
+    uint8_t instrument;    // index into INSTRUMENTS[]
+    uint8_t wave_pos;      // current row in the instrument's wave table
+};
+void chip_voice_ui_state(uint32_t voice, ChipVoiceUiState *out);
+uint8_t chip_speaker_preset_ui();   // SpeakerPreset (speaker_sim.h), for display.cpp
 
 // Default voice is zero-init -- VoiceType 0 is VT_SILENT, so this is the
 // generic engine_base.h default already. No specialization needed (matches

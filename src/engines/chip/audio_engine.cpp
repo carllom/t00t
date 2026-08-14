@@ -26,6 +26,19 @@ uint8_t audio_engine_load() { return s_load_pct; }
 
 static constexpr uint32_t BUF_PERIOD_US = 1000000u * SAMPLES_PER_BUFFER / SAMPLE_RATE;
 
+// P5 display telemetry (engine.h), unconditional like s_load_pct above --
+// display.cpp calls this regardless of CHIP_PROFILE, so the getter must
+// link either way (same reasoning as speech's s_voice_ui/
+// speech_voice_ui_state, which are unconditional for the same reason). The
+// CHIP_PROFILE rig has no MIDI/display and never writes it, so it just
+// reads back zero-init silence, same as speech's profiling build leaving
+// its own array at its "none" default.
+static ChipVoiceUiState s_voice_ui[MAX_VOICES];
+
+void chip_voice_ui_state(uint32_t voice, ChipVoiceUiState *out) {
+    *out = (voice < MAX_VOICES) ? s_voice_ui[voice] : ChipVoiceUiState{false, 0, 0};
+}
+
 #if defined(T00T_CHIP_PROFILE) && T00T_CHIP_PROFILE
 
 // --- P0 measurement rig (sid.md §1 P0, §14 item 1) -------------------------
@@ -285,6 +298,7 @@ static int32_t fx_buf[SAMPLES_PER_BUFFER];
 static FxDelay  fx_delay;
 static FxReverb fx_reverb;
 static uint8_t  s_last_fx_type = 0xFF;
+static SidSpeakerStage speaker;   // sid.md §1 P5, §10
 
 // Fresh instrument: first-frame waveform immediately (before any tick),
 // filter cutoff seeded from the instrument's init value, everything else
@@ -399,6 +413,7 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
     acc_scale_g = sid_acc_scale_q8(SID_CLOCK_PAL, SAMPLE_RATE);
     rates = env_sid_make_rates(SID_CLOCK_PAL, SAMPLE_RATE);
     init_semitone_ratios();
+    res2p_init();   // sid.md §1 P5: speaker sim's peak stage (res2p.h's LUT, must run once before any res2p_set())
     for (uint32_t v = 0; v < MAX_VOICES; v++) {
         voice[v].init(SID_MODEL_6581);   // §13 item 6: 6581 first, 8580 is P6
         last_trigger[v] = 0;
@@ -409,6 +424,7 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
     }
     fx_delay.init();
     fx_reverb.init();
+    speaker.init((float)SAMPLE_RATE);
 
     while (true) {
         uint32_t buf_index = multicore_fifo_pop_blocking();
@@ -487,7 +503,11 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
             // right after a hard_restart: counter is reset to 0 there and
             // only ramps up as tick() runs through the attack, so counter
             // alone would skip a note's own opening samples.
-            if (p.gate || voice[v].env.counter > 0) render_mask |= (1u << v);
+            bool renders = p.gate || voice[v].env.counter > 0;
+            if (renders) render_mask |= (1u << v);
+
+            s_voice_ui[v] = renders ? ChipVoiceUiState{p.gate, ins_idx, vm[v].wave_pos}
+                                     : ChipVoiceUiState{false, 0, 0};
         }
 
         for (uint32_t i = 0; i < SAMPLES_PER_BUFFER; i++) dry[i] = 0;
@@ -568,14 +588,25 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
             else                        fx_reverb.process(fx_buf, SAMPLES_PER_BUFFER, vp.fx);
         }
 
+        // sid.md §1 P5, §10: speaker sim sits downstream of the FX insert
+        // (delay/reverb), upstream of the final safety clamp below -- its
+        // own soft clip is the cone-breakup character, not that clamp.
+        // Preset is a single global choice (not per-voice), but the only
+        // Core0->Core1 channel is VoiceParams -- replicated identically
+        // across every voice by midi_controller.cpp on CC17, read once here
+        // from voice 0 rather than adding a chip-only field to the shared
+        // VoiceParamBlockT (engine_base.h) for one scalar every other
+        // engine would carry unused.
+        speaker.apply_preset(vp.voices[0].speaker_preset);
+
         int16_t *out = i2s_buffer_ptr(buffers, buf_index);
         for (uint32_t i = 0; i < SAMPLES_PER_BUFFER; i++) {
             int32_t v = dry[i];
             if (has_fx) v += fx_buf[i];
             // Mono, duplicated -- sid.md §10: the module is authentically
-            // mono (no VoiceParams.pan); the speaker sim that would sit
-            // downstream of this is P5, not built yet.
-            int16_t s = (int16_t)__ssat(v >> SID_MIX_SHIFT, 16);
+            // mono (no VoiceParams.pan).
+            v = (int32_t)speaker.tick((float)(v >> SID_MIX_SHIFT));
+            int16_t s = (int16_t)__ssat(v, 16);
             *out++ = s;
             *out++ = s;
         }
