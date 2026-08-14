@@ -61,12 +61,10 @@ struct FmOp {
     int32_t *out;           // modulation bus, or the shared voice output bus
     int32_t  fb1, fb2;      // op_render_fb only: last two post-gain outputs (see op_render_fb's own comment)
     EnvDX    eg;            // this operator's own 4-stage envelope
-    // F3: `static_log2` and `rate_scale_qrate` are gone. Output level, key
-    // level scaling and velocity now compose into the envelope's own
-    // `outlevel` (env_dx.h's dx7_note_outlevel), and key rate scaling into its
-    // `rate_scaling`, exactly as Dexed's Dx7Note::init does -- rather than
-    // being carried alongside and added afterwards, which is what put every
-    // sustain stage ~60 dB low (history_fm.md §5.4).
+    // There is no separate `static_log2`/`rate_scale_qrate` field: output
+    // level, key level scaling and velocity compose into the envelope's own
+    // `outlevel` (env_dx.h's dx7_note_outlevel), and key rate scaling into
+    // its `rate_scaling`, exactly as Dexed's Dx7Note::init does.
 };
 
 // Read-only all-zero bus, shared by every operator nothing modulates.
@@ -137,49 +135,23 @@ inline void op_render_first(FmOp &op, uint32_t n) {
 }
 
 // Self-feedback: the modulation input is this operator's own last two
-// outputs, averaged and attenuated by `fb_shift` (patch.h's FmRouting,
-// resolved at note-on from FmOpParams::feedback_level, DX7 units 0-7),
-// instead of an external bus (DX7-style). Always accumulates (+=) --
-// patch.h's routing compiler guarantees this is safe by either scheduling a
-// non-feedback first-writer ahead of it on a shared bus, or (clear_bus_mask)
-// pre-zeroing a bus whose only writer is this op.
+// post-gain outputs, averaged and attenuated by `fb_shift + 1` (`fb_shift`
+// from patch.h's FmRouting, resolved at note-on from FmOpParams::
+// feedback_level, real DX7 units 0-7 -- a 64x depth range across levels
+// 1-7, not an on/off switch), instead of an external bus (DX7-style).
+// Matches Dexed's own `compute_fb` (`scaled_fb = (y0+y) >> (fb_shift+1)`,
+// Source/msfa/fm_op_kernel.cc) exactly, including the `+1`: a bare
+// `>> fb_shift` is exactly 2x too much feedback at every level, and because
+// feedback is what a DX7 patch's "edge" is voiced around, that error reads
+// as a general excess of brightness rather than a feedback bug. Storing
+// `fb1`/`fb2` *after* the gain multiply (not the raw table lookup) is what
+// makes feedback intensity track the operator's own envelope -- why it
+// "breathes" with the note on real hardware, same as Dexed's own `fb_buf`.
 //
-// Two real bugs fixed here, found by comparing against Dexed's actual
-// `compute_fb`/`fb_buf` (Source/msfa/fm_op_kernel.cc, Apache-2.0) after #57's
-// shift fixes still left real ROM1A patches "soft" on hardware:
-//
-// 1. `fb_shift` used to not exist at all -- self-feedback was no-op-or-full
-//    (a bool), always at the single fixed depth this kernel happened to
-//    produce. Real DX7 hardware (dx7note.cc: `fb_shift_ = feedback ? 8 -
-//    feedback : 16`; fm_op_kernel.cc: `scaled_fb = (y0+y) >> (fb_shift+1)`)
-//    spans a 64x (2^6) depth range across levels 1-7 -- collapsing that to
-//    "on" threw away exactly the parameter DX7 patches use for their edge
-//    (brass bite, EP pluck, etc). `fb_shift` (patch.h's FmRouting::fb_shift,
-//    `8 - feedback_level`) restores the real per-level spacing, anchored so
-//    level 7 (max) reproduces this kernel's old, already-safe "always full"
-//    >>1 behavior exactly -- see patch.h's FmRouting::fb_shift comment.
-// 2. `fb1`/`fb2` used to store the *raw* table lookup (`sample`, before
-//    `fm_mul_gain`) -- constant magnitude regardless of the operator's own
-//    envelope, so a decaying/releasing operator's feedback "buzz" never
-//    faded with it. Dexed's own `fb_buf` stores `y` *after* the gain
-//    multiply (fm_op_kernel.cc's `compute_fb`: `y = (y*gain)>>24; ...
-//    fb_buf[1] = y`) -- feedback intensity tracks the envelope on real
-//    hardware, which is why it "breathes" with the note.
-//
-// F2 note: the old "pre-out_shift" caveat is gone with the shift itself --
-// there is one output scale now, so `scaled` and `out[i]` are the same
-// number and feedback strength cannot depend on whether this operator
-// happens to be a carrier in the current algorithm.
-//
-// F4: the shift is `fb_shift + 1`, matching Dexed's compute_fb
-// (`scaled_fb = (y0 + y) >> (fb_shift + 1)`). It used to be `>> fb_shift`,
-// which -- now that F2 put both engines on the same cycle-relative scale --
-// is provably exactly 2x too much feedback at every level: at level 7 this
-// kernel produced two full cycles of self-modulation where real hardware
-// produces one, and the same factor of two holds all the way down to level 1.
-// Feedback is what a DX7 patch's "edge" is voiced around, so being an octave
-// deep on it reads as a general excess of brightness rather than as a
-// feedback problem, which is why ears never located it (history_fm.md §1.1(c)).
+// Always accumulates (+=) -- patch.h's routing compiler guarantees this is
+// safe by either scheduling a non-feedback first-writer ahead of it on a
+// shared bus, or (clear_bus_mask) pre-zeroing a bus whose only writer is
+// this op.
 inline void op_render_fb(FmOp &op, uint32_t n, int32_t fb_shift) {
     uint32_t phase = op.phase;
     uint32_t inc = op.inc;
@@ -429,16 +401,14 @@ inline float fm_voice_step_pitch_and_mod(FmOp ops[FM_NUM_OPS], const FmPatch &pa
 // fixed gain, a hand-set ramp, or an EG, and it wouldn't know the
 // difference (module_fm.md §4.1's routing claim, restated for the EG).
 //
-// #49 took `amp_atten` (0..1) and multiplied it into the already-computed
-// LINEAR gain, reasoning that "a multiplicative tremolo on top of the EG's
-// own linear gain is the natural place for it (no interaction with EnvDX's
-// own state at all)". F6 (history_fm.md §5.14) moved it: Dexed subtracts amp mod
-// from the operator's LOG-domain level, BEFORE the exp lookup that turns it
-// into a gain. That is not the same curve rescaled -- a fixed linear factor
-// is a fixed dB attenuation, whereas Dexed's is proportional to the current
-// level, so the two disagree by more the further the envelope has decayed.
-// See dx7_am_level_factor() (lfo.h) for the curve and for why it is ported
-// despite the reference calling it "TODO: mehhh".
+// `amp_atten` (0..1, from lfo.h) is subtracted from each operator's
+// LOG-domain level, BEFORE the exp lookup that turns it into a gain --
+// matching Dexed, which subtracts amp mod at the same point rather than
+// multiplying it into the already-computed linear gain. That distinction
+// matters: a fixed linear factor is a fixed dB attenuation, whereas the
+// log-domain subtraction is proportional to the current level, so the two
+// curves disagree more the further the envelope has decayed. See
+// dx7_am_level_factor() (lfo.h) for the curve.
 //
 // The guard is `am_sensitivity != 0` alone, matching Dexed, NOT
 // `amp_mod > 0`: the curve is deliberately non-zero at zero mod (~1 dB), so

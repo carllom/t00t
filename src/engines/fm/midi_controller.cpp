@@ -121,7 +121,7 @@ void midi_controller_init() {
         channel_pan[ch] = 0;
         channel_patch[ch] = &FM_TEST_PATCH;
         channel_program[ch] = 0;
-        channel_mod_wheel[ch] = 0;  // #49: wheel at 0 = no LFO effect, matching real-world "push the wheel to add vibrato" patch convention (lfo.h's own header comment)
+        channel_mod_wheel[ch] = 0;  // resting position -- a patch's own configured LFO depth still plays at 0 (lfo.h's max() rule); the wheel only adds on top of it
     }
     ui_state.last_note = 0xFF;
     ui_state.last_velocity = 0;
@@ -177,7 +177,7 @@ void midi_controller_process(const uint8_t *data, uint32_t len, ParamExchange *p
             }
             case MIDI_CC: {
                 switch (ev.data1) {
-                    case 1:  // mod wheel (#49) — scales the patch's own LFO PMD/AMD depth, live
+                    case 1:  // mod wheel — a separate source competing with the patch's own LFO PMD/AMD depth (lfo.h's max() rule), live
                         channel_mod_wheel[ev.channel] = (int16_t)(ev.data2 * 258);
                         apply_channel_mod_wheel(shadow, ev.channel);
                         ui_state.mod = ev.data2;

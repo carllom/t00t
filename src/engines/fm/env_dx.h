@@ -6,35 +6,9 @@
 #include <cmath>
 #include <cstdint>
 
-// EnvDX -- the DX7 envelope, rewritten by F3 (history_fm.md §2/§5.7) as a direct
-// port of Dexed's `Env` (Source/msfa/env.cc, Apache-2.0) rather than a
-// re-derivation of its shape.
-//
-// The previous version was an honest reconstruction: 4 (rate, level) pairs
-// stepped linearly in a log domain, with the operator's output level added
-// separately as a static offset. F1's conformance harness measured what that
-// cost, and the numbers are why this file was replaced rather than adjusted
-// (history_fm.md §5.4):
-//
-//   * an "instant" attack (rate 99) took 16.3 ms to reach -1 dB, against
-//     Dexed's 0.0 ms -- because a linear ramp in the log domain has to
-//     traverse the entire 40-octave floor before it becomes audible. Real DX7
-//     rising stages do not traverse it: they JUMP to a fixed floor
-//     (`jumptarget`, 1716) and then approach the target exponentially. That
-//     jump *is* the DX7's instant attack, and no rate table can substitute
-//     for it.
-//   * rising and falling stages are different curve families on real
-//     hardware -- exponential approach up, linear down. The old file used one
-//     symmetric ramp for both.
-//   * output level (TL) belongs INSIDE the envelope's own target
-//     computation, not added to it afterwards. Dexed folds it in with a bias
-//     and a floor clamp (`advance()` below); adding it separately put every
-//     sustain stage in the wrong place, measured at ~60 dB low on E.PIANO 1.
-//   * the slowest rates were capped at ~6 s by a `step < 1` clamp that this
-//     formulation does not need at all.
-//
-// Everything below therefore follows Dexed's arithmetic exactly, in Dexed's
-// own units, with exactly two documented deviations:
+// EnvDX -- the DX7 envelope: a direct port of Dexed's `Env`
+// (Source/msfa/env.cc, Apache-2.0), in Dexed's own log2-octave domain and
+// units, with exactly two documented deviations:
 //
 //   1. Control-block size. Dexed advances its envelope once per N=64 samples;
 //      this engine advances once per FM_BLOCK (16 by default, op.h). `inc_`
@@ -44,12 +18,20 @@
 //   2. Output gain scale. Dexed's `Exp2::lookup(level_ - (14 << 24))` yields a
 //      Q24 gain peaking at 2.0; this yields a linear gain peaking at op.h's
 //      FM_GAIN_MAX. Same curve, anchored to this engine's own fixed-point
-//      contract (F2). See eg_to_gain().
+//      contract (fm_scale.h). See eg_to_gain().
+//
+// Rising and falling stages are different curve families, matching real DX7
+// hardware: a rising stage jumps to a fixed floor (`jumptarget`) and then
+// approaches its target exponentially (a rate-99 attack reaches full scale
+// on the very first control block); a falling stage ramps linearly in the
+// same log domain. Output level (TL) composes into each stage's own target
+// (`env_dx_advance()`'s bias + floor clamp) rather than being carried
+// separately and added afterwards. See history_fm.md §5.7 for the design
+// history and what this replaced.
 
 // ---------------------------------------------------------------------------
-// DX7 parameter tables. All four of these were verified byte-identical to
-// Dexed's by F1's conformance suite (history_fm.md §5.4) and are unchanged by F3 --
-// they were the parts of the old file that were already right.
+// DX7 parameter tables. Verified byte-identical to Dexed's own by a
+// committed control-plane conformance suite (tools/fm_ctl_diff.py).
 // ---------------------------------------------------------------------------
 
 // Dexed's `Env::scaleoutlevel()`. Levels 0-19 are a measured, non-formulaic
@@ -96,15 +78,9 @@ inline int32_t dx7_scale_level(int midinote, int break_pt, int left_depth, int r
     return dx7_scale_curve(-(offset - 1) / 3, left_depth, left_curve);
 }
 
-// Dexed's `ScaleVelocity()` (dx7note.cc), ported by F3. Returns a delta in
-// the same "microstep" units as `outlevel` (1/32 of a scaleoutlevel unit,
-// i.e. 1/256 octave), to be added AFTER outlevel is shifted left by 5.
-//
-// Replaces the old `eg_vel_sensitivity_log2()`, a hand-rolled model that was
-// linear in velocity with a 4-octave span. F1 measured that at roughly a
-// third of the real curve's depth -- at sensitivity 7 and velocity 0, Dexed
-// attenuates by 3344 microsteps (-78.6 dB) where the old model gave 1024
-// (-24.0 dB) -- and 894 of 1024 (velocity, sensitivity) pairs differed.
+// Dexed's `ScaleVelocity()` (dx7note.cc). Returns a delta in the same
+// "microstep" units as `outlevel` (1/32 of a scaleoutlevel unit, i.e. 1/256
+// octave), to be added AFTER outlevel is shifted left by 5.
 inline int32_t dx7_scale_velocity(int velocity, int sensitivity) {
     static constexpr uint8_t velocity_data[64] = {
         0, 70, 86, 97, 106, 114, 121, 126, 132, 138, 142, 148, 152, 156, 160, 163,
@@ -217,12 +193,11 @@ inline void env_dx_advance(EnvDX &eg, int newix) {
 
     int newlevel = eg.levels[eg.ix];
 
-    // The level composition F1 found missing (history_fm.md §5.4). Output level is
-    // folded into the stage target here, with a bias of 4256 and a floor of
-    // 16 -- NOT added separately afterwards. The floor is what stops a
-    // "silent" stage from being infinitely quiet: 16 microsteps is about
-    // -90 dB below full scale, which is where Dexed's own envelopes bottom
-    // out and what F1 measures as its resting level.
+    // Output level is folded into the stage target here, with a bias of 4256
+    // and a floor of 16 -- NOT added separately afterwards. The floor is what
+    // stops a "silent" stage from being infinitely quiet: 16 microsteps is
+    // about -90 dB below full scale, which is where Dexed's own envelopes
+    // bottom out.
     int actuallevel = dx7_scaleoutlevel(newlevel) >> 1;
     actuallevel = (actuallevel << 6) + eg.outlevel - 4256;
     if (actuallevel < 16) actuallevel = 16;
@@ -311,11 +286,9 @@ inline void env_dx_release(EnvDX &eg) {
 // Returns the level at the END of the block -- the same point Dexed's own
 // return value represents, which fm_core.cc consumes as that block's `gain2`.
 //
-// The two branches are the heart of F3. Rising is an exponential approach
-// toward a fixed ceiling (17 octaves) with a hard jump to `jumptarget` first;
-// falling is a plain linear ramp in the same log domain. They are different
-// curve families, and the old file's single symmetric ramp is what made
-// "instant" attacks take 16 ms.
+// Rising is an exponential approach toward a fixed ceiling (17 octaves) with
+// a hard jump to `jumptarget` first; falling is a plain linear ramp in the
+// same log domain. They are different curve families on real DX7 hardware.
 inline int32_t env_dx_step_block(EnvDX &eg, uint32_t n) {
     if (eg.staticcount) {
         eg.staticcount -= (int32_t)n;

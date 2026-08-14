@@ -240,7 +240,7 @@ static bool run_patch_spectrum_check() {
     render_patch_note(patch, NOTE_LOW, routing, bus, low, peak_low);
     render_patch_note(patch, NOTE_HIGH, routing, bus, high, peak_high);
 
-    // WAV of the low note, for Carl's by-ear check against Dexed on an
+    // WAV of the low note, for the author's by-ear check against Dexed on an
     // equivalent patch (module_fm.md §11 step 3).
     std::vector<int16_t> wav(low.size() * 2);
     for (size_t i = 0; i < low.size(); i++) {
