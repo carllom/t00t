@@ -45,7 +45,7 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
         // against each other at the exact same fundamental -- cost is
         // identical either way (fixed increments), this only matters for
         // the host WAV sounding like something other than a single dense
-        // drone when Carl listens to the sanity render.
+        // drone when the author listens to the sanity render.
         float base_hz = 55.0f * (float)(1u << (v / 4));
         fm_rig_init_voice(s_voices[v], base_hz, (float)SAMPLE_RATE);
     }

@@ -37,15 +37,11 @@ static constexpr uint8_t FM_BUS_ZERO   = FM_NUM_OPS + 1;  // 7
 // note-on/block-rate-resolved pieces that produce the actual, time-varying
 // `gain` op_render sees.
 //
-// F2 removed this struct's `level` field (history_fm.md §2). It was a per-operator
-// "reference gain" that syx2patch.py filled in with one of two hand-tuned
-// constants depending on whether the operator happened to be a carrier, and
-// it is exactly the thing that gave every patch its own private idea of what
-// full scale meant. There is now one engine-wide ceiling (op.h's
-// FM_GAIN_MAX) and everything below it is DX7 parameters -- output level, EG
-// level, key scaling, velocity -- attenuating in the log domain, same as
-// real hardware. Nothing outside op.h is allowed an opinion about absolute
-// level any more, and that is the point.
+// This struct has no per-operator "reference gain" field. There is one
+// engine-wide ceiling (op.h's FM_GAIN_MAX, fm_scale.h) and everything below
+// it is DX7 parameters -- output level, EG level, key scaling, velocity --
+// attenuating in the log domain, same as real hardware. Nothing outside
+// op.h/fm_scale.h is allowed an opinion about absolute level.
 struct FmOpParams {
     float   ratio;         // coarse.fine frequency ratio against the note (ignored if fixed_freq)
     float   fixed_hz;      // absolute frequency in Hz, used only when fixed_freq is true
@@ -57,15 +53,12 @@ struct FmOpParams {
     // fm_op_base_inc() applies both rules at note-on.
     int8_t  detune_offset;
     uint8_t mod_target;    // 0..FM_NUM_OPS-1 (another operator), or FM_TARGET_OUT (carrier)
-    // F7 (history_fm.md §5.20): the operators BESIDES mod_target that this operator
-    // also modulates, as a bitmask of operator indices. 0 for all but 7 of the
-    // 32 DX7 algorithms.
-    //
-    // `mod_target` alone cannot express DX7 algorithms 19-25, where one
-    // modulator drives two or three carriers at once: Dexed's OP6 writes a
-    // scratch bus and OP5, OP4 and OP3 each read it, without the bus being
-    // cleared in between. Deriving a single target from that dropped every
-    // path but the first -- silently, on 25 of the 256 factory ROM voices.
+    // The operators BESIDES mod_target that this operator also modulates, as
+    // a bitmask of operator indices. 0 for all but 7 of the 32 DX7
+    // algorithms -- `mod_target` alone cannot express algorithms 19-25,
+    // where one modulator drives two or three carriers at once (Dexed's OP6
+    // writes a scratch bus and OP5, OP4 and OP3 each read it, without the bus
+    // being cleared in between).
     //
     // Fan-out is kept as a mask on the SOURCE, rather than switching the bus
     // convention from receiver-indexed to source-indexed, because fan-IN
@@ -74,18 +67,15 @@ struct FmOpParams {
     // the additive second writer relies on `bus id == receiving operator`.
     // The two shapes never collide: across all 32 algorithms, no operator that
     // is the target of a fan-out ever has a second modulator (checked
-    // exhaustively by tools/fm_ctl_diff.py's `table/routing` case, which
-    // reconstructs Dexed's real bus semantics rather than comparing the raw
-    // flag bytes the way F1's `table/algorithms` does). So an extra target's
-    // `in_bus` can point straight at its single source's bus with no ambiguity.
+    // exhaustively by `tools/fm_ctl_diff.py`'s `table/routing` case, which
+    // reconstructs Dexed's real bus semantics). So an extra target's `in_bus`
+    // can point straight at its single source's bus with no ambiguity.
     uint8_t extra_target_mask;
-    // Self-modulation depth, DX7 units (0-7; 0 = off). Was a bool (module_fm.md
-    // §5.2's original "no-op-or-full" self-feedback) until real Dexed source
-    // (dx7note.cc's `fb_shift_ = feedback ? 8-feedback : 16`, fm_op_kernel.cc's
-    // `compute_fb`) showed real hardware spans a 64x (2^6) depth range across
-    // levels 1-7, not a switch -- collapsing it lost exactly the "bite" DX7
-    // feedback patches (brass, EP, plucked) are voiced around. See op.h's
-    // op_render_fb for how this resolves into FmRouting::fb_shift at note-on.
+    // Self-modulation depth, DX7 units (0-7; 0 = off) -- real hardware spans
+    // a 64x (2^6) depth range across levels 1-7, not a simple on/off switch
+    // (dx7note.cc's `fb_shift_ = feedback ? 8-feedback : 16`,
+    // fm_op_kernel.cc's `compute_fb`). See op.h's op_render_fb for how this
+    // resolves into FmRouting::fb_shift at note-on.
     uint8_t feedback_level;
     uint8_t output_level;    // DX7 TL, 0-99 -- folded into the EG's own stage targets (env_dx.h)
     uint8_t vel_sensitivity; // 0-7, env_dx.h's dx7_scale_velocity()
@@ -177,18 +167,16 @@ struct FmRouting {
     uint8_t in_bus[FM_NUM_OPS];
     uint8_t out_bus[FM_NUM_OPS];
     uint8_t clear_bus_mask;
-    // Total right-shift op_render_fb applies to (fb1+fb2) before feeding it
-    // back into phase -- resolved once here from FmOpParams::feedback_level,
-    // same "nothing in the render loop reasons about patch data" convention
-    // as everything else in this struct. Only meaningful where kernel[i] ==
-    // FM_KERNEL_FEEDBACK. `8 - feedback_level` anchors level 7 (max) to
-    // >>1 -- exactly this engine's old, already-hardware-tuned "always full"
-    // behavior (FM_TEST_PATCH's op3 was safe against eg_to_gain()
-    // underflow at that depth, #57) -- and steps one octave per level below
-    // that, matching Dexed's own per-level spacing (dx7note.cc's
-    // `fb_shift_ = 8 - feedback`) even though the absolute magnitude scale
-    // differs (this engine's `level`/gain convention was never unit-matched
-    // to Dexed's Q24 one).
+    // `op_render_fb` (op.h) applies the TOTAL right-shift `fb_shift + 1` to
+    // (fb1+fb2) before feeding it back into phase -- the `+1` matches
+    // Dexed's own `compute_fb` (`scaled_fb = (y0 + y) >> (fb_shift + 1)`)
+    // exactly; a bare `>> fb_shift` here would be 2x too much feedback at
+    // every level. Resolved once here from FmOpParams::feedback_level as
+    // `8 - feedback_level`, matching Dexed's own per-level spacing
+    // (dx7note.cc's `fb_shift_ = 8 - feedback`) -- level 7 (max) gives
+    // `fb_shift = 1`, so a total shift of `>>2`; each level below steps the
+    // total shift up by one octave. Only meaningful where kernel[i] ==
+    // FM_KERNEL_FEEDBACK.
     uint8_t fb_shift[FM_NUM_OPS];
     bool    valid;
 };
@@ -260,7 +248,7 @@ inline bool fm_resolve_routing(const FmPatch &patch, FmRouting &r) {
     for (uint8_t i = 0; i < FM_NUM_OPS; i++) {
         r.in_bus[i] = has_writer[i] ? i : FM_BUS_ZERO;
     }
-    // F7: an extra fan-out target reads its SOURCE's bus rather than its own,
+    // An extra fan-out target reads its SOURCE's bus rather than its own,
     // since nothing writes a bus named after it. Safe precisely because such a
     // target has no second modulator (see FmOpParams::extra_target_mask), so
     // this can never overwrite a fan-in arrangement.
@@ -332,23 +320,15 @@ inline bool fm_resolve_routing(const FmPatch &patch, FmRouting &r) {
 // integer (or 0.5), so the spectrum is a predictable harmonic/sideband set,
 // not an inharmonic bell.
 //
-// Levels (rewritten by F2): this patch used to carry a hand-tuned `level`
-// per operator -- 100000000, 83000000, 350000000, 1<<21 -- alongside a
-// uniform output_level of 99, so all six operators claimed "full output"
-// while six magic numbers actually decided how loud each one was. Those
-// numbers were re-tuned by ear at least twice (#57's two parts), and the
-// last round of tuning was itself chasing a scaling bug rather than a sound.
+// Levels: loudness is `output_level` alone, in real DX7 units, against
+// op.h's single engine-wide ceiling -- a modulator at output_level 99 with
+// its EG open produces two full cycles of phase deviation on its target,
+// exactly as a max-level DX7 operator does. The values below are ordinary
+// DX7 voicing -- carrier at 99, modulators in the 75-88 range real patches
+// use -- reasoned about and changed the same way a real DX7 patch sheet
+// would be, with no engine-side scaling to account for.
 //
-// There is no `level` field any more. Loudness is `output_level` alone, in
-// real DX7 units, against op.h's single engine-wide ceiling: a modulator at
-// output_level 99 with its EG open produces two full cycles of phase
-// deviation on its target, exactly as a max-level DX7 operator does. So the
-// values below are now ordinary DX7 voicing -- carrier at 99, modulators in
-// the 75-88 range real patches use -- and they can be reasoned about,
-// compared against a DX7 patch sheet, and changed without touching the
-// engine.
-//
-// EG shapes (#45): every operator gets a distinct 4-stage envelope so all
+// EG shapes: every operator gets a distinct 4-stage envelope so all
 // six are audibly independent (an explicit acceptance criterion), and every
 // L4 is 0 so every operator -- carrier or modulator -- actually reaches
 // true silence on release (env_dx.h's EG_IDLE), not just fades toward it.

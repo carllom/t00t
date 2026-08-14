@@ -1065,7 +1065,7 @@ set from a cycle count alone.
 reported at 16 voices with no FX; §5.22 flagged two candidate mechanisms
 (Core 1 deadline overrun vs. mix-stage summing headroom) since 87.9% dry duty
 was close enough to saturated that a deadline miss was live, not a stretch.
-Carl's own follow-up settles it: on a sustained chord with LFO running, the
+The author's own follow-up settles it: on a sustained chord with LFO running, the
 distortion's intensity tracks *volume*, which a deadline overrun would not do
 (that would read as clicks/dropouts tied to retrigger timing, not a level-
 dependent grit) — mix-stage headroom, not CPU. `MAX_VOICES` stays at 16;
@@ -1813,7 +1813,7 @@ non-silent. `make ENGINE=fm` builds clean both with and without
 
 ### FM P3v2 — Key/Rate Scaling, Detune, Fixed Frequency (#48)
 
-Picked up immediately after #59's rate-curve fix, per Carl's own call on
+Picked up immediately after #59's rate-curve fix, per the author's own call on
 whether to keep chasing Dexed-comparison fidelity work or move on to
 completing the remaining signal-path features first and compare again
 after: "I think it is best to continue implementing the remaining signal
@@ -1903,7 +1903,7 @@ without `patches.h`.
 
 Filed immediately after #47's hardware listen: real ROM1A patches sounded
 like near-plain sine tones on real `breadboard_rp2350` hardware, differing
-only in envelope/octave, never in timbre — "whistling," Carl's word. Traced
+only in envelope/octave, never in timbre — "whistling," the author's word. Traced
 with a direct Goertzel measurement on the converted "BRASS 1" patch (not
 guessed): its two FM-modulated operators produced real but tiny sidebands
 (~0.2–1% of their own fundamental), while the algorithm's two *unmodulated*
@@ -1946,7 +1946,7 @@ instead of `1e9`) divide by fan-in count. New unit test:
 `tools/test_syx2patch.py`'s `test_multi_modulator_level_scaled_down`
 (algorithm 12's 3-way fan-in).
 
-**Carl re-flashed and reported back: profiling roughly unchanged (good —
+**The author re-flashed and reported back: profiling roughly unchanged (good —
 the register-operand shift is cost-neutral, as expected), but still "soft,"
 nothing like real brass bite.** That prompted a direct question — how does
 Dexed actually implement this, what are we missing — answered by fetching
@@ -1997,7 +1997,7 @@ reference. Worth remembering: a "broadband noise" symptom from a spectral
 check is only real if the probe frequency is verified off *every* harmonic
 grid a patch's own ratios can produce, not just the played note's own.
 
-**Still needs Carl:** re-flash and re-listen (again) — this second fix
+**Still needs the author:** re-flash and re-listen (again) — this second fix
 changes the timbre further, and should be the one that actually delivers
 real brass/bell bite; a fresh profiling read wouldn't hurt either, though
 this change is a compile-time constant shift with no new per-sample cost
@@ -2012,7 +2012,7 @@ code to get ground truth, rather than adjust the fit by ear.
 
 #### #58 — level curve
 
-Carl's report after #57's depth fix: "more character now... but still
+The author's report after #57's depth fix: "more character now... but still
 sounds incorrect, almost overdriven sometimes." A direct question — "how
 does Dexed implement the operator math, what are we missing" — led to
 porting Dexed's real `Env`/`Exp2` pipeline (Source/msfa/env.cc/exp2.cc,
@@ -2057,7 +2057,7 @@ patches with multiple harmonically-related carriers.
 
 #### #59 — rate curve
 
-Carl's next report: "envelopes feel a bit sluggish, particularly in
+The author's next report: "envelopes feel a bit sluggish, particularly in
 program 3 and 4 (STRINGS 1/2)... a noticeable 'delay' from note on until
 something audible comes out. The duty cycle shows activity immediately, but
 the attack feels delayed." Same method: ported and ran Dexed's real
@@ -2098,7 +2098,7 @@ Release now reaches `EG_IDLE` in ~163ms instead of ~871ms. All host tests
 pass; disassembly unaffected (48 `smlawb`, table-generation-only changes,
 same as #58).
 
-**Still needs Carl:** re-flash and re-listen once more — #58 should have
+**Still needs the author:** re-flash and re-listen once more — #58 should have
 tamed the overdrive, #59 should have fixed the sluggish/delayed attacks,
 together getting closer to real DX7 timing and character on top of #57's
 depth fix.
@@ -2316,7 +2316,7 @@ this feature's own acceptance criteria opens with; everything here is
 note-on or control-block work. `make ENGINE=fm` builds clean with and
 without `patches.h`.
 
-**Still needs Carl:** hardware listen. Test first with the mod wheel
+**Still needs the author:** hardware listen. Test first with the mod wheel
 actually moved (a patch with vibrato/tremolo configured will sound
 completely flat at wheel=0, by design — see this section's own note on the
 mod-wheel convention chosen). Listen for: a real pitch "blip"/"scoop" on

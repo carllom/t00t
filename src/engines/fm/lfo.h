@@ -6,34 +6,26 @@
 #include <cmath>
 #include <cstdint>
 
-// FmLfo -- the DX7 voice LFO (#49, module_fm.md §5.5): rate/delay/waveform/PMD/AMD/
-// key-sync, evaluated once per control block (same cadence as env_dx.h's
-// EnvDX and this engine's own pitch_eg.h). Per-sample cost: zero -- nothing
-// here ever touches op_render/op_render_first/op_render_fb (op.h) or the
-// kernel's `gain`/`gain_step` fields directly; op.h's
-// fm_voice_step_pitch_and_mod() folds this file's two outputs (a signed
-// cents value and a 0..1 tremolo-attenuation fraction) into the same
-// increment-scaling and gain-multiply op.h already does for pitch_eg.h and
-// env_dx.h respectively.
+// FmLfo -- the DX7 voice LFO: rate/delay/waveform/PMD/AMD/key-sync, evaluated
+// once per control block (same cadence as env_dx.h's EnvDX and this engine's
+// own pitch_eg.h). Per-sample cost: zero -- nothing here ever touches
+// op_render/op_render_first/op_render_fb (op.h) or the kernel's
+// `gain`/`gain_step` fields directly; op.h's fm_voice_step_pitch_and_mod()
+// folds this file's two outputs (a signed cents value and a 0..1
+// tremolo-attenuation fraction) into the same increment-scaling and
+// gain-multiply op.h already does for pitch_eg.h and env_dx.h respectively.
 //
-// #49 also closes module_fm.md open question 5 (global vs. per-voice LFO):
-// **per-voice, no global-phase mode** -- decided, not deferred. DX7
-// hardware has exactly one physical LFO shared by the whole instrument;
-// module_fm.md's own §5.5 already recommended per-voice with key-sync as strictly
-// better for polyphony, keeping a patch flag for global-phase "where DX7
-// fidelity on specific patches matters" as an option. That option is
-// dropped here: #48 already made this engine genuinely multitimbral (one
-// patch pointer per voice, module_fm.md §6.3), and a literal single shared LFO has
-// no principled behavior once two simultaneously-active voices request
-// global phase with two different patches' rates -- a case that cannot
-// arise on real single-timbral hardware at all, so there is no "real DX7
-// behavior" to fall back on for it. Per-voice-with-key-sync already gives
-// every note struck at the same instant identical LFO phase (the common
-// "block chord" case DX7 fidelity actually cares about); the remaining gap
-// -- notes of the SAME patch struck at different times drifting slightly
-// out of phase with each other -- is a small, patch-dependent effect, not
-// worth the architectural ambiguity above. Revisit only if #53's real
-// Dexed-diff work finds this is actually audible on a reference bank.
+// **Per-voice, no global-phase mode.** DX7 hardware has exactly one physical
+// LFO shared by the whole instrument, but this engine is genuinely
+// multitimbral (one patch pointer per voice, patch.h) -- a literal single
+// shared LFO has no principled behavior once two simultaneously-active
+// voices with *different* patches both request global phase, a case that
+// cannot arise on real single-timbral hardware, so there is no real DX7
+// behavior to fall back on. Per-voice-with-key-sync already gives every note
+// struck at the same instant identical LFO phase (the common "block chord"
+// case DX7 fidelity cares about); the residual gap -- notes of the *same*
+// patch struck at different times drifting slightly out of phase -- is
+// small and patch-dependent.
 //
 // Waveform math is NOT a bit-exact port of Dexed's own `Lfo::getsample()`
 // (Source/msfa/lfo.cc, Apache-2.0) -- that function's bit tricks
@@ -45,21 +37,13 @@
 // convention (uint32_t Q32, one cycle = 2^32 -- same convention as op.h's
 // own FmOp::phase) in plain float, since this all runs at control rate
 // (~2756 Hz at BLOCK=16, not per audio sample) where float cost is
-// negligible and every other block-rate/note-on computation in this engine
-// (fm_op_inc) already uses float freely.
-//
-// **F6 (history_fm.md §5.14) corrected the phase ORIGIN, which that re-expression
-// got wrong.** The shapes above were right; where the cycle starts was not.
-// Dexed's `keydown()` syncs to `phase_ = (1<<31) - 1` -- the MIDDLE of the
-// cycle, not the start -- and its two sawtooth cases carry a compensating
-// `^ (1U << 31)`, i.e. a half-cycle rotation baked into the waveform. The
-// old code here dropped both halves of that pair: it synced to phase 0 and
-// wrote the sawtooths unrotated. Those two errors cancel exactly for the
-// sawtooths and for nothing else, which is why F1 measured waveforms 1 and 2
-// as correct and waveforms 0, 3 and 4 as *precisely* half a cycle out --
-// three "broken waveforms" that were really one wrong constant. Both halves
-// are now restored (fm_lfo_trigger() and the two saw cases below), so the
-// pair is once again self-consistent AND matches Dexed.
+// negligible. Dexed's key-sync point is the MIDDLE of the cycle
+// (`phase_ = (1<<31) - 1`, not the start), and its two sawtooth cases carry
+// a compensating half-cycle rotation (`^ (1U << 31)`) -- both halves of that
+// pair matter together (fm_lfo_trigger()'s sync point and each saw case's
+// rotation below); dropping either alone desyncs every waveform but the
+// sawtooths, which is why that shape of bug hides so well. See
+// history_fm.md §5.14 for how this was found.
 //
 // Rate table (`lfoSource`) IS ported verbatim (real hardware-calibrated
 // data, same "port the table, don't re-derive" rule pitch_eg.h's own tables
@@ -79,25 +63,15 @@
 // Q24/Q32/`>>39` bit-shift plumbing that was only ever there to keep Dexed
 // itself integer-only.
 //
-// **F6 reversed #49's mod-wheel decision.** #49 made the wheel a 0..1
-// MULTIPLIER on the patch's configured PMD/AMD, and flagged the consequence
-// honestly: "a patch with real vibrato/tremolo configured will sound
-// completely flat until the mod wheel is actually moved -- expected, not a
-// bug." Measured against the reference, it is a bug: every factory patch
-// with configured vibrato played with no vibrato at wheel 0, which is the
-// resting position. That is not a small fidelity gap, and it is invisible to
-// a scorecard run at wheel 0 -- both sides look "quiet", the way #49's own
-// dropped `am_sensitivity` looked like a well-behaved parameter (history_fm.md
-// §5.13). The wheel now follows Dexed's real `max(pmod_1, pmod_2)` /
-// `max(amod_1, amod_2)` rule instead: the patch's own depth always plays,
-// and the wheel is a SEPARATE source that takes over once it exceeds the
-// patch depth. #49's acceptance criterion ("mod wheel scales LFO depth") is
-// still met -- pushing the wheel up still increases vibrato, monotonically,
-// from zero-wheel patch depth to full -- so this is a strict superset of the
-// old behaviour, not a trade. What is still NOT replicated is Dexed's
-// configurable mod MATRIX (which of aftertouch/breath/foot/wheel routes to
-// pitch vs amp vs EG, and at what range): the wheel is hardwired to both
-// pitch and amp here, matching speech's own CC1 precedent (#36).
+// **Mod wheel is a separate modulation source, not a multiplier on the
+// patch's own depth.** A patch's configured PMD/AMD always plays at its own
+// depth; the wheel follows Dexed's real `max(pmod_1, pmod_2)` /
+// `max(amod_1, amod_2)` rule and takes over only once it exceeds that depth
+// -- so wheel 0 leaves a patch's own vibrato/tremolo intact rather than
+// silencing it. What is NOT replicated is Dexed's configurable mod MATRIX
+// (which of aftertouch/breath/foot/wheel routes to pitch vs amp vs EG, and
+// at what range): the wheel is hardwired to both pitch and amp here,
+// matching speech's own CC1 precedent (#36).
 
 // Dexed's `lfoSource` (Source/msfa/lfo.cc, Apache-2.0), ported verbatim --
 // 100 raw values (index 0-99), converted to real Hz by
@@ -169,17 +143,9 @@ inline constexpr float FM_LFO_PMD_MAX_CENTS = 1200.0f * (float)(255 * 255 * 256)
 // `25190424 / sample_rate` per sample, and the "constant is 1<<32/15.5s/11"
 // comment falls out unchanged).
 //
-// **F6 (history_fm.md §5.14): this used to return a single duration in seconds and
-// the caller ramped linearly across it.** That was wrong in shape, not just
-// in constants. Dexed's delay is a two-stage accumulator, and the FIRST
-// stage is not a ramp at all -- `getdelay()` returns exactly 0 for the whole
-// of it (see fm_lfo_delay_step below). So the real curve is *silence, then a
-// ramp*, and the old code turned it into one ramp spanning only the silent
-// stage's duration: it started opening immediately (when the reference is
-// still fully closed) and was fully open at the exact moment the reference
-// starts to open. Hence F1's `lfo/delay-99` peaking at 1.00 error, and the
-// old comment's claim that stage two is "a comparatively quick tail once the
-// LFO has already started becoming audible" being backwards on both counts.
+// Dexed's delay is a genuine two-stage accumulator: the FIRST stage is not a
+// ramp at all -- `getdelay()` returns exactly 0 for the whole of it (see
+// fm_lfo_delay_step below) -- so the real curve is *silence, then a ramp*.
 // `a &= 0xff80` looks like it can only shrink `a`, but the `max(0x80, ...)`
 // floor means stage two is FASTER for every delay value where the two differ
 // (delay 99: a=32 -> a2=128, so 2.66 s closed then 0.67 s opening).
@@ -214,11 +180,10 @@ inline float fm_lfo_waveform_unipolar(uint32_t phase, uint8_t waveform) {
     auto frac = [](float v) { return v - floorf(v); };
     switch (waveform) {
         case 0: return 1.0f - fabsf(2.0f * t - 1.0f);                    // triangle: 0 at t=0/1, peak at t=0.5 (Dexed: x=phase>>7, complemented past the halfway point -- a tent, not a ramp-then-ramp)
-        // F6: both sawtooths carry Dexed's own `^ (1U << 31)` -- a half-cycle
-        // rotation of the phase, restored here (see this file's header). It
-        // pairs with fm_lfo_trigger()'s half-cycle sync point: together they
-        // put a freshly key-synced saw at the START of its ramp, which is
-        // what the rotation is there for.
+        // Both sawtooths carry Dexed's own `^ (1U << 31)` -- a half-cycle
+        // rotation of the phase. It pairs with fm_lfo_trigger()'s half-cycle
+        // sync point: together they put a freshly key-synced saw at the
+        // START of its ramp.
         case 1: return 1.0f - frac(t + 0.5f);                             // saw down (Dexed: (~phase ^ sign) >> 8)
         case 2: return frac(t + 0.5f);                                    // saw up   (Dexed: (phase ^ sign) >> 8)
         case 3: return t < 0.5f ? 1.0f : 0.0f;                            // square: 1 for the first half-cycle, 0 for the second (Dexed: (~phase>>7)&bit, set exactly while phase's top bit is clear)
@@ -249,10 +214,9 @@ inline void fm_lfo_init(FmLfo &lfo) {
 }
 
 // key_sync resets phase to Dexed's own `keydown()` sync point, `(1<<31) - 1`
-// -- the MIDDLE of the cycle, not the start. See this file's header for why
-// that is not an off-by-one: it is half of a two-part convention whose other
-// half is the sawtooths' half-cycle rotation, and F6 restored both together.
-// The delay accumulator always restarts at 0 regardless of key_sync (matches
+// -- the MIDDLE of the cycle, not the start (not an off-by-one: see this
+// file's header for how it pairs with the sawtooths' own half-cycle
+// rotation). The delay accumulator always restarts at 0 regardless of key_sync (matches
 // Dexed's own `delaystate_ = 0`, which sits outside the `if (sync_)`) -- a
 // fresh note always re-triggers the delay.
 inline void fm_lfo_trigger(FmLfo &lfo, bool key_sync) {
