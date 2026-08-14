@@ -1,4 +1,4 @@
-# Host-only build for the chip module's reference rig (sid.md §11.1, F0).
+# Host-only build for the chip module's reference rig (module_chip.md §11.1, F0).
 # Plain g++, no cmake -- the rig has no reason to need one, and this mirrors
 # tools/fm_ref/Makefile.
 #

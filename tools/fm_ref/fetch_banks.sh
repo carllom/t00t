@@ -9,7 +9,7 @@
 # holding 32 voices; both dexed_render and tools/syx2patch.py accept that form
 # directly.
 #
-# See fm2.md §3.3.
+# See history_fm.md §3.3.
 set -euo pipefail
 
 cd "$(dirname "$0")"

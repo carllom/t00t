@@ -18,18 +18,18 @@ MIDI_UART ?= default
 DMA_BUFFER_SIZE ?= default
 
 # #31 P2 profiling rig: replaces the speech engine's normal MIDI-driven render
-# loop with a self-cycling, pin-only measurement build (see engine.md "Speech
-# Engine P2 profiling"). No effect on other engines.
+# loop with a self-cycling, pin-only measurement build (see history_speech.md
+# "Speech Engine P2 Profiling"). No effect on other engines.
 #   make ENGINE=speech SPEECH_PROFILE=1
 SPEECH_PROFILE ?= 0
 
 # #42 P0 rig: replaces the FM engine's normal test-tone build with the
 # stripped N-voice x 6-operator mixer (src/engines/fm/rig.h). No effect on
-# other engines. See engine.md "FM P0 Rig (#42)".
+# other engines. See history_fm.md "FM P0 Rig (#42)".
 #   make ENGINE=fm FM_PROFILE=1
 FM_PROFILE ?= 0
 
-# fm.md §3.6 tuning levers, each a compile-time switch on the #42 rig (only
+# module_fm.md §3.6 tuning levers, each a compile-time switch on the #42 rig (only
 # meaningful with FM_PROFILE=1) — "default" leaves rig.h's own #ifndef
 # default in place, same sentinel convention as MIDI_USB/DMA_BUFFER_SIZE above.
 #   make ENGINE=fm FM_PROFILE=1 FM_RIG_VOICES=32
@@ -51,7 +51,7 @@ FM_RIG_FB           ?= default
 # #45 BLOCK confirmation: the FM engine's real EG control-rate block size
 # (op.h's FM_BLOCK) — distinct from FM_RIG_BLOCK above, which only affects
 # the #42 profiling rig, not real MIDI-driven playback. "default" leaves
-# op.h's own #ifndef default (16) in place. See engine.md "FM P2 BLOCK
+# op.h's own #ifndef default (16) in place. See history_fm.md "FM Engine — EnvDX + BLOCK
 # Confirmation (#45)".
 #   make ENGINE=fm FM_BLOCK=8
 #   make ENGINE=fm FM_BLOCK=32

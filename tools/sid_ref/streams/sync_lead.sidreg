@@ -2,12 +2,12 @@
 #
 # Voice 2 hard-synced to voice 1, with voice 1's pitch swept per frame.
 #
-# The classic sync lead. sid.md §4.4 warns that the frame VM must be able
+# The classic sync lead. module_chip.md §4.4 warns that the frame VM must be able
 # to target the modulator's frequency, "omit this and sync instruments
 # sound static in a way easily misdiagnosed as a synthesis bug" -- so the
 # source sweeps here and the synced voice does not.
 #
-# Also the stream that catches sid.md §4.1's sync error: the doc says
+# Also the stream that catches module_chip.md §4.1's sync error: the doc says
 # hard sync is accumulator overflow, the reference syncs on the MSB
 # *rising*, and the two differ by half an accumulator cycle. Same rate,
 # different phase, audibly different timbre.

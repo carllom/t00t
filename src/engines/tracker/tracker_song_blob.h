@@ -6,7 +6,7 @@
 // harness already exercises against openmpt123, so this exact note-trigger
 // sequence is proven correct before it ever reaches hardware. Deliberately
 // minimal, not a "real" song -- for an on-device listening test with a real
-// module, regenerate this file from Carl's own (gitignored) xm/ corpus:
+// module, regenerate this file from the author's own (gitignored) xm/ corpus:
 //   python3 tools/xm2t00t/xm2t00t.py convert xm/<file>.xm src/engines/tracker/tracker_song
 #pragma once
 
