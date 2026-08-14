@@ -849,6 +849,106 @@ Verified against 5 real modules (2026-08-07): `118in64.xm` (18ch),
 check above; all convert well under the default SRAM budget (93-241 KB of a
 380 KB budget).
 
+## Chip Module F0 — Primitives + reSID Reference Rig
+
+`chip.md` P0/F0. Host side complete and green; the hardware measurement is
+outstanding, so **the P0 gate is still closed** and none of `chip.md` §9's CPU
+budget is trusted. Full results in `chip.md` §14a; this section records the
+shape of the build and the numbers `engine.md` is the home for.
+
+**Layout.** `src/chip/` holds the topology-free primitives — `sid_osc.h`
+(Q24.8 accumulator, waveform logic, 23-bit noise LFSR), `env_sid.h` (the
+rate-counter envelope with its piecewise-exponential segments), `sid_filter.h`
+(SVF with a 3-bit mode mask, a pluggable cutoff LUT and 6581 saturation, plus
+the C64 board's output network), `sid_voice.h` (the fixed-point contract),
+`sid_tables.h` (generated, committed). `sid_chip.h` is the only file that knows
+the real chip's three-voice/one-filter/adjacency-sync topology; it exists for
+the `CHIP_STRICT` harness and for `chip.md` P1's register-stream playback path.
+
+**The rig is host-first.** `tools/sid_ref/` fetches reSID 1.0-pre1 at a pinned
+SHA (not vendored — GPL-2, host-only, never linked into firmware) and builds
+three tools: `resid_render` (register stream → WAV), `resid_dump` (control-plane
+ground truth as CSV) and `resid_probe` (filter response recordings, for the
+fit). `tools/host_render/render_sid.cpp` is the t00t side with the identical
+CLI, and carries its own self-check suite (`./render_sid` with no arguments) for
+invariants the reSID diff cannot see: LFSR period, fixed-point headroom bounds,
+table monotonicity, saturation monotonicity.
+
+**Verification is split in two**, following the FM module's `fm2.md` §3
+conclusion, adopted here from the first commit rather than retrofitted:
+
+- `tools/sid_ctl_diff.py` — exact, no spectra. **4/4 domains pass.** Triangle,
+  sawtooth, pulse and ring's MSB substitution are bit-exact over all 4096
+  accumulator phases; the noise sequence is bit-exact over 100,000 shifts with
+  the period verified as exactly 2²³−1; both R-2R DAC tables are exact; the
+  envelope has 0 of 12,288 trajectory points exceeding both 3 samples and 0.5%.
+- `tools/sid_compare.py` — spectral scorecard over a 10-stream corpus.
+  Baseline committed at `tools/sid_ref/baseline_f0.json`: mean level gap
+  **−0.27 dB**, band MAE **3.54 dB**, envelope MAE **3.25 dB**, `coactive_frac`
+  1.00 on every stream.
+
+The level gap needed no calibration pass. There is one scale factor in the whole
+chain (`SID_MIX_SHIFT`, a right shift), set from the arithmetic rather than
+fitted, because the fixed-point contract adopts reSID's own voice-output units.
+
+**Filter tables are measured, not derived.** reSID's 6581 filter is a
+transistor-level model with 2¹⁶-entry op-amp tables and no cutoff frequency
+anywhere in it, so `tools/fit_6581_filter.py` fits `sid_filter.h`'s *actual*
+two-pass SVF recurrence — via its exact z-domain transfer function — to reSID's
+measured response at each of 129 cutoff and 16 resonance grid points, then
+interpolates to a 2048-entry table (4 KB flash, no per-sample arithmetic on the
+device). Provenance is stamped into the generated header, as `chip.md` §5.1
+requires: this is reSID `ef7873fc`'s 6581, itself a model of one measured chip.
+
+Two limits found by the fit, both carried into P2:
+
+- The two-pass SVF **cannot follow the 6581's top octave at 44.1 kHz** — the
+  table saturates from `fc = 1440` up, the top 30% of the register range.
+  Stability is not the constraint (spectral radius stays under 1 to F ≈ 27000);
+  above F ≈ 22000 the lowpass simply has no −3 dB corner below Nyquist.
+- The LUT is fitted on lowpass. Per-mode error on the resonance stream: LP
+  5.21 dB, BP 3.39 dB, HP 7.92 dB, LP+HP 4.35 dB.
+
+**Aliasing is the largest residual and is not in `chip.md` at all.** On a
+sustained C4 sawtooth the harmonics match reSID within 0.4 dB up to 6 kHz;
+above that t00t's non-harmonic floor is −48 dBc against reSID's −74 dBc. reSID
+clocks at 985 kHz and resamples through an FIR, t00t generates at 44.1 kHz with
+no band-limiting. `chip.md` §9's oversampling watch item is written as
+conditional on hard sync; it is the oscillator's general problem.
+
+**Measurement build.** `make ENGINE=chip` builds `src/engines/chip/rig.h` — N
+voices with fixed parameters through `chip.md` §7.2's two-phase bus render, no
+MIDI, no VM, no display, PROFILE_PIN (GPIO 22) high for exactly the render. It
+steps through 0/1/4/8/16/24 voices on a 4 s hold so one capture gives the slope,
+which is the per-voice cost; taking it from two builds' intercepts instead would
+fold their code layout differences into it (the FM rig's #43 finding). Every
+other lever is a separate build, because a runtime switch would put a branch
+inside the loop being measured:
+
+```
+make ENGINE=chip                                       # 24 voices, 12 filtered
+make ENGINE=chip CHIP_RIG_FILTERED=0                   # for the round-trip diff
+make ENGINE=chip CHIP_RIG_MOD=1 CHIP_RIG_OVERSAMPLE=2  # sync at 2x
+make ENGINE=chip CHIP_WAVE_DAC=0                       # without the 12-bit DAC LUT
+```
+
+`src/engines/chip/` is *not* the P1 skeleton — it is the smallest flashable
+thing that can carry the rig onto hardware, with stub display and MIDI, and
+`voice_alloc.cpp` left out of the link (`HAS_VOICE_ALLOC=0`, same as the
+tracker). P1 replaces `engine.h`, `audio_engine.cpp` and `midi_controller.cpp`
+wholesale.
+
+Worth recording about the 6581's ladder, because the table looks broken and is
+not: it is **non-monotonic** — 19 descending steps at 8 bits, 347 at 12, worst
+−129, clustered on the major carries where the 2.20 ratio and the missing bit-0
+termination compound. `dac.h` documents the mechanism. Sorting or smoothing it
+would remove a large part of why a quiet 6581 note sounds dirty rather than
+merely quiet.
+
+One flash number is already measured, since it does not need a device: the
+12-bit waveform DAC table costs **8200 bytes** (41380 → 33180 text with
+`CHIP_WAVE_DAC=0`). Everything else in the rig's table waits for hardware.
+
 ## MIDI Input
 
 Control comes from buttons (VGA board only) and MIDI. There is no intermediate
