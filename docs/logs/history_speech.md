@@ -488,3 +488,94 @@ Builds clean on all four engines (`make`/`make ENGINE=groovebox`/
 preset table (particularly the robot-chorus preset's stereo spread) and
 the profiling-pin measurement of effects-on cost for the performance
 table — both need the author at the bench, same as #36's MIDI-wiring gap.
+
+## Speech Engine — LPC Lattice Tract Skeleton (#63)
+
+#39's first slice: an order-10 all-pole lattice filter as a sibling to the
+existing formant cascade, proven audible end-to-end before any corpus
+converter exists — same skeleton-first order the FM engine already used
+for its DX7 patch importer.
+
+**`SpeechVoice`'s tract-specific state became a union.** Adding a second
+tract without doubling per-voice RAM meant the formant cascade's fields
+(`Res2p` array, F/B ramp state, `av`/`af`/`an`, `formant_shift`/
+`bandwidth_scale`) had to move out of `SpeechVoice` into their own struct
+(`FormantVoiceState`) so a `LatticeVoiceState` sibling could sit in a
+union alongside it, selected by a new `SpeechVoice::tract` field. Fields
+genuinely shared by both tracts (glottal phase, noise LFSR, the amplitude
+declick smoother, vibrato/jitter/shimmer state) stayed on `SpeechVoice`
+itself. A tract switch always happens on a note-on retrigger, so
+`speech_render_voice()`/`_seq()`/`_lattice()` (render.h) each
+placement-construct their own union member fresh at that edge before
+writing into it — a voice that alternates tract note-to-note never reads
+the other tract's leftover state.
+
+**Finding: the segment sequencer needed a 3-line touch, not zero.**
+`sequencer.h`'s `speech_seg_load()` calls `tract_retrigger()`/
+`tract_snap_target()`/`tract_set_target()` directly on what used to be
+`SpeechVoice&` — those now take `FormantVoiceState&`, so the union
+refactor forced `speech_seg_load()`'s three call sites to pass `sv.fmt`
+instead of `sv`. The sequencer's own logic (segment advance, mode
+handling, duration calc) is unchanged; only the argument type at three
+call sites moved. Recorded per #63's own acceptance criterion rather than
+treated as a scope violation — "one new file plus a data pipeline" still
+holds for `excitation.h` (untouched) and the sequencer's actual behaviour
+(untouched), just not for every line that happened to reference the old
+flat `SpeechVoice` layout.
+
+**Coefficient interpolation**: lattice `k[i]` ramps linearly from the
+current frame's value to the next frame's over
+`SPEECH_LATTICE_INTERP_STEPS` (8) sub-blocks, computed once as a per-step
+delta at frame load rather than re-approached every sub-block the way the
+formant tract's exponential `TRACT_RAMP_COEFF` works — a genuine linear
+ramp reaches the target exactly by the frame's last sub-block, matching
+how the TMS5220 itself interpolated. Safe without re-deriving filter
+coefficients (unlike the formant cascade) because the stable range
+`|k[i]| < 1` is convex.
+
+**Resampler**: `speech_render_voice_lattice()` doesn't take a
+`native_frames` count like the other two render functions — it takes
+`output_frames` directly and pulls 8 kHz native samples through a
+linear-interpolation upsampler on demand, via a persistent fractional
+accumulator (`LatticeVoiceState::resample_frac`) that survives across
+render calls. A 10-second host render holding one frame confirmed no
+measurable F0 drift between an early and a late analysis window.
+
+**Test word**: no corpus converter exists yet (that's a separate, later
+slice), so `lattice.h`'s `LATTICE_TEST_WORD` is a small hand-built
+fixture — reflection coefficients from a real order-10 Levinson-Durbin
+analysis (a throwaway Python script, not committed) of this module's own
+`/i/`/`/a/`/`/u/` formant-cascade impulse responses, not hand-guessed
+numbers. Every resulting `|k|` came out well inside (-1, 1) (largest
+~0.90). The Levinson-Durbin gain is calibrated for a white-noise-driven
+signal; this tract's glottal-pulse excitation has a much higher crest
+factor and came out audibly quiet at the raw gain value (peak ~220 of
+32767) — `SPEECH_LATTICE_GAIN_BOOST` (40x, tuned by re-running the host
+render until the peak sat in the same ballpark as the formant tract's own
+phonemes) compensates.
+
+**CC102** (tract select, next-note, formant vs. lattice) is the one new
+MIDI hook added — inside the CC102–119 range #39's spec already reserved
+for LPC controls, and the cheapest way to let a real MIDI channel reach
+the hardcoded test word at all, short of the full `KEY_PER_WORD`
+addressing scheme #39 explicitly defers to a later slice.
+
+Host-render harness (`render_speech.cpp`): renders the test word to WAV
+(finite, unclipped, reaches completion), confirms a malformed word
+(null/empty, mirroring the formant sequencer's own malformed-utterance
+guard) renders exact silence, and the 10 s resampler-stability render
+above. All three pass in both Debug (assert active) and Release builds.
+Every pre-existing formant-path check in the same harness still passes
+unchanged — the union refactor is a no-op for formant-tract behaviour.
+Builds clean on all four engines (`make`/`make ENGINE=groovebox`/
+`make ENGINE=tracker`/`make ENGINE=fm`) plus both speech variants
+(`make ENGINE=speech`, `SPEECH_PROFILE=1`).
+
+**Hardware-verified on real `breadboard_rp2350`:** CC102 >= 64 plus a
+held note triggers the test word, confirming the tract-select field, CC
+wiring, and the lattice render/resample path all work end-to-end on
+device, not just in the host harness.
+
+**Not yet done at this point:** the corpus converter, real word-selection
+MIDI addressing, and per-voice LPC render-cost measurement are separate,
+later slices of #39, not this skeleton.

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "excitation.h"
+#include "lattice.h"
 #include "osc/noise.h"
 #include "osc/sine.h"
 #include "pan.h"
@@ -83,20 +84,31 @@ inline void speech_render_voice(SpeechVoice &sv, uint32_t phase_inc, float fs, u
                                  int16_t formant_shift, int16_t bandwidth_scale,
                                  uint8_t jitter, uint8_t shimmer, float lfo_rate, float lfo_depth,
                                  int32_t *dry_l, int32_t *dry_r, uint32_t native_frames) {
-    sv.formant_shift_tgt = (float)formant_shift * (1.0f / 256.0f);
-    sv.bandwidth_scale_tgt = (float)bandwidth_scale * (1.0f / 256.0f);
+    bool retriggering = (trigger != sv.last_trigger);
+    // A tract switch always lands on a retrigger (a new note-on) -- placement-
+    // construct `fmt` fresh before writing into it, so a voice that last held
+    // an LPC word never reads that word's leftover state through the union.
+    if (retriggering && sv.tract != SPEECH_TRACT_FORMANT) new (&sv.fmt) FormantVoiceState();
+    sv.tract = SPEECH_TRACT_FORMANT;
+
+    sv.fmt.formant_shift_tgt = (float)formant_shift * (1.0f / 256.0f);
+    sv.fmt.bandwidth_scale_tgt = (float)bandwidth_scale * (1.0f / 256.0f);
     // Unpacked only on an actual trigger/phoneme change -- PHONEME_TARGETS
     // holds the packed, flash-resident PhonemeDef, and phoneme_unpack() is the
     // one place that expands it back to a FormantTarget, so that cost is paid
     // on those two transitions only, not every buffer.
-    if (trigger != sv.last_trigger) {
+    if (retriggering) {
         sv.last_trigger = trigger;
         sv.last_phoneme = phoneme;
-        tract_retrigger(sv, phoneme_unpack(PHONEME_TARGETS[phoneme % PHONEME_COUNT]));
+        tract_retrigger(sv.fmt, phoneme_unpack(PHONEME_TARGETS[phoneme % PHONEME_COUNT]));
+        sv.glottal_phase = 0;
+        sv.cur_amp = 0.0f;
+        sv.lfo_phase = 0.0f;
+        sv.glot_cycle_amp = 1.0f;
         sv.glot_cycle_inc = phase_inc;  // seed the first cycle before any wrap has fired
     } else if (phoneme != sv.last_phoneme) {
         sv.last_phoneme = phoneme;
-        tract_set_target(sv, phoneme_unpack(PHONEME_TARGETS[phoneme % PHONEME_COUNT]));
+        tract_set_target(sv.fmt, phoneme_unpack(PHONEME_TARGETS[phoneme % PHONEME_COUNT]));
     }
 
     int32_t gain_l, gain_r;
@@ -114,7 +126,7 @@ inline void speech_render_voice(SpeechVoice &sv, uint32_t phase_inc, float fs, u
         uint32_t k = native_frames - n;
         if (k > SPEECH_SUBBLOCK) k = SPEECH_SUBBLOCK;
 
-        tract_advance_subblock(sv, fs);
+        tract_advance_subblock(sv.fmt, fs);
         float amp_tgt = (gate ? (float)amplitude : 0.0f) * SPEECH_EXCITATION_HEADROOM;
 
         // Vibrato is resampled once per sub-block (not per sample, not
@@ -130,9 +142,9 @@ inline void speech_render_voice(SpeechVoice &sv, uint32_t phase_inc, float fs, u
         for (uint32_t i = 0; i < k; i++) {
             sv.cur_amp += (amp_tgt - sv.cur_amp) * AMP_SMOOTH_COEFF;
 
-            float voiced_src = glottal_pulse(sv.glottal_phase) * sv.av * sv.cur_amp * sv.glot_cycle_amp;
+            float voiced_src = glottal_pulse(sv.glottal_phase) * sv.fmt.av * sv.cur_amp * sv.glot_cycle_amp;
             float noise_f = (float)osc_noise(sv.noise_lfsr) * (1.0f / 32768.0f);
-            float noise_src = noise_f * sv.af * sv.cur_amp;
+            float noise_src = noise_f * sv.fmt.af * sv.cur_amp;
 
             uint32_t prev_phase = sv.glottal_phase;
             sv.glottal_phase += sv.glot_cycle_inc;
@@ -141,7 +153,7 @@ inline void speech_render_voice(SpeechVoice &sv, uint32_t phase_inc, float fs, u
                 sv.glot_cycle_amp = glottal_shimmer_mult(shimmer, sv.jitter_lfsr);
             }
 
-            int32_t sample = (int32_t)tract_process_mixed(sv, voiced_src, noise_src);
+            int32_t sample = (int32_t)tract_process_mixed(sv.fmt, voiced_src, noise_src);
             int32_t l = (sample * gain_l) >> 15;
             int32_t r = (sample * gain_r) >> 15;
             uint32_t o = (n + i) * 2;
@@ -178,23 +190,33 @@ inline void speech_render_voice_seq(SpeechVoice &sv, uint32_t phase_inc, float f
                                      uint8_t rate, int16_t pan, int16_t formant_shift, int16_t bandwidth_scale,
                                      uint8_t jitter, uint8_t shimmer, float lfo_rate, float lfo_depth,
                                      int32_t *dry_l, int32_t *dry_r, uint32_t native_frames) {
-    sv.formant_shift_tgt = (float)formant_shift * (1.0f / 256.0f);
-    sv.bandwidth_scale_tgt = (float)bandwidth_scale * (1.0f / 256.0f);
-
     // module_speech.md "Underrun policy", extended to malformed sequencer
     // data: an empty/null utterance renders silence rather than
     // dereferencing utt.phonemes[0] below, verified by
     // tools/host_render/render_speech.cpp deliberately constructing one.
     bool malformed = (utt.length == 0 || utt.phonemes == nullptr);
 
-    if (trigger != sv.last_trigger) {
+    bool retriggering = (trigger != sv.last_trigger);
+    // A tract switch always lands on a retrigger (a new note-on) -- see
+    // speech_render_voice()'s matching comment above.
+    if (retriggering && sv.tract != SPEECH_TRACT_FORMANT) new (&sv.fmt) FormantVoiceState();
+    sv.tract = SPEECH_TRACT_FORMANT;
+
+    sv.fmt.formant_shift_tgt = (float)formant_shift * (1.0f / 256.0f);
+    sv.fmt.bandwidth_scale_tgt = (float)bandwidth_scale * (1.0f / 256.0f);
+
+    if (retriggering) {
         sv.last_trigger = trigger;
         sv.gate_prev = gate;
         sv.seq_done = malformed;
+        sv.glottal_phase = 0;
+        sv.cur_amp = 0.0f;
+        sv.lfo_phase = 0.0f;
+        sv.glot_cycle_amp = 1.0f;
         if (!malformed) {
             speech_seg_load(sv, utt, 0, rate, fs, /*retrigger=*/true);
         } else {
-            tract_retrigger(sv, phoneme_unpack(PHONEME_TARGETS[PH_SIL]));
+            tract_retrigger(sv.fmt, phoneme_unpack(PHONEME_TARGETS[PH_SIL]));
             sv.seg_remaining = 0xFFFFFFFFu;  // see speech_sequencer_advance()'s comment on why
         }
         sv.glot_cycle_inc = phase_inc;  // seed the first cycle before any wrap has fired
@@ -224,7 +246,7 @@ inline void speech_render_voice_seq(SpeechVoice &sv, uint32_t phase_inc, float f
         if (k > sv.seg_remaining) k = sv.seg_remaining;
         if (k > SPEECH_SUBBLOCK) k = SPEECH_SUBBLOCK;
 
-        tract_advance_subblock(sv, fs);
+        tract_advance_subblock(sv.fmt, fs);
         // Done/malformed voices render true silence (amp_tgt 0, declicked
         // through cur_amp same as a normal gate release) rather than being
         // special-cased out of the loop -- they still need dry_l/dry_r
@@ -242,9 +264,9 @@ inline void speech_render_voice_seq(SpeechVoice &sv, uint32_t phase_inc, float f
         for (uint32_t i = 0; i < k; i++) {
             sv.cur_amp += (amp_tgt - sv.cur_amp) * AMP_SMOOTH_COEFF;
 
-            float voiced_src = glottal_pulse(sv.glottal_phase) * sv.av * sv.cur_amp * sv.glot_cycle_amp;
+            float voiced_src = glottal_pulse(sv.glottal_phase) * sv.fmt.av * sv.cur_amp * sv.glot_cycle_amp;
             float noise_f = (float)osc_noise(sv.noise_lfsr) * (1.0f / 32768.0f);
-            float noise_src = noise_f * sv.af * sv.cur_amp;
+            float noise_src = noise_f * sv.fmt.af * sv.cur_amp;
 
             uint32_t prev_phase = sv.glottal_phase;
             sv.glottal_phase += sv.glot_cycle_inc;
@@ -253,7 +275,7 @@ inline void speech_render_voice_seq(SpeechVoice &sv, uint32_t phase_inc, float f
                 sv.glot_cycle_amp = glottal_shimmer_mult(shimmer, sv.jitter_lfsr);
             }
 
-            int32_t sample = (int32_t)tract_process_mixed(sv, voiced_src, noise_src);
+            int32_t sample = (int32_t)tract_process_mixed(sv.fmt, voiced_src, noise_src);
             int32_t l = (sample * gain_l) >> 15;
             int32_t r = (sample * gain_r) >> 15;
             uint32_t o = (n + i) * 2;
@@ -262,5 +284,93 @@ inline void speech_render_voice_seq(SpeechVoice &sv, uint32_t phase_inc, float f
         }
         n += k;
         if (!sv.seq_done) sv.seg_remaining -= k;
+    }
+}
+
+// LPC-lattice render: one voice stepping through a fixed LatticeWord's
+// coefficient frames (lattice.h), reusing this voice's shared glottal-pulse/
+// LFSR-noise excitation exactly like speech_render_voice_seq() above, but
+// driving lattice.h's all-pole synth instead of tract.h's formant cascade.
+// Unlike every other render function in this file, `output_frames` counts
+// samples at the *output* rate directly -- there's no native-frames-then-
+// ZOH-x2 step here, since SPEECH_LATTICE_RATE/`out_fs` has no exact-integer
+// shortcut. The native 8 kHz render is pulled through a linear-
+// interpolation upsampler on demand, one native sample at a time whenever
+// the accumulated fractional position (`sv.lat.resample_frac`, per-voice
+// state) crosses 1.0 -- carried across calls, so a buffer boundary never
+// re-zeroes it into a phase glitch.
+inline void speech_render_voice_lattice(SpeechVoice &sv, uint8_t trigger, int16_t amplitude, bool gate,
+                                         const LatticeWord &word, int16_t pan, float out_fs,
+                                         int32_t *dry_l, int32_t *dry_r, uint32_t output_frames) {
+    bool malformed = (word.length == 0 || word.frames == nullptr);
+
+    bool retriggering = (trigger != sv.last_trigger);
+    // A tract switch always lands on a retrigger -- see speech_render_voice()'s
+    // matching comment above.
+    if (retriggering && sv.tract != SPEECH_TRACT_LATTICE) new (&sv.lat) LatticeVoiceState();
+    sv.tract = SPEECH_TRACT_LATTICE;
+
+    if (retriggering) {
+        sv.last_trigger = trigger;
+        sv.glottal_phase = 0;
+        sv.cur_amp = 0.0f;
+        lattice_reset(sv.lat);
+        sv.lat.word_done = malformed;
+        if (!malformed) lattice_load_frame(sv.lat, word, 0, /*retrigger=*/true);
+        else sv.lat.frame_remaining = 0xFFFFFFFFu;  // see speech_sequencer_advance()'s comment on why
+    }
+    sv.active = !sv.lat.word_done;
+
+    int32_t gain_l, gain_r;
+    pan_gains_q15(pan, gain_l, gain_r);
+    constexpr float AMP_SMOOTH_COEFF = 0.01f;
+    const float native_step = (float)SPEECH_LATTICE_RATE / out_fs;  // < 1: upsampling
+
+    for (uint32_t i = 0; i < output_frames; i++) {
+        sv.lat.resample_frac += native_step;
+        while (sv.lat.resample_frac >= 1.0f) {
+            sv.lat.resample_frac -= 1.0f;
+            sv.lat.y_prev = sv.lat.y_cur;
+
+            if (!malformed && !sv.lat.word_done && sv.lat.frame_remaining == 0) {
+                lattice_advance(sv.lat, word);
+                sv.active = !sv.lat.word_done;
+            }
+            // Frame length divides evenly into the sub-block size (lattice.h's
+            // static_assert), so this fires exactly SPEECH_LATTICE_INTERP_STEPS
+            // times per frame -- once right after a fresh load, then every
+            // SPEECH_LATTICE_SUBBLOCK native samples after that.
+            if ((sv.lat.frame_remaining % SPEECH_LATTICE_SUBBLOCK) == 0) {
+                lattice_advance_subblock(sv.lat);
+            }
+
+            float amp_tgt = (gate && !sv.lat.word_done ? (float)amplitude : 0.0f) * SPEECH_EXCITATION_HEADROOM;
+            sv.cur_amp += (amp_tgt - sv.cur_amp) * AMP_SMOOTH_COEFF;
+
+            // Done voices still tick the filter with zero excitation each
+            // sample (a natural ring-down) rather than being cut out of the
+            // loop -- dry_l/dry_r still need every output frame filled.
+            float exc = 0.0f;
+            if (!sv.lat.word_done) {
+                float g = sv.lat.gain * sv.cur_amp * SPEECH_LATTICE_GAIN_BOOST;
+                if (sv.lat.voiced) {
+                    exc = glottal_pulse(sv.glottal_phase) * g;
+                    sv.glottal_phase += sv.lat.phase_inc;
+                } else {
+                    float noise_f = (float)osc_noise(sv.noise_lfsr) * (1.0f / 32768.0f);
+                    exc = noise_f * g;
+                }
+            }
+            sv.lat.y_cur = lattice_tick(sv.lat, exc);
+
+            if (sv.lat.frame_remaining != 0xFFFFFFFFu) sv.lat.frame_remaining--;
+        }
+
+        float y = sv.lat.y_prev + (sv.lat.y_cur - sv.lat.y_prev) * sv.lat.resample_frac;
+        int32_t sample = (int32_t)y;
+        int32_t l = (sample * gain_l) >> 15;
+        int32_t r = (sample * gain_r) >> 15;
+        dry_l[i] += l;
+        dry_r[i] += r;
     }
 }

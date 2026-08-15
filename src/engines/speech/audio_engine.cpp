@@ -125,7 +125,7 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
             trigger++;
             FormantTarget t = phoneme_unpack(PHONEME_TARGETS[ph.phoneme % PHONEME_COUNT]);
             for (uint32_t v = 0; v < ph.voice_count; v++) {
-                tract_retrigger(voices[v], t);
+                tract_retrigger(voices[v].fmt, t);
                 voices[v].last_trigger = trigger;
                 voices[v].last_phoneme = ph.phoneme;
             }
@@ -150,13 +150,13 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
 
         for (uint32_t v = 0; v < ph.voice_count; v++) {
             if (ph.recompute_only) {
-                voices[v].formant_shift_tgt = (float)formant_shift * (1.0f / 256.0f);
-                voices[v].bandwidth_scale_tgt = (float)bandwidth_scale * (1.0f / 256.0f);
+                voices[v].fmt.formant_shift_tgt = (float)formant_shift * (1.0f / 256.0f);
+                voices[v].fmt.bandwidth_scale_tgt = (float)bandwidth_scale * (1.0f / 256.0f);
                 uint32_t n = 0;
                 while (n < NATIVE_SAMPLES_PER_BUFFER) {
                     uint32_t k = NATIVE_SAMPLES_PER_BUFFER - n;
                     if (k > SPEECH_SUBBLOCK) k = SPEECH_SUBBLOCK;
-                    tract_advance_subblock(voices[v], (float)SPEECH_RATE);
+                    tract_advance_subblock(voices[v].fmt, (float)SPEECH_RATE);
                     n += k;
                 }
             } else {
@@ -228,7 +228,22 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
         uint32_t active_mask = 0;
         for (uint32_t v = 0; v < MAX_VOICES; v++) {
             const VoiceParams &p = vp.voices[v];
-            if (p.utterance == SPEECH_NO_UTTERANCE) {
+            if (p.tract == SPEECH_TRACT_LATTICE) {
+                // LPC lattice tract (module_speech.md "LPC sibling engine"):
+                // no MIDI word-select yet, so every lattice voice plays the
+                // one hardcoded test word (lattice.h) -- pitch comes from
+                // the word's own frames, not the note. Renders straight to
+                // output rate (no ZOH-x2 step; see speech_render_voice_
+                // lattice()'s own header comment), so it gets the whole
+                // SAMPLES_PER_BUFFER, not the halved native count below.
+                speech_render_voice_lattice(voices[v], p.trigger, p.amplitude, p.gate,
+                                             LATTICE_TEST_WORD, p.pan, (float)SAMPLE_RATE,
+                                             dry_l, dry_r, SAMPLES_PER_BUFFER);
+                if (voices[v].active) active_mask |= (1u << v);
+                // No display support for LPC state in this pass -- the
+                // per-voice phoneme grid/F1-F2 plot are formant-specific.
+                s_voice_ui[v] = { 0, 0, PHONEME_COUNT, voices[v].active };
+            } else if (p.utterance == SPEECH_NO_UTTERANCE) {
                 // Phoneme keyboard: one sustained phoneme, no sequencer --
                 // active mirrors gate directly, since there's no utterance
                 // to outlast it.
@@ -238,7 +253,7 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
                                      p.jitter, p.shimmer, p.lfo_rate, p.lfo_depth,
                                      dry_l, dry_r, NATIVE_SAMPLES_PER_BUFFER);
                 if (p.gate) active_mask |= (1u << v);
-                s_voice_ui[v] = { (uint16_t)voices[v].F[0], (uint16_t)voices[v].F[1], p.phoneme, p.gate };
+                s_voice_ui[v] = { (uint16_t)voices[v].fmt.F[0], (uint16_t)voices[v].fmt.F[1], p.phoneme, p.gate };
             } else {
                 // Segment sequencer: active stays set until the
                 // utterance itself completes (sv.active, sequencer.h/
@@ -262,7 +277,7 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
                 // into `utt`, not a phoneme id directly -- resolve it here,
                 // same lookup speech_seg_load() itself does.
                 uint8_t cur_phoneme = (voices[v].seg_index < utt.length) ? utt.phonemes[voices[v].seg_index] : PH_SIL;
-                s_voice_ui[v] = { (uint16_t)voices[v].F[0], (uint16_t)voices[v].F[1], cur_phoneme, voices[v].active };
+                s_voice_ui[v] = { (uint16_t)voices[v].fmt.F[0], (uint16_t)voices[v].fmt.F[1], cur_phoneme, voices[v].active };
             }
         }
 
