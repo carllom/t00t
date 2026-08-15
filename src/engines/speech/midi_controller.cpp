@@ -37,14 +37,18 @@
 // selection -- "playing the words themselves" rather than "playing a line"
 // -- while pitch still comes from the note as always.
 //
-// Under the LPC lattice tract (CC102 >= 64), Program Change means something
-// else entirely: KEY_PER_WORD addressing (module_speech.md "LPC Lattice
-// Tract") maps the note number straight to a word within a 128-word page of
-// the converted corpus, and Program Change picks which page is current --
-// speech_lattice_word_for_key() below resolves note+page to a
-// LATTICE_WORDS[] entry. CC23 keeps its formant-only meaning; there's no
-// LPC equivalent of "off" the way band 0 gives CC23 for the formant tract,
-// since every note always addresses some word.
+// CC102 selects among all three tracts, banded like CC27's mode select
+// (band 0 formant, band 1 LPC lattice, band 2 SAM). Under the LPC lattice
+// tract, Program Change means something else entirely: KEY_PER_WORD
+// addressing (module_speech.md "LPC Lattice Tract") maps the note number
+// straight to a word within a 128-word page of the converted corpus, and
+// Program Change picks which page is current -- speech_lattice_word_for_key()
+// below resolves note+page to a LATTICE_WORDS[] entry. CC23 keeps its
+// formant-only meaning; there's no LPC equivalent of "off" the way band 0
+// gives CC23 for the formant tract, since every note always addresses some
+// word. The SAM tract has no MIDI-selectable word/allophone addressing of
+// its own yet -- CC20's existing phoneme-select band still reaches it,
+// wrapped onto the smaller SAM_ALLOPHONE_COUNT fixture.
 //
 // CC15 (velocity toggle, next-note, default on) sits just outside the
 // BSP's CC16-31 encoder block: 0-63 makes every note sound at max velocity
@@ -398,10 +402,13 @@ void midi_controller_process(const uint8_t *data, uint32_t len, ParamExchange *p
                         ui_state.fx_p2 = ev.data2;
                         changed = true;
                         break;
-                    case 102:  // tract select, next-note only -- formant vs. LPC lattice
-                        channel_tract[ev.channel] = ev.data2 >= 64 ? SPEECH_TRACT_LATTICE : SPEECH_TRACT_FORMANT;
+                    case 102: {  // tract select, next-note only -- formant / LPC lattice / SAM
+                        uint8_t band = (uint8_t)((uint32_t)ev.data2 * 3u / 128u);
+                        channel_tract[ev.channel] =
+                            band == 0 ? SPEECH_TRACT_FORMANT : (band == 1 ? SPEECH_TRACT_LATTICE : SPEECH_TRACT_SAM);
                         ui_state.last_channel = ev.channel;
                         break;
+                    }
                     case 103:  // LPC pitch-shift multiplier, live -- see header comment
                         channel_lattice_pitch_shift[ev.channel] =
                             tract_cc_to_q8_8(ev.data2, SPEECH_LATTICE_PITCH_SHIFT_MIN, SPEECH_LATTICE_PITCH_SHIFT_MAX);

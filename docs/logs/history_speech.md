@@ -1090,3 +1090,61 @@ speech engine, `SPEECH_PROFILE=1`, default subtractive engine).
 **Not yet done at this point:** Carl's own by-ear listen to decide
 whether the unvoiced noise should get its own independent CC rather than
 staying paired with the chirp table's own toggle.
+
+## Speech Engine — S.A.M. Tract Skeleton (#70)
+
+#69's first slice: three independently-driven formant resonators, summed
+in parallel rather than chained, as a third sibling to the formant
+cascade and LPC lattice tract -- proven audible end-to-end before any
+reciter or allophone-table import tool exists, the same skeleton-first
+order #63 already used for the LPC lattice tract.
+
+**Union grew a third member, not a fourth flat field.** `SpeechVoice`'s
+tract-state union already held `fmt`/`lat`; `sam` (`SamVoiceState`,
+`sam.h`) joins them as a third mutually-exclusive variant, sized like the
+others so 8 voices' worth of tract state still costs the largest single
+variant, not the sum of three. `speech_render_voice_sam()` follows the
+same placement-construct-on-tract-switch rule the other two render
+functions already established.
+
+**Parallel, not cascaded.** Each of the three resonators is driven
+directly by the glottal/noise source and summed independently
+(`sam_process_mixed()`), rather than one resonator's output feeding the
+next the way the formant cascade's five stages do. A dedicated frication
+resonator (mirroring the formant tract's own fricative branch) shapes the
+shared LFSR noise excitation for unvoiced consonants, rather than
+importing the original's short sampled PCM bursts -- #69's own scope
+decision, avoiding a second class of imported proprietary audio data.
+
+**No reciter or generated allophone table yet.** `sam.h`'s
+`SAM_TEST_ALLOPHONES` is a small, hand-authored fixture -- silence,
+three vowels, one fricative -- reusing the formant tract's own Peterson &
+Barney (1952) F1-F3 reference values rather than guessed numbers. The
+voice's existing `phoneme` field indexes it directly (wrapped
+`% SAM_ALLOPHONE_COUNT`), the same field the formant tract's phoneme
+keyboard already reads -- reused rather than duplicated, since only one
+tract renders a given voice at a time.
+
+**Headroom**: an initial `1/6` guess left `/s/` (`af=1.0`, the same
+frication-branch target values as the formant tract's own `/s/` row)
+peaking at 30767 of 32767 -- uncomfortably close to clipping at full
+velocity. Reusing the formant cascade's own `1/12` headroom instead
+(`SAM_EXCITATION_HEADROOM = SPEECH_EXCITATION_HEADROOM`) brought every
+fixture entry comfortably under the ceiling (vowels ~4000-4500,
+`/s/` 15383) without a separate constant to maintain.
+
+**CC102** (tract select) changed from a two-way to a three-way band,
+matching CC27's mode-select shape -- band 0 formant, band 1 LPC lattice,
+band 2 SAM. The cheapest way to reach the new tract from a real MIDI
+channel, short of any SAM-specific CC work #69 defers to a later slice.
+
+Host-render harness (`render_speech.cpp`): renders every fixture entry to
+WAV (finite, unclipped), and confirms an out-of-range allophone index
+wraps rather than reading past the fixture table. All pre-existing checks
+in the same harness still pass unchanged. Builds clean on all engines
+plus both speech variants (`make ENGINE=speech`, `SPEECH_PROFILE=1`).
+
+**Not yet done at this point:** hardware verification, the reciter and
+allophone-table import tool, MIDI/CC integration beyond the CC102
+bring-up hook, pitch contour, and per-voice cost measurement are separate,
+later slices of #69, not this skeleton.

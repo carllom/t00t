@@ -282,6 +282,18 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
                 // No display support for LPC state in this pass -- the
                 // per-voice phoneme grid/F1-F2 plot are formant-specific.
                 s_voice_ui[v] = { 0, 0, PHONEME_COUNT, voices[v].active };
+            } else if (p.tract == SPEECH_TRACT_SAM) {
+                // SAM tract bring-up: no reciter or allophone-table import
+                // tool exists yet, so every SAM voice plays straight from
+                // sam.h's hardcoded fixture, one sustained allophone per
+                // note like the formant tract's own phoneme keyboard.
+                speech_render_voice_sam(voices[v], p.phase_inc, (float)SPEECH_RATE, p.trigger,
+                                         p.amplitude, p.gate, p.phoneme, p.pan,
+                                         dry_l, dry_r, NATIVE_SAMPLES_PER_BUFFER);
+                if (p.gate) active_mask |= (1u << v);
+                // No display support for SAM state in this pass -- see the
+                // LPC lattice branch above for the same reasoning.
+                s_voice_ui[v] = { 0, 0, PHONEME_COUNT, p.gate };
             } else if (p.utterance == SPEECH_NO_UTTERANCE) {
                 // Phoneme keyboard: one sustained phoneme, no sequencer --
                 // active mirrors gate directly, since there's no utterance
