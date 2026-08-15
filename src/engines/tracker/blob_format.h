@@ -90,7 +90,7 @@ struct SongHeader {
     uint32_t sample_data_bytes;  // total PCM+guard bytes; the SRAM residency size
     uint32_t total_size;  // whole blob size, for a bounds-checked copy
     char name[32];
-    char tracker_name[24];  // XM header's tracker-name field (#24 display)
+    char tracker_name[24];  // XM header's tracker-name field, shown by display.cpp
 };
 static_assert(sizeof(SongHeader) == 128, "SongHeader size drifted from blob_format.py");
 

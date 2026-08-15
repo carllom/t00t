@@ -8,8 +8,8 @@
 #include "pico/time.h"
 #include <arm_acle.h>
 
-// Phoneme keyboard (#28 cascade, #29 full tract, speech.md P1 "SPEECH_HOLD"):
-// MAX_VOICES=4 independent tract voices, each driven straight from
+// Phoneme keyboard (module_speech.md "SPEECH_HOLD"): MAX_VOICES independent
+// tract voices, each driven straight from
 // VoiceParams (phase_inc = glottal pitch, phoneme = sustained vowel/
 // fricative/nasal, gate = held/released) with no segment sequencer -- one
 // MIDI note is one sustained phoneme. render.h's speech_render_voice() is
@@ -31,11 +31,10 @@ static constexpr uint32_t NATIVE_SAMPLES_PER_BUFFER = SAMPLES_PER_BUFFER / 2;
 static_assert(SAMPLES_PER_BUFFER % 2 == 0,
               "speech engine's ZOH x2 resample requires an even output buffer size");
 
-// Stereo dry mix at output rate (44.1 kHz, post-ZOH). Unlike the #27
-// skeleton's single always-on test tone, speech_render_voice() accumulates
-// (+=) so up to MAX_VOICES can be mixed -- callers must clear both buffers
-// first. `fx_buf` is the mono send/return scratch for the post-mix effect
-// (mono send / stereo return).
+// Stereo dry mix at output rate (44.1 kHz, post-ZOH). speech_render_voice()
+// accumulates (+=) so up to MAX_VOICES can be mixed -- callers must clear
+// both buffers first. `fx_buf` is the mono send/return scratch for the
+// post-mix effect (mono send / stereo return).
 static int32_t dry_l[SAMPLES_PER_BUFFER];
 static int32_t dry_r[SAMPLES_PER_BUFFER];
 static int32_t fx_buf[SAMPLES_PER_BUFFER];
@@ -43,9 +42,9 @@ static int32_t fx_buf[SAMPLES_PER_BUFFER];
 // Per-voice render state (Core 1 only, never crosses ParamExchange).
 static SpeechVoice voices[MAX_VOICES];
 
-// #37 display telemetry (engine.h): published once per buffer by the normal
-// (non-profiling) loop below. The #31 profiling build's synthetic loop has
-// no display to feed (see its own comment) and leaves this at its
+// Display telemetry (engine.h): published once per buffer by the normal
+// (non-profiling) loop below. The profiling build's synthetic loop has no
+// display to feed (see its own comment) and leaves this at its
 // PHONEME_COUNT ("none") default.
 static SpeechVoiceUiState s_voice_ui[MAX_VOICES];
 
@@ -53,22 +52,18 @@ void speech_voice_ui_state(uint32_t voice, SpeechVoiceUiState *out) {
     *out = (voice < MAX_VOICES) ? s_voice_ui[voice] : SpeechVoiceUiState{0, 0, PHONEME_COUNT, false};
 }
 
-// Post-mix effects (Core 1 only). Linked unconditionally, unlike the
-// tracker's skeleton -- speech.md: "Delay/reverb stay linked ... speech has
-// no sample-RAM pressure".
+// Post-mix effects (Core 1 only), linked unconditionally.
 static FxDelay  fx_delay;
 static FxReverb fx_reverb;
 static uint8_t  s_last_fx_type = 0xFF;
 
 #if defined(T00T_SPEECH_PROFILE) && T00T_SPEECH_PROFILE
 
-// #31 P2 profiling rig: replaces the normal MIDI-driven loop below with a
-// self-cycling, pin-only measurement build -- no display, no stdio, same
-// "hands-off" shape as the tracker's #16 rig (engine.md "Tracker Engine --
-// 32-Voice Mixer (#15/#16)"). Drives `voices[]` directly with synthetic
-// content instead of going through ParamExchange, so each phase isolates
-// exactly one of the costs speech.md's P2 budget table predicts and #31
-// asks to measure: voice count (1/2/4/8), held vowel vs. voiced fricative,
+// Profiling rig (T00T_SPEECH_PROFILE build): replaces the normal
+// MIDI-driven loop below with a self-cycling, pin-only measurement build --
+// no display, no stdio. Drives `voices[]` directly with synthetic content
+// instead of going through ParamExchange, so each phase isolates exactly
+// one cost: voice count (1/2/4/8), held vowel vs. voiced fricative,
 // coefficient-recompute vs. per-sample cost, and static vs. actively-swept
 // formant_shift/bandwidth_scale. MAX_VOICES is 8 in this build (engine.h),
 // so the 8-voice phase has a real 8th slot.
@@ -78,7 +73,7 @@ struct ProfilePhase {
     bool     recompute_only;  // true: call tract_advance_subblock() only --
                                // skips the per-sample tract_process_mixed()
                                // loop, isolating coefficient-recompute cost
-                               // from speech.md's "suspect line item"
+                               // from per-sample cost
     bool     sweep_tract;     // true: sweep formant_shift/bandwidth_scale
                                // across their full CC range every buffer
                                // instead of holding them at 1.0x
@@ -96,8 +91,7 @@ static constexpr ProfilePhase PROFILE_PHASES[] = {
 };
 static constexpr uint32_t PROFILE_PHASE_COUNT = sizeof(PROFILE_PHASES) / sizeof(PROFILE_PHASES[0]);
 
-// ~4s per phase, same hold time as #16, long enough for a stable scope/logic
-// analyzer reading.
+// ~4s per phase, long enough for a stable scope/logic analyzer reading.
 static constexpr uint32_t PROFILE_HOLD_BUFFERS = (4000000u / BUF_PERIOD_US) + 1;
 
 // Fixed ~110 Hz glottal pitch -- pitch is irrelevant to render cost, so one
@@ -129,7 +123,7 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
             // -- and mark it so speech_render_voice() below doesn't redo the
             // same work on every buffer of the phase.
             trigger++;
-            FormantTarget t = phoneme_unpack(PHONEME_TARGETS[ph.phoneme % PHONEME_COUNT]);  // #32
+            FormantTarget t = phoneme_unpack(PHONEME_TARGETS[ph.phoneme % PHONEME_COUNT]);
             for (uint32_t v = 0; v < ph.voice_count; v++) {
                 tract_retrigger(voices[v], t);
                 voices[v].last_trigger = trigger;
@@ -206,10 +200,9 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
 
     res2p_init();    // must run before any res2p_radius()/res2p_set() call
     osc_init_sine();  // pan_gains_q15() (speech_render_voice) reads this table --
-                       // an easy drop when #28 replaced the #27 skeleton's own
-                       // osc_init_sine() call with res2p_init(): every sample
-                       // was getting multiplied by gain 0 from an all-zero
-                       // wavetable, silent output despite correct DSP upstream.
+                       // easy to drop by mistake: skipping it multiplies every
+                       // sample by gain 0 from an all-zero wavetable, silent
+                       // output despite correct DSP upstream.
     for (uint32_t v = 0; v < MAX_VOICES; v++) {
         voices[v] = SpeechVoice{};
         s_voice_ui[v] = { 0, 0, PHONEME_COUNT, false };
@@ -236,11 +229,9 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
         for (uint32_t v = 0; v < MAX_VOICES; v++) {
             const VoiceParams &p = vp.voices[v];
             if (p.utterance == SPEECH_NO_UTTERANCE) {
-                // #28 phoneme keyboard: one sustained phoneme, no sequencer.
-                // speech.md: "hold the bit set until the phoneme sequence
-                // completes, regardless of gate" -- this mode has no
-                // utterance to outlast the gate, so active == gate is
-                // exactly that rule applied to a single sustained phoneme.
+                // Phoneme keyboard: one sustained phoneme, no sequencer --
+                // active mirrors gate directly, since there's no utterance
+                // to outlast it.
                 speech_render_voice(voices[v], p.phase_inc, (float)SPEECH_RATE, p.trigger,
                                      p.amplitude, p.gate, p.phoneme, p.pan,
                                      p.formant_shift, p.bandwidth_scale,
@@ -249,17 +240,17 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
                 if (p.gate) active_mask |= (1u << v);
                 s_voice_ui[v] = { (uint16_t)voices[v].F[0], (uint16_t)voices[v].F[1], p.phoneme, p.gate };
             } else {
-                // #34 segment sequencer: active stays set until the
+                // Segment sequencer: active stays set until the
                 // utterance itself completes (sv.active, sequencer.h/
                 // render.h), which under SPEECH_MODE_GATED can outlive
                 // note-off by up to the release segment's own duration.
-                // #36: SPEECH_PHRASES (phrases.h, generated by #35's
-                // speechgen.py gen-phrases) replaces utterance.h's
-                // SPEECH_UTTERANCES here -- same SpeechUtterance shape, real
-                // phrase content instead of the two P3 fixtures (still used
-                // by tools/host_render/render_speech.cpp's #34-specific
-                // regression checks, which need HELLO/CAT's exact known
-                // phoneme strings, not whatever speech_phrases.txt says).
+                // SPEECH_PHRASES (phrases.h, generated by tools/speechgen.py
+                // gen-phrases) is the utterance source here -- same
+                // SpeechUtterance shape as utterance.h's hand-picked HELLO/CAT
+                // fixtures, which stay in place only for
+                // tools/host_render/render_speech.cpp's regression checks,
+                // which need their exact known phoneme strings, not whatever
+                // speech_phrases.txt currently says.
                 const SpeechUtterance &utt = SPEECH_PHRASES[p.utterance % SPEECH_PHRASE_COUNT];
                 speech_render_voice_seq(voices[v], p.phase_inc, (float)SPEECH_RATE, p.trigger,
                                          p.amplitude, p.gate, utt,
@@ -267,19 +258,18 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
                                          p.jitter, p.shimmer, p.lfo_rate, p.lfo_depth,
                                          dry_l, dry_r, NATIVE_SAMPLES_PER_BUFFER);
                 if (voices[v].active) active_mask |= (1u << v);
-                // #37: the sequencer (sequencer.h) tracks position as
-                // seg_index into `utt`, not a phoneme id directly -- resolve
-                // it here, same lookup speech_seg_load() itself does.
+                // The sequencer (sequencer.h) tracks position as seg_index
+                // into `utt`, not a phoneme id directly -- resolve it here,
+                // same lookup speech_seg_load() itself does.
                 uint8_t cur_phoneme = (voices[v].seg_index < utt.length) ? utt.phonemes[voices[v].seg_index] : PH_SIL;
                 s_voice_ui[v] = { (uint16_t)voices[v].F[0], (uint16_t)voices[v].F[1], cur_phoneme, voices[v].active };
             }
         }
 
-        // Post-mix effect (delay / reverb, selected by CC74) — identical
-        // shape to the subtractive/groovebox chain. Mono send / stereo
-        // return: downmix the stereo dry mix to mono, run the (still-mono)
-        // effect on it, then add its wet output identically to both
-        // channels. Clear the newly selected effect's buffer on a type
+        // Post-mix effect (delay / reverb, selected by CC74). Mono send /
+        // stereo return: downmix the stereo dry mix to mono, run the
+        // (still-mono) effect on it, then add its wet output identically to
+        // both channels. Clear the newly selected effect's buffer on a type
         // switch so a stale tail can't leak.
         bool has_fx = (vp.fx.type == FX_DELAY || vp.fx.type == FX_REVERB);
         if (vp.fx.type != s_last_fx_type) {

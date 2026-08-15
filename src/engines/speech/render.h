@@ -9,14 +9,14 @@
 #include "tract.h"
 #include <cstdint>
 
-// Shared core of the speech engine skeleton (#27): renders `native_frames`
+// Shared core of the speech engine's test-tone bring-up path: renders `native_frames`
 // samples of a fixed test tone at the engine's native rate and zero-order-
 // holds each one x2 into the (output-rate-sized) dry_l/dry_r buffers, i.e.
 // dry_{l,r}[2*i] == dry_{l,r}[2*i+1] for every native sample i. Both the
 // device path (engines/speech/audio_engine.cpp, called from the Core 1
 // render loop) and the host path (tools/host_render/render_speech.cpp) call
 // this exact function, so the ZOH seam and the frame-count arithmetic around
-// it are proven identical on both before any formant DSP exists.
+// it are identical on both.
 //
 // Deliberately has no pico-sdk dependency (osc/sine.h, pan.h, excitation.h,
 // tract.h and phonemes.h are all header-only, common-layer DSP) -- pulling
@@ -41,13 +41,12 @@ inline void speech_render_test_tone(uint32_t &phase, uint32_t phase_inc, int16_t
 }
 
 // Sub-block size: how often coefficients get recomputed from ramped F/B
-// (speech.md "Timing Domains": "Sub-block <=64 frames (1.45 ms)"). Same
-// value as the tracker's TRACKER_SUBBLOCK, for the same reason -- a unit of
-// parameter constancy, not of output.
+// (module_speech.md "Timing Domains") -- a unit of parameter constancy, not
+// of output.
 static constexpr uint32_t SPEECH_SUBBLOCK = 64;
 
 // Headroom applied to both excitation sources (glottal pulse and LFSR
-// noise, #29) before they hit the tract: each res2p stage has unity DC
+// noise) before they hit the tract: each res2p stage has unity DC
 // gain, but a narrow-bandwidth resonator has real gain at its own resonant
 // frequency (roughly 1/(1-r)), and five of them in series (the cascade)
 // compounds that. Without this the cascade clips well before `amplitude`
@@ -59,8 +58,8 @@ static constexpr uint32_t SPEECH_SUBBLOCK = 64;
 // checks()/run_nasal_checks()'s clip checks).
 static constexpr float SPEECH_EXCITATION_HEADROOM = 1.0f / 12.0f;
 
-// Renders `native_frames` samples of one voice's full tract output (#28
-// cascade, #29 parallel fricative/nasal branches + mixed excitation) at the
+// Renders `native_frames` samples of one voice's full tract output (cascade
+// plus parallel fricative/nasal branches, mixed excitation) at the
 // engine's native rate, panned and zero-order-held x2 into the
 // (output-rate-sized) dry_l/dry_r accumulators -- callers must clear those
 // buffers themselves and may call this once per active voice, since it
@@ -86,15 +85,15 @@ inline void speech_render_voice(SpeechVoice &sv, uint32_t phase_inc, float fs, u
                                  int32_t *dry_l, int32_t *dry_r, uint32_t native_frames) {
     sv.formant_shift_tgt = (float)formant_shift * (1.0f / 256.0f);
     sv.bandwidth_scale_tgt = (float)bandwidth_scale * (1.0f / 256.0f);
-    // Unpacked only on an actual trigger/phoneme change (#32: PHONEME_TARGETS
-    // is now the packed, flash-resident PhonemeDef -- phoneme_unpack() is the
-    // one place that expands it back to a FormantTarget), same as before
-    // this only happened on those two transitions, not every buffer.
+    // Unpacked only on an actual trigger/phoneme change -- PHONEME_TARGETS
+    // holds the packed, flash-resident PhonemeDef, and phoneme_unpack() is the
+    // one place that expands it back to a FormantTarget, so that cost is paid
+    // on those two transitions only, not every buffer.
     if (trigger != sv.last_trigger) {
         sv.last_trigger = trigger;
         sv.last_phoneme = phoneme;
         tract_retrigger(sv, phoneme_unpack(PHONEME_TARGETS[phoneme % PHONEME_COUNT]));
-        sv.glot_cycle_inc = phase_inc;  // #36: seed the first cycle before any wrap has fired
+        sv.glot_cycle_inc = phase_inc;  // seed the first cycle before any wrap has fired
     } else if (phoneme != sv.last_phoneme) {
         sv.last_phoneme = phoneme;
         tract_set_target(sv, phoneme_unpack(PHONEME_TARGETS[phoneme % PHONEME_COUNT]));
@@ -118,7 +117,7 @@ inline void speech_render_voice(SpeechVoice &sv, uint32_t phase_inc, float fs, u
         tract_advance_subblock(sv, fs);
         float amp_tgt = (gate ? (float)amplitude : 0.0f) * SPEECH_EXCITATION_HEADROOM;
 
-        // #36: vibrato is resampled once per sub-block (not per sample, not
+        // Vibrato is resampled once per sub-block (not per sample, not
         // per glottal cycle) -- `base_inc` is this sub-block's nominal
         // (vibrato-applied) phase increment; jitter perturbs it further,
         // once per glottal cycle, inside the sample loop below.
@@ -153,12 +152,12 @@ inline void speech_render_voice(SpeechVoice &sv, uint32_t phase_inc, float fs, u
     }
 }
 
-// Sequenced render (#34, speech.md P3 "Segment sequencer"). Unlike
-// speech_render_voice() above (#28's SPEECH_HOLD phoneme keyboard -- one
+// Sequenced render (module_speech.md "Segment sequencer"). Unlike
+// speech_render_voice() above (the SPEECH_HOLD phoneme keyboard -- one
 // note, one sustained phoneme, no sequencer at all), this steps the voice
 // through SPEECH_UTTERANCES[utterance_id]'s phoneme string one segment at a
 // time, with the sub-block cut point moved *inside* the per-voice loop
-// (speech.md "Sub-block cut point moves inside the voice loop"): k =
+// (module_speech.md "Sub-block cut point moves inside the voice loop"): k =
 // min(frames left in this call, samples left in the current segment,
 // SPEECH_SUBBLOCK) -- not just min(frames left, SPEECH_SUBBLOCK), the way
 // the HOLD path above cuts, since a sequenced voice's segment boundary can
@@ -168,7 +167,7 @@ inline void speech_render_voice(SpeechVoice &sv, uint32_t phase_inc, float fs, u
 // fixture table itself, same reasoning render.h already gives for taking
 // `phase_inc`/`fs` as parameters instead of baking in a specific source.
 // `mode`/`rate` are VoiceParams::mode/rate straight through (engine.h).
-// `jitter`/`shimmer`/`lfo_rate`/`lfo_depth` (#36, speech.md P4 "Vibrato
+// `jitter`/`shimmer`/`lfo_rate`/`lfo_depth` (module_speech.md "Vibrato
 // LFO"/"Jitter and shimmer"): applied to the glottal excitation exactly like
 // speech_render_voice() above, independent of the sequencer -- a phoneme
 // boundary changes tract targets, not excitation character, so jitter/
@@ -182,11 +181,10 @@ inline void speech_render_voice_seq(SpeechVoice &sv, uint32_t phase_inc, float f
     sv.formant_shift_tgt = (float)formant_shift * (1.0f / 256.0f);
     sv.bandwidth_scale_tgt = (float)bandwidth_scale * (1.0f / 256.0f);
 
-    // speech.md "Underrun policy", extended to malformed sequencer data: an
-    // empty/null utterance renders silence rather than dereferencing
-    // utt.phonemes[0] below -- the acceptance criterion "any inconsistency
-    // renders silence", verified by tools/host_render/render_speech.cpp
-    // deliberately constructing one.
+    // module_speech.md "Underrun policy", extended to malformed sequencer
+    // data: an empty/null utterance renders silence rather than
+    // dereferencing utt.phonemes[0] below, verified by
+    // tools/host_render/render_speech.cpp deliberately constructing one.
     bool malformed = (utt.length == 0 || utt.phonemes == nullptr);
 
     if (trigger != sv.last_trigger) {
@@ -199,10 +197,10 @@ inline void speech_render_voice_seq(SpeechVoice &sv, uint32_t phase_inc, float f
             tract_retrigger(sv, phoneme_unpack(PHONEME_TARGETS[PH_SIL]));
             sv.seg_remaining = 0xFFFFFFFFu;  // see speech_sequencer_advance()'s comment on why
         }
-        sv.glot_cycle_inc = phase_inc;  // #36: seed the first cycle before any wrap has fired
+        sv.glot_cycle_inc = phase_inc;  // seed the first cycle before any wrap has fired
     } else if (!malformed && !sv.seq_done) {
         // Note-off edge, checked once per call rather than per-sample --
-        // #30's SPEECH_MODE_GATED jump to the release segment. ONESHOT/LOOP
+        // SPEECH_MODE_GATED's jump to the release segment. ONESHOT/LOOP
         // have no extra work to do here; their note-off handling lives in
         // speech_sequencer_advance()'s end-of-utterance branch instead.
         if (sv.gate_prev && !gate && mode == SPEECH_MODE_GATED && sv.seg_index < utt.release_index) {
@@ -233,7 +231,7 @@ inline void speech_render_voice_seq(SpeechVoice &sv, uint32_t phase_inc, float f
         // filled for every frame of this call.
         float amp_tgt = (gate && !sv.seq_done ? (float)amplitude : 0.0f) * SPEECH_EXCITATION_HEADROOM;
 
-        // #36: vibrato resampled once per sub-block, same as
+        // Vibrato resampled once per sub-block, same as
         // speech_render_voice() above.
         uint32_t base_inc = phase_inc;
         if (lfo_rate > 0.0f && lfo_depth > 0.0f) {

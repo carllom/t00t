@@ -404,7 +404,7 @@ channel is needed at this stage.
 
 ### No shared `BlockClock` for FM and speech (#46)
 
-`fm.md` §5.3 flagged a possible shared abstraction: FM's `EnvDX` (#45) and
+`module_fm.md` §5.3 flagged a possible shared abstraction: FM's `EnvDX` (#45) and
 speech's per-voice segment sequencer (#34) both looked like *N independent
 control-rate clocks per voice, stepped at block boundaries, driving
 per-sample interpolated values* — a shape the tracker's single ordered
@@ -436,7 +436,7 @@ has no use for.
 
 **Decision: reject.** No shared code. This is a case of a common pattern at
 the design-sketch level that turned out not to be common code once both
-sides were real. `fm.md` open question 4 is closed on this basis. Speech's
+sides were real. `module_fm.md` open question 4 is closed on this basis. Speech's
 sequencer (#34/#36/#37, all hardware-verified) was not touched — this
 question should not be reopened by a future module without a similarly
 concrete comparison against real trees, not sketches.

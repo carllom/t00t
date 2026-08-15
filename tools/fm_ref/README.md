@@ -1,6 +1,6 @@
 # FM reference rig (F0)
 
-Ground-truth comparison harness for the FM module rewrite. See [fm2.md](../../fm2.md)
+Ground-truth comparison harness for the FM module rewrite. See history_fm.md
 §3 for why it exists and §4 for how it gates the phases.
 
 The short version: attempt 1 was validated by ear on hardware, which cannot tell
@@ -95,7 +95,7 @@ Never analyse those — the per-file normalisation destroys the level informatio
 | `dexed_render.cpp` | the reference renderer. |
 | `wav32.h` | float32 (analysis) and normalised PCM16 (listening) WAV writers, shared with the t00t side. |
 | `make_freq_bank.py` | synthetic banks sweeping coarse/fine/detune/fixed-frequency, for F5's frequency test. |
-| `sine_table_ab.py` | the §3.2 interpolation check — what the non-interpolated table costs across a modulation-index sweep. |
+| `sine_table_ab.py` | the history_fm.md §3.2 interpolation check — what the non-interpolated table costs across a modulation-index sweep. |
 | `dexed_dump.cpp` | control-plane trajectories as CSV (F1): EG, pitch EG, LFO, the integer tables, the algorithm table. |
 | `../fm_compare.py` | the signal-plane scorecard. |
 | `../fm_ctl_diff.py` | the control-plane conformance suite (F1). |

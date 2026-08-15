@@ -1,8 +1,7 @@
-"""nrl_rules.py -- host-side English letter-to-sound engine (#35, speech.md
-"Host Tooling" / Phase 3's "NRL letter-to-sound rules engine (~400 rules,
-6-8 KB)" -- kept host-only exactly as that line recommends: the device never
-links this file or any rule table, it only ever sees the phoneme bytes
-speechgen.py's gen-phrases baked into phrases.h).
+"""nrl_rules.py -- host-side English letter-to-sound engine (#35, module_speech.md
+"Host Tooling", Phase 3). Kept host-only: the device never links this file
+or any rule table, it only ever sees the phoneme bytes speechgen.py's
+gen-phrases baked into phrases.h.
 
 Same shape as the original NRL Report 7948 (Elovitz et al. 1976) algorithm:
 an ordered list of context-sensitive rules per starting letter, tried
@@ -12,10 +11,8 @@ entries built up over years of chasing English spelling's exceptions; this
 one is a few dozen, covering common digraphs/vowel-teams/suffixes plus a
 short whole-word exception list for irregular high-frequency words (THE, OF,
 ONE, ...). speechgen.py's phrase-list override syntax ({SYM SYM ...}) is the
-intended escape hatch for whatever this rule set gets wrong, per #35's own
-framing ("that is what the override is for, rather than expanding the rule
-set indefinitely") -- so this file grows only when a real phrase needs it,
-not preemptively.
+intended escape hatch for whatever this rule set gets wrong -- so this file
+grows only when a real phrase needs it, not preemptively.
 
 Output phonemes are symbol strings matching tools/speech_phonemes.csv's
 `symbol` column exactly (e.g. "K_CL", "K_BR", "AE") -- speechgen.py validates
@@ -247,11 +244,9 @@ def _classify_group(groups: List[Rule]) -> List[Rule]:
 # Common irregular / high-frequency words a general spelling rule would get
 # wrong (function words especially -- "the"/"of"/"one" are exactly the words
 # a phrase bank leans on most and rules handle worst). Checked before the
-# rule engine runs at all; this is the practical version of #35's own
-# guidance ("the rules get wrong ... that is what the override is for") pre
-# -applied to the small set of words common enough to be worth it here,
-# instead of leaving every phrase author to discover and override them by
-# ear one at a time.
+# rule engine runs at all, pre-applied to the small set of words common
+# enough to be worth it here, instead of leaving every phrase author to
+# discover and override them by ear one at a time.
 WORD_EXCEPTIONS: Dict[str, Tuple[str, ...]] = {
     "A": ("AX",),
     "I": ("AY",),

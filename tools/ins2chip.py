@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """ins2chip.py -- GoatTracker .ins instrument file -> chip_instruments.txt block
-(chip.md §1 P4, §11.2 ".ins compatibility").
+(module_chip.md §1, §11.2 ".ins compatibility").
 
     ins2chip.py <file.ins> [file2.ins ...] [-o out.txt]
 
@@ -16,16 +16,14 @@ Byte layout below was read directly out of GoatTracker2's own save/load
 source (src/gsong.c: saveinstrument()/loadinstrument(), src/gcommon.h's
 INSTR struct) and cross-checked field-by-field against two real .ins files
 (examples/sfx_arp1.ins, examples/sfx_gun.ins) from the same tree --
-leafo/goattracker2 on GitHub, commit current as of 2026-08. Not guessed
-from a web summary (an earlier search claimed a "GTI5" fixed-offset layout
-that doesn't match either the real source or the real files -- ptr[]
-relocation and the wave/pulse/filter row grammar below are only visible in
-gplay.c's actual playback code, not documented in the repo's own readme or
-ChiptuneSAK's docs).
+leafo/goattracker2 on GitHub, commit current as of 2026-08. ptr[] relocation
+and the wave/pulse/filter row grammar below are only visible in gplay.c's
+actual playback code, not documented in the repo's own readme or
+ChiptuneSAK's docs.
 
 What this converter refuses to guess at, and errors out on instead of
-silently mis-translating (chip.md §11.2's "what is actually lost" already
-flags most of this at the design level):
+silently mis-translating (module_chip.md §11.2 already flags most of this at
+the design level):
 
   * WAVECMD rows (wavetable-embedded portamento/vibrato/set-AD/set-SR/
     set-wave/set-filterptr/etc, GT's 0xF0-0xFE wave byte range) -- these
@@ -210,7 +208,7 @@ def decode_wave_table(ltab, rtab, optr_w, path):
             # can't express "hold at whatever's current" as a fixed target,
             # so a loop here maps straight to the transition row instead,
             # dropping up to w frames (<=15, 300ms) of hold on repeat
-            # passes only. Approximation, not exact -- see chip.md §14e.3.
+            # passes only. Approximation, not exact -- see history_chip.md §14e.3.
             rows[-1][2] += w
             raw_to_emitted[i] = len(rows)
             rows.append([None, note, 1])

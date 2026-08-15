@@ -11,7 +11,7 @@
 // loop) and the host path (tools/host_render/render_fm.cpp) call this exact
 // function, so the FM table lookup and phase arithmetic are proven identical
 // on both before any operator kernel, patch struct, envelope, or algorithm
-// table exists -- fm.md's P0 measurement gate is the very next slice.
+// table exists -- module_fm.md's P0 measurement gate is the very next slice.
 //
 // No pico-sdk dependency (sine_tab.h and pan.h are both header-only,
 // common-layer DSP) -- pulling in engine.h/engine_base.h here instead would

@@ -3,13 +3,11 @@
 #include "res2p.h"
 #include <cmath>
 
-// Speaker simulation output stage -- chip.md §1 P5, §10 (HP cone rolloff ->
+// Speaker simulation output stage -- module_chip.md §10 (HP cone rolloff ->
 // resonant "boxy" peak -> LP -> soft clip). Downstream of the FX insert
-// (delay/reverb) and upstream of the final int16 __ssat -- §10's own "you
-// want delay -> speaker, or reverb -> speaker", and open question 4
-// (resolved): the stage's own soft clip is the cone-breakup *character*,
-// a tonal choice, not the final safety clamp, so it runs before that clamp
-// rather than after it.
+// (delay/reverb) and upstream of the final int16 __ssat: the stage's own
+// soft clip is the cone-breakup *character*, a tonal choice, not the
+// final safety clamp, so it runs before that clamp rather than after it.
 //
 // Float, not the chip primitives' fixed-point: this sits downstream of the
 // insert (delay/reverb), which are already float (fx/reverb.h's Freeverb),
@@ -55,9 +53,7 @@ struct SpeakerPresetDef {
 };
 
 // Numbers below are a first, doc-range-respecting pass, not a hardware-
-// measured or by-ear-tuned set -- same status P3's vibrato constants had
-// before Carl's by-ear pass (chip.md §14d.5): "a better first guess, not a
-// calibrated one." Needs a real listen before it's trusted.
+// measured or by-ear-tuned set. Needs a real listen before it's trusted.
 static const SpeakerPresetDef SPEAKER_PRESETS[SPEAKER_PRESET_COUNT] = {
     // hp_hz  peak_hz  peak_bw  lp_hz    drive
     {  150.0f,  500.0f,  250.0f, 9000.0f, 1.0f },  // SPEAKER_1702 -- open, mild
@@ -102,15 +98,14 @@ struct SidSpeakerStage {
 
     inline float tick(float x) {
         // SPEAKER_BYPASS: a real short-circuit, not "corners tuned wide
-        // enough to sound flat" -- Carl heard the difference (a "tiny bit
-        // dull" against the pre-P5 build). Root cause: res2p's own LUT
-        // clamps peak_bw to RES2P_RADIUS_X_MAX (res2p.h) rather than
-        // extrapolating, so the intended ~4 kHz bandwidth silently became
-        // ~1.1 kHz at this sample rate -- a real, if broad, resonant bump,
-        // not the negligible one the SPEAKER_PRESETS row aimed for. A
-        // resonant 2-pole filter genuinely cannot be tuned into a flat
-        // response by widening bw past what the pole radius supports; only
-        // an actual passthrough is guaranteed transparent.
+        // enough to sound flat" -- res2p's own LUT clamps peak_bw to
+        // RES2P_RADIUS_X_MAX (res2p.h) rather than extrapolating, so the
+        // intended ~4 kHz bandwidth silently becomes ~1.1 kHz at this
+        // sample rate -- a real, if broad, resonant bump, not the
+        // negligible one the SPEAKER_PRESETS row aims for. A resonant
+        // 2-pole filter genuinely cannot be tuned into a flat response by
+        // widening bw past what the pole radius supports; only an actual
+        // passthrough is guaranteed transparent.
         if (current_preset == SPEAKER_BYPASS) return x;
 
         hp_lp_state += (x - hp_lp_state) * hp_a;

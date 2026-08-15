@@ -1,14 +1,12 @@
 #!/usr/bin/env python3
 """sine_table_ab -- what does t00t's non-interpolated sine table cost at real
-modulation indices? (fm2.md §3.2, the F0 check.)
+modulation indices? (history_fm.md §3.2, the F0 check.)
 
-fm.md §3.5 justified dropping interpolation with an estimated ~-72 dBc
-truncation-spur floor. That estimate was reasoned about a bare sine. Under phase
-modulation the truncation error is no longer a fixed low-level dither: the
-lookup index moves through the table at a rate set by the *modulated* phase, so
-the spur floor rises with modulation index. Since fixing fm2.md §1.1(a) is
-specifically about letting real patches reach index 3-10, the estimate needs
-checking in that range before F2 commits to a kernel shape.
+Under phase modulation the truncation error is no longer a fixed low-level
+dither: the lookup index moves through the table at a rate set by the
+*modulated* phase, so the spur floor rises with modulation index. Real DX7
+patches reach modulation indices of roughly 3-10, so that is the range this
+measures.
 
 Models t00t's exact integer arithmetic (uint32 phase accumulator, 4096-entry
 int16 table, index = phase >> 20) for a 2-operator pair -- modulator through the
@@ -17,7 +15,7 @@ with identical increments, and reports SNR over a beta sweep.
 
 Three variants, to separate the two independent error sources:
   trunc-16    4096-entry int16 table, no interpolation   (what op.h does today)
-  interp-16   same table, linear interpolation           (costs ~45%/op, fm.md §3.5)
+  interp-16   same table, linear interpolation           (costs ~45%/op, module_fm.md §3.5)
   trunc-24    4096-entry int32 table, no interpolation   (isolates phase
               truncation from 16-bit amplitude quantisation)
 
@@ -44,8 +42,8 @@ def render(f_c, f_m, beta, mode):
     """One 2-operator FM pair. Returns float64 audio in [-1, 1].
 
     `beta` is the modulation index in radians, applied as a full-circle phase
-    offset: 2**32 phase units == 2*pi radians, matching the contract fm2.md §2
-    proposes (unity operator output == one full cycle of deviation).
+    offset: 2**32 phase units == 2*pi radians, matching the contract in
+    history_fm.md §2 (unity operator output == one full cycle of deviation).
     """
     n = np.arange(N)
     inc_c = int(f_c / SR * 2 ** 32)

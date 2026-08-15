@@ -1,16 +1,13 @@
-// Host-side proof of src/engines/fm/render.h (#41) and, below, of
-// src/engines/fm/op.h + patch.h (#44): the #41 section renders the engine
-// skeleton's fixed test tone through the FM-specific 4096-entry sine table
-// (no interpolation, phase >> 20); the #44 section renders FM_TEST_PATCH --
-// the same one hardcoded 6-op patch device's audio_engine.cpp plays from
-// MIDI -- through the exact same fm_resolve_routing()/fm_voice_note_on()/
-// fm_render_voice() the device calls, checks the DAG-routing compiler's
-// accept/reject behaviour (multi-operator cycle rejected, self-loop/
-// feedback accepted), and Goertzel-checks the spectrum against what the
-// routing predicts. Dexed is the eventual ground-truth reference for this
-// module (fm.md §7), but that's a P3+ concern -- this harness proves
-// correctness the same pragmatic way render_speech.cpp's formant checks do:
-// real, predictable spectral content in the right place, not a byte-exact
+// Host-side proof of src/engines/fm/render.h (#41) and src/engines/fm/op.h +
+// patch.h (#44): renders the engine skeleton's fixed test tone through the
+// FM-specific 4096-entry sine table (no interpolation, phase >> 20), then
+// renders FM_TEST_PATCH -- the same hardcoded 6-op patch device's
+// audio_engine.cpp plays from MIDI -- through the exact
+// fm_resolve_routing()/fm_voice_note_on()/fm_render_voice() the device
+// calls, checks the DAG-routing compiler's accept/reject behaviour
+// (multi-operator cycle rejected, self-loop/feedback accepted), and
+// Goertzel-checks the spectrum against what the routing predicts: real,
+// predictable spectral content in the right place, not a byte-exact
 // reference render. No pico-sdk, no ARM intrinsics -- render.h/op.h/patch.h
 // only touch sine_tab.h and pan.h (see render.h's own header comment for
 // why that matters).
@@ -67,7 +64,7 @@ static bool run_test_tone_check() {
     bool ok = write_wav_pcm16("fm_test_tone.wav", out, SAMPLE_RATE, 2);
 
     // Table sanity: a 4096-entry table with quarter-wave symmetric
-    // generation (fm.md §5.1) must still be an odd function about the origin
+    // generation (module_fm.md §5.1) must still be an odd function about the origin
     // and zero at phase 0 -- the actual invariant this skeleton's table
     // generation depends on, independent of anything audible.
     bool table_ok = (fm_sine_table[0] == 0);
@@ -85,9 +82,9 @@ static bool run_test_tone_check() {
 
 // #44's DAG-routing compiler (patch.h's fm_resolve_routing()): must reject a
 // cycle spanning two or more operators, and must accept a self-loop
-// (feedback) on an otherwise clean chain -- fm.md §4.2's "DAG + self-loops
-// only" constraint, exercised on FM_TEST_PATCH itself (which already has a
-// feedback operator, op3) plus one deliberately broken variant.
+// (feedback) on an otherwise clean chain (module_fm.md §4.2), exercised on
+// FM_TEST_PATCH itself (which already has a feedback operator, op3) plus
+// one deliberately broken variant.
 static bool run_routing_checks() {
     FmRouting r_ok;
     bool ok_valid = fm_resolve_routing(FM_TEST_PATCH, r_ok);
@@ -111,15 +108,7 @@ static bool run_routing_checks() {
     return pass;
 }
 
-// the old level model (eg_to_linear against DX7_LEVEL_TO_LOG2, unity at level
-// 99, monotonicity, "not a linear ramp"), none of which exist any more --
-// env_dx.h is now a direct port of Dexed's Env and folds output level into the
-// envelope's own targets. The coverage moved somewhere strictly stronger:
-// tools/fm_ctl_diff.py's table/scaleoutlevel and eg/* cases compare against
-// Dexed's actual numbers rather than against this engine's own assumptions.
-
-// Goertzel magnitude of a Hann-windowed segment at `freq` Hz. Same technique
-// render_speech.cpp uses for its formant/sideband checks.
+// Goertzel magnitude of a Hann-windowed segment at `freq` Hz.
 static float goertzel_mag(const std::vector<float> &x, size_t start, size_t n, float freq, float fs) {
     float w = 2.0f * (float)M_PI * freq / fs;
     float coeff = 2.0f * cosf(w);
@@ -157,18 +146,12 @@ static FmPatch flat_eg_patch() {
 // Renders `total` samples of `patch` at `note_hz` (default: one second)
 // through the exact device code path (fm_voice_note_on/fm_render_voice,
 // op.h), mono-summed for spectral analysis. Never releases (no
-// fm_voice_note_off call) -- callers that need release behaviour use
-// render_patch_release() below instead.
+// fm_voice_note_off call).
 //
-// #49: always drives a real FmPitchEg/FmLfo (not the nullptr-skip path) --
-// this is the "exact device code path" harness, and FM_TEST_PATCH's own
-// pmd=amd=0 means every EXISTING caller here is still unaffected (lfo.h's
-// own depth-fraction math is exactly 0 regardless of mod_wheel). Default
-// mod_wheel=32767 (full) rather than 0 so a real DX7 patch bank's
-// configured vibrato/tremolo (once syx2patch.py bakes lfo/pitch_eg fields)
-// is actually audible in the batch-rendered fm_patches/*.wav bank by
-// default -- see lfo.h's own header comment on why 0 would otherwise mean
-// "no effect at all" regardless of patch data.
+// Always drives a real FmPitchEg/FmLfo, not the nullptr-skip path -- this is
+// the "exact device code path" harness. Default mod_wheel=32767 (full)
+// rather than 0 so a patch's configured vibrato/tremolo is actually audible
+// in the batch-rendered fm_patches/*.wav bank by default.
 static void render_patch_note(const FmPatch &patch, float note_hz, const FmRouting &routing,
                                FmVoiceBuses &bus, std::vector<float> &mono, int32_t &peak,
                                uint32_t total = SAMPLE_RATE, int16_t mod_wheel = 32767) {
@@ -202,20 +185,15 @@ static void render_patch_note(const FmPatch &patch, float note_hz, const FmRouti
     }
 }
 
-// #44's acceptance criterion: "render_fm renders the same patch to WAV; the
-// spectrum matches the ratios and sideband structure the routing predicts."
 // FM_TEST_PATCH's op4/op5 pair is a 1:1 modulator:carrier ratio, which
 // predicts a full harmonic series at the note's own integer multiples
-// (fm.md §4.1's routing claim made audible: the *shape* of the spectrum is
-// determined entirely by note-on-resolved ratios/routing, nothing else).
-// Verified two ways: (1) real energy at 2x/3x the fundamental, clearly above
-// the noise floor at non-harmonic bins; (2) that content tracks the note --
-// rendering an octave up moves the fundamental peak with it, proving the
-// per-operator increments really do scale off the note (not some fixed
-// drone), which is what "correct ratios across the keyboard" means. Uses
-// flat_eg_patch() (above), not FM_TEST_PATCH's real EG shape, so a
-// deliberately-fast-decaying modulator (op4, #45's EP timbre) doesn't
-// confound a check that's fundamentally about routing, not envelopes.
+// (module_fm.md §4.1). Checked two ways: (1) real energy at 2x/3x the
+// fundamental, clearly above the noise floor at non-harmonic bins; (2) that
+// content tracks the note -- rendering an octave up moves the fundamental
+// peak with it, proving the per-operator increments scale off the note, not
+// a fixed drone. Uses flat_eg_patch() (above), not FM_TEST_PATCH's real EG
+// shape, so a deliberately-fast-decaying modulator doesn't confound a check
+// that's fundamentally about routing, not envelopes.
 static bool run_patch_spectrum_check() {
     fm_init_sine_tab();
     osc_init_sine();
@@ -240,8 +218,8 @@ static bool run_patch_spectrum_check() {
     render_patch_note(patch, NOTE_LOW, routing, bus, low, peak_low);
     render_patch_note(patch, NOTE_HIGH, routing, bus, high, peak_high);
 
-    // WAV of the low note, for Carl's by-ear check against Dexed on an
-    // equivalent patch (fm.md §11 step 3).
+    // WAV of the low note, for the author's by-ear check against Dexed on an
+    // equivalent patch (module_fm.md §11 step 3).
     std::vector<int16_t> wav(low.size() * 2);
     for (size_t i = 0; i < low.size(); i++) {
         int16_t s = (int16_t)std::clamp(low[i], -32768.0f, 32767.0f);
@@ -258,15 +236,10 @@ static bool run_patch_spectrum_check() {
     // (1) harmonic content: 2nd harmonic must clear the noise floor by a
     // real margin, and a genuinely off-grid probe must NOT (otherwise the
     // "signal" is just broadband noise, not the specific sideband structure
-    // FM predicts). The floor probe used to sit at NOTE_LOW*4.5 -- safely
-    // off-grid back when op0's real modulation depth was negligible (pre-
-    // #57's ceiling fix), because the audible spectrum was then dominated
-    // by NOTE_LOW's own 220 Hz-multiple grid. #57 raised real depth enough
-    // that op0's ratio (0.5, two hops upstream of the carrier through op2/
-    // op4) now visibly pulls the *true* fundamental down to NOTE_LOW*0.5 --
-    // host-verified (#57): every multiple of 110 Hz carries real energy,
-    // and 990 Hz (NOTE_LOW*4.5) is exactly the 9th one, not noise at all.
-    // NOTE_LOW*4.3 (946 Hz) isn't a multiple of either grid -- verified ~0.01.
+    // FM predicts). The floor probe sits at NOTE_LOW*4.3 (946 Hz), which is
+    // not a multiple of either the note's own grid or the true fundamental
+    // that op0's 0.5 ratio pulls down to (NOTE_LOW*0.5, two hops upstream of
+    // the carrier through op2/op4).
     float h1 = goertzel_mag(low, start, n, NOTE_LOW * 1, (float)SAMPLE_RATE);
     float h2 = goertzel_mag(low, start, n, NOTE_LOW * 2, (float)SAMPLE_RATE);
     float floor_mag = goertzel_mag(low, start, n, NOTE_LOW * 4.3f, (float)SAMPLE_RATE);
@@ -318,23 +291,12 @@ static bool run_eg_shape_check() {
     fm_voice_note_on(ops, FM_TEST_PATCH, inc, /*amplitude=*/32767, /*midinote=*/57);  // A3, matches 220Hz
 
     // Step in FM_BLOCK-sized increments (same granularity the device
-    // uses), recording each operator's gain at a handful of checkpoints.
-    // Checkpoints were 1ms/200ms from #59 until the rate-conversion fix
-    // below: `env_dx.h`'s `dx7_qrate_to_octaves_per_sec_q8()` was missing a
-    // `>> LG_N` (LG_N=6, Dexed's own real per-render-call block size,
-    // Source/msfa/synth.h) when converting Dexed's real `inc_` -- a Q24
-    // octaves-per-*64-sample-Dexed-block* delta -- into an octaves-per-
-    // *second* rate, so every stage of every envelope ran a real 64x too
-    // fast (confirmed by building Dexed's actual env.cc/exp2.cc standalone
-    // and A/B-rendering a real ROM1A patch against it -- a decay this
-    // engine finished in ~600ms was, in real Dexed, still clearly sounding
-    // past 2000ms). Host-probed directly against the *fixed* rate table:
-    // FM_TEST_PATCH's slowest-attack operator (op3, R1=90) is still
-    // *exactly* zero at 16ms and first nonzero at 17ms, and every operator
-    // has fully settled into its stage-3 sustain (bit-for-bit unchanging
-    // block to block) by 800ms -- so 25ms/1000ms (comfortable margin either
-    // side) is what "near attack peak" / "settled" now actually mean, not
-    // 1ms/200ms.
+    // uses), recording each operator's gain at 25ms and 1000ms:
+    // FM_TEST_PATCH's slowest-attack operator (op3, R1=90) is still exactly
+    // zero at 16ms and first nonzero at 17ms, and every operator has fully
+    // settled into its stage-3 sustain (bit-for-bit unchanging block to
+    // block) by 800ms, so these checkpoints sit with a comfortable margin
+    // either side of "near attack peak" / "settled".
     uint32_t done = 0;
     auto step_to = [&](uint32_t target_sample, int32_t out_gain[FM_NUM_OPS]) {
         while (done < target_sample) {
@@ -360,9 +322,9 @@ static bool run_eg_shape_check() {
     // (2) Independence: op4 (the modulator, EG_LEVEL {99,20,15,0}) decays
     // to a much smaller fraction of its own 25ms level than op5 (the
     // carrier, {99,70,60,0}) does of its own -- the whole point of the EP
-    // patch (fm.md P2 gate). Compared as fractions, not raw gain, since
-    // op4 and op5 have very different reference `level` magnitudes
-    // (patch.h's #44 modulator-vs-carrier scale, unrelated to the EG).
+    // patch. Compared as fractions, not raw gain, since op4 and op5 have
+    // very different reference `level` magnitudes (patch.h's modulator-vs-
+    // carrier scale, unrelated to the EG).
     float op4_frac = std::fabs((float)g_1000ms[4] / (float)g_25ms[4]);
     float op5_frac = std::fabs((float)g_1000ms[5] / (float)g_25ms[5]);
     bool independence_ok = op4_frac < op5_frac * 0.6f;
@@ -390,10 +352,8 @@ static bool run_eg_shape_check() {
     return pass;
 }
 
-// #45's acceptance criterion: "Note-off releases through the EG's release
-// stage; a voice reports itself free only when its carriers have actually
-// decayed." Verifies both halves: fm_voice_active() does NOT drop the
-// instant gate goes false (there IS a release, not #44's hard cutoff), and
+// Verifies both halves of note-off/release: fm_voice_active() does NOT drop
+// the instant gate goes false (there is a release, not a hard cutoff), and
 // it DOES eventually become false, with the carrier's own gain landing on
 // an exact 0 -- not an epsilon-close guess (env_dx.h's EG_SILENCE_THRESHOLD
 // guarantee) -- avoiding the tracker's #21 "key-off never frees a voice"
@@ -455,16 +415,9 @@ static bool run_release_check() {
     return pass;
 }
 
-// FmOp::static_log2 / FmOp::rate_scale_qrate, fields F3 deleted when key
-// scaling moved inside EnvDX. tools/fm_ctl_diff.py's table/scale-level (55040
-// rows) and table/scale-rate (1024 rows) now check exactly this, exactly,
-// against Dexed.
-
-// #49's pitch EG acceptance criterion: "applied by scaling all six operator
-// increments at block boundaries ... zero per-sample cost." Checked
-// directly against pitch_eg.h's own state machine (trigger/step/release)
-// plus op.h's fm_voice_step_pitch_and_mod() increment scaling, the same
-// "read the intermediate state, not just the mixed audio" method
+// Checked directly against pitch_eg.h's own state machine (trigger/step/
+// release) plus op.h's fm_voice_step_pitch_and_mod() increment scaling, the
+// same "read the intermediate state, not just the mixed audio" method
 // run_eg_shape_check() uses for the amplitude EG -- a single voice's pitch
 // is a scalar the mixed spectrum can't cleanly separate from ordinary
 // vibrato/detune.
@@ -522,7 +475,7 @@ static bool run_pitch_eg_check() {
     FmLfo lfo2;
     uint32_t note_inc = fm_phase_inc(220.0f);
     fm_voice_note_on(ops, patch, note_inc, 32767, /*midinote=*/57, &peg2, &lfo2);
-    // F5: the operator's neutral-pitch increment is resolved at note-on into
+    // The operator's neutral-pitch increment is resolved at note-on into
     // FmOp::base_inc, so read it from there rather than recomputing -- which
     // also checks that note-on actually stored it.
     uint32_t base_inc_op1 = ops[1].base_inc;
@@ -549,20 +502,18 @@ static bool run_pitch_eg_check() {
     return pass;
 }
 
-// #49's LFO acceptance criteria: all six waveforms, rate, delay, PMD/AMD,
-// key sync are real and correctly shaped -- checked directly against
-// lfo.h's own tables/functions, plus one integration check that AM
+// Checked directly against lfo.h's own tables/functions: all six waveforms,
+// rate, delay, PMD/AMD, and key sync, plus one integration check that AM
 // actually reaches fm_voice_step_envelopes()'s gain output.
 static bool run_lfo_check() {
     fm_init_sine_tab();
     env_dx_init_tables();
 
     // (1) Waveform shapes, sampled at phase 0 / quarter / half / three-quarter.
-    // F6: the two sawtooths now carry Dexed's own half-cycle rotation (see
-    // lfo.h), so their phase-0 value is the MIDDLE of the ramp, not an end of
-    // it -- and their ends land at Q2 instead. The tent/square/sine cases are
-    // unchanged. Checked against the rotation rather than around it, so this
-    // still fails if the rotation is dropped again.
+    // The two sawtooths carry Dexed's own half-cycle rotation (see lfo.h),
+    // so their phase-0 value is the middle of the ramp, not an end of it,
+    // and their ends land at Q2 instead. Checked against the rotation
+    // rather than around it, so a regression there doesn't slip through.
     constexpr uint32_t Q0 = 0, Q1 = 0x40000000u, Q2 = 0x80000000u, Q3 = 0xC0000000u;
     bool tri_ok = fm_lfo_waveform_unipolar(Q0, 0) < 0.05f && fm_lfo_waveform_unipolar(Q2, 0) > 0.95f;
     bool sawdown_ok = std::fabs(fm_lfo_waveform_unipolar(Q0, 1) - 0.5f) < 0.05f
@@ -577,16 +528,13 @@ static bool run_lfo_check() {
     bool waveforms_ok = tri_ok && sawdown_ok && sawup_ok && square_ok && sine_ok;
 
     // (2) Rate table: real-Hz anchors (rate 0 ~0.065 Hz / ~15.5s period,
-    // rate 99 ~50.9 Hz -- cross-checked against a standalone calibration
-    // harness running Dexed's own real Lfo::init() formula).
+    // rate 99 ~50.9 Hz), matching Dexed's own Lfo::init() formula.
     float hz0 = dx7_lfo_rate_to_hz(0), hz99 = dx7_lfo_rate_to_hz(99);
     bool rate_ok = hz0 > 0.05f && hz0 < 0.08f && hz99 > 45.0f && hz99 < 55.0f;
 
-    // (3) Delay: instant at 0; at 99 the accumulator must sit fully CLOSED for
-    // ~2.66s and only then ramp. F6 replaced the old single seconds-to-open
-    // number with Dexed's real two-stage accumulator, so this checks the shape
-    // (closed / opening / open) rather than one duration -- the old version
-    // could not have distinguished a ramp from a delay at all.
+    // (3) Delay: instant at 0; at 99 the accumulator must sit fully closed
+    // for ~2.66s and only then ramp -- checks the shape (closed / opening /
+    // open), not just a single duration.
     uint32_t d0a, d0b, d99a, d99b;
     dx7_lfo_delay_incs(0, d0a, d0b);
     dx7_lfo_delay_incs(99, d99a, d99b);
@@ -629,14 +577,11 @@ static bool run_lfo_check() {
     bool oscillates_ok = min_cents < -900.0f && max_cents > 900.0f;  // FM_LFO_PMD_MAX_CENTS is ~1190.6
     bool amp_swings_ok = max_atten > 0.7f;
 
-    // (5) F6 inverted this check. It used to assert that mod_wheel=0 SILENCES
-    // both outputs regardless of patch depth -- #49's "wheel is a multiplier"
-    // convention. That is now the defect, not the contract: a factory patch's
-    // configured vibrato must play with the wheel at rest, and the wheel is a
-    // separate source combined by max() (lfo.h). So the assertion is that a
-    // full-depth patch at wheel 0 still modulates, and that raising the wheel
-    // never REDUCES it. Inverted rather than deleted so the old behaviour
-    // cannot come back unnoticed.
+    // (5) A full-depth patch's configured vibrato must play with the wheel
+    // at rest -- the wheel is a separate modulation source combined with
+    // the patch's own depth by max() (lfo.h), not a multiplier gating it.
+    // Assert a full-depth patch at wheel 0 still modulates, and that
+    // raising the wheel never reduces it.
     FmLfo lfo_wheel0;
     fm_lfo_init(lfo_wheel0);
     fm_lfo_trigger(lfo_wheel0, false);
@@ -657,13 +602,10 @@ static bool run_lfo_check() {
     // first sample is already at a bipolar extreme (square, unlike sine's
     // own zero-crossing start), the very first block after trigger must be
     // far smaller than that extreme -- the fade-in is real, not a no-op.
-    // F6: driven at mod_wheel=0, because the delay gates the PATCH's own depth
-    // only. Dexed's wheel term (`pmod_2`) carries no `lfo_delay` factor at all,
-    // so a player who pushes the wheel during the delay period gets vibrato
-    // immediately -- correct, and the reason this check used to read as a pass
-    // only by accident (it drove the wheel at full and the old multiplicative
-    // convention then re-applied the delay on top). Both directions are
-    // asserted now: suppressed at wheel 0, immediate at wheel 1.
+    // Driven at mod_wheel=0, since the delay gates only the patch's own
+    // depth: Dexed's wheel term carries no delay factor at all, so pushing
+    // the wheel during the delay period gets vibrato immediately. Both
+    // directions are asserted: suppressed at wheel 0, immediate at wheel 1.
     FmLfoParams p_delay{ 99, 99, 99, 99, /*waveform=*/3, false, 7 };
     FmLfo lfo_delay;
     fm_lfo_init(lfo_delay);
@@ -691,8 +633,7 @@ static bool run_lfo_check() {
     fm_voice_note_on(ops_b, patch, inc, 32767, 57);
     // Run both to a real, settled nonzero gain first (rate-99's attack is
     // fast but not literally one FM_BLOCK=16-sample/0.36ms step, per
-    // run_eg_shape_check()'s own 25ms checkpoint -- env_dx.h's rate-
-    // conversion fix, see that function's comment) before comparing --
+    // run_eg_shape_check()'s own 25ms checkpoint) before comparing --
     // otherwise both would still read exactly 0 and "b < a" would trivially
     // fail without AM being the reason.
     uint32_t settle = 0;
@@ -728,20 +669,16 @@ static bool run_lfo_check() {
 }
 
 #ifdef T00T_FM_HAS_PATCHES
-// #47's acceptance criterion: "render_fm renders a fixed set of notes per
-// patch to WAV on the host, so #53 has something to diff against Dexed."
 // One held note (A3, matching NOTE_LOW's convention above), 3 seconds --
 // longer than render_patch_note()'s 1s default, since real DX7 patches
 // include deliberately slow-swelling sound effects (ROM1A's "TAKE OFF",
 // R1=9, is inaudible inside 1s but real inside 3s) -- per patch in the
-// generated bank. #53's own job is the actual Dexed diff and any
-// multi-note/velocity-layer coverage that needs; this just has to produce
-// real, bounded, non-silent audio for every patch that made it through
-// syx2patch.py, through the exact same fm_resolve_routing()/
-// fm_voice_note_on()/fm_render_voice() path everything else in this file
-// uses. Conditionally compiled -- patches.h is generated locally and
-// gitignored (see CMakeLists.txt), so this function (and its #include
-// above) only exist once someone has run tools/syx2patch.py.
+// generated bank. Produces real, bounded, non-silent audio for every patch
+// that made it through syx2patch.py, through the exact same
+// fm_resolve_routing()/fm_voice_note_on()/fm_render_voice() path everything
+// else in this file uses. Conditionally compiled -- patches.h is generated
+// locally and gitignored, so this function (and its #include above) only
+// exist once someone has run tools/syx2patch.py.
 static bool run_patch_bank_render() {
     fm_init_sine_tab();
     osc_init_sine();
@@ -786,14 +723,13 @@ static bool run_patch_bank_render() {
         bool bounded = wrote && peak > 0 && peak < 32768;
         if (bounded) bounded_ok++;
 
-        // #57 regression guard: real sideband energy relative to the
-        // patch's own fundamental, not just "bounded and non-silent"
-        // (which #47 alone already checked, and which a near-pure sine
-        // satisfies just as well as a rich FM tone -- exactly the bug #57
-        // fixed). The fundamental is the *lowest-ratio carrier's* own
-        // frequency, not necessarily note_hz -- carriers can run at
-        // fractional ratios (BRASS 1's op0 is 0.5x), so assuming note_hz
-        // would silently probe the wrong bin for those patches.
+        // Regression guard: real sideband energy relative to the patch's
+        // own fundamental, not just bounded and non-silent (a near-pure
+        // sine satisfies that just as well as a rich FM tone). The
+        // fundamental is the lowest-ratio carrier's own frequency, not
+        // necessarily note_hz -- carriers can run at fractional ratios
+        // (BRASS 1's op0 is 0.5x), so assuming note_hz would silently
+        // probe the wrong bin for those patches.
         float fundamental_ratio = -1.0f;
         for (uint8_t i = 0; i < FM_NUM_OPS; i++) {
             if (patch.op[i].mod_target == FM_TARGET_OUT) {
@@ -834,8 +770,6 @@ int main() {
     bool ok6 = run_release_check();
     bool ok9 = run_pitch_eg_check();
     bool ok10 = run_lfo_check();
-    // ok3 (level table) and ok8 (key/rate scaling) removed by F3 -- see the
-    // comments where those functions used to be.
     bool ok = ok1 && ok2 && ok4 && ok5 && ok6 && ok9 && ok10;
 #ifdef T00T_FM_HAS_PATCHES
     bool ok7 = run_patch_bank_render();

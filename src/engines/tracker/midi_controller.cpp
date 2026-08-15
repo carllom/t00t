@@ -2,14 +2,9 @@
 #include "midi_parser.h"
 #include "player_task.h"
 
-// Tracker transport control (#18): the module plays itself (player_task.cpp
+// Tracker transport control: the module plays itself (player_task.cpp
 // auto-plays on boot), so MIDI here drives play/stop/seek rather than notes
-// -- there's no live-note path in this engine at all (tracker.md
-// non-goals: "Live editing or pattern entry on-device"). Modeled directly
-// on src/engines/groovebox/midi_controller.cpp's MIDI_START/MIDI_STOP
-// handling of its own sequencer's seq_clock_running flag: same MidiParser,
-// same transport-message vocabulary, driving player_task's transport
-// functions instead of a step-sequencer flag.
+// -- there's no live-note path in this engine at all.
 
 static MidiParser midi_parser;
 static MidiUiState ui_state;

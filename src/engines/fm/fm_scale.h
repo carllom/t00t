@@ -3,30 +3,21 @@
 #include <cstdint>
 
 // ===========================================================================
-// The fixed-point contract (F2, fm2.md §2/§5).
+// The fixed-point contract (F2, history_fm.md §2/§5).
 //
 // ONE anchor, from which every other number here is derived:
 //
 //     an operator's output, in `out[]` units, is phase deviation --
 //     FM_CYCLE units == one full cycle (2*pi) on whatever it modulates.
 //
-// That is Dexed's own contract, measured rather than assumed (tools/fm_ref;
-// fm2.md §5.6): `Sin::lookup` is full-scale 2^24, its maximum operator gain
-// is exactly 2.0, and 24 bits is one cycle of its phase -- so a max-level
-// Dexed operator peaks at exactly TWO full cycles of deviation, and a
-// *unity*-gain one at exactly one. Carriers are not a special case there and
-// are not one here: a carrier's output is the same number, reinterpreted as
-// audio instead of as phase. Everything else the DX7 does -- output level,
-// EG level, key scaling, velocity -- is attenuation in the log domain
-// beneath this single ceiling.
-//
-// This replaces six mutually-cancelling constants (FM_OUT_SHIFT_CARRIER,
-// FM_OUT_SHIFT_MODULATOR, FM_MOD_INPUT_SHIFT, FmOpParams::level, and
-// syx2patch.py's FM_CARRIER_LEVEL_REF/FM_MODULATOR_LEVEL_REF), each of which
-// existed to compensate for another. fm2.md §5.1 measured what that cost:
-// per-patch level errors from -12 dB to -96 dB and brightness from 0.30x to
-// 6.31x on the same build, because with no shared anchor every patch landed
-// somewhere different.
+// That is Dexed's own contract: `Sin::lookup` is full-scale 2^24, its
+// maximum operator gain is exactly 2.0, and 24 bits is one cycle of its
+// phase -- so a max-level Dexed operator peaks at exactly TWO full cycles of
+// deviation, and a *unity*-gain one at exactly one. Carriers are not a
+// special case there and are not one here: a carrier's output is the same
+// number, reinterpreted as audio instead of as phase. Everything else the
+// DX7 does -- output level, EG level, key scaling, velocity -- is
+// attenuation in the log domain beneath this single ceiling.
 //
 // Do not "tune" anything in this block. If a patch is too loud or too dim,
 // the answer is in its output level, its EG, or its key scaling -- exactly as
@@ -37,9 +28,7 @@
 // headroom over the 2^27 maximum a single operator can emit (see
 // FM_GAIN_MAX), which covers both fan-in (several modulators summing onto one
 // bus) and several carriers summing into the output bus, without ever
-// approaching int32 overflow -- the failure mode fm2.md §1.1(a) found in the
-// old scaling, where a max-level modulator reached 2^33.4 and wrapped the
-// phase accumulator several times per sample.
+// approaching int32 overflow.
 static constexpr uint32_t FM_CYCLE_BITS = 26;
 static constexpr int32_t  FM_CYCLE = 1 << FM_CYCLE_BITS;
 

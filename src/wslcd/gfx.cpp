@@ -2,7 +2,7 @@
 #include "lcd_st7789.h"
 #include "font8x8.h"
 
-// Largest integer text scale the title bar needs (decided in #5).
+// Largest integer text scale the title bar needs.
 static constexpr int MAX_SCALE = 3;
 
 // Scratch cell: one glyph at max scale. 24 * 24 * 2 = 1,152 B. gfx_gradient()

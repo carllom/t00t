@@ -4,7 +4,7 @@
 # attack transient on each cycle.
 #
 # This is the stream that tests the frame clock rather than any
-# primitive. sid.md §6 calls the 50 Hz steppiness "the whole character"
+# primitive. module_chip.md §6 calls the 50 Hz steppiness "the whole character"
 # and §6.2 makes the frame rate a module-global constant because "a
 # 1-frame noise click at 50 Hz and at 200 Hz are different sounds". If
 # the two renderers disagree about frame length by even a fraction of a

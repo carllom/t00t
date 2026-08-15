@@ -2,7 +2,7 @@
 
 #include <cstdint>
 
-// Preset step sequences for the TB-303 (303-only for now). Each pattern is a
+// Preset step sequences for the TB-303. Each pattern is a
 // list of 16th-note steps played from the incoming MIDI clock (24 PPQN → 6
 // pulses per step). A pattern is selected/toggled by a key on the pattern
 // channel; tempo follows the clock.

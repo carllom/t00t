@@ -1,4 +1,4 @@
-# Host-only build for the FM reference rig (fm2.md §3.1). Plain g++, no cmake --
+# Host-only build for the FM reference rig (history_fm.md §3.1). Plain g++, no cmake --
 # this machine has no cmake, and the rig has no reason to need one.
 #
 #   ./fetch_dexed.sh     # once: pull Dexed's msfa core into msfa/ (gitignored)

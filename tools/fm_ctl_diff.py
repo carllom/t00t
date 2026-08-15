@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""fm_ctl_diff -- exact control-plane conformance: t00t vs Dexed (fm2.md §3, F1).
+"""fm_ctl_diff -- exact control-plane conformance: t00t vs Dexed (history_fm.md §3, F1).
 
 The half of the harness that does not involve audio, spectra, or judgement.
 
@@ -309,17 +309,14 @@ def cmp_routing(dexed_csv, verbose):
     """The modulation GRAPH each algorithm decodes to, not the bytes it decodes
     from.
 
-    `cmp_algorithms` above compares the raw bus-flag bytes and has passed
-    192/192 since F1 -- while `decode_algorithm()` was silently dropping two
-    thirds of the modulation edges in algorithm 22. Identical inputs to a lossy
-    decoder still produce identical inputs. F7 (fm2.md §5.20) found that the
-    expensive way, so the decoder's *output* is now checked too.
+    `cmp_algorithms` above compares the raw bus-flag bytes; this checks the
+    decoder's *output* graph instead, since identical inputs to a lossy
+    decoder still produce identical inputs.
 
     The reference side is Dexed's `FmCore::render` bus behaviour, re-derived
     here from the same flag bytes: a bus keeps its contents until an operator
     writes it WITHOUT the add flag, so every operator that reads it in the
-    meantime is modulated by every operator currently in it. That is the one
-    rule the old decoder got wrong (it emptied the bus on first read).
+    meantime is modulated by every operator currently in it.
     """
     spec = importlib.util.spec_from_file_location("syx2patch", REPO / "tools" / "syx2patch.py")
     mod = importlib.util.module_from_spec(spec)
@@ -365,7 +362,7 @@ def cmp_routing(dexed_csv, verbose):
 
 
 # Representative EG configs. Chosen to exercise the shapes real patches use and
-# the ones fm2.md §1.1 predicts are broken, not to be exhaustive.
+# the ones history_fm.md §1.1 predicts are broken, not to be exhaustive.
 EG_CASES = [
     ("eg/instant-attack",  "99,99,99,99", "99,99,99,99", 99),   # reference config
     ("eg/epiano-carrier",  "95,50,35,60", "99,90,80,0",  99),   # the F0 baseline patch's shape
@@ -373,13 +370,11 @@ EG_CASES = [
     ("eg/very-slow-decay", "99,5,5,30",   "99,60,50,0",  99),   # tests §1.1(d)'s step<1 clamp
     ("eg/percussive",      "99,70,60,80", "99,50,0,0",   99),   # decay to silence while gated
     ("eg/low-outlevel",    "99,60,40,60", "99,85,75,0",  70),   # tests the TL composition
-    # F6 (fm2.md §5.15) added the last two. The six above all have L2 != L1 and
-    # all have L4 == 0, so between them they never once enter Env's
-    # `targetlevel_ == level_` branch -- the ACCURATE_ENVELOPE `staticcount`
-    # hold, which is the whole reason the statics[77] table exists -- and never
-    # release UPWARDS. Both paths are ported in env_dx.h and neither was under
-    # test; both are exercised by ROM1A #30 TRAIN, whose two remaining outlier
-    # operators are precisely one of each.
+    # The last two cover cases the six above miss: L2 != L1 and L4 == 0 on all
+    # of them means none exercises Env's `targetlevel_ == level_` branch (the
+    # ACCURATE_ENVELOPE `staticcount` hold) or a release that moves UPWARDS.
+    # Both paths are ported in env_dx.h; both are exercised by ROM1A #30 TRAIN,
+    # whose two remaining outlier operators are precisely one of each.
     ("eg/static-hold",     "42,17,25,53", "99,99,99,0",  83),   # TRAIN op4: L1=L2=L3 -> two staticcount holds
     ("eg/rising-release",  "49,17,25,53", "99,99,99,98", 99),   # TRAIN op5: L4 > sustain -> release rises
 ]

@@ -1,13 +1,9 @@
 #!/usr/bin/env python3
 """Fit t00t's SVF to reSID's measured filter response and emit src/chip/sid_tables.h.
 
-chip.md §5.1 asks for "a pluggable cutoff LUT instead of svf_compute_f_half's
-linear map", and warns:
-
-    The 6581 cutoff curve varied enormously between physical chips. Any curve
-    is *a* 6581, not *the* 6581. The LUT must be documented as sampled from a
-    named reference (reSID's, or a specific chip), never presented as
-    canonical.
+module_chip.md §5.1 calls for a cutoff LUT sampled from a named reference
+rather than a linear map, documented as such rather than presented as
+canonical.
 
 This is the sampling. tools/sid_ref/resid_probe.cpp records reSID's response
 over the cutoff and resonance grids; this script fits src/chip/sid_filter.h's
@@ -22,19 +18,19 @@ converting would put a systematic error into exactly the top octave where the
 that class of error entirely.
 
 Also emitted here, because they belong to the same header and have the same
-"measured from reSID" provenance:
+measured-from-reSID provenance:
 
   * the 8-bit envelope and 12-bit waveform R-2R DAC tables, derived from the
     ladder's measured resistor ratio rather than copied from reSID (see
-    r2r_vbit), which chip.md does not mention but §3's signal-path test keeps;
-  * the C64 board output network coefficients (chip.md §10's "free bonus");
+    r2r_vbit);
+  * the C64 board output network coefficients (module_chip.md §10);
   * the filter saturation scale.
 
 Usage:
     tools/sid_ref/.venv/bin/python tools/fit_6581_filter.py \\
         --probe-dir tools/sid_ref/out --out src/chip/sid_tables.h
 
-numpy only, no scipy -- same constraint as the FM module's tooling.
+numpy only, no scipy.
 """
 
 import argparse
@@ -55,19 +51,11 @@ FIT_HI_HZ = 16000.0
 
 # Upper bound on the SVF's Q15 half-frequency coefficient.
 #
-# NOT src/filter.h's svf_compute_f_half clamp of 15564 ("F=0.95 maximum"),
-# which is a single-pass Chamberlin stability figure. src/chip/sid_filter.h
-# runs the loop twice per sample, and the two-pass system's spectral radius
-# stays under 1 well past that: measured here, |eig(A^2)| < 1 up to F ~ 39950
-# at the lightest damping in the resonance table and F ~ 27100 at the heaviest.
-#
-# Copying the 15564 clamp into the fit was a real bug and worth recording: it
-# capped the fitted cutoff at about 4.5 kHz, so every register value from
-# fc = 1360 upward -- a third of the range -- landed on the same table entry
-# and the top of the filter sweep would have gone silent-flat instead of
-# opening. 22000 is chosen instead as the point past which the lowpass no
-# longer has a -3 dB corner below Nyquist at all, with the stability margin
-# above it left unused.
+# Not src/filter.h's svf_compute_f_half clamp (a single-pass Chamberlin
+# stability figure) -- src/chip/sid_filter.h runs the loop twice per sample
+# and the two-pass system's spectral radius stays under 1 well past that.
+# 22000 is chosen instead as the point past which the lowpass no longer has
+# a -3 dB corner below Nyquist at all.
 SVF_F_MAX = 22000
 
 # Voice-sum to int16 scale factor; see the generated header for the rationale.
@@ -140,8 +128,8 @@ def svf_response(f_half_q15, q_q15, mode_mask, freqs):
     s1 = A s[n] + B x[n]. Evaluating (zI - A^2)^-1 at z = e^{jw} gives the
     response directly.
 
-    An impulse-response FFT was the first version and is ~1000x slower --
-    enough to matter, since the fit evaluates this tens of thousands of times.
+    Closed form rather than an impulse-response FFT: ~1000x faster, which
+    matters since the fit evaluates this tens of thousands of times.
     """
     f = f_half_q15 / 32768.0
     q = q_q15 / 32768.0
@@ -166,9 +154,7 @@ def svf_response(f_half_q15, q_q15, mode_mask, freqs):
     # lp and bp are read from the post-update state s[n+1] = z*S(z), hp from
     # the intermediate state. On its own each output's magnitude is unaffected
     # by that unit delay, but the mode *mask* sums them, and a relative delay
-    # between summed terms is not a delay -- it is a different filter. Getting
-    # this wrong is worth up to 18 dB on LP+BP+HP, which is precisely the
-    # combination chip.md §5.1 exists to support.
+    # between summed terms is not a delay -- it is a different filter.
     out = np.zeros_like(z)
     if mode_mask & 0x1:
         out = out + z * s0
@@ -178,8 +164,7 @@ def svf_response(f_half_q15, q_q15, mode_mask, freqs):
         # (s0, s1) above is the transform of the *start-of-sample* state, so
         # the intermediate state the second pass sees is A s + B x directly.
         # (lp and bp are read one update later, which is a unit delay and so
-        # leaves their magnitudes alone -- hp is the only output where getting
-        # this wrong shows up, and it showed up as 6.5 dB.)
+        # leaves their magnitudes alone -- hp is the only output affected.)
         i0 = A[0, 0] * s0 + A[0, 1] * s1 + B[0]
         i1 = A[1, 0] * s0 + A[1, 1] * s1 + B[1]
         out = out + (1.0 - i0 - q * i1)
@@ -192,14 +177,6 @@ def svf_response(f_half_q15, q_q15, mode_mask, freqs):
 # including it lets the least-squares trade real passband error for stopband
 # error it cannot fix anyway (a 2-pole SVF and reSID's 6581 do not have the
 # same asymptotic slope).
-#
-# The first version clamped the target at -40 dB instead, which is subtly
-# fatal: a nearly-closed filter's response is *also* flat at the clamp, so
-# after mean-subtraction it matched every wide-open target perfectly and the
-# fit returned F_half = 20 -- the minimum -- for the entire top third of the
-# cutoff range. Worth stating plainly, because the failure produced a
-# monotonic-looking table that would have sounded like the filter was
-# backwards above fc ~ 1300.
 FIT_FLOOR_DB = -35.0
 
 
@@ -274,15 +251,10 @@ def fit_fq(target_db, freqs, mode_mask, f_hint):
 # Derived here rather than dumped from reSID, for two reasons.
 #
 # Licensing: reSID is GPL-2 and this repo is not, which is the whole reason
-# fetch_resid.sh fetches rather than vendors. An earlier version of this script
-# shelled out to `resid_dump --domain dac` and committed 4352 entries that were
-# a mechanical reproduction of reSID's own constexpr constructor -- which puts
-# back exactly the question the fetch arrangement exists to keep out.
+# fetch_resid.sh fetches rather than vendors.
 #
-# Testing: with the tables copied from reSID, sid_ctl_diff.py's `dac` domain
-# compared reSID's table against a copy of reSID's table. It reported 0/256 and
-# 0/4096 because it could not do anything else. Deriving them independently
-# turns that domain into a real conformance test.
+# Testing: deriving the tables independently keeps sid_ctl_diff.py's `dac`
+# domain a real conformance test instead of a tautology.
 #
 # What is taken from reSID is four numbers, and they are facts about the
 # hardware rather than code: the ladder's resistor ratio is 2R/R = 2.20 on the
@@ -290,15 +262,12 @@ def fit_fq(target_db, freqs, mode_mask, f_hint):
 # the 8580. Dag Lem obtained those by measurement; dac.h documents them, and
 # they are what makes a 6581 sound like a 6581 at low envelope levels.
 #
-# The method here is deliberately not reSID's. dac.h walks the ladder with
+# The method here is deliberately not reSID's: dac.h walks the ladder with
 # repeated parallel substitution and source transformation; this solves the
-# resistor network directly by nodal analysis and uses superposition, which is
-# a different algorithm arriving at the same physics. Agreement between the two
-# is therefore evidence, not tautology -- and the topology below was in fact
-# settled by that agreement: the 6581 matches either way (an unterminated
-# ladder has no termination node to place), but the 8580 only matches with the
-# termination 2R going straight to ground at the LSB node rather than through
-# another rail resistor.
+# resistor network directly by nodal analysis and uses superposition. The
+# 6581 matches either way (an unterminated ladder has no termination node to
+# place); the 8580 matches only with its termination 2R going straight to
+# ground at the LSB node rather than through another rail resistor.
 # ---------------------------------------------------------------------------
 
 def r2r_vbit(bits, ratio_2r_over_r, terminated):
@@ -352,29 +321,22 @@ def r2r_table(bits, ratio_2r_over_r, terminated):
 
     # Structural checks, in place of a normalisation constant.
     #
-    # Both of the obvious invariants are false for one of the two models, and
-    # finding out which way round taught more about the hardware than the
-    # tables themselves did:
+    # The two invariants below each hold for only one of the two models.
     #
-    #   "all-ones is full scale" holds only WITHOUT termination. Driving every
+    #   "all-ones is full scale" holds only WITHOUT termination: driving every
     #   bit high on an unterminated ladder leaves no current path anywhere, so
     #   the network sits at 1 V. With the 8580's 2R to ground that code does
-    #   draw current and the top sags -- reSID's 8580 8-bit table ends at 254,
-    #   and it is right to.
+    #   draw current and the top sags -- reSID's 8580 8-bit table ends at 254.
     #
     #   "a DAC table is monotonic" holds only WITH termination. The 6581's
-    #   ladder is not merely imprecise, it is non-monotonic: 19 descending
-    #   steps in the 8-bit table and 347 in the 12-bit, worst case -129,
-    #   clustered on the major carries (15->16, 31->32, 63->64) where the
-    #   2.20 ratio and the missing bit-0 termination compound. dac.h says as
-    #   much -- "pronounced errors for the lower 4 - 5 bits (e.g. the output
-    #   for bit 0 is actually equal to the output for bit 1), resulting in DAC
-    #   discontinuities" -- and it is a large part of why a quiet 6581 note
-    #   sounds dirty rather than merely quiet.
+    #   ladder is not merely imprecise, it is non-monotonic, clustered on the
+    #   major carries where the 2.20 ratio and the missing bit-0 termination
+    #   compound. dac.h documents the same discontinuities, and it is a large
+    #   part of why a quiet 6581 note sounds dirty rather than merely quiet.
     #
     # Recorded here because the 6581 table looks broken and is not. Anyone who
     # later "fixes" it by sorting or smoothing will have removed the thing
-    # chip.md §3 says to keep.
+    # module_chip.md §3 says to keep.
     assert table[0] == 0, "zero code must be zero"
     if terminated:
         assert np.all(np.diff(table) >= 0), "a terminated ladder is monotonic"
@@ -474,9 +436,7 @@ def run_fit(args):
     #
     # Ordered before the cutoff sweep on purpose. The cutoff fit needs a
     # damping value to hold fixed, and the right one is whatever the 6581 does
-    # at res = 0 -- which is not a round number and not critical damping. An
-    # earlier version guessed 45000 and fitted the whole cutoff curve against a
-    # damping the chip never uses; every entry then carried that guess's error.
+    # at res = 0 -- which is not a round number and not critical damping.
     # F and Q are fitted jointly here because raising resonance on a 6581 also
     # moves its cutoff, and charging the Q table for that shift would bake a
     # cutoff error into the resonance knob.
@@ -524,12 +484,12 @@ def run_fit(args):
 
 def emit(args, sha, res_q, res_f, f_full, fc_ref):
     # --- 8580 ---------------------------------------------------------------
-    # chip.md §13.6: "6581 first, LUT-based, so 8580 is a table swap plus a
-    # saturation bypass." The 8580 table is NOT measured here -- P6 owns that
-    # (chip.md §1). What is emitted is reSID's own closed-form 8580 mapping,
-    # w0 = 2*pi*12500*(fc+1)/2048 (filter.h's set_w0), converted into this
-    # SVF's units. It is a placeholder with a correct shape, not a fit, and is
-    # labelled as such in the header so P6 does not mistake it for measured.
+    # module_chip.md §13.6 keeps 8580 support as a LUT table swap plus a
+    # saturation bypass. The 8580 table below is NOT measured -- it is
+    # reSID's own closed-form 8580 mapping, w0 = 2*pi*12500*(fc+1)/2048
+    # (filter.h's set_w0), converted into this SVF's units. It is a
+    # placeholder with a correct shape, not a fit, and is labelled as such in
+    # the header.
     f_8580 = []
     for fc in range(2048):
         hz = 12500.0 * (fc + 1) / 2048.0
@@ -555,9 +515,8 @@ def emit(args, sha, res_q, res_f, f_full, fc_ref):
 //                   --out out/probe_res_lp.f32 --meta out/probe_res_lp.json
 //     cd ../.. && tools/sid_ref/.venv/bin/python tools/fit_6581_filter.py
 //
-// PROVENANCE. chip.md §5.1: "The 6581 cutoff curve varied enormously between
-// physical chips. Any curve is *a* 6581, not *the* 6581. The LUT must be
-// documented as sampled from a named reference, never presented as canonical."
+// PROVENANCE. module_chip.md §5.1: the LUT must be documented as sampled from a
+// named reference, never presented as canonical.
 //
 // These tables are sampled from reSID {sha[:12]}
 // (daglem/reSID, 1.0-pre1), whose 6581 filter is itself a transistor-level
@@ -584,10 +543,10 @@ def emit(args, sha, res_q, res_f, f_full, fc_ref):
     body.append("")
     body.append(fmt_table(
         "SID_8580_FC_Q15", "uint16_t", f_8580, 16,
-        "// 8580 cutoff. PLACEHOLDER, not measured -- chip.md §1 puts the 8580 model\n"
-        "// at P6. This is reSID's own closed-form 8580 mapping (filter.h's set_w0:\n"
-        "// cutoff = 12.5 kHz * (fc+1)/2048) converted into this SVF's units, so the\n"
-        "// shape is right and the model switch is exercisable. Refit at P6."))
+        "// 8580 cutoff. PLACEHOLDER, not measured (module_chip.md §1). This is\n"
+        "// reSID's own closed-form 8580 mapping (filter.h's set_w0: cutoff =\n"
+        "// 12.5 kHz * (fc+1)/2048) converted into this SVF's units, so the shape\n"
+        "// is right and the model switch is exercisable."))
     body.append("")
     body.append(fmt_table(
         "SID_6581_RES_Q15", "uint16_t", res_q, 8,
@@ -596,14 +555,13 @@ def emit(args, sha, res_q, res_f, f_full, fc_ref):
     body.append("")
     body.append(fmt_table(
         "SID_8580_RES_Q15", "uint16_t", res_q_8580, 8,
-        "// 8580 resonance. PLACEHOLDER alongside SID_8580_FC_Q15; refit at P6."))
+        "// 8580 resonance. PLACEHOLDER alongside SID_8580_FC_Q15."))
     body.append("")
     body.append(fmt_table(
         "SID_ENV_DAC_6581", "uint8_t", dac8_6581, 16,
         "// 6581 envelope DAC: 8-bit R-2R ladder, 2R/R = 2.20, bit-0 termination\n"
         "// missing. Emitted from reSID's own dac.h rather than reimplemented.\n"
-        "// chip.md does not mention the DACs; §3's test (does it operate inside the\n"
-        "// signal path?) puts them on the keep side, and this one costs 256 bytes."))
+        "// Costs 256 bytes (module_chip.md §3)."))
     body.append("")
     body.append(fmt_table(
         "SID_ENV_DAC_8580", "uint8_t", dac8_8580, 16,
@@ -613,12 +571,12 @@ def emit(args, sha, res_q, res_f, f_full, fc_ref):
     body.append(fmt_table(
         "SID_WAVE_DAC_6581", "uint16_t", dac12_6581, 12,
         "// 6581 waveform DAC: 12-bit, same ladder. 8 KB of flash, which is why it\n"
-        "// is behind CHIP_WAVE_DAC in sid_voice.h rather than unconditional --\n"
-        "// F0 prices it, P1 decides. The 8580's is linear and has no table."))
+        "// is behind CHIP_WAVE_DAC in sid_voice.h rather than unconditional.\n"
+        "// The 8580's is linear and has no table."))
 
     footer = f'''
 
-// C64 board output network (chip.md §10's "free bonus"): the passive RC between
+// C64 board output network (module_chip.md §10): the passive RC between
 // the SID and the AV connector. Values are reSID's ExternalFilter, which names
 // the components: w0lp = 1/(10k * 1nF) = 15.9 kHz, w0hp = 1/(1k * 10uF) =
 // 15.9 Hz. The high-pass is not cosmetic here -- the 6581's 0x380
@@ -632,20 +590,18 @@ static constexpr int32_t SID_BOARD_HP_Q15 = {one_pole_q15(15.915)};
 // voice-output units of sid_voice.h ((wave12 - wave_zero) * env8). One voice at
 // full envelope peaks around {0x0c7f * 255}; this is set so a single voice stays
 // essentially linear and three summed voices do not -- which is the property
-// chip.md §5.2 depends on for shared-bus intermodulation to be real.
+// module_chip.md §5.2 depends on for shared-bus intermodulation to be real.
 static constexpr int32_t SID_FILT_SAT_SCALE_6581 = {int(0x0c7f * 255 * 1.6)};
 
 // The single scale factor between the voice contract (sid_voice.h) and the
 // int16 the chip outputs, applied in sid_chip.h before the master volume.
 //
-// It is a right shift, and it is the *only* free gain in the whole chain --
-// which is the point. Three 6581 voices at full envelope reach {3 * 0x0c7f * 255},
-// and >> {SID_MIX_SHIFT} puts that at {(3 * 0x0c7f * 255) >> SID_MIX_SHIFT}, inside int16 with
-// headroom for the resonant filter's own gain. Calibrated once against reSID's
-// output level (tools/sid_compare.py reports the residual as `level gap`) and
-// then left alone: the FM module's attempt 1 is the cautionary tale for what
-// happens when a chain accumulates several of these and each is free to
-// absorb the others' errors (fm2.md §1.1a).
+// It is a right shift, and it is the only free gain in the whole chain.
+// Three 6581 voices at full envelope reach {3 * 0x0c7f * 255}, and
+// >> {SID_MIX_SHIFT} puts that at {(3 * 0x0c7f * 255) >> SID_MIX_SHIFT}, inside int16 with
+// headroom for the resonant filter's own gain. Calibrated once against
+// reSID's output level (tools/sid_compare.py reports the residual as `level
+// gap`) and then left alone.
 static constexpr int SID_MIX_SHIFT = {SID_MIX_SHIFT};
 '''
 

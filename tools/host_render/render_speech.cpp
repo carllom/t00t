@@ -1,11 +1,11 @@
 // Host-side proof of src/engines/speech/render.h. Two independent checks,
 // both calling the exact functions the device's audio_engine.cpp calls from
 // its Core 1 render loop -- there is no openmpt123 equivalent for a formant
-// synth (speech.md "Testing"), so this harness *is* the reference from here
-// on: same source, host compiler, WAV out, diffable against a device
-// capture to separate DSP bugs from embedded bugs. No pico-sdk, no ARM
-// intrinsics -- render.h only touches header-only common-layer DSP (see its
-// own header comment for why that matters).
+// synth, so this harness *is* the reference from here on: same source, host
+// compiler, WAV out, diffable against a device capture to separate DSP bugs
+// from embedded bugs. No pico-sdk, no ARM intrinsics -- render.h only
+// touches header-only common-layer DSP (see its own header comment for why
+// that matters).
 //
 //   - run_test_tone_check() (#27): the ZOH x2 native-rate resample seam,
 //     proven before any formant DSP existed.
@@ -16,15 +16,9 @@
 //   - run_vowel_checks() (#28, generalized by #32): renders every
 //     PCLASS_VOWEL row (phoneme_meta.h) through the formant cascade, checks
 //     the cascade puts a real spectral peak where each phoneme's F1/F2
-//     target says it should, and -- #32's actual point -- cross-checks
-//     against vowel_reference.h's independently-committed published values
-//     for whichever symbols have one, to catch a data-entry error the first
-//     comparison can't see.
-//   - run_fricative_checks() (#29): renders the three voiceless fricatives
-//     through the parallel fricative resonator and checks the noise
-//     spectrum peaks near each one's fric_F target -- and that /sh/'s peak
-//     lands measurably lower than /s/'s and /f/'s, its defining spectral
-//     feature.
+//     target says it should, and cross-checks against vowel_reference.h's
+//     independently-committed published values for whichever symbols have
+//     one, to catch a data-entry error the first comparison can't see.
 //   - run_fricative_checks() (#29): renders the three voiceless fricatives
 //     through the parallel fricative resonator and checks the noise
 //     spectrum peaks near each one's fric_F target -- and that /sh/'s peak
@@ -38,8 +32,8 @@
 //   - run_nasal_checks() (#29): for /m/ and /n/, confirms the nasal pole
 //     measurably contributes energy at nasal_F, by comparing against the
 //     same cascade target with an forced to zero (the acoustic difference
-//     between a nasal and its cognate stop's closure -- P2 has no plosive
-//     closure/burst mechanism yet, that's speech.md P3).
+//     between a nasal and its cognate stop's closure -- module_speech.md
+//     has no plosive closure/burst mechanism yet).
 //   - test_cc_sweep_stability() (#29): sweeps formant_shift and
 //     bandwidth_scale across their full CC range at every phoneme target
 //     and checks every resonator's pole (cascade, fricative, nasal) stays
@@ -132,11 +126,10 @@ static float goertzel_mag(const std::vector<float> &x, size_t start, size_t n, f
 
 // Hill-climbs from `center` to the local magnitude peak within +-150 Hz, in
 // 5 Hz steps. Used instead of a blind global spectrum search because a
-// cascade of five formants can have multiple comparably-sized peaks; what
-// #28's acceptance criterion actually wants to know is "is there a real
-// resonance where phonemes.h says F1/F2 should be," not "find the two
-// biggest peaks anywhere" (which is ambiguous for /u/'s F1/F2 sitting close
-// together).
+// cascade of five formants can have multiple comparably-sized peaks, and
+// what matters is whether there's a real resonance where phonemes.h says
+// F1/F2 should be, not just the two biggest peaks anywhere (which is
+// ambiguous for /u/'s F1/F2 sitting close together).
 static float local_peak_freq(const std::vector<float> &x, size_t start, size_t n, float center, float fs) {
     float best_f = center, best_mag = -1.0f;
     for (float f = center - 150.0f; f <= center + 150.0f; f += 5.0f) {
@@ -148,18 +141,14 @@ static float local_peak_freq(const std::vector<float> &x, size_t start, size_t n
 }
 
 struct PhonemeName { Phoneme p; const char *label; };
-// The #29-era fixed short lists this used to have (VOWEL_NAMES etc.) are
-// gone -- #32 grew the table from 12 phonemes to PHONEME_COUNT (see
-// phoneme_meta.h's generated PHONEME_CLASS[]), so anything that needs "all
-// the vowels" or "all the voiceless fricatives" now filters PHONEME_CLASS
-// instead of hardcoding a name list that would silently stop covering new
-// rows. The three symbol-specific claims from #29's acceptance criteria
-// (/sh/ measurably lower than /s/ and /f/; at least one voiced fricative
-// shows mixed excitation; a nasal is distinguishable from its an=0
-// counterpart) still name PH_S/PH_SH/PH_F/PH_Z/PH_V/PH_M/PH_N directly
-// below -- those are regression locks on specific phonemes, not
-// class-wide properties, so generalizing them would test something weaker
-// than what #29 actually promised.
+// Anything that needs "all the vowels" or "all the voiceless fricatives"
+// filters PHONEME_CLASS (phoneme_meta.h) instead of hardcoding a name list
+// that would silently stop covering new rows. The three symbol-specific
+// claims below (/sh/ measurably lower than /s/ and /f/; at least one voiced
+// fricative shows mixed excitation; a nasal is distinguishable from its
+// an=0 counterpart) still name PH_S/PH_SH/PH_F/PH_Z/PH_V/PH_M/PH_N directly
+// -- those are regression locks on specific phonemes, not class-wide
+// properties, so generalizing them would test something weaker.
 static const PhonemeName FRICATIVE_NAMES[3] = { { PH_S, "s" }, { PH_SH, "sh" }, { PH_F, "f" } };
 static const PhonemeName VOICED_FRICATIVE_NAMES[2] = { { PH_Z, "z" }, { PH_V, "v" } };
 static const PhonemeName NASAL_NAMES[2] = { { PH_M, "m" }, { PH_N, "n" } };
@@ -291,16 +280,14 @@ static void write_phoneme_wav(const char *label, const std::vector<float> &mono)
     write_wav_pcm16(path, out, SAMPLE_RATE, 2);
 }
 
-// #32 acceptance: "Every phoneme renders to a WAV via the host harness in
-// one command." Held-gate audible render of every row in the table (not
-// just the handful the class-specific checks below name individually), so
-// growing speech_phonemes.csv automatically gets WAV coverage without
-// anyone updating this harness. Deliberately the only place that writes
-// speech_phoneme_*.wav -- the class-specific checks below used to each
-// write their own subset (duplicating renders for S/SH/F/Z/V/M/N), now they
-// just assert on peak/spectrum and let this pass own the file I/O.
-// STOP_CLOSURE/SIL rows render silence under gate, correctly -- only
-// clipping and non-finite output are bugs here, silence is not.
+// Held-gate audible render of every row in the table (not just the handful
+// the class-specific checks below name individually), so growing
+// speech_phonemes.csv automatically gets WAV coverage without anyone
+// updating this harness. Deliberately the only place that writes
+// speech_phoneme_*.wav -- the class-specific checks below just assert on
+// peak/spectrum and let this pass own the file I/O. STOP_CLOSURE/SIL rows
+// render silence under gate, correctly -- only clipping and non-finite
+// output are bugs here, silence is not.
 static bool run_full_table_render() {
     static constexpr float NOTE_HZ = 220.0f;
     static constexpr float SECONDS = 0.6f;
@@ -328,19 +315,15 @@ static bool run_full_table_render() {
     return all_ok;
 }
 
-// #28 acceptance, generalized by #32 from the original 5 cardinal vowels to
-// every PCLASS_VOWEL row in the (now CSV-generated) table: "F1/F2 of each
-// sustained vowel, measured from a host-rendered WAV, land inside the
-// published vowel-space region for that vowel." Two independent
-// comparisons per vowel:
+// Checks every PCLASS_VOWEL row in the table. Two independent comparisons
+// per vowel:
 //   - measured vs. this table's own F/B target (DSP correctness -- the
-//     cascade puts a real resonance where the row says it should; this is
-//     the #28-original check, just no longer limited to 5 rows).
+//     cascade puts a real resonance where the row says it should).
 //   - measured vs. vowel_reference.h's independently-committed published
-//     values, for whichever symbols have a reference entry (#32's actual
-//     point -- catches a coefficient/data-entry error in speech_phonemes.csv
-//     that the ear forgives and the first check above can't see, since that
-//     one only proves the DSP hits whatever the CSV happens to say).
+//     values, for whichever symbols have a reference entry (catches a
+//     coefficient/data-entry error in speech_phonemes.csv that the ear
+//     forgives and the first check above can't see, since that one only
+//     proves the DSP hits whatever the CSV happens to say).
 static bool run_vowel_checks() {
     static constexpr float AUDIBLE_NOTE_HZ = 220.0f;  // A3, mid-keyboard
     static constexpr float AUDIBLE_SECONDS = 1.0f;
@@ -388,11 +371,11 @@ static bool run_vowel_checks() {
         all_ok = all_ok && ok;
     }
 
-    // Pitch tracking (#28: "glottal pitch tracks note number across at
-    // least three octaves without the cascade going unstable or dull").
-    // res2p_set()'s own assert(a2 < 1.0f) is the stability backstop (fires
-    // and aborts a debug build on a bad pole); this just confirms the
-    // output stays finite and non-silent at each octave.
+    // Pitch tracking across at least three octaves without the cascade
+    // going unstable or dull. res2p_set()'s own assert(a2 < 1.0f) is the
+    // stability backstop (fires and aborts a debug build on a bad pole);
+    // this just confirms the output stays finite and non-silent at each
+    // octave.
     printf("\n== Pitch tracking across octaves (vowel /a/) ==\n");
     float notes[] = { 110.0f, 220.0f, 440.0f, 880.0f };  // A2..A5, 3 octaves
     for (float hz : notes) {
@@ -429,13 +412,11 @@ static float wideband_peak_freq(const std::vector<float> &x, size_t start, size_
     return best_f;
 }
 
-// #29 acceptance: "Fricatives (/s/, /f/, /sh/) are distinguishable from each
-// other by ear when played as held phonemes." Writes each voiceless
-// fricative's audible WAV for listening, and as an objective proxy, checks
-// the parallel fricative resonator's noise output peaks in the right part
-// of the spectrum -- specifically that /sh/'s peak lands measurably below
-// /s/'s and /f/'s, which is the actual perceptual cue that separates it
-// from the other two.
+// Writes each voiceless fricative's audible WAV for listening, and as an
+// objective proxy, checks the parallel fricative resonator's noise output
+// peaks in the right part of the spectrum -- specifically that /sh/'s peak
+// lands measurably below /s/'s and /f/'s, which is the actual perceptual
+// cue that separates it from the other two.
 static bool run_fricative_checks() {
     static constexpr float AUDIBLE_NOTE_HZ = 220.0f;
     bool all_ok = true;
@@ -471,14 +452,12 @@ static bool run_fricative_checks() {
     return all_ok;
 }
 
-// #29 acceptance: "At least one voiced fricative (/z/ or /v/) renders with
-// both excitation sources active, verified in the host WAV's spectrum, not
-// just by ear." Compares each voiced fricative's real (av>0, af>0) render
-// against the same target with af forced to zero: if both sources are
-// really contributing, forcing af to zero should measurably drop energy
-// well above F5 (where only the fricative resonator's noise excitation has
-// anything to say), while energy at F0 -- proof of voicing -- stays present
-// in both.
+// Compares each voiced fricative's real (av>0, af>0) render against the
+// same target with af forced to zero: if both sources are really
+// contributing, forcing af to zero should measurably drop energy well
+// above F5 (where only the fricative resonator's noise excitation has
+// anything to say), while energy at F0 -- proof of voicing -- stays
+// present in both.
 static bool run_voiced_fricative_checks() {
     static constexpr float F0 = 220.0f;
     static constexpr float PROBE_HZ = 6000.0f;  // above F5 (3750) and PH_S/PH_Z's fric_F region
@@ -514,14 +493,13 @@ static bool run_voiced_fricative_checks() {
     return all_ok;
 }
 
-// #29 acceptance: "A nasal (/m/ or /n/) is distinguishable from the
-// corresponding voiced stop." P2 has no plosive closure/burst mechanism yet
-// (speech.md P3), so the closest objective proxy available here is the
-// nasal pole's own contribution: the acoustic difference between a nasal
-// and its cognate stop's closure interval is entirely whether the velum is
-// lowered (nasal pole active) or the nasal port is sealed too (an=0, same
-// oral-cavity cascade shape). Compares each nasal's real render against the
-// same target with an forced to zero and checks for a measurable energy
+// module_speech.md has no plosive closure/burst mechanism yet, so the
+// closest objective proxy available here is the nasal pole's own
+// contribution: the acoustic difference between a nasal and its cognate
+// stop's closure interval is entirely whether the velum is lowered (nasal
+// pole active) or the nasal port is sealed too (an=0, same oral-cavity
+// cascade shape). Compares each nasal's real render against the same
+// target with an forced to zero and checks for a measurable energy
 // increase at nasal_F.
 static bool run_nasal_checks() {
     static constexpr float F0 = 220.0f;
@@ -553,14 +531,11 @@ static bool run_nasal_checks() {
     return all_ok;
 }
 
-// #29 acceptance: "A host sweep of both CCs across their full ranges, at
-// every vowel target, asserts every pole stays inside the unit circle
-// (extend the existing render_res2p style of check rather than inventing a
-// new harness)." Extends render_res2p.cpp's test_stability_sweep() to this
-// engine's actual live-parameter path (tract_apply_coeffs(), not a raw
-// res2p_set() sweep) across every phoneme, not just the vowels -- the
-// fricative and nasal branches are exactly as exposed to formant_shift/
-// bandwidth_scale as the cascade is.
+// Extends render_res2p.cpp's test_stability_sweep() to this engine's actual
+// live-parameter path (tract_apply_coeffs(), not a raw res2p_set() sweep)
+// across every phoneme, not just the vowels -- the fricative and nasal
+// branches are exactly as exposed to formant_shift/bandwidth_scale as the
+// cascade is.
 static bool test_cc_sweep_stability() {
     bool all_ok = true;
     uint32_t checked = 0;
@@ -653,14 +628,12 @@ static float rms(const std::vector<float> &x, size_t start, size_t n) {
     return (float)std::sqrt(sum_sq / (double)n);
 }
 
-// #34 acceptance: "A hardcoded phoneme string is intelligible as the
-// intended word ... Segment duration comes from the phoneme's nominal
-// duration scaled by rate ... Plosives are distinguishable from the
-// corresponding fricatives by ear ... F/B ramps are continuous across
-// segment boundaries -- no click ... Any inconsistency renders silence ...
-// Note-off behaves as #30 specified." One function per claim below, all
-// sharing render_utterance_native() so every claim is checked against
-// exactly what audio_engine.cpp's Core 1 render loop calls.
+// One function per claim below (intelligibility as the intended word,
+// segment duration scaled by rate, plosive/fricative contrast, continuous
+// F/B ramps across segment boundaries, silence on inconsistency, and #30's
+// note-off behaviour), all sharing render_utterance_native() so every claim
+// is checked against exactly what audio_engine.cpp's Core 1 render loop
+// calls.
 static bool run_utterance_word_checks() {
     static constexpr float NOTE_HZ = 150.0f;
     static constexpr float MAX_SECONDS = 3.0f;
@@ -718,12 +691,9 @@ static bool run_utterance_word_checks() {
     return all_ok;
 }
 
-// #34 acceptance: "Segment duration comes from the phoneme's nominal
-// duration scaled by rate, and a rate change is audible as a speaking-speed
-// change without pitch shift." A single sustained /e/ "utterance" (one
-// segment, no diphone boundary to confound the measurement) rendered at
-// three rates: total duration must scale with rate (Q4.4, speech_seg_
-// duration_samples()'s "larger rate = longer segment"), while the glottal
+// A single sustained /e/ "utterance" (one segment, no diphone boundary to
+// confound the measurement) rendered at three rates: total duration must
+// scale with rate (Q4.4, larger rate = longer segment), while the glottal
 // F0 -- measured independently of duration by Goertzel magnitude at
 // note_hz on each render's stable middle third -- must not move.
 static bool run_rate_checks() {
@@ -764,11 +734,8 @@ static bool run_rate_checks() {
     return all_ok;
 }
 
-// #34 acceptance: "Plosives are distinguishable from the corresponding
-// fricatives by ear." speech.md's own claim about *why* is specific: a
-// plosive's closure (silence) immediately followed by a burst (transient)
-// is the acoustic shape a continuous fricative doesn't have -- "without
-// this, plosives sound like fricatives and intelligibility collapses."
+// A plosive's closure (silence) immediately followed by a burst (transient)
+// is the acoustic shape a continuous fricative doesn't have (module_speech.md).
 // Renders CAT (K_CL K_BR AE T_CL T_BR SIL) once and measures RMS energy
 // inside each closure segment (should be near-silent) against its paired
 // burst segment (should be a real transient) using speech_seg_duration_
@@ -815,13 +782,12 @@ static bool run_plosive_checks() {
     return all_ok;
 }
 
-// #34 acceptance: "Note-off behaves as #30 specified" -- specifically
-// SPEECH_MODE_GATED's bound: "Maximum time a voice may outlive its note-off
-// is ... the release segment's own duration." Cuts HELLO's gate early
-// (partway through the second segment, well before the utterance would
-// finish on its own) and checks the voice finishes within release_index's
-// own segment duration of that note-off, not the remaining length of the
-// whole utterance.
+// SPEECH_MODE_GATED's bound: a voice may outlive its note-off by at most
+// the release segment's own duration. Cuts HELLO's gate early (partway
+// through the second segment, well before the utterance would finish on
+// its own) and checks the voice finishes within release_index's own
+// segment duration of that note-off, not the remaining length of the whole
+// utterance.
 static bool run_gated_release_checks() {
     bool all_ok = true;
     printf("\n== Segment sequencer: SPEECH_MODE_GATED note-off bound (#30/#34) ==\n");
@@ -850,10 +816,9 @@ static bool run_gated_release_checks() {
     return all_ok;
 }
 
-// #34 acceptance: "Any inconsistency renders silence; verified by
-// deliberately injecting one." Constructs a malformed utterance directly
-// (null phonemes / zero length -- data corruption or a caller passing the
-// wrong table entry) and confirms the voice renders exact silence and
+// Constructs a malformed utterance directly (null phonemes / zero length --
+// data corruption or a caller passing the wrong table entry) and confirms
+// the voice renders exact silence and
 // reports itself immediately reclaimable (SpeechVoice::active == false)
 // rather than dereferencing null or holding the voice forever.
 static bool run_malformed_utterance_check() {
@@ -879,17 +844,15 @@ static bool run_malformed_utterance_check() {
     return ok;
 }
 
-// #35 acceptance: "Every phrase renders to WAV via the host harness in one
-// command." phrases.h (tools/speechgen.py gen-phrases, from
-// tools/speech_phrases.txt) is generated data, not a hand-picked fixture
-// like utterance.h's HELLO/CAT above -- this can't assert *correct*
-// pronunciation (that's #35's other acceptance criterion, the blind
-// intelligibility spot-check, and it needs a human ear, not this harness).
-// What it checks is that every phrase the generator produced is well-formed
-// audio: finite, not clipping, and the sequencer actually reaches
-// SPEECH_MODE_ONESHOT completion within a generous time budget rather than
-// running out the clock (which would mean a malformed/never-terminating
-// utterance slipped past speechgen.py's own validation).
+// phrases.h (tools/speechgen.py gen-phrases, from tools/speech_phrases.txt)
+// is generated data, not a hand-picked fixture like utterance.h's
+// HELLO/CAT above -- this can't assert *correct* pronunciation, which
+// needs a human ear, not this harness. What it checks is that every phrase
+// the generator produced is well-formed audio: finite, not clipping, and
+// the sequencer actually reaches SPEECH_MODE_ONESHOT completion within a
+// generous time budget rather than running out the clock (which would mean
+// a malformed/never-terminating utterance slipped past speechgen.py's own
+// validation).
 static const char *sanitize_wav_label(const char *text, char *out, size_t out_len) {
     size_t j = 0;
     for (size_t i = 0; text[i] != '\0' && j + 1 < out_len; i++) {
@@ -939,15 +902,13 @@ static bool run_phrase_renders() {
     return all_ok;
 }
 
-// #36 acceptance: "A MIDI sequence plays a sung phrase at the correct
-// pitch, with pitch tracking note number across the useful range." Unlike
-// run_vowel_checks()'s octave sweep above (a single sustained phoneme, not
-// an utterance) or run_rate_checks() (a single-segment utterance, checking
-// only "has pitch" not "has the *requested* pitch"), this renders a real
-// generated phrase (SPEECH_PHRASES, #35/#36) at three notes spanning the
-// keyboard and checks each render shows real energy at its requested
-// frequency -- if pitch weren't tracking note number, changing `note_hz`
-// wouldn't move where the energy concentrates.
+// Unlike run_vowel_checks()'s octave sweep above (a single sustained
+// phoneme, not an utterance) or run_rate_checks() (a single-segment
+// utterance, checking only "has pitch" not "has the requested pitch"),
+// this renders a real generated phrase (SPEECH_PHRASES) at three notes
+// spanning the keyboard and checks each render shows real energy at its
+// requested frequency -- if pitch weren't tracking note number, changing
+// `note_hz` wouldn't move where the energy concentrates.
 static bool run_phrase_pitch_tracking_checks() {
     bool all_ok = true;
     printf("\n== Phrase bank: pitch tracks note number (#36) ==\n");
@@ -971,10 +932,8 @@ static bool run_phrase_pitch_tracking_checks() {
     return all_ok;
 }
 
-// #36 acceptance: "Jitter/shimmer at zero produce a measurably periodic
-// waveform (verified from a host render, not just by ear); non-zero
-// visibly perturbs period and amplitude." Renders a sustained vowel with
-// jitter/shimmer off and again at their max, then measures cycle-to-cycle
+// Renders a sustained vowel with jitter/shimmer off and again at their max,
+// then measures cycle-to-cycle
 // period (rising zero-crossing distance) and per-cycle peak amplitude
 // straight from the post-tract waveform -- the same audio the device
 // actually plays, not an internal-state probe.
@@ -1046,12 +1005,11 @@ static bool run_jitter_shimmer_checks() {
     return all_ok;
 }
 
-// #36 acceptance: "Vibrato LFO is audible on glottal pitch and runs at
-// sub-block rate." Renders a sustained vowel with a fast, full-depth
-// vibrato and confirms the measured F0 (local_peak_freq's hill-climb,
-// reused from run_vowel_checks() above) actually swings across the render
-// instead of sitting still -- the direct, measurable meaning of "audible on
-// glottal pitch" for a host harness with no ear.
+// Renders a sustained vowel with a fast, full-depth vibrato and confirms
+// the measured F0 (local_peak_freq's hill-climb, reused from
+// run_vowel_checks() above) actually swings across the render instead of
+// sitting still -- the direct, measurable meaning of "audible on glottal
+// pitch" for a host harness with no ear.
 static bool run_vibrato_checks() {
     bool all_ok = true;
     printf("\n== Excitation: vibrato LFO modulates glottal pitch (#36) ==\n");
@@ -1080,8 +1038,8 @@ static bool run_vibrato_checks() {
     all_ok = all_ok && ok;
 
     // Regression lock: lfo_depth=0 must reproduce the flat pitch every
-    // pre-#36 render already assumed (run_vowel_checks()'s pitch-tracking
-    // pass, etc.) -- vibrato being off shouldn't perturb anything.
+    // other render in this file assumes (run_vowel_checks()'s pitch-
+    // tracking pass, etc.) -- vibrato being off shouldn't perturb anything.
     std::vector<float> flat = render_phoneme_native(PH_A, NOTE_HZ, SECONDS, 256, 256, 0, 0, LFO_RATE_HZ, 0.0f);
     float flat_min = 1.0e9f, flat_max = -1.0e9f;
     for (size_t start = win; start + win < flat.size(); start += win) {

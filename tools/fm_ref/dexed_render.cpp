@@ -1,4 +1,4 @@
-// dexed_render -- ground-truth DX7 reference renderer for the FM module (fm2.md §3.1, F0-a).
+// dexed_render -- ground-truth DX7 reference renderer for the FM module (history_fm.md §3.1, F0-a).
 //
 // Drives Dexed's synthesis core (Source/msfa/, fetched by fetch_dexed.sh) as a
 // standalone command-line renderer: load a DX7 32-voice .syx bank, pick a
@@ -41,11 +41,9 @@
 // unity-amplitude carrier at 1.0, which is the natural unit to report in and
 // keeps the float WAV's numbers interpretable rather than arbitrary.
 //
-// Measured for context (this rig, 96 renders: ROM1A/2A/4B x 32 voices x notes
-// 36/48/60 at velocity 127): the hottest factory patch peaks at raw 144,096,955
-// = 8.59 in these units. Nothing is clamped -- float WAV has no headroom limit,
-// and fm_compare.py normalises. This constant exists so the reported dB numbers
-// mean something, not to prevent clipping.
+// Nothing is clamped -- float WAV has no headroom limit, and fm_compare.py
+// normalises. This constant exists so the reported dB numbers mean something,
+// not to prevent clipping.
 static constexpr double DEXED_UNIT = 16777216.0;  // 2^24
 
 static constexpr double SR = 44100.0;
@@ -226,7 +224,7 @@ int main(int argc, char **argv) {
     // Dexed advances in fixed N=64-sample blocks (synth.h's LG_N); the note's
     // whole control plane -- every EG, the pitch EG, the LFO -- steps exactly
     // once per block. That block size is Dexed's, not t00t's (which uses
-    // FM_BLOCK=16), and is one of the deliberate deviations listed in fm2.md §3.2.
+    // FM_BLOCK=16), and is one of the deliberate deviations listed in history_fm.md §3.2.
     for (uint32_t done = 0; done < total_frames; done += N) {
         if (!released && done >= gate_frames) { note.keyup(); released = true; }
 

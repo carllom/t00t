@@ -1,4 +1,4 @@
-// t00t_ctl_dump -- t00t's control-plane trajectories as CSV (fm2.md §3.1, F1).
+// t00t_ctl_dump -- t00t's control-plane trajectories as CSV.
 //
 // The t00t side of the exact harness. Emits the same columns, in the same
 // units, as tools/fm_ref/dexed_dump; tools/fm_ctl_diff.py runs both and
@@ -35,12 +35,12 @@ static constexpr double DB_PER_OCTAVE = 6.020599913;
 // `actuallevel` is 1/256 octave, since `targetlevel_ = actuallevel << 16` lands
 // in a Q24-per-octave field.
 //
-// Since F3 this side works in Dexed's own Q24-octave level domain (env_dx.h is
-// a direct port), so the conversion is now the identical expression on both
-// sides: (level - reference) / 2^24 * dB-per-octave. The shared anchor -- all
-// rates and levels 99, output level 99, no key scaling, no velocity -- is
-// EG_LEVEL_MAX, the 15-octave ceiling env_dx_advance() produces for exactly
-// that config.
+// This side works in Dexed's own Q24-octave level domain (env_dx.h is a
+// direct port), so the conversion is the identical expression on both
+// sides: (level - reference) / 2^24 * dB-per-octave. The shared anchor --
+// all rates and levels 99, output level 99, no key scaling, no velocity --
+// is EG_LEVEL_MAX, the 15-octave ceiling env_dx_advance() produces for
+// exactly that config.
 static constexpr int32_t reference_level() { return EG_LEVEL_MAX; }
 
 static void parse4(const char *s, uint8_t out[4]) {
@@ -112,9 +112,8 @@ int main(int argc, char **argv) {
                 printf("%d,%d,%d\n", n, s, dx7_scale_rate(n, s));
 
     } else if (what == "velocity") {
-        // F3 replaced the hand-rolled velocity model with a port of Dexed's
-        // own ScaleVelocity, so this is now a like-for-like table diff in the
-        // same microstep units rather than a comparison across two models.
+        // A like-for-like table diff in the same microstep units (env_dx.h's
+        // dx7_scale_velocity() is a port of Dexed's own ScaleVelocity).
         printf("velocity,sensitivity,outlevel_delta\n");
         for (int v = 0; v < 128; v++)
             for (int s = 0; s < 8; s++)

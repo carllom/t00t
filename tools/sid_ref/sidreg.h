@@ -1,10 +1,8 @@
 #pragma once
 
-// The register stream format that both sides of the F0 comparison consume.
-//
-// chip.md §11.1: "A register stream is $D400-$D418: three voices, one shared
-// filter, adjacency-wired sync." This header is that stream's parser, shared
-// verbatim by tools/sid_ref/resid_render.cpp (reSID) and
+// The register stream format that both sides of the F0 comparison consume
+// (module_chip.md §11.1). This header is that stream's parser, shared verbatim
+// by tools/sid_ref/resid_render.cpp (reSID) and
 // tools/host_render/render_sid.cpp (t00t/CHIP_STRICT) so the two renderers
 // cannot disagree about *when* a write lands -- only about what it sounds
 // like, which is the thing being measured.
@@ -19,13 +17,10 @@
 //   @<frame> <reg> <val>   write $D4<reg> = $<val> at the start of that frame
 //                          (reg and val are hex, reg 00-1c)
 //
-// Writes are applied at frame boundaries only. That is not a limitation of
-// the format so much as a statement of what this module *is*: chip.md §6.2
-// makes the frame the chip control clock, and a driver that wrote registers
-// mid-frame would be doing something no instrument table can express. It also
-// keeps the two renderers comparable -- reSID is cycle-accurate and t00t runs
-// at 44.1 kHz, so a shared timebase coarser than either is the only one both
-// can honour exactly.
+// Writes are applied at frame boundaries only (module_chip.md §6.2): the frame
+// is the chip control clock, and a shared timebase coarser than either
+// renderer -- reSID is cycle-accurate, t00t runs at 44.1 kHz -- is the only
+// one both can honour exactly.
 
 #include <cstdint>
 #include <cstdio>

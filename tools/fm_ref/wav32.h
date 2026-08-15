@@ -1,6 +1,6 @@
 #pragma once
 
-// WAV writers for the FM reference rig (fm2.md §3.1). Shared by dexed_render
+// WAV writers for the FM reference rig (history_fm.md §3.1). Shared by dexed_render
 // and tools/host_render/render_fm_patch -- both sides of the comparison must
 // write byte-identical container formats or fm_compare.py is comparing readers
 // as much as engines.

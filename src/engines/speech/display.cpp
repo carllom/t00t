@@ -9,17 +9,13 @@
 #include "pico/time.h"
 #include <cstdio>
 
-// Speech status display (Core 0, low priority). Mirrors the groovebox
-// display's chrome (buttonless breadboard, no presets.h) with a per-voice
-// phoneme grid and F1/F2 formant-space plot in place of the old single MODE
-// row -- #37 / speech.md's Open Question #4 ("current phoneme plus a
-// formant-space plot ... genuinely useful ... the same F1/F2 view the vowel-
-// chart verification in #32 uses"). This supersedes #28's single PHON row
-// (last note-on's channel program, useful only for "did PC land at all"):
-// the per-voice grid below shows the same information per sounding voice,
-// which the single row couldn't. FX rows dropped for now -- not part of
-// #28/#37, revisit if delay/reverb becomes a real requirement for this
-// engine.
+// Speech status display (Core 0, low priority) for a buttonless breadboard
+// (no presets.h row). Module-specific content is a per-voice phoneme grid
+// and F1/F2 formant-space plot (module_speech.md "Display") -- the same
+// F1/F2 view the vowel-chart verification in
+// tools/host_render/render_speech.cpp uses. The grid shows the current
+// phoneme per sounding voice, which a single last-note-on row can't. FX
+// rows are omitted from the display.
 
 static const uint16_t COL_BG      = gfx_rgb(0, 0, 0);
 static const uint16_t COL_TITLE   = gfx_rgb(90, 30, 160);   // violet-ish speech bar
@@ -47,17 +43,17 @@ static constexpr int ROW_VOICES = 36, ROW_CPU = 76, ROW_NOTE = 116;
 static constexpr int VBAR_Y = 56, VCELL_PITCH = 15, VCELL_W = 13, VBAR_H = 14;
 static constexpr int CBAR_X = 4, CBAR_Y = 96, CBAR_W = 232, CBAR_H = 12;
 
-// Per-voice phoneme grid (#37 acceptance: "current phoneme shown per active
-// voice"): 2 columns x 4 rows, one cell per voice (MAX_VOICES == 8).
+// Per-voice phoneme grid: 2 columns x 4 rows, one cell per voice
+// (MAX_VOICES == 8), showing the current phoneme for each active voice.
 static constexpr int PHON_ROW0 = 138, PHON_ROW_H = 12, PHON_COL_W = 120, PHON_CH = 10;
 
-// F1/F2 formant-space plot (#37: "F1 on one axis, F2 on the other, a dot per
-// voice moving as the segment sequencer ramps between targets"). Oriented
-// like the conventional IPA vowel chart: F1 (low = close vowel) increases
-// downward, F2 (high = front vowel) increases leftward. Range covers every
-// vowel in phonemes.h's PHONEME_TARGETS with headroom (#32's I=270/2290 and
-// W=290/610 are the extremes) -- consonants mostly share a fixed F1/F2
-// placeholder and cluster near centre, which is correct: this tract has no
+// F1/F2 formant-space plot: one dot per voice, moving as the segment
+// sequencer ramps between targets. Oriented like the conventional IPA
+// vowel chart: F1 (low = close vowel) increases downward, F2 (high = front
+// vowel) increases leftward. Range covers every vowel in phonemes.h's
+// PHONEME_TARGETS with headroom (I=270/2290 Hz and W=290/610 Hz are the
+// extremes) -- consonants mostly share a fixed F1/F2 placeholder and
+// cluster near centre, which is correct: this tract has no
 // place-of-articulation formant data for them yet.
 static constexpr int PLOT_X = 4, PLOT_Y = 190, PLOT_W = 232, PLOT_H = 90;
 static constexpr int PLOT_DOT = 5;
@@ -73,7 +69,7 @@ static void draw_val(int y, const char *raw, uint16_t fg) {
     gfx_text(VAL_X, y, b, fg, COL_BG, 2);
 }
 
-// `text` == "" clears the cell (voice inactive -- #37: only active voices
+// `text` == "" clears the cell (voice inactive -- only active voices
 // show a phoneme). Padded to PHON_CH so a shorter new string still overwrites
 // every glyph cell the previous, longer one occupied.
 static void draw_phon_cell(uint32_t v, const char *text, uint16_t fg) {
@@ -118,7 +114,7 @@ void display_init() {
 }
 
 void display_task() {
-    // Redraws at ~10 Hz (#37 acceptance criterion) -- far below the segment
+    // Redraws at ~10 Hz -- far below the segment
     // rate, plenty for a monitor that isn't trying to be an animation, and
     // this is Core 0 wall-clock time, so it has no effect on Core 1's render
     // deadline either way.
@@ -178,7 +174,7 @@ void display_task() {
     }
     last_midi = m;
 
-    // Per-voice phoneme grid + formant plot (#37). Pull each voice's current
+    // Per-voice phoneme grid + formant plot. Pull each voice's current
     // telemetry once and reuse it for both.
     SpeechVoiceUiState ui[MAX_VOICES];
     for (uint32_t v = 0; v < MAX_VOICES; v++) speech_voice_ui_state(v, &ui[v]);

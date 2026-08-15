@@ -11,12 +11,12 @@ when switching):
 
 | `BOARD` | Hardware | Buttons | DAC | Notes |
 |---|---|---|---|---|
-| `breadboard_rp2350` **(default)** | Pico 2 on breadboard | none (MIDI only) | PCM5122, I2S GPIO 16(BCK)/17(LRCK)/18(DIN) | Carl's actual rig |
+| `breadboard_rp2350` **(default)** | Pico 2 on breadboard | none (MIDI only) | PCM5122, I2S GPIO 16(BCK)/17(LRCK)/18(DIN) | the author's actual rig |
 | `vgaboard_rp2350` | Pimoroni VGA Demo + Pico 2 | A/B/C on GPIO 0/6/11 | PCM5100A | |
 
 - Board headers live in [src/boards/](src/boards/); they are also included by the assembler,
   so they must contain **only preprocessor directives**.
-- **Carl runs the breadboard board.** Build with plain `make`. Do NOT flash a vgaboard UF2
+- **The author runs the breadboard board.** Build with plain `make`. Do NOT flash a vgaboard UF2
   to it — it produces silence.
 - Profiling pin: GPIO 22 (scope probe; high while Core 1 renders a buffer).
 - **LCD (breadboard only):** Waveshare 1.83" 240×284 IPS, Rev2 = **ST7789P**, on
@@ -29,7 +29,7 @@ when switching):
 - `make` → `build/t00t.uf2` (breadboard). `make BOARD=vgaboard_rp2350` for the other.
 - MIDI transport overrides: `make MIDI_USB=0` (DIN only) / `make MIDI_UART=0` (USB only);
   default `"default"` lets the board header decide (both on).
-- pico-sdk/ and pico-extras/ are vendored at repo root (see [building.md](building.md) if missing).
+- pico-sdk/ and pico-extras/ are vendored at repo root (see [docs/building.md](docs/building.md) if missing).
 - Flash: hold BOOTSEL, plug in, `cp build/t00t.uf2 /media/$USER/RPI-RP2/`.
 
 ## Architecture (dual-core)
@@ -113,10 +113,20 @@ parses raw bytes and maps notes to voices; fed by pluggable transports:
 
 ## Docs
 
-- [architecture.md](architecture.md) — full system design (detailed).
-- [engine.md](engine.md) — synthesis engine deep-dive.
-- [building.md](building.md) — toolchain, SDK setup, build/flash steps.
-- [migration.md](migration.md) — porting notes.
+- [docs/logs/architecture.md](docs/logs/architecture.md) — full system design (detailed).
+- [docs/engine.md](docs/engine.md) — cross-module dual-core architecture (pin allocation, buffer
+  flow, IPC, voice allocation, MIDI input) shared by every synthesis module.
+- [docs/building.md](docs/building.md) — toolchain, SDK setup, build/flash steps.
+- [docs/logs/migration.md](docs/logs/migration.md) — porting notes.
+- **Per-module docs** — one `docs/module_<name>.md` (current spec/usage) and, where the module
+  has development history worth keeping, a `docs/logs/history_<name>.md` (dated build/measurement
+  narrative, kept separate so it doesn't clutter the spec):
+  [module_subtractive.md](docs/module_subtractive.md) / [history_subtractive.md](docs/logs/history_subtractive.md),
+  [module_chip.md](docs/module_chip.md) / [history_chip.md](docs/logs/history_chip.md),
+  [module_fm.md](docs/module_fm.md) / [history_fm.md](docs/logs/history_fm.md),
+  [module_groovebox.md](docs/module_groovebox.md),
+  [module_speech.md](docs/module_speech.md) / [history_speech.md](docs/logs/history_speech.md),
+  [module_tracker.md](docs/module_tracker.md) / [history_tracker.md](docs/logs/history_tracker.md).
 
 ## Notes / gotchas
 
