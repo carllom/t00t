@@ -57,6 +57,11 @@
 #include <cstdio>
 #include <vector>
 
+#ifdef T00T_SPEECH_HAS_LATTICE_WORDS
+#include "../../src/engines/speech/lattice_words.h"
+#include <sys/stat.h>
+#endif
+
 // Mirrors src/engines/speech/engine.h's SPEECH_RATE (SAMPLE_RATE/2) without
 // pulling engine.h/engine_base.h in here — see render.h's comment on why.
 static constexpr uint32_t SPEECH_RATE = SAMPLE_RATE / 2;
@@ -215,9 +220,9 @@ static std::vector<float> render_phoneme_native(Phoneme p, float note_hz, float 
 static std::vector<float> render_target_native(const FormantTarget &tgt, float note_hz, float seconds,
                                                  float af_override = -1.0f, float an_override = -1.0f) {
     SpeechVoice sv{};
-    tract_retrigger(sv, tgt);
-    if (af_override >= 0.0f) sv.af = sv.af_tgt = af_override;
-    if (an_override >= 0.0f) sv.an = sv.an_tgt = an_override;
+    tract_retrigger(sv.fmt, tgt);
+    if (af_override >= 0.0f) sv.fmt.af = sv.fmt.af_tgt = af_override;
+    if (an_override >= 0.0f) sv.fmt.an = sv.fmt.an_tgt = an_override;
 
     const uint32_t total = (uint32_t)(SPEECH_RATE * seconds);
     std::vector<float> y(total);
@@ -228,12 +233,12 @@ static std::vector<float> render_target_native(const FormantTarget &tgt, float n
     uint32_t done = 0;
     while (done < total) {
         uint32_t k = std::min((uint32_t)SPEECH_SUBBLOCK, total - done);
-        tract_advance_subblock(sv, (float)SPEECH_RATE);
+        tract_advance_subblock(sv.fmt, (float)SPEECH_RATE);
         for (uint32_t i = 0; i < k; i++) {
-            float voiced_src = glottal_pulse(phase) * sv.av;
-            float noise_src = (float)osc_noise(lfsr) * (1.0f / 32768.0f) * sv.af;
+            float voiced_src = glottal_pulse(phase) * sv.fmt.av;
+            float noise_src = (float)osc_noise(lfsr) * (1.0f / 32768.0f) * sv.fmt.af;
             phase += inc;
-            y[done + i] = tract_process_mixed(sv, voiced_src, noise_src);
+            y[done + i] = tract_process_mixed(sv.fmt, voiced_src, noise_src);
         }
         done += k;
     }
@@ -252,14 +257,14 @@ static std::vector<float> render_target_native(const FormantTarget &tgt, float n
 // spacing.
 static std::vector<float> render_phoneme_impulse_response(Phoneme p, uint32_t n_samples) {
     SpeechVoice sv{};
-    tract_retrigger(sv, phoneme_unpack(PHONEME_TARGETS[p]));
+    tract_retrigger(sv.fmt, phoneme_unpack(PHONEME_TARGETS[p]));
     std::vector<float> y(n_samples);
     uint32_t done = 0;
     while (done < n_samples) {
         uint32_t k = std::min((uint32_t)SPEECH_SUBBLOCK, n_samples - done);
-        tract_advance_subblock(sv, (float)SPEECH_RATE);
+        tract_advance_subblock(sv.fmt, (float)SPEECH_RATE);
         for (uint32_t i = 0; i < k; i++) {
-            y[done + i] = tract_process(sv, (done + i == 0) ? 1.0f : 0.0f);
+            y[done + i] = tract_process(sv.fmt, (done + i == 0) ? 1.0f : 0.0f);
         }
         done += k;
     }
@@ -547,20 +552,20 @@ static bool test_cc_sweep_stability() {
         for (uint32_t cc_shift = 0; cc_shift <= 127; cc_shift++) {
             for (uint32_t cc_bw = 0; cc_bw <= 127; cc_bw += 4) {
                 SpeechVoice sv{};
-                tract_retrigger(sv, tgt);
+                tract_retrigger(sv.fmt, tgt);
                 int16_t shift_q88 = tract_cc_to_q8_8((uint8_t)cc_shift, FORMANT_SHIFT_MIN, FORMANT_SHIFT_MAX);
                 int16_t bw_q88 = tract_cc_to_q8_8((uint8_t)cc_bw, BANDWIDTH_SCALE_MIN, BANDWIDTH_SCALE_MAX);
                 // Snap current == target so this checks the coefficients at
                 // the extreme value itself (mirrors what a sustained CC
                 // sweep settles to), not mid-ramp toward it.
-                sv.formant_shift = sv.formant_shift_tgt = (float)shift_q88 * (1.0f / 256.0f);
-                sv.bandwidth_scale = sv.bandwidth_scale_tgt = (float)bw_q88 * (1.0f / 256.0f);
-                tract_advance_subblock(sv, (float)SPEECH_RATE);
+                sv.fmt.formant_shift = sv.fmt.formant_shift_tgt = (float)shift_q88 * (1.0f / 256.0f);
+                sv.fmt.bandwidth_scale = sv.fmt.bandwidth_scale_tgt = (float)bw_q88 * (1.0f / 256.0f);
+                tract_advance_subblock(sv.fmt, (float)SPEECH_RATE);
                 checked++;
 
                 bool fail = false;
-                for (uint32_t i = 0; i < SPEECH_FORMANTS; i++) fail = fail || bad_pole(sv.formant[i]);
-                fail = fail || bad_pole(sv.fric) || bad_pole(sv.nasal);
+                for (uint32_t i = 0; i < SPEECH_FORMANTS; i++) fail = fail || bad_pole(sv.fmt.formant[i]);
+                fail = fail || bad_pole(sv.fmt.fric) || bad_pole(sv.fmt.nasal);
                 if (fail) {
                     printf("  FAIL phoneme=%u cc_shift=%u cc_bw=%u -> pole outside unit circle\n", p, cc_shift, cc_bw);
                     all_ok = false;
@@ -1054,6 +1059,470 @@ static bool run_vibrato_checks() {
     return all_ok;
 }
 
+// LPC lattice tract bring-up regression: renders lattice.h's one hardcoded
+// test word (LATTICE_TEST_WORD) through speech_render_voice_lattice() --
+// the same function audio_engine.cpp's Core 1 render loop calls for a
+// lattice-tract voice -- and checks the result is finite, unclipped, and
+// actually reaches completion. run_lattice_corpus_render() below covers the
+// real converted corpus when one has been generated locally.
+static bool run_lattice_word_check() {
+    printf("\n== LPC lattice tract: hardcoded test word ==\n");
+
+    SpeechVoice sv{};
+    uint32_t total = SAMPLE_RATE * 2;  // comfortably longer than the word
+    std::vector<int32_t> dry_l(total, 0), dry_r(total, 0);
+    speech_render_voice_lattice(sv, /*trigger=*/1, /*amplitude=*/32767, /*gate=*/true,
+                                 LATTICE_TEST_WORD, SPEECH_MODE_ONESHOT, /*pitch_shift=*/256,
+                                 /*chirp_exciter=*/false,
+                                 /*pan=*/0, (float)SAMPLE_RATE,
+                                 dry_l.data(), dry_r.data(), total);
+
+    float peak = 0.0f;
+    bool finite = true;
+    for (uint32_t i = 0; i < total; i++) {
+        finite = finite && std::isfinite((float)dry_l[i]) && std::isfinite((float)dry_r[i]);
+        peak = std::max(peak, std::fabs((float)dry_l[i]));
+    }
+    bool finished = !sv.active;  // word completed and cleared itself within `total`
+    bool clipped = peak >= 32767.0f;
+    bool ok = finite && !clipped && finished;
+
+    std::vector<int16_t> out(total * 2);
+    for (uint32_t i = 0; i < total; i++) {
+        out[i * 2 + 0] = (int16_t)std::max(-32768.0f, std::min(32767.0f, (float)dry_l[i]));
+        out[i * 2 + 1] = (int16_t)std::max(-32768.0f, std::min(32767.0f, (float)dry_r[i]));
+    }
+    write_wav_pcm16("speech_lattice_test_word.wav", out, SAMPLE_RATE, 2);
+
+    printf("  test word: peak=%.0f finite=%s finished=%s -> %s (speech_lattice_test_word.wav)\n",
+           peak, finite ? "yes" : "no", finished ? "yes" : "no", ok ? "PASS" : "FAIL");
+    if (clipped) printf("  FAIL: clipped (peak=%.0f)\n", peak);
+    if (!finished) printf("  FAIL: word never completed within the render time budget\n");
+    return ok;
+}
+
+// Mirrors run_malformed_utterance_check() above, for the lattice tract's own
+// equivalent guard: a null/empty word renders exact silence and reports
+// itself immediately reclaimable rather than dereferencing null.
+static bool run_lattice_malformed_check() {
+    printf("\n== LPC lattice tract: malformed word renders silence ==\n");
+
+    LatticeWord bad{ nullptr, 0 };
+    SpeechVoice sv{};
+    uint32_t total = SAMPLE_RATE / 2;
+    std::vector<int32_t> dry_l(total, 0), dry_r(total, 0);
+    speech_render_voice_lattice(sv, /*trigger=*/1, /*amplitude=*/32767, /*gate=*/true,
+                                 bad, SPEECH_MODE_ONESHOT, /*pitch_shift=*/256, /*chirp_exciter=*/false,
+                                 /*pan=*/0, (float)SAMPLE_RATE, dry_l.data(), dry_r.data(), total);
+
+    bool silent = true;
+    for (uint32_t i = 0; i < total; i++) silent = silent && dry_l[i] == 0 && dry_r[i] == 0;
+    bool ok = silent && !sv.active;
+    printf("  malformed word (null frames, length=0): silent=%s active=%s -> %s\n",
+           silent ? "yes" : "no", sv.active ? "yes" : "no", ok ? "PASS" : "FAIL");
+    if (!silent) printf("  FAIL: malformed word produced non-zero output\n");
+    if (sv.active) printf("  FAIL: voice reports itself still sounding after a malformed word\n");
+    return ok;
+}
+
+// The fractional-ratio (44.1 kHz / 8 kHz) upsampler's accumulator persists
+// across render calls rather than resetting per buffer -- this holds one
+// voiced test frame for 10 s (well beyond any single buffer) and checks the
+// measured F0 hasn't drifted between an early and a late window. A resampler
+// that lost fractional precision over a long render would show up here as a
+// measurable frequency error, not just a click.
+static bool run_lattice_resample_stability_check() {
+    printf("\n== LPC lattice tract: fractional resampler stability over a long render ==\n");
+
+    static constexpr uint32_t HOLD_FRAMES = 400;  // 400 * 25 ms = 10 s
+    std::vector<LatticeFrame> word_frames(HOLD_FRAMES, LATTICE_TEST_I);
+    LatticeWord word{ word_frames.data(), (uint16_t)word_frames.size() };
+
+    SpeechVoice sv{};
+    uint32_t total = SAMPLE_RATE * 10;
+    std::vector<int32_t> dry_l(total, 0), dry_r(total, 0);
+    speech_render_voice_lattice(sv, /*trigger=*/1, /*amplitude=*/32767, /*gate=*/true,
+                                 word, SPEECH_MODE_ONESHOT, /*pitch_shift=*/256, /*chirp_exciter=*/false,
+                                 /*pan=*/0, (float)SAMPLE_RATE, dry_l.data(), dry_r.data(), total);
+
+    bool finite = true;
+    float peak = 0.0f;
+    std::vector<float> mono(total);
+    for (uint32_t i = 0; i < total; i++) {
+        mono[i] = (float)dry_l[i];
+        finite = finite && std::isfinite(mono[i]);
+        peak = std::max(peak, std::fabs(mono[i]));
+    }
+    bool clipped = peak >= 32767.0f;
+
+    size_t win = SAMPLE_RATE / 4;  // 250 ms analysis windows
+    float early = local_peak_freq(mono, win, win, LATTICE_TEST_I.pitch_hz, (float)SAMPLE_RATE);
+    float late = local_peak_freq(mono, total - 2 * win, win, LATTICE_TEST_I.pitch_hz, (float)SAMPLE_RATE);
+    float drift = std::fabs(late - early);
+    bool no_drift = drift < 2.0f;  // well under local_peak_freq's own 5 Hz search grid
+
+    bool ok = finite && !clipped && no_drift;
+    printf("  10 s render: peak=%.0f finite=%s  F0 early=%.1f late=%.1f (drift=%.1f Hz) -> %s\n",
+           peak, finite ? "yes" : "no", early, late, drift, ok ? "PASS" : "FAIL");
+    if (!no_drift) printf("  FAIL: fractional resampler phase drifted over a long render\n");
+    return ok;
+}
+
+// Renders one voice through speech_render_voice_lattice() at the output
+// rate directly (that function takes output_frames, not native_frames --
+// see its own header comment), gate held true for the first
+// `hold_output_frames` and false thereafter. Mirrors
+// render_utterance_native()'s shape above: trigger stays constant at 1 so
+// the first call retriggers and later calls continue the same note, and
+// `completed_at` is the first call-boundary at which sv.active went false.
+struct LatticeRender {
+    std::vector<float> mono;
+    uint32_t completed_at;
+};
+
+static LatticeRender render_lattice_native(const LatticeWord &word, SpeechMode mode,
+                                            uint32_t hold_output_frames, uint32_t total_output_frames,
+                                            int16_t pitch_shift = 256, bool chirp_exciter = false) {
+    SpeechVoice sv{};
+    LatticeRender result;
+    result.mono.assign(total_output_frames, 0.0f);
+    result.completed_at = total_output_frames;
+
+    static constexpr uint32_t CHUNK = NATIVE_BUFFER * 2;
+    std::vector<int32_t> dry_l(CHUNK, 0), dry_r(CHUNK, 0);
+
+    uint32_t done = 0;
+    bool recorded = false;
+    while (done < total_output_frames) {
+        uint32_t n = std::min(CHUNK, total_output_frames - done);
+        std::fill(dry_l.begin(), dry_l.begin() + n, 0);
+        std::fill(dry_r.begin(), dry_r.begin() + n, 0);
+        bool gate = done < hold_output_frames;
+        speech_render_voice_lattice(sv, /*trigger=*/1, /*amplitude=*/32767, gate, word, mode, pitch_shift,
+                                     chirp_exciter, /*pan=*/0, (float)SAMPLE_RATE, dry_l.data(), dry_r.data(), n);
+        for (uint32_t i = 0; i < n; i++) result.mono[done + i] = (float)dry_l[i];
+        if (!sv.active && !recorded) { result.completed_at = done; recorded = true; }
+        done += n;
+    }
+    return result;
+}
+
+// The output-rate span of one 25 ms coefficient frame -- the yardstick the
+// mode checks below measure note-off overhang against.
+static const float LATTICE_FRAME_OUTPUT_SAMPLES =
+    (float)SPEECH_LATTICE_FRAME_SAMPLES * (float)SAMPLE_RATE / (float)SPEECH_LATTICE_RATE;
+
+// GATED/ONESHOT/LOOP on the lattice tract (module_speech.md "LPC Lattice
+// Tract"): a synthetic 8-frame word (four voiced LATTICE_TEST_I frames,
+// four voiced LATTICE_TEST_A frames -- both real fixtures from lattice.h's
+// own hardcoded test word), gate released partway through frame 1 of 8.
+//   - GATED jumps straight to the word's last frame on note-off, so it
+//     completes roughly one frame period after release -- much sooner than
+//     the ~6 remaining frames' worth of natural duration.
+//   - ONESHOT ignores the same note-off for word progression, so it keeps
+//     playing all 8 frames' natural duration regardless.
+//   - LOOP restarts at frame 0 while gate stays held (checked separately,
+//     below, since it needs a longer render than the other two), then
+//     degrades to one-shot completion once gate drops.
+static bool run_lattice_mode_checks() {
+    bool all_ok = true;
+    printf("\n== LPC lattice tract: GATED/ONESHOT/LOOP note-off contract ==\n");
+
+    static const LatticeFrame WORD_FRAMES[8] = {
+        LATTICE_TEST_I, LATTICE_TEST_I, LATTICE_TEST_I, LATTICE_TEST_I,
+        LATTICE_TEST_A, LATTICE_TEST_A, LATTICE_TEST_A, LATTICE_TEST_A,
+    };
+    static const LatticeWord WORD{ WORD_FRAMES, 8 };
+
+    uint32_t hold = (uint32_t)(LATTICE_FRAME_OUTPUT_SAMPLES * 1.5f);  // release mid-frame-1
+    uint32_t total = (uint32_t)(LATTICE_FRAME_OUTPUT_SAMPLES * 8 * 2);  // generous cap
+
+    LatticeRender gated = render_lattice_native(WORD, SPEECH_MODE_GATED, hold, total);
+    LatticeRender oneshot = render_lattice_native(WORD, SPEECH_MODE_ONESHOT, hold, total);
+
+    bool gated_finished = gated.completed_at < total;
+    uint32_t gated_overhang = gated_finished ? gated.completed_at - hold : 0xFFFFFFFFu;
+    bool gated_ok = gated_finished && gated_overhang < (uint32_t)(LATTICE_FRAME_OUTPUT_SAMPLES * 3.0f);
+    printf("  GATED:   note-off at %u, completed at %u (overhang=%u, bound=%.0f) -> %s\n",
+           hold, gated.completed_at, gated_overhang, LATTICE_FRAME_OUTPUT_SAMPLES * 3.0f,
+           gated_ok ? "PASS" : "FAIL");
+    all_ok = all_ok && gated_ok;
+
+    bool oneshot_finished = oneshot.completed_at < total;
+    // Natural completion is ~8 frame periods regardless of the early
+    // release -- well past GATED's release-jump bound above.
+    bool oneshot_ok = oneshot_finished
+        && oneshot.completed_at > (uint32_t)(LATTICE_FRAME_OUTPUT_SAMPLES * 6.0f);
+    printf("  ONESHOT: note-off at %u (ignored), completed at %u (expect > %.0f) -> %s\n",
+           hold, oneshot.completed_at, LATTICE_FRAME_OUTPUT_SAMPLES * 6.0f, oneshot_ok ? "PASS" : "FAIL");
+    all_ok = all_ok && oneshot_ok;
+
+    // LOOP: gate held across more than one full pass -- must not complete
+    // within that window (still looping), then must complete within one
+    // more pass after gate finally drops (degrades to one-shot).
+    uint32_t natural = 8;  // frames per pass
+    uint32_t loop_total = (uint32_t)(LATTICE_FRAME_OUTPUT_SAMPLES * natural * 3.0f);
+    LatticeRender held_loop = render_lattice_native(WORD, SPEECH_MODE_LOOP, loop_total, loop_total);
+    bool still_looping = held_loop.completed_at == loop_total;  // never went inactive while gated
+    printf("  LOOP:    held for %.1f passes, still active throughout -> %s\n",
+           (float)loop_total / (LATTICE_FRAME_OUTPUT_SAMPLES * natural), still_looping ? "PASS" : "FAIL");
+    all_ok = all_ok && still_looping;
+
+    uint32_t loop_hold = (uint32_t)(LATTICE_FRAME_OUTPUT_SAMPLES * natural * 1.5f);  // release mid-2nd pass
+    uint32_t loop_release_total = (uint32_t)(LATTICE_FRAME_OUTPUT_SAMPLES * natural * 3.0f);
+    LatticeRender released_loop = render_lattice_native(WORD, SPEECH_MODE_LOOP, loop_hold, loop_release_total);
+    bool degrades_ok = released_loop.completed_at < total
+        && released_loop.completed_at < loop_hold + (uint32_t)(LATTICE_FRAME_OUTPUT_SAMPLES * natural);
+    printf("  LOOP:    note-off at %u mid-pass, completed at %u (expect within one more pass) -> %s\n",
+           loop_hold, released_loop.completed_at, degrades_ok ? "PASS" : "FAIL");
+    all_ok = all_ok && degrades_ok;
+
+    return all_ok;
+}
+
+// The pitch-shift CC (module_speech.md "MIDI Mapping"): a word's own
+// recorded pitch contour (LATTICE_TEST_I's 130 Hz) scaled by a Q8.8
+// multiplier, measured the same way run_lattice_resample_stability_check()
+// measures F0 above.
+static bool run_lattice_pitch_shift_check() {
+    bool all_ok = true;
+    printf("\n== LPC lattice tract: pitch-shift CC scales the recorded contour ==\n");
+
+    static constexpr uint32_t HOLD_FRAMES = 40;  // 40 * 25 ms = 1 s
+    std::vector<LatticeFrame> frames(HOLD_FRAMES, LATTICE_TEST_I);
+    LatticeWord word{ frames.data(), (uint16_t)frames.size() };
+    uint32_t total = SAMPLE_RATE;
+
+    struct { int16_t q8_8; float mult; } cases[] = { { 256, 1.0f }, { 512, 2.0f }, { 128, 0.5f } };
+    for (auto &c : cases) {
+        LatticeRender r = render_lattice_native(word, SPEECH_MODE_ONESHOT, total, total, c.q8_8);
+        size_t win = total / 4;
+        float target = LATTICE_TEST_I.pitch_hz * c.mult;
+        float measured = local_peak_freq(r.mono, win, win * 2, target, (float)SAMPLE_RATE);
+        bool ok = std::fabs(measured - target) / target < 0.05f;
+        printf("  mult=%.2fx (Q8.8=%d): target=%.1f Hz measured=%.1f Hz -> %s\n",
+               c.mult, c.q8_8, target, measured, ok ? "PASS" : "FAIL");
+        all_ok = all_ok && ok;
+    }
+    return all_ok;
+}
+
+// The chirp exciter (lattice.h's lattice_chirp_pulse(), the real TMS5220's
+// own excitation table): confirms it tracks pitch the same way
+// glottal_pulse() does (same period, same F0 -- only the in-period shape
+// differs), and that it's genuinely, measurably harsher/buzzier, not just
+// wired but indistinguishable. Crest factor (peak / RMS over one steady
+// second) is the proxy: a short burst concentrated at the start of each
+// pitch period has a much higher peak-to-average ratio than a triangle
+// spanning the whole period, which is exactly the audible difference this
+// exciter exists to make.
+static bool run_lattice_chirp_exciter_check() {
+    bool all_ok = true;
+    printf("\n== LPC lattice tract: chirp exciter (TMS5220 excitation table) ==\n");
+
+    static constexpr uint32_t HOLD_FRAMES = 40;  // 40 * 25 ms = 1 s
+    std::vector<LatticeFrame> frames(HOLD_FRAMES, LATTICE_TEST_I);
+    LatticeWord word{ frames.data(), (uint16_t)frames.size() };
+    uint32_t total = SAMPLE_RATE;
+
+    LatticeRender pulse = render_lattice_native(word, SPEECH_MODE_ONESHOT, total, total, /*pitch_shift=*/256, /*chirp_exciter=*/false);
+    LatticeRender chirp = render_lattice_native(word, SPEECH_MODE_ONESHOT, total, total, /*pitch_shift=*/256, /*chirp_exciter=*/true);
+
+    // Autocorrelation period, not local_peak_freq()'s spectral hill-climb
+    // or a zero-crossing count -- the chirp burst's harmonic-rich,
+    // DC-heavy spectrum (module_speech.md "LPC Lattice Tract") both
+    // carries strong energy at multiples of F0 (misleading a narrow
+    // spectral search) and rings enough to add spurious zero crossings
+    // within one true period (misleading a crossing count). Autocorrelation
+    // integrates the whole waveform shape against a lagged copy of itself,
+    // so it locks onto the true repetition period regardless of how that
+    // period's internal harmonic content is distributed.
+    size_t win = total / 4;
+    uint32_t expected_period = (uint32_t)((float)SAMPLE_RATE / LATTICE_TEST_I.pitch_hz + 0.5f);
+    auto autocorr_period_hz = [&](const std::vector<float> &mono) {
+        size_t start = win;
+        // A narrow +-15% window around the known expected period, not an
+        // open-ended pitch search -- the target pitch is already known
+        // exactly (this word's own fixed pitch_hz), so this only needs to
+        // confirm the render reproduces it, not blind-detect an unknown
+        // one. A wider range invites the classic autocorrelation octave
+        // error: correlation at 2x the true period is often just as
+        // strong, or stronger, than at the true period itself for a
+        // clean, low-noise periodic signal.
+        uint32_t min_lag = expected_period * 85 / 100, max_lag = expected_period * 115 / 100;
+        // A fixed term count across every tested lag -- comparing raw sums
+        // across lags with different term counts (e.g. `i + lag < end`)
+        // biases toward whichever lag happens to sum the most terms, not
+        // whichever lag correlates best.
+        size_t fixed_n = mono.size() - start - max_lag;
+        double best_corr = -1.0;
+        uint32_t best_lag = expected_period;
+        for (uint32_t lag = min_lag; lag <= max_lag; lag++) {
+            double sum = 0.0;
+            for (size_t i = 0; i < fixed_n; i++) sum += (double)mono[start + i] * (double)mono[start + i + lag];
+            if (sum > best_corr) { best_corr = sum; best_lag = lag; }
+        }
+        return (float)SAMPLE_RATE / (float)best_lag;
+    };
+    float f0_pulse = autocorr_period_hz(pulse.mono);
+    float f0_chirp = autocorr_period_hz(chirp.mono);
+    bool pitch_ok = std::fabs(f0_chirp - LATTICE_TEST_I.pitch_hz) / LATTICE_TEST_I.pitch_hz < 0.05f;
+    printf("  pitch tracking: glottal_pulse F0=%.1f  chirp F0=%.1f (target %.1f) -> %s\n",
+           f0_pulse, f0_chirp, LATTICE_TEST_I.pitch_hz, pitch_ok ? "PASS" : "FAIL");
+    all_ok = all_ok && pitch_ok;
+
+    auto crest_factor = [&](const std::vector<float> &mono) {
+        float peak = 0.0f;
+        double sum_sq = 0.0;
+        for (size_t i = win; i < mono.size(); i++) {
+            peak = std::max(peak, std::fabs(mono[i]));
+            sum_sq += (double)mono[i] * (double)mono[i];
+        }
+        float rms = (float)std::sqrt(sum_sq / (double)(mono.size() - win));
+        return rms > 0.0f ? peak / rms : 0.0f;
+    };
+    float cf_pulse = crest_factor(pulse.mono);
+    float cf_chirp = crest_factor(chirp.mono);
+    bool finite = std::all_of(pulse.mono.begin(), pulse.mono.end(), [](float s) { return std::isfinite(s); })
+        && std::all_of(chirp.mono.begin(), chirp.mono.end(), [](float s) { return std::isfinite(s); });
+    float peak_pulse = 0.0f, peak_chirp = 0.0f;
+    for (float s : pulse.mono) peak_pulse = std::max(peak_pulse, std::fabs(s));
+    for (float s : chirp.mono) peak_chirp = std::max(peak_chirp, std::fabs(s));
+    bool unclipped = peak_pulse < 32767.0f && peak_chirp < 32767.0f;
+    bool harsher = cf_chirp > cf_pulse * 1.2f;  // comfortably above measurement noise
+    bool ok = finite && unclipped && harsher;
+
+    printf("  crest factor: glottal_pulse=%.2f  chirp=%.2f (expect chirp measurably higher) -> %s\n",
+           cf_pulse, cf_chirp, ok ? "PASS" : "FAIL");
+    if (!finite) printf("  FAIL: non-finite sample\n");
+    if (!unclipped) printf("  FAIL: clipped (peak pulse=%.0f chirp=%.0f)\n", peak_pulse, peak_chirp);
+    if (!harsher) printf("  FAIL: chirp exciter isn't measurably harsher than glottal_pulse()\n");
+    all_ok = all_ok && ok;
+
+    return all_ok;
+}
+
+// Unit-level regression lock on lattice_chip_noise() itself (lattice.h),
+// independent of the lattice filter or resampler: the real chip's noise
+// generator only ever emits one of two exact levels (+-64/113), unlike
+// osc/noise.h's osc_noise(), which returns a full-range value -- confirms
+// the generator actually reproduces that coarseness, and that it isn't
+// stuck always returning the same one of the two (a frozen or
+// non-toggling register would still pass a "two levels" check trivially).
+static bool test_lattice_chip_noise_two_level() {
+    uint16_t rng = LATTICE_CHIP_NOISE_SEED;
+    constexpr float POS = 64.0f / LATTICE_CHIRP_PEAK, NEG = -64.0f / LATTICE_CHIRP_PEAK;
+    uint32_t pos_count = 0, neg_count = 0, other_count = 0;
+    constexpr uint32_t TRIALS = 100000;
+    for (uint32_t i = 0; i < TRIALS; i++) {
+        float v = lattice_chip_noise(rng);
+        if (std::fabs(v - POS) < 1e-6f) pos_count++;
+        else if (std::fabs(v - NEG) < 1e-6f) neg_count++;
+        else other_count++;
+    }
+    bool two_level = other_count == 0;
+    bool toggles = pos_count > TRIALS / 4 && neg_count > TRIALS / 4;  // not stuck on one level
+    bool ok = two_level && toggles;
+    printf("\n== LPC lattice tract: chip noise generator is genuinely two-level ==\n");
+    printf("  %u trials: +%.4f x%u  %.4f x%u  other x%u -> %s\n",
+           TRIALS, POS, pos_count, NEG, neg_count, other_count, ok ? "PASS" : "FAIL");
+    if (!two_level) printf("  FAIL: emitted a value other than the two expected levels\n");
+    if (!toggles) printf("  FAIL: stuck on one level -- register isn't toggling\n");
+    return ok;
+}
+
+#ifdef T00T_SPEECH_HAS_LATTICE_WORDS
+// Renders every word in the converted corpus (LATTICE_WORDS[],
+// lattice_words.h, gitignored -- generated locally by tools/
+// talkie2lattice.py from a real Talkie vocab source, see that tool's own
+// header comment) through the exact function audio_engine.cpp's Core 1
+// render loop calls for a lattice-tract voice, checking each is finite and
+// unclipped -- module_speech.md's "renders every word" acceptance
+// criterion, extending run_full_table_render()'s per-phoneme coverage to
+// the LPC corpus. `chirp_exciter`/`write_wav` let the same sweep re-run
+// as a cheap, WAV-free safety check for the chirp exciter (below) --
+// SPEECH_LATTICE_GAIN_BOOST was calibrated against glottal_pulse()'s own
+// crest factor, and the chirp exciter's measurably higher one
+// (run_lattice_chirp_exciter_check() above) is exactly the kind of change
+// that already caused a real clipping regression once (#65's history),
+// so this needs re-checking against the whole corpus, not assumed safe.
+static bool run_lattice_corpus_render(bool chirp_exciter = false, bool write_wav = true) {
+    bool all_ok = true;
+    printf("\n== LPC lattice tract: full corpus render (%u words, chirp_exciter=%s) ==\n",
+           (unsigned)LATTICE_WORD_COUNT, chirp_exciter ? "true" : "false");
+
+    if (write_wav) mkdir("lpc_words", 0755);  // ignore EEXIST -- fine if it's already there
+
+    float worst_peak = 0.0f;
+    for (uint32_t w = 0; w < LATTICE_WORD_COUNT; w++) {
+        const LatticeWord &word = LATTICE_WORDS[w];
+        // Cap generously above the word's own natural length rather than
+        // a fixed budget -- corpus words vary from a fraction of a second
+        // to several seconds.
+        uint32_t total = (uint32_t)(LATTICE_FRAME_OUTPUT_SAMPLES * (float)(word.length + 4));
+        LatticeRender r = render_lattice_native(word, SPEECH_MODE_ONESHOT, total, total, /*pitch_shift=*/256, chirp_exciter);
+
+        float peak = 0.0f;
+        bool finite = true;
+        for (float s : r.mono) { peak = std::max(peak, std::fabs(s)); finite = finite && std::isfinite(s); }
+        worst_peak = std::max(worst_peak, peak);
+        bool clipped = peak >= 32767.0f;
+        bool finished = r.completed_at < total;
+        bool ok = finite && !clipped && finished;
+
+        if (write_wav) {
+            size_t wav_len = std::min(r.mono.size(), (size_t)r.completed_at + SAMPLE_RATE / 4);
+            std::vector<int16_t> out(wav_len * 2);
+            for (size_t i = 0; i < wav_len; i++) {
+                int16_t s = (int16_t)std::max(-32768.0f, std::min(32767.0f, r.mono[i]));
+                out[i * 2 + 0] = s; out[i * 2 + 1] = s;
+            }
+            char path[64];
+            snprintf(path, sizeof(path), "lpc_words/%03u_%s.wav", w, LATTICE_WORD_NAMES[w]);
+            write_wav_pcm16(path, out, SAMPLE_RATE, 2);
+        }
+
+        if (!ok) {
+            printf("  FAIL %-24s peak=%.0f finite=%s finished=%s\n",
+                   LATTICE_WORD_NAMES[w], peak, finite ? "yes" : "no", finished ? "yes" : "no");
+        }
+        all_ok = all_ok && ok;
+    }
+    printf("  %u words%s, worst-case peak=%.0f, all finite/unclipped/completed: %s\n",
+           (unsigned)LATTICE_WORD_COUNT, write_wav ? " rendered to lpc_words/*.wav" : "", worst_peak,
+           all_ok ? "PASS" : "FAIL");
+    return all_ok;
+}
+
+// Extends test_cc_sweep_stability()'s pole-stability pattern to the LPC
+// corpus's own precomputed data: every |k[i]| < 1 for every frame of every
+// word, checked directly against the compiled LATTICE_WORDS[] struct data
+// rather than trusted from tools/talkie2lattice.py's own (already-passing)
+// Python-side validation -- this is the actual C++ data the device plays.
+static bool test_lattice_corpus_stability() {
+    bool all_ok = true;
+    uint32_t frames_checked = 0;
+
+    for (uint32_t w = 0; w < LATTICE_WORD_COUNT; w++) {
+        const LatticeWord &word = LATTICE_WORDS[w];
+        for (uint32_t f = 0; f < word.length; f++) {
+            const LatticeFrame &fr = word.frames[f];
+            frames_checked++;
+            bool fail = fr.gain < 0.0f || fr.gain > 1.0f;
+            for (uint32_t i = 0; i < SPEECH_LATTICE_ORDER; i++) fail = fail || !(fr.k[i] > -1.0f && fr.k[i] < 1.0f);
+            if (fail) {
+                printf("  FAIL word=%s frame=%u -> coefficient or gain out of range\n",
+                       LATTICE_WORD_NAMES[w], f);
+                all_ok = false;
+            }
+        }
+    }
+    printf("  %u words, %u frames checked, every |k[i]|<1 and gain in [0,1]: %s\n",
+           (unsigned)LATTICE_WORD_COUNT, frames_checked, all_ok ? "PASS" : "FAIL");
+    return all_ok;
+}
+#endif  // T00T_SPEECH_HAS_LATTICE_WORDS
+
 int main() {
     res2p_init();       // must run before any res2p_radius()/res2p_set() call
     osc_init_sine();     // speech_render_test_tone()/pan_gains_q15()'s wavetable source
@@ -1077,6 +1546,19 @@ int main() {
     ok = run_phrase_pitch_tracking_checks() && ok;
     ok = run_jitter_shimmer_checks() && ok;
     ok = run_vibrato_checks() && ok;
+
+    ok = run_lattice_word_check() && ok;
+    ok = run_lattice_malformed_check() && ok;
+    ok = run_lattice_resample_stability_check() && ok;
+    ok = run_lattice_mode_checks() && ok;
+    ok = run_lattice_pitch_shift_check() && ok;
+    ok = run_lattice_chirp_exciter_check() && ok;
+    ok = test_lattice_chip_noise_two_level() && ok;
+#ifdef T00T_SPEECH_HAS_LATTICE_WORDS
+    ok = run_lattice_corpus_render() && ok;
+    ok = run_lattice_corpus_render(/*chirp_exciter=*/true, /*write_wav=*/false) && ok;
+    ok = test_lattice_corpus_stability() && ok;
+#endif
 
     printf(ok ? "\nALL CHECKS PASSED\n" : "\nCHECKS FAILED\n");
     return ok ? 0 : 1;
