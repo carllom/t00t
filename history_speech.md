@@ -62,6 +62,43 @@ from a fresh `build/`, unchanged in behaviour by #27 (the subtractive/
 groovebox/tracker figures above drift slightly from their #13-era table
 entries due to unrelated work landed since — not this change).
 
+## Speech Engine — Common Component Extraction (P0)
+
+Plan was to land `res2p.h` and `noise.h` in the common layer, wiring
+`res2p.h` into the groovebox first (808 toms/congas) so the resonator
+would be proven against a known sound before any speech code depended on
+it — exit criterion: 808 toms/congas rebuilt on `res2p.h`, output diffed
+against the previous build, no audible change.
+
+**Half executed.** `res2p.h` landed in the common layer and is what
+speech's formant cascade and fricative/nasal branches are built on. The
+groovebox side never happened: the groovebox's toms/congas still use
+their own pitch-envelope generator, not `res2p.h`, and `res2p.h`'s own
+header comment still reads "backport pending". Left open — see
+`module_speech.md`'s Future/TODO.
+
+## Speech Engine — Phoneme Keyboard (#28)
+
+P1: static formant targets, no sequencer, no transitions. One MIDI note =
+one sustained phoneme, pitch from note number. Cascade + excitation only;
+fricative and nasal branches deferred to #29.
+
+Hardware-verified on real `breadboard_rp2350`: notes, pan, vowel
+selection, and both delay and reverb confirmed working end-to-end.
+
+## Speech Engine — Fricative Branch, Nasal Pole, Mixed Excitation (#29)
+
+Added the parallel fricative resonator and nasal pole alongside the
+existing voiced cascade, plus mixed excitation (voiced + noise together,
+for voiced fricatives like /z/, /v/, /ʒ/) and live `formant_shift`/
+`bandwidth_scale` parameters (CC21/22, ramped per sub-block so a CC sweep
+can't zipper). This is also what extended `PhonemeDef` with
+`fric_F`/`fric_B`/`nasal_F`/`nasal_B` — the original 16-byte sketch
+predated this work and had no field for a per-phoneme fricative/nasal
+pole.
+
+Confirmed audible on real `breadboard_rp2350` hardware.
+
 ## Speech Engine P2 Profiling (#31)
 
 Speech's measurement gate — the direct analogue of the tracker's #16 — deciding
@@ -194,6 +231,168 @@ Settled Decisions (as the `MAX_VOICES = 8` bullet above) — its numbered
 position in the Open Questions list has since shifted as other items were added
 and resolved, so it's no longer "Open Question 2" there.
 
+## Speech Engine — SpeechMode and SUSTAINABLE Decisions (#30)
+
+Settled before writing the segment sequencer, since it was P3's blocker:
+it determines whether `seg_remaining` and the active-voice bitmap can
+diverge.
+
+**Default `SpeechMode` for new presets is `SPEECH_GATED`.** Every other
+engine in this project treats note-off as something a player can hear
+happen — the subtractive engine's ADSR release, the groovebox's one-shot
+decay envelopes. A default that ignores note-off (`ONESHOT`) would make
+the gate on a freshly-created speech preset appear inert, the wrong first
+impression for an instrument meant to be playable, not just a talking
+clock. `LOOP` and `HOLD` are both real modes but neither is a sane
+default: LOOP repeating indefinitely while held is a specialised
+drone/vocoder behaviour a preset should opt into, and HOLD sustains a
+single phoneme rather than sequencing an utterance at all, so it doesn't
+apply to utterance presets.
+
+How GATED bounds `seg_remaining` against note-off: note-off does not zero
+it directly (that would cut the tract mid-coefficient-ramp, the click the
+resonator stability rule exists to avoid). Instead it jumps `seg_index` to
+the utterance's designated release segment, and the normal per-segment
+clock runs from there — bounding maximum overhang to the release
+segment's own duration. `ONESHOT` and `LOOP` were bounded the same way for
+consistency (see `module_speech.md`'s Architecture section for the current
+behavior of all three).
+
+A new note-on for a voice still finishing an utterance always wins
+immediately — `tract_retrigger()`'s existing phoneme-level rule (snap to
+target, no glide, reset state), applied at the utterance level. The
+alternative (queuing the note-on until the old utterance's release segment
+finishes) would make a fast retrigger on a polyphonic instrument feel like
+the busiest voice is stuck — a worse failure mode than clipping a release
+tail, the same tradeoff the tracker's underrun policy already makes.
+
+**`SUSTAINABLE` reserved as bit 3 of `PhonemeDef.flags`.** Nothing reads
+this bit until singing mode lands (still unbuilt — see
+`module_speech.md`'s Future/TODO). The reasoning is entirely about *when*
+the flag is cheap versus expensive, not about whether singing mode itself
+is P3 or P4 work: at the time of this decision `PhonemeDef` existed only
+as a struct definition, no CSV, no generated header, no consumer, so
+reserving a bit costs nothing. Once a phoneme CSV was hand-authored and in
+use, adding a column would mean back-filling every row and regenerating
+every downstream header.
+
+## Speech Engine — `phonemes.h` Generator (#32)
+
+`speechgen.py gen` parses `tools/speech_phonemes.csv` (48 phonemes —
+vowels, fricatives, nasals, plosive closure/burst pairs, affricates,
+approximants) into `phonemes.h`, failing loudly on any row that would
+wrap a `uint8_t`/`uint16_t` rather than truncating silently.
+
+Verification reuses `tools/host_render/render_speech.cpp`: it renders
+every row to a WAV in one command, and for the vowels, cross-checks the
+measured F1/F2 against `tools/host_render/vowel_reference.h` (generated
+from `speech_vowel_reference.csv`, an independently-committed
+published-values table — comparing a measurement against the same number
+that authored it would prove nothing).
+
+## Speech Engine — Segment Sequencer (#34)
+
+P3 exit criterion: a hardcoded phoneme string is intelligible as a word.
+
+`sequencer.h` implements the per-voice segment clock exactly as designed
+(`k = min3(frames left, seg_remaining, SPEECH_SUBBLOCK)`, moved inside
+`speech_render_voice_seq()`'s per-voice loop, `render.h`). Two hand-picked
+utterances ("HELLO", "CAT" — `utterance.h`, not generated; text-to-phoneme
+stayed P4 work) exercise variable per-segment duration, F/B ramping across
+a phoneme boundary, and the plosive closure/burst pair.
+
+Landed scoped to exactly what this exit criterion needed, deferring the
+rest of the originally-sketched `VoiceParams`/`SpeechMode` design to P4:
+
+- `SpeechMode` shipped with three values (`ONESHOT`/`GATED`/`LOOP`), not
+  four — `SPEECH_HOLD` is represented structurally instead (see
+  `module_speech.md`'s Architecture for how).
+- Utterances were `utterance.h`'s hand-picked table (phoneme strings only,
+  no phrase text), not a generated `phrases.h` — letter-to-sound and
+  Program Change phrase selection stayed P4 work.
+- `VoiceParams` gained exactly `utterance`/`mode`/`rate`; `jitter`,
+  `shimmer`, `lfo_rate`/`lfo_depth` were still P4. `rate` existed and was
+  exercised by the segment clock but wasn't CC-mapped yet — CC23 picked
+  an utterance for on-device testing only.
+- Note-off (#30) was implemented for all three shipped modes at this
+  point, not just the `GATED` default.
+- Malformed/empty utterance data renders silence rather than
+  dereferencing it — the Underrun Policy extended to sequencer data, not
+  just DMA/tick inconsistency; `render_speech.cpp` verifies by
+  deliberately constructing one.
+
+## Speech Engine — Letter-to-Sound (#35)
+
+`speechgen.py gen-phrases` parses a plain-text phrase list
+(`tools/speech_phrases.txt`, `NAME: word word word` per line) into
+`phrases.h` (`enum SpeechPhraseId`, `SPEECH_PHRASES[]`, reusing
+`sequencer.h`'s `SpeechUtterance` struct — the same shape as
+`utterance.h`'s hand-picked fixtures — plus `SPEECH_PHRASE_TEXT[]` for
+debugging/WAV-naming). Each word runs through `tools/nrl_rules.py`, a
+curated few dozen ordered, context-sensitive rules (not the original NRL
+report's ~400) plus a short whole-word exception list for irregular
+high-frequency function words (THE, OF, ONE, ...) — a word the rules get
+wrong is fixed with an attached override rather than by growing the rule
+table to chase one exception. Every emitted phoneme symbol (rule-derived
+or overridden) is checked against `speech_phonemes.csv`'s own symbol
+column before `phrases.h` is written, so a typo fails the build instead of
+emitting an out-of-range phoneme index. No rules engine, rule table, or
+text parsing links into the device build — only the generated
+phoneme-byte arrays do, same host/device split as `phonemes.h`.
+
+Verification extends `render_speech.cpp` the same way #32 did:
+`run_phrase_renders()` renders every entry in `SPEECH_PHRASES[]` to a WAV
+in one command, checking the audio is finite, non-clipping, and that the
+sequencer actually reaches completion — not that the pronunciation is
+correct, which no host check can verify. The demo bank
+(`tools/speech_phrases.txt`) is 6 phrases / 121 bytes in flash (73
+phoneme bytes + 48 bytes of table).
+
+**Blind intelligibility spot-check: was still pending at this point** —
+needs a human listener; a host check can only confirm a phrase renders,
+not that it sounds like the intended word. WAVs land in
+`tools/host_render/build/speech_phrase_*.wav` for whoever does the listen.
+
+## Speech Engine — Utterances and MIDI Integration (#36)
+
+P4 exit criterion: a MIDI sequence plays a sung phrase at correct pitch.
+
+`audio_engine.cpp` sequences `phrases.h`'s generated `SPEECH_PHRASES[]`
+(#35) instead of `utterance.h`'s two P3 fixtures. Program Change and CC23
+both select a phrase; CC28's phrase-bank mode maps note number to phrase
+directly ("playing the words themselves" vs. Program Change's "playing a
+line"). `SpeechMode`'s three values were already implemented by #34; this
+added a live CC27 mode select so all three (plus the structurally-
+represented `SPEECH_HOLD`) are reachable without a rebuild. `rate`/
+`jitter`/`shimmer` (CC24-26) and the vibrato LFO (CC1/CC76) are new here —
+see `module_speech.md`'s Excitation section for the DSP (vibrato resampled
+once per sub-block; jitter/shimmer drawn once per glottal cycle, detected
+by phase-accumulator wraparound). `utterance.h`'s HELLO/CAT fixtures
+stayed in place for `render_speech.cpp`'s #34-era regression checks, which
+need their exact known phoneme strings rather than whatever
+`speech_phrases.txt` currently contains.
+
+This also repointed Program Change from phoneme selection (its #28/#29
+job) to utterance selection, since a single PC message can't mean both —
+CC20 already covers phoneme selection for controllers (the project's
+BeatStep Pro) that can't send real Program Change anyway.
+
+Host-verified (`render_speech.cpp`): jitter/shimmer at zero measure as
+exactly periodic (0.0 coefficient of variation on both cycle period and
+peak amplitude) and visibly perturbed at max; vibrato produces a
+measurable, sub-block-rate F0 swing; a generated phrase's measured pitch
+tracks three notes spanning two octaves.
+
+**MIDI-layer correctness had no host-side harness at this point** —
+`midi_controller.cpp` has a pico-sdk dependency (`voice_alloc`/
+`midi_parser`), unlike `render.h`, so it was only compile-verified (both
+`ENGINE=speech` and `ENGINE=speech SPEECH_PROFILE=1` build clean), not yet
+confirmed by ear on real hardware, including the four-`SpeechMode`
+by-ear check the original acceptance criteria called for.
+`PHONEME_FLAG_SUSTAINABLE` stayed reserved but unread — true singing mode
+is a real gap against the original design sketch, but wasn't in this
+step's own acceptance criteria, so deferred rather than silently dropped.
+
 ## Speech Engine — Display + Per-Voice Telemetry (#37)
 
 Closes `module_speech.md`'s former "what does the LCD show for a speech module"
@@ -216,3 +415,76 @@ phrase voices plus reverb hold steady at 31% Core 1 load — consistent with
 #31's flat ~93.5 c/f/voice (22% for 8 voices) plus reverb's own measured
 overhead, with no additional cost from the display telemetry itself (it reads
 already-published per-voice state on Core 0, off the audio path entirely).
+
+## Speech Engine — Presets, Effects Wiring, CMake Fix (#38)
+
+P5 exit criterion: module is playable and ships.
+
+Delay/reverb linking and per-voice pan turned out to already be in place —
+both shipped with the #27 skeleton and the tracker's stereo-output work
+respectively, before any P3/P4 sequencer or MIDI-mapping code existed, and
+both were already hardware-verified (#28's closing note: "notes, pan,
+vowel select, both delay and reverb" confirmed on `breadboard_rp2350`).
+
+**Overdrive was never actually part of "the existing effects chain"
+anywhere in the codebase.** The plan for this step assumed it was — its
+own wording was "route through the existing delay/reverb/overdrive chain
+... nothing about it needs rework, just wiring" — but checking found
+`EffectType` (`engine_base.h`) only ever had `FX_DELAY`/`FX_REVERB`;
+"delay/reverb/overdrive" traced back to an *Open Question* in
+`module_tracker.md` ("the existing delay/reverb/overdrive could run as a
+stereo send" — itself hypothetical), and separately to the groovebox's
+unrelated per-voice 303 ladder-filter `drive` parameter, a different
+mechanism with the same name. Adding a real `FX_OVERDRIVE` would mean
+extending `EffectType` and CC74's band-select in the shared
+`engine_base.h`, changing CC74's behaviour for the subtractive and
+groovebox engines too — a cross-engine feature, not speech-specific
+wiring. Decided to defer it and document the gap rather than build a
+shared three-engine feature inside a speech-scoped step.
+
+**What actually landed:** `presets.h` (`SpeechPreset`,
+`voice_apply_preset()`, 9 presets — one per `SpeechMode` (`SPEECH_HOLD`
+via the phoneme keyboard, `ONESHOT`, `GATED`, `LOOP`), robotic, breathy,
+tract-shift up/down, and a robot-chorus preset spreading up to
+`MAX_VOICES` simultaneously-held notes across the stereo field with a
+small per-voice detune), CC16 preset select (`midi_controller.cpp`), and
+a CMake fix.
+
+**The CMake fix:** `src/controller.cpp` (the VGA-board 3-button demo) was
+gated in `CMakeLists.txt` on "does this engine's directory contain a
+`presets.h`" — true only for the subtractive engine until this step gave
+speech one too, which pulled the demo into the speech build and broke it
+(the demo is hardcoded to the subtractive engine's `VoicePreset`/
+`WAVE_SAMPLE`/`osc_sample_phase_inc`, not a generic preset-button
+interface). Re-gated on `T00T_ENGINE STREQUAL "subtractive"` — what the
+demo's actual code dependency always was. No behaviour change for any
+existing engine: subtractive still gets it, groovebox and tracker still
+don't (they never shipped a `presets.h` either), speech now correctly
+doesn't, matching its buttonless `breadboard_rp2350` target same as the
+groovebox.
+
+**Robot chorus** (per-voice pan spread + small detune, keyed by the
+allocated voice slot, deterministic, no new state) was the payoff named
+back when #31 raised `MAX_VOICES` to 8 — it's in the preset table as
+`PRESET_ROBOT_CHORUS`.
+
+Preset selection needed a structural decision: applying a preset directly
+to a fresh voice at every note-on (the subtractive engine's exact
+pattern) would mean per-field CCs (formant_shift/bandwidth_scale/jitter/
+shimmer/rate/mode — CC21/22/24-27) stop affecting future notes the moment
+a preset was selected once, silently regressing #29/#36's already-
+hardware-verified "CC tweak also becomes the new per-channel default"
+behaviour — something the subtractive engine's presets never contend
+with, since none of its preset-owned fields have their own live CC.
+Resolved by having preset selection (CC16, next-note-only) bulk-write the
+same per-channel state those CCs individually own, routed through
+`voice_apply_preset()` via a scratch `VoiceParams`, so the preset-to-field
+mapping is still written in exactly one place.
+
+Builds clean on all four engines (`make`/`make ENGINE=groovebox`/
+`make ENGINE=tracker`/`make ENGINE=speech`, plus `SPEECH_PROFILE=1`).
+
+**Not yet done at this point:** hardware listening confirmation of the
+preset table (particularly the robot-chorus preset's stereo spread) and
+the profiling-pin measurement of effects-on cost for the performance
+table — both need the author at the bench, same as #36's MIDI-wiring gap.

@@ -1,12 +1,95 @@
 # T00T — Subtractive Engine
 
-The original synthesis engine, predating the module system — this doc covers
-what's specific to it (envelope, LFO, waveforms, filter). See `engine.md` for
-the shared dual-core architecture, pin allocation, and IPC every module
-(including this one) is built on. Development history (baseline measurements,
-the RP2350 performance-gain table) is in `history_subtractive.md`.
+The original synthesis engine, predating the module system. See `engine.md`
+for the shared dual-core architecture, pin allocation, and IPC every module
+(including this one) is built on; `history_subtractive.md` for development
+history and full performance measurements.
 
-## ADSR Envelope
+## Overview
+
+General-purpose subtractive synthesizer — one ADSR + LFO + filter voice per
+note, with optional PCM sample playback in place of the synthesized
+oscillator.
+
+### Specifications
+
+- **Voices**: 16, dynamically allocated (steal policy: silent > released >
+  oldest active — see `engine.md`)
+- **Oscillators**: 8 waveform types — sine, square, triangle, saw, noise,
+  band-limited (PolyBLEP) square, band-limited saw, and PCM sample playback
+- **Envelope**: 1 ADSR per voice (linear attack, exponential decay/release)
+- **LFO**: 1 general-purpose LFO per voice (4 destinations: amplitude, pitch,
+  duty cycle, filter cutoff) plus 1 dedicated mod-wheel vibrato LFO
+- **Filter**: 1 state-variable filter per voice (lowpass/bandpass/highpass/
+  notch/off)
+- **Effects**: 1 shared post-mix insert (delay or reverb, mono send / stereo
+  return) — global, not per-voice
+- **Presets**: 11 factory presets (3 synthesized, 8 sample-based) — see
+  `presets.h`
+- No arpeggiator or step sequencer in the engine itself; the VGA board's
+  buttons each cycle a fixed 4-note pattern (see MIDI mapping below)
+
+### MIDI Mapping (Input Capabilities)
+
+| Message | Name | Range | Function |
+|---|---|---|---|
+| Note On/Off | — | notes 0–127, all channels | 16 voices, dynamically allocated |
+| Velocity | — | 0–127 | linear to amplitude |
+| Pitch Bend | — | 14-bit | ±2 semitones |
+| CC1 | Mod Wheel | 0–127 | dedicated vibrato LFO depth |
+| CC10 | Pan | 0–127 | live per-voice stereo pan — subtractive is the only module that maps this CC; not stored in presets |
+| CC72 | FX Param 1 | 0–127 | delay feedback / reverb room size |
+| CC73 | FX Mix | 0–127 | wet/dry mix (global) |
+| CC74 | FX Type | 0–127 | select, splits range into the 3 FX bands |
+| CC75 | FX Param 2 | 0–127 | delay time / reverb damping |
+| CC0 | Bank Select MSB | 0–127 | selects the microKORG program bank, used with Program Change |
+| CC32 | Bank Select LSB | 0–127 | captured, currently unused |
+| Program Change | — | 0–127 | microKORG numbering (tens digit = row, ones digit = column) mapped to one of the 11 factory presets; affects future notes only |
+
+Non-MIDI input: VGA board buttons (A/B/C, `vgaboard_rp2350` only) — each
+fixed to one preset, cycling through its own 4-note pattern on successive
+presses.
+
+### Display (Presentation Capabilities)
+
+`breadboard_rp2350`'s optional LCD shows (`display.cpp`, ~20 Hz refresh,
+change-detected redraws only):
+
+- Per-voice dot bar (16 voices: filled = sounding, bordered = key held) plus
+  sounding count
+- CPU load (%, colour-coded bar)
+- Last note (name + octave + velocity)
+- Current preset name
+- Pitch bend and mod wheel values
+- FX type, its two params, and mix
+
+## Technical Overview
+
+### Source Layout
+
+- `engine.h` — `VoiceParams`/`ParamExchange` (via `engine_base.h`'s templates)
+- `presets.h` — `VoicePreset` struct and the 11-entry factory preset table
+- `audio_engine.cpp` — Core 1 render loop
+- `display.cpp` — Core 0 status display
+
+Also draws on shared, non-engine-specific code: `src/controller.cpp`
+(VGA-board buttons — subtractive is the only engine that links it, see
+`CMakeLists.txt`) and `src/midi/midi_controller.cpp` (no engine-specific
+override).
+
+### Build
+
+Default engine — `make` alone builds it (equivalent to
+`make ENGINE=subtractive`). No subtractive-specific build flags. See
+`building.md` for board selection, MIDI transport overrides, and flashing.
+
+### Tools
+
+No dedicated tools for this module.
+
+## Architecture
+
+### ADSR Envelope
 
 Per-voice state machine on Core 1. Envelope `level` is a float in 0.0–1.0,
 converted to Q15 (`level * 32767`) inside the render loop. Attack is **linear**
@@ -50,9 +133,9 @@ if filter_mode != OFF:
 The actual Core 1 loop computes `env_f`, the LFO value, and `F_half` once per
 64-sample sub-block (`SUBBLOCK` in `audio_engine.cpp`) and linearly ramps each
 toward its next target across the block, rather than recomputing them fresh
-every sample as shown above — an optimization, not a behavior change; the
-oscillator phase advance, PolyBLEP correction, and the filter's own two-pass
-state update stay genuinely per-sample.
+every sample as shown above — the oscillator phase advance, PolyBLEP
+correction, and the filter's own two-pass state update stay genuinely
+per-sample.
 
 Current ADSR values:
 - Attack:  10ms
@@ -60,7 +143,7 @@ Current ADSR values:
 - Sustain: 70%
 - Release: 800ms
 
-## LFO
+### LFO
 
 Per-voice LFO on Core 1, driven by a float phase accumulator in [0.0, 1.0)
 advanced by `lfo_rate / SAMPLE_RATE` each sample. The phase is scaled to the
@@ -77,7 +160,7 @@ LFO params in VoiceParams: `lfo_rate` (Hz, shared) plus four depth fields.
 inner loop converts the depths to Q15 once per buffer. LFO phase state lives on
 Core 1 only and is reset to 0 on trigger.
 
-### Mod-wheel vibrato (dedicated LFO)
+#### Mod-wheel vibrato (dedicated LFO)
 
 Separate from the preset LFO above, each voice has a second, dedicated vibrato
 LFO for the MIDI mod wheel: a fixed 5 Hz (`MOD_VIBRATO_HZ`) sine that modulates
@@ -87,7 +170,7 @@ not part of a preset (`voice_apply_preset()` resets it to 0). It stacks on top o
 any preset pitch LFO and runs from its own `mod_lfo_phase[v]` accumulator, also
 reset to 0 on trigger.
 
-## Waveform Types
+### Waveform Types
 
 ```c
 enum Waveform : uint8_t {
@@ -114,7 +197,7 @@ PolyBLEP smooths discontinuities over one sample on each side using a quadratic
 polynomial residual. Fixed-point Q10 arithmetic, uses RP2350 hardware divider.
 The naive (non-BLEP) variants are kept for intentionally aliased/"crusty" sound.
 
-## State-Variable Filter (SVF)
+### State-Variable Filter (SVF)
 
 Per-voice SID-style 2-pole (12dB/octave) multimode filter. Produces lowpass,
 bandpass, highpass, and notch outputs from shared state variables.
@@ -129,7 +212,7 @@ The filter itself is all integer arithmetic. On the RP2350 (Cortex-M33),
 no intermediate clamping is needed. State (`lp`, `bp`) lives in `SVFilter`
 with `init()` and `tick(input, F_half, Q_q15, mode)`.
 
-### Per-sample update (2-pass)
+#### Per-sample update (2-pass)
 ```
 for pass in 0..1:
     hp = input - lp - (Q_q15 * bp) >> 15
@@ -138,20 +221,67 @@ for pass in 0..1:
 output = lp | bp | hp | lp+hp depending on mode (input if OFF)
 ```
 
-### Coefficient computation
+#### Coefficient computation
 - **F_half** (Q15): `cutoff_hz * 76539 >> 15`, clamped [33, 15564]
   - Approximation of `π * cutoff / sample_rate`, <0.1% error
 - **Q** (Q15): `65534 - (resonance << 1)`, clamped to a minimum of 2
   - resonance=0 → Q=65534 (2.0, no resonance)
   - resonance=32767 → Q≈0 (near self-oscillation)
 
-### Modulation
+#### Modulation
 Per-sample cutoff = base_cutoff + (envelope × env_amount >> 15) + (LFO × lfo_filter_depth >> 15),
 clamped 20–18000 Hz. Q is constant per buffer.
 
 Filter state (lp, bp) reset to 0 on voice trigger for clean attacks.
 
-### CPU cost
-~20 integer ops per sample per voice (6 multiplies, 6 shifts, 8 adds/
-subtracts — 2-pass integration, 3 multiplies per pass).
-Estimated ~1-2% per voice on profiling pin.
+## Status and Plan
+
+### Performance
+
+Idle ~0.6%. One voice ~5–6% (more with LFO and filter both active). Delay
+insert adds ~1.5pp; reverb adds ~8pp. Measured on breadboard_rp2350 at
+44.1 kHz / 150 MHz. Full measurement history: `history_subtractive.md`.
+
+### Future / TODO
+
+None currently planned.
+
+## Decision Record
+
+1. **Attack is linear, decay/release are exponential** — matches how
+   amplitude envelopes are perceived; a linear decay/release sounds
+   unnaturally abrupt.
+2. **Envelope, LFO, and filter coefficient are computed once per 64-sample
+   sub-block and linearly ramped**, rather than recomputed every sample —
+   cuts control-rate cost without an audible behavior change; oscillator
+   phase, PolyBLEP correction, and the filter's own per-sample state update
+   are unaffected.
+3. **Naive (non-BLEP) waveforms are kept alongside their PolyBLEP-corrected
+   counterparts** — the aliased versions are an intentional "crusty" sound
+   option, not legacy code left behind.
+4. **Mod-wheel vibrato is a separate, dedicated LFO**, not a shared instance
+   with the preset LFO — a live control (CC1) has to layer independently on
+   top of whatever pitch-LFO a preset already programs, and stay at zero
+   depth (off) by default regardless of preset.
+5. **The SVF uses two-pass integration in fixed point**, with `int64_t`
+   intermediates (`SMULL` on the M33) — needed for stability at high cutoff /
+   low Q; a single pass is not.
+6. **CC10 pan is a live control, not part of stored presets** —
+   `voice_apply_preset()` always resets it to center, matching mod-wheel
+   depth's treatment.
+7. **Program Change uses microKORG-specific numbering** (row = tens digit,
+   column = ones digit) rather than a linear 0–127 map — matches the specific
+   external controller this engine was built to pair with.
+
+## Glossary
+
+- **PolyBLEP**: Polynomial Band-Limited Step — a correction added at a
+  waveform's discontinuity to suppress aliasing, without full oversampling.
+- **SVF**: State-Variable Filter — a filter topology that produces
+  lowpass/bandpass/highpass simultaneously from the same per-sample state.
+- **Q15**: fixed-point format with 15 fractional bits (range roughly
+  -1.0..1.0 as a 16-bit signed integer).
+- **Sub-block**: a fixed-size chunk of samples (64 here) within one audio
+  buffer, used as the unit at which slowly-changing parameters (envelope,
+  LFO, filter coefficient) are recomputed and then ramped across, rather
+  than recomputed every sample.
