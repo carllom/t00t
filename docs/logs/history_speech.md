@@ -746,3 +746,64 @@ confirming page-select and the pitch-shift CC by ear, and a per-voice LPC
 render-cost measurement are all still open. The "musical" and two-CC
 pseudo-program-select addressing modes module_speech.md's Decision Record
 leaves room for remain unbuilt.
+
+**Hardware-verified on real `breadboard_rp2350`:** Carl confirmed
+`KEY_PER_WORD` addressing working end-to-end across multiple corpus
+pages, hearing both male and female voices from the converted vocabulary.
+Program Change page-select and CC102 tract-select both confirmed working
+from a BeatStep Pro (whose virtual keyboard spans MIDI notes 24-108, not
+the full 0-127 range `KEY_PER_WORD` addresses). Two things noted for
+later, not acted on in this slice: playback is quieter than the old
+hardcoded test word by design (`SPEECH_LATTICE_GAIN_BOOST`'s corpus
+retuning above), and Carl described the voice quality as "almost too
+smooth and intelligible" for his taste, wanting more of the real
+TMS5220's buzzy character — likely reachable via a lattice-tract-only
+excitation shape (`excitation.h`'s `glottal_pulse()` is currently shared,
+unchanged, with the formant tract), deferred rather than built.
+
+## Speech Engine — LPC Preset + CC16 Tract Selection (#66)
+
+Wires #65's `SpeechTract`/`KEY_PER_WORD` page/pitch-shift fields into the
+preset table, so a single CC16 program change can put a channel into LPC
+corpus playback instead of requiring CC102 + a separate page-select PC.
+
+**`SpeechPreset` gained three fields** (`tract`, `lattice_page`,
+`lattice_pitch_shift`) and every one of the nine existing rows was
+updated to set `tract = SPEECH_TRACT_FORMANT` explicitly, rather than
+leaving a newly-added struct member to whatever its default-initialized
+value would be. `voice_apply_preset()` writes `tract`/`lattice_pitch_shift`
+into `VoiceParams` the same unconditional way it already writes every
+other preset field; `lattice_page` bypasses it (it's channel-level
+addressing state, not a `VoiceParams` field) and gets read straight from
+the preset row by `midi_controller.cpp`'s `speech_load_preset()`, the
+same way that function already reads `chorus`.
+
+**New preset, `PRESET_LPC_WORDS`** (index 9): `SPEECH_TRACT_LATTICE`,
+page 0, pitch-shift neutral (256). Its formant-only fields (utterance,
+phoneme, formant_shift, bandwidth_scale, jitter, shimmer, lfo) are left at
+the same neutral values `PRESET_PHONEME_KEYBOARD` uses — unread by the
+lattice render path, but a channel that switches back to a formant preset
+afterward shouldn't inherit anything unusual from them either.
+
+**`midi_controller_init()`'s per-channel tract/page/pitch-shift
+initialization became redundant** once `speech_load_preset()` started
+bulk-writing those three fields: loading `PRESET_PHONEME_KEYBOARD` at
+power-on already sets them to the same values the explicit lines used to.
+Removed the now-dead lines rather than leaving two paths that have to
+stay in sync by hand.
+
+**No new host-render coverage**: `presets.h` includes `engine.h`, which
+pulls in `engine_base.h` and `hardware/sync.h` — a real pico-sdk
+dependency the standalone host build has no access to (the same
+constraint `render.h`'s own header comment already documents for why it
+stays pico-sdk-free). Preset-table logic has never been host-tested for
+this reason; verified here by full device-firmware compilation instead
+(`make ENGINE=speech` and the default engine, both clean), consistent
+with the project's existing MIDI-layer testing boundary.
+
+**Not yet done at this point:** hardware verification that selecting
+`PRESET_LPC_WORDS` from CC16 actually switches a channel's tract cleanly,
+and that switching back to a formant preset afterward leaves no audible
+trace — implemented and reasoned through against the union
+placement-new-on-tract-switch mechanism #63 already built and
+hardware-verified, but not itself re-confirmed by ear.

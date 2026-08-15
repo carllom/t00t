@@ -117,6 +117,9 @@ static void speech_load_preset(uint8_t channel, uint8_t preset_id) {
     channel_lfo_rate[channel] = tmp.lfo_rate;
     channel_lfo_depth[channel] = tmp.lfo_depth;
     channel_chorus[channel] = pr.chorus;
+    channel_tract[channel] = tmp.tract;
+    channel_lattice_page[channel] = pr.lattice_page;
+    channel_lattice_pitch_shift[channel] = tmp.lattice_pitch_shift;
 }
 
 // KEY_PER_WORD addressing (module_speech.md "LPC Lattice Tract"): note
@@ -193,13 +196,11 @@ void midi_controller_init() {
         // PRESET_PHONEME_KEYBOARD's fields (presets.h) match this engine's
         // power-on defaults; loading it here routes those defaults through
         // the same preset machinery CC16 uses at runtime, rather than
-        // duplicating the field values.
+        // duplicating the field values -- including tract/lattice_page/
+        // lattice_pitch_shift, now that presets carry those too.
         speech_load_preset(ch, PRESET_PHONEME_KEYBOARD);
         channel_pan[ch] = 0;
         channel_phrase_bank[ch] = false;
-        channel_tract[ch] = SPEECH_TRACT_FORMANT;
-        channel_lattice_page[ch] = 0;
-        channel_lattice_pitch_shift[ch] = 256;
     }
     ui_state.last_note = 0xFF;
     ui_state.last_velocity = 0;

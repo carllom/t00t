@@ -36,10 +36,11 @@ shimmer are all live MIDI controls) rather than just a talking clock.
   a 6-phrase demo bank (`phrases.h`, generated from plain text via a
   letter-to-sound engine); two hand-picked fixtures (`utterance.h`) used
   only by host regression tests
-- **Presets**: 9 factory presets (`presets.h`) — phoneme keyboard,
+- **Presets**: 10 factory presets (`presets.h`) — phoneme keyboard,
   one-shot/gated/looped phrase examples, robotic and breathy timbres,
-  tract-length shift up/down, and a robot-chorus preset spreading up to 8
-  simultaneously-held voices across the stereo field with per-voice detune
+  tract-length shift up/down, a robot-chorus preset spreading up to 8
+  simultaneously-held voices across the stereo field with per-voice detune,
+  and one LPC lattice preset selecting the corpus's `KEY_PER_WORD` page 0
 - **Effects**: shared post-mix insert (delay or reverb) — no overdrive (see
   Future/TODO)
 - **LPC lattice tract**: a second, sibling tract — a 10th-order all-pole
@@ -742,6 +743,17 @@ breakdown: `history_speech.md`.
     an existing live slot** — it has no formant-tract equivalent to share
     with, and the CC102–119 range was already reserved for exactly this
     kind of LPC-specific addition.
+26. **`SpeechPreset` gained `tract`/`lattice_page`/`lattice_pitch_shift`,
+    and every existing preset row sets `tract` explicitly** (all
+    `SPEECH_TRACT_FORMANT`) rather than leaving it to an implicit
+    zero-value default — a preset table is exactly the kind of place a
+    silently-defaulted field goes unnoticed for a long time, and the cost
+    of writing it out on nine already-existing rows is one column.
+    `lattice_page` isn't a `VoiceParams` field (it's per-channel
+    addressing state, not a per-voice render parameter), so
+    `speech_load_preset()` reads it straight from the preset row rather
+    than through `voice_apply_preset()`, the same way it already reads
+    `chorus`.
 
 ## Glossary
 
