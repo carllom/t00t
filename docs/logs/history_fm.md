@@ -2324,3 +2324,91 @@ patches whose pitch EG differs meaningfully from a flat center (many of
 ROM1A's brass/bass patches do); real vibrato depth and rate that tracks
 the mod wheel; tremolo (amplitude wobble) on patches with real AMD/AMS.
 
+### Multi-Bank syx2patch, Full ROM By-Ear Pass, and the ORCH-CHIME RAM Fix
+
+`tools/syx2patch.py convert` now takes one to four `.syx` files and
+concatenates their patches into a single `patches.h`, banks in file order.
+Capped at 4 files (128 patches): `FM_PATCH_COUNT` indexes Program Change and
+CC30 directly, both 7-bit MIDI values, so a larger table would leave some
+patches permanently unreachable. Cross-bank name collisions are
+disambiguated the same way single-bank ones already were (`FMPATCH_DUP_0`,
+`FMPATCH_DUP_0_2`, ...).
+
+The author completed a full by-ear hardware pass of all 8 ROM half-banks
+(rom1a/b, rom2a/b, rom3a/b, rom4a/b — 256 patches) plus the mod-wheel
+check, closing that part of module_fm.md's `MAX_VOICES` re-confirmation
+TODO. Two patches initially looked like bugs and were confirmed to be real,
+intentional DX7 behavior instead, both matching the L4-passthrough case
+already covered by Decision Record #17: **TRAIN** (ROM1A) and **ST.HELENS**
+(ROM4B) never release on their own — ST.HELENS ships nonzero L4 (85-90) on
+all 6 operators, not just the audible carrier, so the whole timbre (not
+just TRAIN's single whistle) is designed to ring forever until voice-stolen.
+**EXPLOSION** (ROM3B) looked similar (a very long decay) but is a real,
+different case: its carriers all have L4=0 (genuine eventual silence), just
+with R4 in the 9-17 range (DX7's rate scale runs 0=slowest..99=fastest) —
+a deliberately glacial release, not a stuck one.
+
+#### The ORCH-CHIME cost anomaly
+
+During the by-ear pass, ROM1A's ORCH-CHIME measured a real per-voice CPU
+outlier — roughly 60-70% higher duty than every other ROM1A patch at
+matched voice counts — but only in a `patches.h` built from ROM1A alone (32
+patches). Rebuilding with ROM1A+1B (64) or ROM1A+1B+2A+2B (128) made the
+same patch measure identically to the rest of the bank, on real hardware,
+reproduced by the author across three independent builds with an identical
+test procedure (idle baseline on BRASS 1, then hold C2 on patch 24).
+
+Two hypotheses were ruled out directly rather than assumed:
+
+- **Not a converter/data bug.** ORCH-CHIME's emitted `FmOpParams` struct was
+  diffed byte-for-byte between a standalone ROM1A conversion and the merged
+  ROM1A+1B+2A+2B one — identical.
+- **Not a codegen difference.** Both a 32-patch and a 128-patch firmware
+  were built locally from the same source commit and compared: `
+  audio_engine_run()` landed at the same address (`0x10000575`) and the same
+  size (12676 bytes) in both, and a raw byte diff of the compiled function
+  showed only 44 bytes differing, in small paired clusters consistent with
+  relocated absolute-address constants elsewhere (`FM_PATCHES` itself grew
+  and moved), not any change in what the loop does.
+
+That left the data table's own flash placement. `fm_voice_step_envelopes()`
+and `fm_voice_step_pitch_and_mod()` (`op.h`) dereference
+`patch.op[i].am_sensitivity`, `patch.pitch_eg`, and `patch.lfo` directly
+from `FM_PATCHES` every control block — continuously, for as long as a note
+is held, not just once at note-on. `FM_PATCHES`'s own linker address (and
+therefore ORCH-CHIME's specific byte range within it, computed from the
+struct's real 212-byte size, confirmed exactly from the linker symbol size
+across all three builds: 6784/32, 13568/64, 27136/128) genuinely differed
+between the 32/64/128-patch builds (`0x1000ad64`, `0x1000aed0`,
+`0x1000b1a0` respectively) — consistent with an XIP-cache placement/
+aliasing effect: RP2350's flash cache is small and shared, and a specific
+address happening to collide with something else hot (likely the render
+loop's own instruction fetches, served through the same cache) would
+produce exactly this signature — one patch, one build size, a real and
+reproducible cost swing, gone once the address moves. The precise
+collision was not (and likely cannot be, without on-chip cache
+hit/miss counters) pinned down further.
+
+**Fix**: `FM_PATCHES` is no longer `const`/`constexpr` in the generated
+header, which places it in RAM (`.data`) instead of flash (`.rodata`) on
+this target — confirmed by the symbol moving from `0x10009984` (flash) to
+`0x20001174` (RAM) in a rebuild. RAM access has no cache-placement
+sensitivity, so this doesn't just reduce the effect, it removes the
+mechanism outright. Confirmed on real hardware: ORCH-CHIME's cost is flat
+across all three table sizes (32/64/128 patches), at the previously-normal
+lower cost, in all three. See module_fm.md Decision Record #18.
+
+Incidental fixes made while investigating: the algorithm-4/6 warning
+message (`syx2patch.py`) referenced `#54` and a "module_fm.md open question
+6" that doesn't exist — `#54` was in fact already closed as "not needed"
+(§5.9); the message now just states the fact without the stale citation.
+The printed flash-size estimate (a hand-computed struct-layout guess) was
+replaced with the real measured 212 bytes/patch.
+
+A small side effect noticed after the RAM move, not separately chased:
+16 voices + reverb on real hardware, previously measured at 95% duty
+(flash-resident `FM_PATCHES`), now runs high-80s to 91% across repeated
+checks. The move only targeted ORCH-CHIME's address-dependent cost, but
+apparently shaved a little general XIP pressure elsewhere too. Treated as
+a modest, incidental gain — no new profiling task opened for it.
+

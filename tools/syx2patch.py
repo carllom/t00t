@@ -1,21 +1,27 @@
 #!/usr/bin/env python3
 """syx2patch.py -- DX7 32-voice .syx bulk dump -> patches.h (module_fm.md P3/P4).
 
-    syx2patch.py convert <in.syx> <out.h>
-        Parse a 4104-byte DX7 32-voice bulk dump (F0 43 0n 09 20 00 + 4096
-        packed bytes + checksum + F7), unpack all 128 packed bytes/voice,
-        resolve each voice's algorithm into patch.h's mod_target/feedback
-        routing shape, and write <out.h>: a device+host header
-        (`enum FmPatchId`, `FM_PATCH_COUNT`, `const FmPatch FM_PATCHES[]`,
-        `const char *FM_PATCH_NAMES[]`). Never wired into CMakeLists.txt or
-        committed -- see the file's own generated-header comment and
-        history_tracker.md's xm2t00t Host Converter precedent (copyrighted
-        third-party patch/song data stays local, gitignored, user-populated).
+    syx2patch.py convert <in.syx> [in2.syx ...] <out.h>
+        Parse one to four 4104-byte DX7 32-voice bulk dumps (F0 43 0n 09 20
+        00 + 4096 packed bytes + checksum + F7), unpack all 128 packed
+        bytes/voice, resolve each voice's algorithm into patch.h's
+        mod_target/feedback routing shape, and write <out.h>: a device+host
+        header (`enum FmPatchId`, `FM_PATCH_COUNT`, `const FmPatch
+        FM_PATCHES[]`, `const char *FM_PATCH_NAMES[]`). Patches from
+        multiple files are laid out in the given file order, one bank after
+        the next. Capped at 4 files (128 patches): FM_PATCH_COUNT indexes
+        Program Change and CC30 directly, both 7-bit MIDI values (0-127), so
+        a larger table would leave some patches permanently unreachable.
+        Never wired into CMakeLists.txt or committed -- see the file's own
+        generated-header comment and history_tracker.md's xm2t00t Host
+        Converter precedent (copyrighted third-party patch/song data stays
+        local, gitignored, user-populated).
 
-    syx2patch.py dump <in.syx>
+    syx2patch.py dump <in.syx> [in2.syx ...]
         Parse and print the per-voice summary (algorithm, name, any
         warnings) without writing a header. Same parse/convert path as
-        `convert`, useful for sanity-checking a dump before committing to
+        `convert`, including the multi-file concatenation and the 4-file
+        cap, useful for sanity-checking a bank lineup before committing to
         an output path.
 
 The device ships six op's worth of plain data per patch, and the log-domain
@@ -385,7 +391,7 @@ class DX7Voice:
     transpose: int
 
 
-def unpack_voice(bulk: bytes, voice_idx: int, warnings: Optional[List[str]] = None) -> DX7Voice:
+def unpack_voice(bulk: bytes, voice_idx: int, warnings: Optional[List[str]] = None, label: str = "") -> DX7Voice:
     """Bit-for-bit port of Dexed's Cartridge::unpackProgram (Source/
     PluginData.cpp, Apache-2.0) -- the packed-format bit layout it implements
     was cross-checked against the DX7 MIDI Data Format Sheet's own published
@@ -393,10 +399,11 @@ def unpack_voice(bulk: bytes, voice_idx: int, warnings: Optional[List[str]] = No
     Unlike Dexed's own `normparm` (which silently clamps out-of-range bytes
     to avoid crashing on already-loaded, possibly-corrupt patches), this
     raises Syx2PatchError instead -- fail loud, not silent, on this
-    converter's own input path."""
+    converter's own input path. `label` (a source filename) prefixes every
+    message so warnings stay traceable once multiple banks are concatenated."""
     if warnings is None:
         warnings = []
-    ctx = f"voice {voice_idx}"
+    ctx = f"{label} voice {voice_idx}" if label else f"voice {voice_idx}"
     ops: List[DX7Op] = []
     for j in range(6):
         base = j * 17
@@ -559,7 +566,7 @@ class FmPatchOut:
     algorithm_display: int  # 1-32, for log messages
 
 
-def convert_voice(idx: int, voice: DX7Voice, warnings: List[str]) -> Optional[FmPatchOut]:
+def convert_voice(idx: int, voice: DX7Voice, warnings: List[str], label: str = "") -> Optional[FmPatchOut]:
     decode = ALGORITHM_CACHE[voice.algorithm]
     # No carrier-count or fan-in division: op.h's FM_CYCLE leaves 5 bits of
     # headroom above a single operator's maximum precisely so that summing
@@ -608,11 +615,11 @@ def convert_voice(idx: int, voice: DX7Voice, warnings: List[str]) -> Optional[Fm
         )
 
     if decode.needs_interleaved:
+        ctx = f"{label} voice {idx}" if label else f"voice {idx}"
         warnings.append(
-            f"voice {idx} ({voice.name!r}): algorithm {voice.algorithm + 1} has a second, "
-            f"operator-spanning feedback loop this engine can't represent yet (#54, "
-            f"module_fm.md open question 6) -- collapsed to single self-feedback on the primary "
-            f"operator only; the secondary loop is dropped, explicitly, not silently"
+            f"{ctx} ({voice.name!r}): algorithm {voice.algorithm + 1} has a second, "
+            f"operator-spanning feedback loop -- collapsed to single self-feedback on the "
+            f"primary operator only, the secondary loop dropped, explicitly, not silently"
         )
 
     lfo = FmLfoOut(rate=voice.lfo_speed, delay=voice.lfo_delay, pmd=voice.lfo_pmd, amd=voice.lfo_amd,
@@ -645,9 +652,10 @@ def _make_unique(base: str, used: Dict[str, int]) -> str:
 # patches.h emission.
 # ---------------------------------------------------------------------------
 
-def render_header(patches: List[FmPatchOut], syx_path: str) -> str:
+def render_header(patches: List[FmPatchOut], syx_paths: List[str]) -> str:
+    sources = ", ".join(os.path.basename(p) for p in syx_paths)
     lines = [
-        f"// GENERATED by tools/syx2patch.py convert from {os.path.basename(syx_path)} -- do not hand-edit.",
+        f"// GENERATED by tools/syx2patch.py convert from {sources} -- do not hand-edit.",
         "// Covers algorithm routing, EG rates/levels, output level, velocity",
         "// sensitivity, coarse/fine ratio, feedback depth (0-7), algorithm 4/6",
         "// interleaved-feedback detection (collapsed to single self-feedback, see the",
@@ -673,9 +681,11 @@ def render_header(patches: List[FmPatchOut], syx_path: str) -> str:
     lines.append("    FM_PATCH_COUNT")
     lines.append("};")
     lines.append("")
-    lines.append("inline constexpr FmPatch FM_PATCHES[FM_PATCH_COUNT] = {")
+    # Not const/constexpr, so this lands in RAM rather than flash -- op.h
+    # rereads a patch's fields every control block, not just at note-on.
+    lines.append("inline FmPatch FM_PATCHES[FM_PATCH_COUNT] = {")
     for p in patches:
-        note = f"  // algorithm {p.algorithm_display}: second feedback loop dropped, see #54" if p.needs_interleaved else ""
+        note = f"  // algorithm {p.algorithm_display}: second feedback loop dropped" if p.needs_interleaved else ""
         lines.append(f'    {{ "{p.name}", {{{note}')
         for op in p.ops:
             eg_r = ", ".join(str(v) for v in op.eg_rate)
@@ -708,41 +718,46 @@ def render_header(patches: List[FmPatchOut], syx_path: str) -> str:
     return "\n".join(lines)
 
 
-# sizeof(FmPatch) estimate for the printed flash-cost summary: FmOpParams is
-# 3 floats (12) + bool (1, padded) + int32_t level (4) + mod_target (1) +
-# feedback_level uint8_t (1) + output_level (1) + vel_sensitivity (1) +
-# eg_rate[4] (4) + eg_level[4] (4) + 6 key-scaling uint8_t fields
-# (scale_breakpoint/left_depth/right_depth/left_curve/right_curve/
-# rate_scaling, 6) + am_sensitivity (1) -- rounds to ~37 bytes/op under
-# normal 4-byte struct alignment. Two voice-wide (not per-op) structs are
-# added on top: FmLfoParams (7 uint8_t/bool fields, ~8 with padding) and
-# FmPitchEgParams (rate[4]+level[4], 8 bytes exactly) -- once per patch, not
-# once per operator. Plus one 4-byte name pointer per patch. Not a compiled
-# sizeof() (no device toolchain invoked here), just a documented estimate --
-# module_fm.md §8's flash budget should be revisited against the real number
-# once available.
-_BYTES_PER_OP_ESTIMATE = 37
-_BYTES_PER_VOICE_LFO_PEG_ESTIMATE = 16
-_BYTES_PER_PATCH_ESTIMATE = 4 + FM_NUM_OPS * _BYTES_PER_OP_ESTIMATE + _BYTES_PER_VOICE_LFO_PEG_ESTIMATE
+# sizeof(FmPatch), measured directly from a real build's FM_PATCHES linker
+# symbol size (27136 bytes / 128 patches), confirmed exact across 32/64/128-
+# patch builds alike -- stays accurate only as long as FmPatch's own layout
+# doesn't change.
+_BYTES_PER_PATCH = 212
 
 
-def _convert_all(syx_path: str) -> tuple[List[FmPatchOut], List[str], int]:
-    with open(syx_path, "rb") as f:
-        data = f.read()
-    voices_raw = parse_syx_bulk(data, syx_path)
+_MAX_SYX_FILES = 4  # FM_PATCH_COUNT indexes Program Change/CC30 directly, both
+                     # 7-bit MIDI values -- more than 128 patches (4 x 32) would
+                     # leave some permanently unreachable, so this is a hard cap,
+                     # not a convenience default.
+
+
+def _convert_all(syx_paths: List[str]) -> tuple[List[FmPatchOut], List[str], int]:
+    if not syx_paths:
+        raise Syx2PatchError("no input files given")
+    if len(syx_paths) > _MAX_SYX_FILES:
+        raise Syx2PatchError(
+            f"{len(syx_paths)} input files given (32 voices each, "
+            f"{len(syx_paths) * 32} total) -- max {_MAX_SYX_FILES} supported, "
+            f"see this module's docstring"
+        )
 
     warnings: List[str] = []
     used_idents: Dict[str, int] = {}
     patches: List[FmPatchOut] = []
     skipped = 0
-    for idx, raw in enumerate(voices_raw):
-        voice = unpack_voice(raw, idx, warnings)
-        out = convert_voice(idx, voice, warnings)
-        if out is None:
-            skipped += 1
-            continue
-        out.ident = _make_unique(out.ident, used_idents)
-        patches.append(out)
+    for syx_path in syx_paths:
+        with open(syx_path, "rb") as f:
+            data = f.read()
+        voices_raw = parse_syx_bulk(data, syx_path)
+        label = os.path.basename(syx_path)
+        for idx, raw in enumerate(voices_raw):
+            voice = unpack_voice(raw, idx, warnings, label)
+            out = convert_voice(idx, voice, warnings, label)
+            if out is None:
+                skipped += 1
+                continue
+            out.ident = _make_unique(out.ident, used_idents)
+            patches.append(out)
     return patches, warnings, skipped
 
 
@@ -760,9 +775,9 @@ def cmd_convert(args: argparse.Namespace) -> None:
     with open(args.header, "w") as f:
         f.write(render_header(patches, args.syx))
 
-    table_bytes = len(patches) * _BYTES_PER_PATCH_ESTIMATE
+    table_bytes = len(patches) * _BYTES_PER_PATCH
     print(f"Wrote {args.header} ({len(patches)}/{len(patches) + skipped} voices converted, "
-          f"{skipped} skipped, ~{table_bytes} bytes in flash -- estimate, see module_fm.md §8)")
+          f"{skipped} skipped, ~{table_bytes} bytes of RAM (FM_PATCHES is not const))")
     for w in warnings:
         print(f"  note: {w}")
 
@@ -786,13 +801,15 @@ def main(argv=None) -> None:
     parser = argparse.ArgumentParser(prog="syx2patch")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    p_convert = sub.add_parser("convert", help="parse a 32-voice .syx bulk dump and emit patches.h")
-    p_convert.add_argument("syx", help="input .syx file (32-voice bulk dump, 4104 bytes)")
+    p_convert = sub.add_parser("convert", help="parse 1-4 32-voice .syx bulk dumps and emit patches.h")
+    p_convert.add_argument("syx", nargs="+",
+                            help="input .syx file(s) (32-voice bulk dump, 4104 bytes each), "
+                                 "up to 4 -- patches are laid out in the given file order")
     p_convert.add_argument("header", help="output path for patches.h")
     p_convert.set_defaults(func=cmd_convert)
 
     p_dump = sub.add_parser("dump", help="parse and print a per-voice summary, write nothing")
-    p_dump.add_argument("syx")
+    p_dump.add_argument("syx", nargs="+", help="input .syx file(s), up to 4")
     p_dump.set_defaults(func=cmd_dump)
 
     args = parser.parse_args(argv)
