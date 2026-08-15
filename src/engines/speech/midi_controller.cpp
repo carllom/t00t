@@ -7,6 +7,10 @@
 #include "presets.h"
 #include <cmath>
 
+#ifdef T00T_SPEECH_HAS_LATTICE_WORDS
+#include "lattice_words.h"
+#endif
+
 // Phoneme keyboard: one MIDI note is one sustained phoneme (module_speech.md
 // "MIDI Mapping"). Note number sets glottal pitch, gate sustains the
 // phoneme. The phoneme new notes on a channel use is selected by Program
@@ -27,11 +31,20 @@
 // and vibrato depth/rate (CC1/CC76) are live the same way.
 //
 // Program Change and CC23 both select an utterance (phrases.h's
-// SPEECH_PHRASES); CC20 stays phoneme-only, since a single PC message can't
-// mean both. CC28 (phrase-bank mode, next-note) makes each note-on's own
-// note number pick the phrase instead of PC/CC23's selection -- "playing the
-// words themselves" rather than "playing a line" -- while pitch still comes
-// from the note as always.
+// SPEECH_PHRASES) under the formant tract; CC20 stays phoneme-only, since a
+// single PC message can't mean both. CC28 (phrase-bank mode, next-note)
+// makes each note-on's own note number pick the phrase instead of PC/CC23's
+// selection -- "playing the words themselves" rather than "playing a line"
+// -- while pitch still comes from the note as always.
+//
+// Under the LPC lattice tract (CC102 >= 64), Program Change means something
+// else entirely: KEY_PER_WORD addressing (module_speech.md "LPC Lattice
+// Tract") maps the note number straight to a word within a 128-word page of
+// the converted corpus, and Program Change picks which page is current --
+// speech_lattice_word_for_key() below resolves note+page to a
+// LATTICE_WORDS[] entry. CC23 keeps its formant-only meaning; there's no
+// LPC equivalent of "off" the way band 0 gives CC23 for the formant tract,
+// since every note always addresses some word.
 //
 // CC16 selects a preset (presets.h SpeechPreset / voice_apply_preset()),
 // next-note only like CC20/CC23: a preset can set utterance/mode/phoneme,
@@ -66,6 +79,8 @@ static bool    channel_phrase_bank[NUM_CHANNELS];      // CC28: note number sele
 static float   channel_lfo_rate[NUM_CHANNELS];         // CC76, Hz (live)
 static float   channel_lfo_depth[NUM_CHANNELS];        // CC1, 0-1 (live)
 static SpeechTract channel_tract[NUM_CHANNELS];        // CC102, next-note: formant vs. LPC lattice tract
+static uint8_t channel_lattice_page[NUM_CHANNELS];      // Program Change under the LPC tract: KEY_PER_WORD page
+static int16_t channel_lattice_pitch_shift[NUM_CHANNELS]; // CC103, Q8.8 (live)
 static uint8_t channel_preset[NUM_CHANNELS];           // CC16: last preset loaded, for UI only --
                                                          // individual field CCs above can drift it out of
                                                          // sync with presets[channel_preset[ch]], same as
@@ -104,6 +119,30 @@ static void speech_load_preset(uint8_t channel, uint8_t preset_id) {
     channel_chorus[channel] = pr.chorus;
 }
 
+// KEY_PER_WORD addressing (module_speech.md "LPC Lattice Tract"): note
+// number selects a word within the channel's current 128-word page.
+// LPC_PAGE_WORDS matches the acceptance-tested keyboard span (0-127), not
+// PHONEME_COUNT/SPEECH_PHRASE_COUNT-style corpus size -- the page is what
+// makes a >128-word corpus reachable a page at a time. Wraps with `%`
+// rather than clamping, the same out-of-range convention every other
+// table lookup in this file already uses (channel_phoneme % PHONEME_COUNT,
+// preset_id % SPEECH_PRESET_COUNT, etc.) -- a corpus whose last page is
+// only partially populated still gives every key a defined word rather
+// than silence. Without a generated corpus (lattice_words.h), every key
+// and every page plays the same lattice.h LATTICE_TEST_WORD.
+static constexpr uint32_t LPC_PAGE_WORDS = 128;
+
+static const LatticeWord *speech_lattice_word_for_key(uint8_t channel, uint8_t note) {
+#ifdef T00T_SPEECH_HAS_LATTICE_WORDS
+    uint32_t idx = (uint32_t)channel_lattice_page[channel] * LPC_PAGE_WORDS + note;
+    return &LATTICE_WORDS[idx % LATTICE_WORD_COUNT];
+#else
+    (void)channel;
+    (void)note;
+    return &LATTICE_TEST_WORD;
+#endif
+}
+
 static void midi_voice_on(VoiceParamBlock &shadow, int v, uint8_t note, uint8_t velocity, uint8_t channel) {
     float freq = 440.0f * powf(2.0f, (float)(note - 69) / 12.0f);
 
@@ -112,6 +151,8 @@ static void midi_voice_on(VoiceParamBlock &shadow, int v, uint8_t note, uint8_t 
     vp.amplitude = (int16_t)(velocity * 258);
     vp.phoneme = channel_phoneme[channel];
     vp.tract = channel_tract[channel];
+    vp.lattice_word = speech_lattice_word_for_key(channel, note);
+    vp.lattice_pitch_shift = channel_lattice_pitch_shift[channel];
     vp.pan = channel_pan[channel];
     vp.formant_shift = channel_formant_shift[channel];
     vp.bandwidth_scale = channel_bandwidth_scale[channel];
@@ -157,6 +198,8 @@ void midi_controller_init() {
         channel_pan[ch] = 0;
         channel_phrase_bank[ch] = false;
         channel_tract[ch] = SPEECH_TRACT_FORMANT;
+        channel_lattice_page[ch] = 0;
+        channel_lattice_pitch_shift[ch] = 256;
     }
     ui_state.last_note = 0xFF;
     ui_state.last_velocity = 0;
@@ -334,14 +377,19 @@ void midi_controller_process(const uint8_t *data, uint32_t len, ParamExchange *p
                         ui_state.fx_p2 = ev.data2;
                         changed = true;
                         break;
-                    case 102:  // tract select (LPC bring-up slice), next-note only --
-                               // reserved CC102-119 range for LPC-specific
-                               // controls; word-select modes aren't built yet,
-                               // so this just switches a channel's new notes
-                               // between the formant tract and the one
-                               // hardcoded LPC test word (lattice.h).
+                    case 102:  // tract select, next-note only -- formant vs. LPC lattice
                         channel_tract[ev.channel] = ev.data2 >= 64 ? SPEECH_TRACT_LATTICE : SPEECH_TRACT_FORMANT;
                         ui_state.last_channel = ev.channel;
+                        break;
+                    case 103:  // LPC pitch-shift multiplier, live -- see header comment
+                        channel_lattice_pitch_shift[ev.channel] =
+                            tract_cc_to_q8_8(ev.data2, SPEECH_LATTICE_PITCH_SHIFT_MIN, SPEECH_LATTICE_PITCH_SHIFT_MAX);
+                        for (uint32_t v = 0; v < MAX_VOICES; v++) {
+                            if (voice_held[v] && voice_channel[v] == ev.channel)
+                                shadow.voices[v].lattice_pitch_shift = channel_lattice_pitch_shift[ev.channel];
+                        }
+                        ui_state.last_channel = ev.channel;
+                        changed = true;
                         break;
                     case 76:  // vibrato rate (GM standard "Vibrato Rate"), live
                         channel_lfo_rate[ev.channel] = (float)ev.data2 / 127.0f * SPEECH_LFO_RATE_HZ_MAX;
@@ -357,10 +405,21 @@ void midi_controller_process(const uint8_t *data, uint32_t len, ParamExchange *p
                 break;
             }
             case MIDI_PROGRAM_CHANGE: {
-                // Program Change selects an utterance (SPEECH_PHRASES,
-                // phrases.h), not a phoneme -- see header comment. Affects
-                // future notes only, same as every other "next note" CC.
-                channel_utterance[ev.channel] = ev.data1 % SPEECH_PHRASE_COUNT;
+                // Tract-dependent (see header comment): under the LPC
+                // lattice tract, picks the KEY_PER_WORD page instead of a
+                // formant utterance -- no cross-talk between the two, since
+                // a channel only ever reads one of channel_utterance/
+                // channel_lattice_page, chosen by channel_tract at note-on.
+                // Affects future notes only, same as every other "next
+                // note" CC.
+                if (channel_tract[ev.channel] == SPEECH_TRACT_LATTICE) {
+#ifdef T00T_SPEECH_HAS_LATTICE_WORDS
+                    constexpr uint32_t LPC_PAGE_COUNT = (LATTICE_WORD_COUNT + LPC_PAGE_WORDS - 1) / LPC_PAGE_WORDS;
+                    channel_lattice_page[ev.channel] = (uint8_t)(ev.data1 % LPC_PAGE_COUNT);
+#endif
+                } else {
+                    channel_utterance[ev.channel] = ev.data1 % SPEECH_PHRASE_COUNT;
+                }
                 ui_state.last_channel = ev.channel;
                 break;
             }

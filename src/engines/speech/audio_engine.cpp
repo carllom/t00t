@@ -229,15 +229,17 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
         for (uint32_t v = 0; v < MAX_VOICES; v++) {
             const VoiceParams &p = vp.voices[v];
             if (p.tract == SPEECH_TRACT_LATTICE) {
-                // LPC lattice tract (module_speech.md "LPC sibling engine"):
-                // no MIDI word-select yet, so every lattice voice plays the
-                // one hardcoded test word (lattice.h) -- pitch comes from
-                // the word's own frames, not the note. Renders straight to
+                // LPC lattice tract (module_speech.md "LPC Lattice Tract"):
+                // p.lattice_word is resolved by midi_controller.cpp's
+                // KEY_PER_WORD addressing (note + Program-Change page) --
+                // pitch comes from the word's own frames, scaled by the
+                // live pitch-shift CC, not the note. Renders straight to
                 // output rate (no ZOH-x2 step; see speech_render_voice_
                 // lattice()'s own header comment), so it gets the whole
                 // SAMPLES_PER_BUFFER, not the halved native count below.
                 speech_render_voice_lattice(voices[v], p.trigger, p.amplitude, p.gate,
-                                             LATTICE_TEST_WORD, p.pan, (float)SAMPLE_RATE,
+                                             *p.lattice_word, p.mode, p.lattice_pitch_shift,
+                                             p.pan, (float)SAMPLE_RATE,
                                              dry_l, dry_r, SAMPLES_PER_BUFFER);
                 if (voices[v].active) active_mask |= (1u << v);
                 // No display support for LPC state in this pass -- the

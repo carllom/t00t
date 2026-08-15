@@ -57,17 +57,22 @@ struct VoiceParams {
     float    lfo_rate;    // vibrato LFO rate, Hz, 0 = off (excitation.h VIBRATO_*)
     float    lfo_depth;   // vibrato depth, 0.0-1.0
     // Selects which tract render.h renders this voice through (tract.h's
-    // SpeechTract). No MIDI control wired to it yet -- every voice defaults
-    // to SPEECH_TRACT_FORMANT, so this field is currently only set by a
-    // caller that constructs VoiceParams directly (the profiling rig,
-    // audio_engine.cpp's LPC smoke-test phase).
+    // SpeechTract), set from CC102 (midi_controller.cpp).
     SpeechTract tract;
+    // KEY_PER_WORD addressing (module_speech.md "LPC Lattice Tract"): the
+    // word this voice plays under SPEECH_TRACT_LATTICE, resolved by
+    // midi_controller.cpp from the note number and the channel's current
+    // Program-Change page. Defaults to lattice.h's LATTICE_TEST_WORD so a
+    // voice is always valid whether or not a real corpus
+    // (lattice_words.h) has been generated locally.
+    const LatticeWord *lattice_word;
+    int16_t lattice_pitch_shift;  // Q8.8, 256 = 1.0x -- live override on the word's own pitch contour
 };
 
 template <>
 inline VoiceParams voice_params_default<VoiceParams>() {
     return { 0, 0, 0, false, 0, 0, 256, 256, SPEECH_NO_UTTERANCE, SPEECH_MODE_GATED, 16,
-             0, 0, 0.0f, 0.0f, SPEECH_TRACT_FORMANT };
+             0, 0, 0.0f, 0.0f, SPEECH_TRACT_FORMANT, &LATTICE_TEST_WORD, 256 };
 }
 
 using VoiceParamBlock = VoiceParamBlockT<VoiceParams>;

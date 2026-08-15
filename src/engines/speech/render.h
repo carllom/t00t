@@ -299,10 +299,19 @@ inline void speech_render_voice_seq(SpeechVoice &sv, uint32_t phase_inc, float f
 // the accumulated fractional position (`sv.lat.resample_frac`, per-voice
 // state) crosses 1.0 -- carried across calls, so a buffer boundary never
 // re-zeroes it into a phase glitch.
+// `mode`/`pitch_shift` are VoiceParams::mode/lattice_pitch_shift straight
+// through (engine.h): `mode` gives this tract the same GATED/ONESHOT/LOOP
+// note-off contract speech_render_voice_seq() already has (a GATED note-off
+// jumps to the word's own final frame -- always the corpus decoder's
+// trailing silent STOP frame -- instead of cutting mid-glide; LOOP restarts
+// at frame 0 while still gated); `pitch_shift` is a raw Q8.8 multiplier on
+// top of each frame's own recorded pitch_hz.
 inline void speech_render_voice_lattice(SpeechVoice &sv, uint8_t trigger, int16_t amplitude, bool gate,
-                                         const LatticeWord &word, int16_t pan, float out_fs,
+                                         const LatticeWord &word, SpeechMode mode, int16_t pitch_shift,
+                                         int16_t pan, float out_fs,
                                          int32_t *dry_l, int32_t *dry_r, uint32_t output_frames) {
     bool malformed = (word.length == 0 || word.frames == nullptr);
+    float pitch_mult = (float)pitch_shift * (1.0f / 256.0f);
 
     bool retriggering = (trigger != sv.last_trigger);
     // A tract switch always lands on a retrigger -- see speech_render_voice()'s
@@ -312,12 +321,23 @@ inline void speech_render_voice_lattice(SpeechVoice &sv, uint8_t trigger, int16_
 
     if (retriggering) {
         sv.last_trigger = trigger;
+        sv.gate_prev = gate;
         sv.glottal_phase = 0;
         sv.cur_amp = 0.0f;
         lattice_reset(sv.lat);
         sv.lat.word_done = malformed;
-        if (!malformed) lattice_load_frame(sv.lat, word, 0, /*retrigger=*/true);
+        if (!malformed) lattice_load_frame(sv.lat, word, 0, /*retrigger=*/true, pitch_mult);
         else sv.lat.frame_remaining = 0xFFFFFFFFu;  // see speech_sequencer_advance()'s comment on why
+    } else if (!malformed && !sv.lat.word_done) {
+        // Note-off edge (mirrors speech_render_voice_seq()'s own check
+        // above): SPEECH_MODE_GATED jumps straight to the word's last frame
+        // rather than cutting mid-glide. ONESHOT/LOOP have no extra work to
+        // do here; LOOP's own note-off handling lives in the frame-advance
+        // branch below.
+        if (sv.gate_prev && !gate && mode == SPEECH_MODE_GATED && sv.lat.frame_index < word.length - 1) {
+            lattice_load_frame(sv.lat, word, (uint16_t)(word.length - 1), /*retrigger=*/false, pitch_mult);
+        }
+        sv.gate_prev = gate;
     }
     sv.active = !sv.lat.word_done;
 
@@ -333,7 +353,7 @@ inline void speech_render_voice_lattice(SpeechVoice &sv, uint8_t trigger, int16_
             sv.lat.y_prev = sv.lat.y_cur;
 
             if (!malformed && !sv.lat.word_done && sv.lat.frame_remaining == 0) {
-                lattice_advance(sv.lat, word);
+                lattice_advance(sv.lat, word, mode == SPEECH_MODE_LOOP && gate, pitch_mult);
                 sv.active = !sv.lat.word_done;
             }
             // Frame length divides evenly into the sub-block size (lattice.h's

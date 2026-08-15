@@ -23,10 +23,18 @@ inline constexpr uint32_t SPEECH_LATTICE_RATE = 8000;
 // gain -- correct for reproducing a white-noise-driven signal's energy, but
 // this tract's excitation is a glottal pulse train, not white noise, so a
 // pulse's much higher crest factor comes out noticeably quieter than the
-// same nominal gain would for noise. Tuned empirically against
-// LATTICE_TEST_WORD (lattice.h) so the test word actually sounds like
-// something instead of a whisper.
-inline constexpr float SPEECH_LATTICE_GAIN_BOOST = 40.0f;
+// same nominal gain would for noise. Tuned empirically against the
+// converted Talkie corpus's worst-case resonance (tools/talkie2lattice.py),
+// not LATTICE_TEST_WORD -- the corpus's real chip-recorded reflection
+// coefficients sit much closer to the unit circle than the test word's own
+// smoother, synthetic ones, so the same excitation scale that never clips
+// the corpus leaves the test word quiet by comparison.
+inline constexpr float SPEECH_LATTICE_GAIN_BOOST = 2.5f;
+
+// Live pitch-shift multiplier range (module_speech.md "MIDI Mapping"), a
+// live CC override on top of a word's own recorded per-frame pitch
+// contour -- one octave down to one octave up.
+inline constexpr float SPEECH_LATTICE_PITCH_SHIFT_MIN = 0.5f, SPEECH_LATTICE_PITCH_SHIFT_MAX = 2.0f;
 
 // One 25 ms coefficient frame -- the TMS5220's own frame period, at the
 // lattice's 8 kHz native rate that's exactly 200 samples. `pitch_hz == 0`
@@ -102,7 +110,12 @@ inline void lattice_reset(LatticeVoiceState &ls) {
 // note left behind, matching tract_retrigger()'s same rule for the formant
 // tract); otherwise sets up a linear ramp from the current coefficients to
 // this frame's, covering SPEECH_LATTICE_INTERP_STEPS sub-blocks.
-inline void lattice_load_frame(LatticeVoiceState &ls, const LatticeWord &w, uint16_t idx, bool retrigger) {
+// `pitch_mult` scales the frame's own recorded pitch_hz before it becomes a
+// phase increment -- the live pitch-shift CC's override, re-applied on
+// every frame load so a CC change reaches a word already in progress within
+// one frame period.
+inline void lattice_load_frame(LatticeVoiceState &ls, const LatticeWord &w, uint16_t idx, bool retrigger,
+                                float pitch_mult) {
     const LatticeFrame &f = w.frames[idx];
     for (uint32_t i = 0; i < SPEECH_LATTICE_ORDER; i++) {
         if (retrigger) ls.k[i] = f.k[i];
@@ -113,27 +126,34 @@ inline void lattice_load_frame(LatticeVoiceState &ls, const LatticeWord &w, uint
     ls.frame_index = idx;
     ls.frame_remaining = SPEECH_LATTICE_FRAME_SAMPLES;
     ls.voiced = f.pitch_hz > 0.0f;
-    ls.phase_inc = ls.voiced ? glottal_phase_inc(f.pitch_hz, (float)SPEECH_LATTICE_RATE) : 0;
+    ls.phase_inc = ls.voiced ? glottal_phase_inc(f.pitch_hz * pitch_mult, (float)SPEECH_LATTICE_RATE) : 0;
 }
 
 // Advances to the next coefficient frame once the current one's
 // frame_remaining reaches zero -- sequencer.h's speech_sequencer_advance(),
-// adapted to a fixed frame array instead of a phoneme string. Reaching the
-// end of the word marks it done; render.h's speech_render_voice_lattice()
-// uses `word_done` to stop rendering and to clear the active-voice bitmap,
-// same contract as SpeechVoice::seq_done.
-inline void lattice_advance(LatticeVoiceState &ls, const LatticeWord &w) {
+// adapted to a fixed frame array instead of a phoneme string. `loop` is
+// `mode == SPEECH_MODE_LOOP && gate` (render.h) -- SpeechMode itself isn't
+// known here, the same split render.h keeps between sequencer.h's mode
+// logic and lattice.h's frame data. Reaching the end of the word without
+// looping marks it done; render.h's speech_render_voice_lattice() uses
+// `word_done` to stop rendering and to clear the active-voice bitmap, same
+// contract as SpeechVoice::seq_done.
+inline void lattice_advance(LatticeVoiceState &ls, const LatticeWord &w, bool loop, float pitch_mult) {
     uint16_t next = (uint16_t)(ls.frame_index + 1);
     if (next >= w.length) {
-        ls.word_done = true;
-        // Must be nonzero for the same reason speech_sequencer_advance()'s
-        // end-of-utterance branch leaves seg_remaining nonzero: the render
-        // loop cuts each iteration at min(..., frame_remaining, ...), and a
-        // stale 0 here would spin the loop without ever consuming a sample.
-        ls.frame_remaining = 0xFFFFFFFFu;
-        return;
+        if (loop) {
+            next = 0;
+        } else {
+            ls.word_done = true;
+            // Must be nonzero for the same reason speech_sequencer_advance()'s
+            // end-of-utterance branch leaves seg_remaining nonzero: the render
+            // loop cuts each iteration at min(..., frame_remaining, ...), and a
+            // stale 0 here would spin the loop without ever consuming a sample.
+            ls.frame_remaining = 0xFFFFFFFFu;
+            return;
+        }
     }
-    lattice_load_frame(ls, w, next, /*retrigger=*/false);
+    lattice_load_frame(ls, w, next, /*retrigger=*/false, pitch_mult);
 }
 
 // Ramps k/gain one sub-block toward this frame's target and asserts the
