@@ -154,6 +154,21 @@ phoneme and every phrase to a WAV in one command, and cross-checks vowel
 F1/F2 against `tools/host_render/vowel_reference.h` (an independently
 sourced published-values table).
 
+`tools/talkie2lattice.py` — decodes the TI-99/4A "Talkie" TMS5220 wordset's
+own bitstream format into the LPC lattice tract's `LatticeFrame` format
+(reflection coefficients, gain, pitch), following the DX7 `.syx` converter's
+gitignored-output precedent:
+
+```
+talkie2lattice.py convert <in.ino> [in2.ino ...] <out.h>   # -> lattice_words.h (gitignored)
+talkie2lattice.py dump <in.ino> [in2.ino ...]               # per-word summary, writes nothing
+```
+
+Source vocab files (`talkie/`, gitignored) aren't supplied — populate it
+locally from Talkie's own `examples/` vocab sketches
+(https://github.com/going-digital/Talkie) to run `convert` or the corpus-
+gated half of `tools/test_talkie2lattice.py`.
+
 ## Architecture
 
 ### Control Plane: Latest-Wins, Not the Tracker's Ordered Ring
@@ -507,11 +522,13 @@ breakdown: `history_speech.md`.
 
 ### Future / TODO
 
-- **LPC corpus + real word selection** — the lattice tract itself is built
-  and hardware-confirmed audible (see Architecture's LPC Lattice Tract),
-  but every voice still plays one hardcoded test word; no corpus
-  converter, no `KEY_PER_WORD` (or any other) MIDI addressing mode, and no
-  per-voice LPC render-cost measurement on real hardware yet.
+- **LPC real word selection** — the lattice tract is built and
+  hardware-confirmed audible, and `tools/talkie2lattice.py` can decode the
+  full ~1,163-word Talkie corpus into `lattice_words.h` (gitignored,
+  not yet generated or linked into the build), but every voice still plays
+  one hardcoded test word: no `KEY_PER_WORD` (or any other) MIDI
+  addressing mode exists yet to reach the converted corpus, and no
+  per-voice LPC render-cost measurement on real hardware.
 - **Singing mode** — the `SUSTAINABLE` flag is reserved (see Architecture)
   but nothing reads it yet; holding a vowel segment open under gate
   instead of advancing at its nominal duration is unbuilt.
@@ -621,6 +638,30 @@ breakdown: `history_speech.md`.
     (inside the CC102–119 range already reserved for LPC controls), and
     it's what lets the hardcoded test word actually be reached from a
     MIDI channel instead of only from host-render tooling.
+17. **`talkie2lattice.py`'s TMS5220 decode tables are re-expressed as this
+    project's own data, not copied from the Talkie library's source
+    file** — the bitstream *format* (which bits mean what) is the chip's
+    own hardware behavior, the same reasoning that already applies to the
+    DX7 sysex byte layout ported from Dexed, but Talkie itself is GPLv2 (a
+    stricter, copyleft license than Dexed's Apache-2.0), so the specific
+    table values are transcribed independently and attributed by comment
+    rather than copied wholesale.
+18. **A word whose bitstream fails to decode is skipped with a warning,
+    not an abort of the whole run** — a deliberate deviation from
+    `syx2patch.py`'s stricter "any bad voice aborts the whole bank"
+    policy, since the Talkie corpus (~1,163 words across several
+    independently-sourced files) is roughly an order of magnitude larger
+    than a 32-voice DX7 bank, and one corrupted or unusually-shaped word
+    blocking every other word's conversion is a worse failure mode at
+    that scale. Every skip is still reported, not silent.
+19. **The TMS5220's raw energy value is normalized to `LatticeFrame.gain`
+    by dividing by 255**, a different unit and calibration than #63's
+    `LATTICE_TEST_WORD` (whose gain values came from an unrelated
+    Levinson-Durbin analysis, then re-scaled again by render.h's
+    `SPEECH_LATTICE_GAIN_BOOST`) — real corpus playback may need its own
+    loudness retuning once heard on hardware; this converter's job is a
+    faithful decode of the chip's own value, not a loudness match to
+    LATTICE_TEST_WORD's bring-up-only calibration.
 
 ## Glossary
 
