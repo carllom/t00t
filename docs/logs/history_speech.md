@@ -655,3 +655,94 @@ fixture during this session, not committed).
 wired into the build (no `talkie/` corpus is committed, by design); no
 MIDI addressing mode exists yet to select a word from it even once it is;
 the gain calibration above is a first pass, not hardware-confirmed.
+
+## Speech Engine — KEY_PER_WORD MIDI Addressing + Full LPC Corpus Playback (#65)
+
+Wires #64's corpus converter into #63's lattice tract as real,
+MIDI-playable vocabulary: `KEY_PER_WORD` addressing (note selects a word,
+Program Change selects a 128-word page), GATED/ONESHOT/LOOP applied to
+lattice voices, and a live pitch-shift override (CC103).
+
+**Corpus fetched locally for verification, not committed** — same
+"fetched for this session only" precedent #64 already set. All six
+`going-digital/Talkie` example vocab files converted cleanly to
+`lattice_words.h`: 1173 words, 0 skipped, 26667 frames, matching #64's
+own earlier run exactly. Neither `talkie/` nor `lattice_words.h` touched
+the repo.
+
+**`VoiceParams` gained `lattice_word` (a `const LatticeWord *`, not an
+index) and `lattice_pitch_shift`** (Q8.8). The pointer mirrors the FM
+engine's own `patch` field — always valid (defaults to
+`&LATTICE_TEST_WORD`), whether or not `lattice_words.h` exists locally.
+`midi_controller.cpp`'s `speech_lattice_word_for_key()` resolves note +
+the channel's current page to a `LATTICE_WORDS[]` entry behind
+`T00T_SPEECH_HAS_LATTICE_WORDS` (a new CMake gate, same shape as `#47`'s
+`T00T_FM_HAS_PATCHES`); without it, every key and every page plays
+`LATTICE_TEST_WORD`. Program Change becomes tract-dependent: under the
+LPC tract it writes `channel_lattice_page` instead of
+`channel_utterance`, selected by the same `channel_tract` CC102 already
+set — no new CC needed, no cross-talk between the two meanings.
+
+**GATED/ONESHOT/LOOP reached the lattice tract with a 3-line touch to
+`lattice.h`**, not a rewrite: `lattice_load_frame()`/`lattice_advance()`
+gained a `pitch_mult` parameter (applied to `pitch_hz` before it becomes
+a phase increment) and `lattice_advance()` gained a `loop` bool instead
+of a `SpeechMode` parameter — `lattice.h` sits below `sequencer.h` in the
+include graph (`tract.h` includes `lattice.h`, `sequencer.h` includes
+`tract.h`), so `SpeechMode` itself can't be named there without a cycle.
+`render.h`'s `speech_render_voice_lattice()` computes
+`mode == SPEECH_MODE_LOOP && gate` and passes the bool through, and
+handles the GATED note-off jump inline (mirrors
+`speech_render_voice_seq()`'s own inline release-jump, not a
+`sequencer.h` function either). The release point is always the word's
+own final frame — Talkie's format has no release marker, and the
+decoder already guarantees every word ends in genuine silence, so no new
+field was needed on `LatticeWord`.
+
+**Real corpus playback clipped badly at the old `SPEECH_LATTICE_GAIN_BOOST`
+(40.0)** — 1019/1173 words overshot full scale, some by 2x. Root cause:
+the constant was tuned in #63 against `LATTICE_TEST_WORD`'s
+Levinson-Durbin-derived coefficients (largest magnitude ~0.90), but real
+chip-recorded speech has reflection coefficients much closer to the unit
+circle, so the same excitation scale drives a far more resonant filter.
+Retuned empirically against the actual local corpus render (binary search
+over the boost constant, rebuilding and checking the worst-case peak
+across all 1173 words each time): 2.5 leaves the worst word at 29960
+(comfortable margin under 32767) while every other host-render check
+still passes. Consequence, recorded rather than silently accepted:
+`LATTICE_TEST_WORD` itself is now much quieter (peak 546, was audible at
+a much louder relative level before) — a known tradeoff of one shared
+constant covering both a hand-built fixture and real chip data, not a
+regression to chase further in this slice.
+
+**Host-render harness extended** (`render_speech.cpp`): a
+`render_lattice_native()` helper (mirrors `render_utterance_native()`'s
+shape, but calls the output-rate `speech_render_voice_lattice()`
+directly); `run_lattice_mode_checks()` (a synthetic 8-frame word proves
+GATED's release-jump completes roughly one frame period after note-off
+where ONESHOT ignores it and LOOP restarts, then degrades to one-shot
+once gate drops); `run_lattice_pitch_shift_check()` (0.5x/1.0x/2.0x
+measured against target F0 by Goertzel, within 5%); and, gated behind
+`T00T_SPEECH_HAS_LATTICE_WORDS`, `run_lattice_corpus_render()` (every
+corpus word rendered through the exact device render path, written to
+`lpc_words/*.wav`, checked finite/unclipped/completed) and
+`test_lattice_corpus_stability()` (every corpus frame's `|k[i]| < 1` and
+`gain` in range, checked directly against the compiled `LATTICE_WORDS[]`
+struct data — independent of `talkie2lattice.py`'s own Python-side
+validation, which already checks the same property before emission).
+Full corpus run: 1173/1173 words finite, unclipped, and completed; 26667
+frames all within range. All pre-existing checks in the file still pass.
+
+Builds clean in all four configurations that matter here: the device
+firmware with and without a generated `lattice_words.h` present
+(`T00T_SPEECH_HAS_LATTICE_WORDS` gate verified both ways, including a
+from-scratch CMake reconfigure), plus the default subtractive-engine
+build and the `SPEECH_PROFILE=1` variant, to confirm the `VoiceParams`
+field additions don't disturb anything outside the speech engine.
+
+**Not yet done at this point:** hardware verification — everything above
+is host-render-verified only; hearing real words play from a keyboard,
+confirming page-select and the pitch-shift CC by ear, and a per-voice LPC
+render-cost measurement are all still open. The "musical" and two-CC
+pseudo-program-select addressing modes module_speech.md's Decision Record
+leaves room for remain unbuilt.
