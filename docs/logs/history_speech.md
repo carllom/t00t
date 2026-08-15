@@ -807,3 +807,120 @@ and that switching back to a formant preset afterward leaves no audible
 trace — implemented and reasoned through against the union
 placement-new-on-tract-switch mechanism #63 already built and
 hardware-verified, but not itself re-confirmed by ear.
+
+**Hardware-verified on real `breadboard_rp2350`:** Carl confirmed CC16
+toggling cleanly between `PRESET_LPC_WORDS` and a formant preset, with no
+stale tract state carried across either direction.
+
+## Speech Engine — LPC Per-Voice Cost Measurement Rig (#67)
+
+A human-in-the-loop decision gate (real hardware, real profiling pin --
+not resolvable by an agent alone): what the lattice tract's per-voice
+render cost actually is, and whether `MAX_VOICES` (currently one shared
+pool of 8 across both tracts) needs to change. What's buildable ahead of
+that measurement is the rig itself; the measurement, comparison, and
+final `MAX_VOICES` decision are still open, waiting on Carl at the bench.
+
+**Extended the existing `SPEECH_PROFILE=1` rig rather than building a
+second one.** `ProfilePhase` gained a `tract` discriminator
+(`PROFILE_FORMANT`/`PROFILE_LATTICE`); five new phases (idle/1/2/4/8
+lattice voices) were appended to the same `PROFILE_PHASES` array the
+formant phases already use, so the whole state machine (buffer clearing,
+pin toggling, EMA load calculation, phase-hold timing) stays one code
+path instead of two. `phoneme`/`recompute_only`/`sweep_tract` are simply
+unused on lattice rows -- no second phase-descriptor type was worth it
+for three dead fields.
+
+**Found and fixed a measurement-validity bug before it ever reached a
+real reading:** `LATTICE_TEST_WORD` is 325 ms; the phase hold is ~4 s.
+Rendered under `ONESHOT`-style ignore-note-off (the first thing tried),
+each lattice voice would finish the word about 8% into the phase and
+spend the remaining ~92% in its post-completion ring-down state -- which
+skips `lattice_advance()`/`lattice_advance_subblock()` entirely (the
+frame-remaining sentinel that marks a word done never satisfies the
+sub-block modulo check again), so the pin would mostly be measuring the
+cheaper tail state, not steady playback. Fixed by rendering with
+`SPEECH_MODE_LOOP` and a permanently held gate, so every phase's voices
+cycle through the word's frames for the entire hold -- caught by tracing
+through render.h's own completion logic before ever flashing hardware,
+not by a wrong number coming back from the bench.
+
+**Verified by compilation only** in three configurations
+(`SPEECH_PROFILE=1`, the plain speech engine, and the default
+subtractive engine) -- there's nothing for the host-render harness to
+check here; a profiling rig's entire output is a GPIO pin's timing, which
+only exists on real silicon.
+
+**Not yet done at this point:** everything the acceptance criteria
+actually gate on -- the real cycles/frame/voice and %-Core-1 numbers at
+1/2/4/8 lattice voices, comparing them against the formant tract's own
+(~93.5 c/f/voice, flat 1-8v), and the resulting `MAX_VOICES` decision
+(and its rationale) for the lattice tract, including whether the current
+shared-pool-of-8 design holds up or needs to change. All require Carl at
+the bench with the profiling pin.
+
+**Measured on real `breadboard_rp2350`.** Carl read the profiling pin's
+duty cycle by ear-and-scope across a full 13-phase cycle (~52 s) and,
+usefully, matched each phase to what he heard from the speaker --
+sustained-vowel/fricative buzz for the formant phases, `LATTICE_TEST_WORD`
+(heard as "biam", its SIL-/i/-/a/-/u/-SIL shape looped) for the lattice
+ones, silence for both idle phases and the recompute-only phase (which
+never writes to `dry_l`/`dry_r` at all, so silence there is expected, not
+a bug) -- which let every one of the 13 readings be identified with
+confidence purely from the phase order, without needing a second
+instrumented run.
+
+Converting duty cycle to cycles/frame/voice (`duty% * BUF_PERIOD_US *
+150 MHz / (256 output frames * voice count)` -- the same formula the
+existing ~93.5 c/f/voice number already implies, "frame" meaning an
+output-rate frame in both tracts' case, not either one's own native
+rate):
+
+| phase | reading | c/f/voice |
+|---|---|---|
+| formant 1/2/4/8v | 2.75/5.5/11.0/22.0% | 93.54, flat -- exact match to the historical number, confirming no regression |
+| formant 4v PH_Z (voiced fricative) | 11.0% | 93.54 -- same as plain 4v, fricative branch free |
+| formant 4v recompute-only | 1.3% | 11.05 -- coefficient recompute is ~12% of the per-voice cost |
+| formant 4v swept formant_shift/bandwidth_scale | 11.0% | 93.54 -- same as static, live sweep free |
+| lattice 1/2/4/8v | 2.3/4.55/9.1/18.1% | ~77.5, flat |
+
+The lattice tract came in **cheaper than the formant tract** (~77.5 vs.
+~93.5 c/f/voice), not more expensive -- the order-10 lattice recursion's
+own per-sample cost is real, but its 8 kHz native rate (vs. the formant
+tract's 22.05 kHz) means fewer native samples get processed per output
+frame, and that more than pays back the difference once normalized the
+same way the formant number already is.
+
+**Decision: `MAX_VOICES` stays 8, shared between both tracts, unchanged.**
+Since the lattice tract measured cheaper, not more expensive, the shared
+pool's worst-case Core 1 cost is already bounded by the formant tract's
+own already-characterized numbers (22% @ 8v, ~30% with reverb) regardless
+of which tract fills the pool -- there's no headroom problem the
+measurement reveals, and giving the cheaper tract a separate, larger
+budget would need a real architecture change (per-tract voice pools) that
+nothing here justifies. Carl confirmed this reading and the decision.
+
+Acceptance criteria all met: cost measured, compared against the formant
+tract, `MAX_VOICES` decided and recorded, no regression confirmed.
+
+## Speech Engine — Velocity Toggle (CC15)
+
+Carl's own spec, given directly rather than through an issue: a per-channel
+CC (15, next-note, default on) that lets a controller with unreliable or
+undesired velocity sensitivity force every note to sound at max velocity
+instead. 0-63 disables velocity (every note-on computes `amplitude` from a
+fixed 127 instead of the received value); 64-127 restores normal
+velocity-sensitive behavior.
+
+`channel_velocity_enabled[NUM_CHANNELS]` bulk-defaults to `true` in
+`midi_controller_init()`, same as `channel_pan`/`channel_phrase_bank` --
+not routed through the preset table, since it's a performance/controller
+concern, not part of what a preset says a voice should sound like.
+`ui_state.last_velocity` still always shows the raw received value
+(diagnostic display of what the controller actually sent), independent of
+whether it ends up affecting `amplitude`.
+
+Verified by device compilation only (`make ENGINE=speech`) -- pure
+MIDI-CC-to-per-channel-state wiring, the same testing boundary every
+other CC handler in this file already has (no host-render coverage,
+hardware-verification pending).
