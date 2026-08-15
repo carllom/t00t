@@ -46,6 +46,12 @@
 // LPC equivalent of "off" the way band 0 gives CC23 for the formant tract,
 // since every note always addresses some word.
 //
+// CC15 (velocity toggle, next-note, default on) sits just outside the
+// BSP's CC16-31 encoder block: 0-63 makes every note sound at max velocity
+// regardless of what the controller sent, 64-127 uses the received velocity
+// as normal. ui_state.last_velocity always shows the real received value,
+// whether or not it ends up affecting amplitude.
+//
 // CC16 selects a preset (presets.h SpeechPreset / voice_apply_preset()),
 // next-note only like CC20/CC23: a preset can set utterance/mode/phoneme,
 // and pushing those into an already-sequencing voice would be exactly the
@@ -86,6 +92,7 @@ static uint8_t channel_preset[NUM_CHANNELS];           // CC16: last preset load
                                                          // sync with presets[channel_preset[ch]], same as
                                                          // any hardware synth's knobs-vs-preset relationship
 static bool    channel_chorus[NUM_CHANNELS];            // CC16: pr.chorus of the last preset loaded
+static bool    channel_velocity_enabled[NUM_CHANNELS];  // CC15, next-note: use received velocity vs. fixed max
 
 static MidiUiState ui_state;
 
@@ -148,10 +155,14 @@ static const LatticeWord *speech_lattice_word_for_key(uint8_t channel, uint8_t n
 
 static void midi_voice_on(VoiceParamBlock &shadow, int v, uint8_t note, uint8_t velocity, uint8_t channel) {
     float freq = 440.0f * powf(2.0f, (float)(note - 69) / 12.0f);
+    // CC15: when velocity is toggled off, every note sounds at max velocity
+    // regardless of what the controller actually sent -- ui_state.last_velocity
+    // below still shows the real received value.
+    uint8_t sounding_velocity = channel_velocity_enabled[channel] ? velocity : 127;
 
     VoiceParams &vp = shadow.voices[v];
     vp.phase_inc = glottal_phase_inc(freq, (float)SPEECH_RATE);
-    vp.amplitude = (int16_t)(velocity * 258);
+    vp.amplitude = (int16_t)(sounding_velocity * 258);
     vp.phoneme = channel_phoneme[channel];
     vp.tract = channel_tract[channel];
     vp.lattice_word = speech_lattice_word_for_key(channel, note);
@@ -201,6 +212,7 @@ void midi_controller_init() {
         speech_load_preset(ch, PRESET_PHONEME_KEYBOARD);
         channel_pan[ch] = 0;
         channel_phrase_bank[ch] = false;
+        channel_velocity_enabled[ch] = true;
     }
     ui_state.last_note = 0xFF;
     ui_state.last_velocity = 0;
@@ -270,6 +282,11 @@ void midi_controller_process(const uint8_t *data, uint32_t len, ParamExchange *p
                         channel_pan[ev.channel] = (int16_t)(((int32_t)ev.data2 - 64) * 512);
                         ui_state.last_channel = ev.channel;
                         changed = true;
+                        break;
+                    case 15:  // velocity toggle, next-note — 0-63 off (every note at max
+                              // velocity), 64-127 on (use the received velocity), default on
+                        channel_velocity_enabled[ev.channel] = ev.data2 >= 64;
+                        ui_state.last_channel = ev.channel;
                         break;
                     case 16: {  // preset select (presets.h) — split range into
                                 // SPEECH_PRESET_COUNT bands, next-note only (see header comment)

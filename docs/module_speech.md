@@ -60,15 +60,18 @@ shimmer are all live MIDI controls) rather than just a talking clock.
 ### MIDI Mapping (Input Capabilities)
 
 Notes trigger voices through the standard allocator; pitch sets glottal
-frequency. CC assignments follow the Arturia BeatStep Pro's fixed
+frequency, velocity sets amplitude (CC15 can disable this per channel, see
+below). CC assignments follow the Arturia BeatStep Pro's fixed
 absolute-mode 16-encoder block (CC16–31); CC1 and CC76 are the real
 GM-standard "mod wheel" and "vibrato rate" assignments, matching the
-subtractive engine's own CC1/CC10 precedent.
+subtractive engine's own CC1/CC10 precedent. CC15 sits just outside that
+encoder block.
 
 | CC | Name | Field | Live? |
 |---|---|---|---|
 | 1 | Mod wheel (GM) | Vibrato depth | live |
 | 10 | Pan (GM) | Pan | next note |
+| 15 | Velocity toggle | 0-63 = every note at max velocity, 64-127 = use received velocity (default) | next note |
 | 16 | Preset select | Loads a `presets[]` entry (bulk-writes the CCs below) | next note |
 | 20 | Phoneme select | Phoneme keyboard index | next note |
 | 21 | Formant shift | Tract length / "gender" | live |
@@ -550,12 +553,23 @@ yet — see Future/TODO.
 
 ### Performance
 
-~93.5 cycles/frame/voice (2.75%), flat from 1 to 8 voices, on real
-`breadboard_rp2350` hardware — the fricative/nasal branches and a live
-formant-shift/bandwidth-scale sweep cost nothing extra over that flat
-number (both already run unconditionally). 8 voices alone: 22% of Core 1;
-with reverb (mutually exclusive with delay): ~30%. Full measurement
-breakdown: `history_speech.md`.
+Formant tract: ~93.5 cycles/frame/voice (2.75%), flat from 1 to 8 voices,
+on real `breadboard_rp2350` hardware — the fricative/nasal branches and a
+live formant-shift/bandwidth-scale sweep cost nothing extra over that
+flat number (both already run unconditionally). 8 voices alone: 22% of
+Core 1; with reverb (mutually exclusive with delay): ~30%.
+
+LPC lattice tract: ~77.5 cycles/frame/voice, also flat from 1 to 8
+voices, cheaper than the formant tract despite the extra resampler step —
+the lower 8 kHz native rate more than pays back the order-10 lattice
+recursion's own per-sample cost once normalized per output frame. 8
+voices alone: 18.1% of Core 1. `MAX_VOICES = 8` is shared between both
+tracts (one voice pool, tract selected per voice — see Decision Record);
+since the lattice tract is cheaper, not more expensive, than the formant
+tract, the shared pool's worst case stays bounded by the formant
+numbers above regardless of which tract's voices fill it.
+
+Full measurement breakdown: `history_speech.md`.
 
 ### Future / TODO
 
@@ -564,9 +578,6 @@ breakdown: `history_speech.md`.
   the keyboard via standard MIDI Bank Select + Program Change, and a
   two-CC pseudo-program-select for controllers that can't reliably send
   Program Change, are both left room for but unbuilt.
-- **Per-voice LPC render-cost measurement** on real hardware — the
-  formant tract has one (Performance below); the lattice tract doesn't
-  yet.
 - **Singing mode** — the `SUSTAINABLE` flag is reserved (see Architecture)
   but nothing reads it yet; holding a vowel segment open under gate
   instead of advancing at its nominal duration is unbuilt.
@@ -587,12 +598,11 @@ breakdown: `history_speech.md`.
   for a speech-only change.
 - **Hardware verification pending** on several already-built features: the
   preset table by ear (particularly `PRESET_ROBOT_CHORUS`'s stereo
-  spread), CC16 preset-select's glitch-free-switching claim, MIDI-layer
-  correctness (Program Change/CC parsing, phrase-bank note mapping — only
-  compile-verified so far), the profiling-pin measurement of effects-on
-  cost, and `KEY_PER_WORD` addressing (note/page selection, CC103
-  pitch-shift, GATED/ONESHOT/LOOP on lattice voices) once a corpus has
-  been generated locally — host-verified only so far.
+  spread and glitch-free switching between two ordinary formant presets —
+  `KEY_PER_WORD`'s own preset switch is confirmed, see Decision Record),
+  MIDI-layer correctness (Program Change/CC parsing, phrase-bank note
+  mapping — only compile-verified so far), and the profiling-pin
+  measurement of effects-on cost.
 
 ## Decision Record
 
@@ -754,6 +764,21 @@ breakdown: `history_speech.md`.
     `speech_load_preset()` reads it straight from the preset row rather
     than through `voice_apply_preset()`, the same way it already reads
     `chorus`.
+27. **`MAX_VOICES = 8` stays shared between both tracts, not split into a
+    separate per-tract budget** — real hardware measurement put the LPC
+    lattice tract at ~77.5 cycles/frame/voice, flat from 1 to 8 voices,
+    cheaper than the formant tract's own ~93.5, so the shared pool's
+    worst-case Core 1 cost is already bounded by the formant numbers
+    (Performance above) regardless of which tract fills it. A separate,
+    larger budget for the cheaper tract would be a real architecture
+    change (per-tract voice pools instead of one shared pool with a
+    per-voice tract selector) that nothing in the measurement justifies.
+28. **The velocity toggle (CC15) is next-note, not live, and defaults
+    on** — velocity only ever feeds `amplitude` at the moment a voice is
+    struck (there's no separate live-amplitude CC it would need to keep
+    in sync with), so "live" has no meaning for it the way it does for
+    formant_shift or rate; defaulting on keeps a fresh channel's dynamics
+    behaving exactly as they did before this CC existed.
 
 ## Glossary
 
