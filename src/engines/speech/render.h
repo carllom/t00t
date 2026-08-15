@@ -59,6 +59,14 @@ static constexpr uint32_t SPEECH_SUBBLOCK = 64;
 // checks()/run_nasal_checks()'s clip checks).
 static constexpr float SPEECH_EXCITATION_HEADROOM = 1.0f / 12.0f;
 
+// Headroom for the SAM tract's three parallel resonators plus its frication
+// branch (sam.h), tuned empirically in tools/host_render/render_speech.cpp
+// against every entry in SAM_TEST_ALLOPHONES -- same value as the formant
+// cascade's own headroom above, which already proves safe at the same
+// frication-branch target values (SAM_AL_S reuses the formant tract's own
+// /s/ row).
+static constexpr float SAM_EXCITATION_HEADROOM = SPEECH_EXCITATION_HEADROOM;
+
 // Renders `native_frames` samples of one voice's full tract output (cascade
 // plus parallel fricative/nasal branches, mixed excitation) at the
 // engine's native rate, panned and zero-order-held x2 into the
@@ -154,6 +162,74 @@ inline void speech_render_voice(SpeechVoice &sv, uint32_t phase_inc, float fs, u
             }
 
             int32_t sample = (int32_t)tract_process_mixed(sv.fmt, voiced_src, noise_src);
+            int32_t l = (sample * gain_l) >> 15;
+            int32_t r = (sample * gain_r) >> 15;
+            uint32_t o = (n + i) * 2;
+            dry_l[o] += l; dry_l[o + 1] += l;
+            dry_r[o] += r; dry_r[o + 1] += r;
+        }
+        n += k;
+    }
+}
+
+// SAM tract bring-up render: structurally identical to speech_render_voice()
+// above (one sustained allophone per note, no sequencer) but through sam.h's
+// three parallel resonators instead of tract.h's five-formant cascade. No
+// reciter or generated allophone table exists yet, so `phoneme` indexes
+// sam.h's hardcoded SAM_TEST_ALLOPHONES fixture directly -- the same field
+// the formant tract's phoneme keyboard reads, reused here rather than
+// duplicated since only one tract renders a given voice at a time. Shares
+// the formant tract's native rate and zero-order-hold x2 resample path
+// (`fs`/`native_frames` are native-rate, like speech_render_voice() above,
+// not output-rate the way speech_render_voice_lattice()'s `output_frames`
+// is) -- there's no single native sample rate distinct to this tract's own
+// source, since it ran at whatever rate each ported platform's own DAC
+// used. No jitter/shimmer/vibrato yet; the glottal phase advances by the
+// raw `phase_inc` every sample.
+inline void speech_render_voice_sam(SpeechVoice &sv, uint32_t phase_inc, float fs, uint8_t trigger,
+                                     int16_t amplitude, bool gate, uint8_t phoneme, int16_t pan,
+                                     int32_t *dry_l, int32_t *dry_r, uint32_t native_frames) {
+    bool retriggering = (trigger != sv.last_trigger);
+    if (retriggering && sv.tract != SPEECH_TRACT_SAM) new (&sv.sam) SamVoiceState();
+    sv.tract = SPEECH_TRACT_SAM;
+
+    const SamAllophoneTarget &tgt = SAM_TEST_ALLOPHONES[phoneme % SAM_ALLOPHONE_COUNT];
+    if (retriggering) {
+        sv.last_trigger = trigger;
+        sv.last_phoneme = phoneme;
+        sam_retrigger(sv.sam, tgt);
+        sv.glottal_phase = 0;
+        sv.cur_amp = 0.0f;
+    } else if (phoneme != sv.last_phoneme) {
+        sv.last_phoneme = phoneme;
+        sam_set_target(sv.sam, tgt);
+    }
+
+    int32_t gain_l, gain_r;
+    pan_gains_q15(pan, gain_l, gain_r);
+
+    // Same declick time constant as speech_render_voice() above -- fast
+    // enough that gate on/off doesn't thump, slow enough to stay under this
+    // tract's own target-ramp settle time.
+    constexpr float AMP_SMOOTH_COEFF = 0.01f;
+
+    uint32_t n = 0;
+    while (n < native_frames) {
+        uint32_t k = native_frames - n;
+        if (k > SPEECH_SUBBLOCK) k = SPEECH_SUBBLOCK;
+
+        sam_advance_subblock(sv.sam, fs);
+        float amp_tgt = (gate ? (float)amplitude : 0.0f) * SAM_EXCITATION_HEADROOM;
+
+        for (uint32_t i = 0; i < k; i++) {
+            sv.cur_amp += (amp_tgt - sv.cur_amp) * AMP_SMOOTH_COEFF;
+
+            float voiced_src = glottal_pulse(sv.glottal_phase) * sv.cur_amp;
+            float noise_f = (float)osc_noise(sv.noise_lfsr) * (1.0f / 32768.0f);
+            float noise_src = noise_f * sv.cur_amp;
+            sv.glottal_phase += phase_inc;
+
+            int32_t sample = (int32_t)sam_process_mixed(sv.sam, voiced_src, noise_src);
             int32_t l = (sample * gain_l) >> 15;
             int32_t r = (sample * gain_r) >> 15;
             uint32_t o = (n + i) * 2;

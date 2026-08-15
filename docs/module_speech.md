@@ -1,8 +1,9 @@
 # T00T — Speech Synthesis Module
 
 A formant (Klatt-reduced) speech synthesis engine: a phoneme keyboard,
-utterance/phrase playback, a reserved-but-unimplemented singing mode, and
-a sibling LPC lattice tract still at its hardcoded-test-word bring-up
+utterance/phrase playback, a reserved-but-unimplemented singing mode, an
+LPC lattice sibling tract playing back real TMS5220 chip-speech words, and
+a S.A.M.-style sibling tract still at its hardcoded-fixture bring-up
 stage. See `engine.md` for the shared dual-core architecture; `architecture.md`
 for the cross-engine `VoiceParams`/CMake pattern this module follows;
 `history_speech.md` for build-phase results and full performance
@@ -56,6 +57,14 @@ shimmer are all live MIDI controls) rather than just a talking clock.
   (`lattice.h`'s `LATTICE_TEST_WORD`). `SpeechMode` (GATED/ONESHOT/LOOP)
   and a live pitch-shift override apply to lattice voices the same as
   formant voices — see LPC Lattice Tract and MIDI Mapping.
+- **SAM tract**: a third, sibling tract — three formant resonators driven
+  and summed independently (parallel, not cascaded), reusing the same
+  glottal-pulse/LFSR-noise excitation, selected per voice by
+  `VoiceParams::tract`. Renders at the same native rate and zero-order-hold
+  doubling as the formant tract. No reciter or generated allophone table
+  exists yet: every SAM voice plays one sustained allophone from a small
+  hardcoded fixture (`sam.h`'s `SAM_TEST_ALLOPHONES`), indexed the same way
+  the formant tract's phoneme keyboard is — see SAM Tract and MIDI Mapping.
 
 ### MIDI Mapping (Input Capabilities)
 
@@ -83,19 +92,21 @@ encoder block.
 | 27 | Mode select | `SpeechMode` (3 live bands: ONESHOT/GATED/LOOP) | live |
 | 28 | Phrase-bank toggle | Note number selects the phrase directly, instead of Program Change/CC23 | next note |
 | 76 | Vibrato rate (GM) | LFO rate | live |
-| 102 | Tract select | Formant (<64) vs. LPC lattice (>=64) — see LPC lattice tract | next note |
+| 102 | Tract select | Formant / LPC lattice / SAM, 3 bands — see LPC lattice tract and SAM Tract | next note |
 | 103 | LPC pitch-shift multiplier | Q8.8 override on a word's own recorded pitch contour, 0.5x–2x | live |
 | 104 | LPC excitation select | Shared `glottal_pulse()`/noise (<64) vs. the TMS5220's own chirp table + LFSR, paired (≥64) | live |
 
 **Program Change** is tract-dependent: under the formant tract it selects
 an utterance (same value CC23 writes) — phoneme selection is CC20-only;
-under the LPC lattice tract (CC102 ≥ 64) it selects the `KEY_PER_WORD`
-page instead (see LPC Lattice Tract). The two meanings never collide,
-since only one tract is active per channel at a time. "Live" CCs push
-directly into every currently-held voice on the channel, not just the
-per-channel default for future notes. CC102 and CC103 are the first two
-of a reserved CC102–119 block for LPC-specific controls, disjoint from the
-formant tract's CC16–28.
+under the LPC lattice tract it selects the `KEY_PER_WORD` page instead
+(see LPC Lattice Tract). The two meanings never collide, since only one
+tract is active per channel at a time; the SAM tract has no Program-Change
+meaning of its own yet. "Live" CCs push directly into every currently-held
+voice on the channel, not just the per-channel default for future notes.
+CC102–119 is a reserved block for tract-specific controls, disjoint from
+the formant tract's CC16–28; CC103/104 are LPC-specific, and CC20's
+existing phoneme-select band also reaches the SAM tract's own smaller
+fixture (wrapped, not a dedicated CC of its own yet).
 
 ### Display (Presentation Capabilities)
 
@@ -115,13 +126,15 @@ src/engines/speech/
   audio_engine.h    audio_engine_run()/audio_engine_load() declarations
   audio_engine.cpp  render pass entry point, effects mix, profiling rig
   render.h          per-voice render core (phoneme-keyboard + sequenced +
-                     LPC-lattice paths) — no pico-sdk dependency, shared
-                     with host tooling
+                     LPC-lattice + SAM paths) — no pico-sdk dependency,
+                     shared with host tooling
   tract.h           formant resonator cascade + coefficient computation;
                      SpeechVoice state (shared fields + the FormantVoiceState/
-                     LatticeVoiceState union)
+                     LatticeVoiceState/SamVoiceState union)
   lattice.h         LPC lattice tract: reflection-coefficient filter,
                      per-voice state, hardcoded test word
+  sam.h             SAM tract: three parallel formant resonators + frication
+                     branch, per-voice state, hardcoded bring-up fixture
   excitation.h      glottal pulse train, jitter/shimmer/vibrato
   sequencer.h       per-voice segment advance, SpeechMode
   phoneme_def.h     PhonemeDef struct, phoneme_unpack()
@@ -462,6 +475,34 @@ the chirp exciter until `SPEECH_LATTICE_CHIRP_GAIN_SCALE` (0.86, tuned
 the same empirical way against the real corpus) brought its own
 worst-case peak back down to match.
 
+### SAM Tract
+
+A third sibling tract, `VoiceParams::tract` selects the same way as the
+LPC lattice tract above. Three formant resonators (`sam.h`'s
+`SamVoiceState::formant[SAM_FORMANTS]`, `SAM_FORMANTS == 3`) are driven
+and summed independently rather than chained -- each is excited directly
+by the shared glottal pulse, scaled by its own per-formant amplitude
+weight, instead of one resonator's output feeding the next the way the
+formant cascade's five stages do. A dedicated frication resonator, driven
+by the shared LFSR noise excitation, approximates unvoiced consonants
+through the same parallel structure rather than sampled audio data.
+Coefficients follow the same rule as the formant cascade: F/B/amplitude
+targets ramp one sub-block at a time and coefficients are recomputed from
+the ramped values, never interpolated directly.
+
+**Native rate and resampling**: shares the formant tract's own 22.05 kHz
+native rate and zero-order-hold ×2 resample path -- there's no single
+native sample rate specific to this tract's own source material to
+target, unlike the LPC lattice tract's TMS5220-matched 8 kHz.
+
+**No word-addressing scheme yet**: no reciter or generated allophone
+table exists. Every SAM voice plays one sustained allophone, held under
+gate like the formant tract's own phoneme keyboard, from `sam.h`'s
+hardcoded `SAM_TEST_ALLOPHONES` fixture (silence, three vowels, one
+fricative). `VoiceParams::phoneme` -- the same field the formant tract's
+phoneme keyboard reads -- indexes it directly, wrapped
+`% SAM_ALLOPHONE_COUNT`.
+
 ### Resonator and the Stability Rule
 
 Never interpolate biquad coefficients directly — walking between two
@@ -597,10 +638,25 @@ since the lattice tract is cheaper, not more expensive, than the formant
 tract, the shared pool's worst case stays bounded by the formant
 numbers above regardless of which tract's voices fill it.
 
+SAM tract: not yet measured on hardware — its own per-voice cost, and
+whether the shared `MAX_VOICES = 8` pool still holds once it's included,
+are a later slice.
+
 Full measurement breakdown: `history_speech.md`.
 
 ### Future / TODO
 
+- **SAM reciter and allophone-table import tool** — the SAM tract
+  currently plays one hardcoded fixture; a from-scratch English
+  letter-to-sound reciter and a generated allophone/pitch table are
+  separate, later slices.
+- **SAM pitch contour** — the stress-driven pitch overshoot/undershoot
+  that gives S.A.M. its characteristic cadence is unbuilt; planned to be
+  baked in by the reciter and rendered as a per-segment ramped target,
+  the same shape F/B targets already ramp.
+- **SAM MIDI/CC integration** — beyond the CC102 tract-select band, the
+  SAM tract has no live controls, preset-table entry, or display support
+  of its own yet.
 - **Further LPC addressing modes** — `KEY_PER_WORD` is the only
   word-addressing mode built; a "musical" mode spreading one word across
   the keyboard via standard MIDI Bank Select + Program Change, and a
@@ -846,6 +902,49 @@ Full measurement breakdown: `history_speech.md`.
     default exciter for a problem specific to the other one; a second,
     chirp-only multiplier fixes it without touching the already-correct
     default calibration.
+34. **The SAM tract's three formant resonators are driven and summed in
+    parallel, not chained into a cascade** — the defining structural
+    difference from the formant tract's own five-stage cascade, chosen to
+    give this tract its own distinct, buzzier character rather than a
+    third variation on the same cascade topology.
+35. **Unvoiced consonants are approximated through a dedicated frication
+    resonator driven by the shared LFSR noise excitation, not sampled PCM
+    bursts** — the original source renders some unvoiced consonants from
+    short embedded audio samples; importing that data would mean a second
+    class of imported proprietary audio alongside any allophone/pitch
+    table data, on top of the formant-synthesis approximation already
+    accepted for this tract's overall authenticity target. An optional
+    sample-accurate mode is left as a possible later addition, not built
+    here.
+36. **`SpeechVoice`'s tract-state union grew a third member (`sam`)
+    instead of a separate flat struct** — the same reasoning that already
+    governs the formant/lattice union: only one tract renders a given
+    voice at a time, so 8 voices' worth of tract state costs the largest
+    single variant, not the sum of all three.
+37. **The SAM tract shares the formant tract's 22.05 kHz native rate and
+    zero-order-hold ×2 resample path**, rather than adopting a rate of
+    its own the way the LPC lattice tract's 8 kHz matches the TMS5220's
+    real frame rate — there's no single sample rate specific to this
+    tract's own source material, since it ran across several home
+    computers at whatever rate each one's own DAC used.
+38. **`SAM_EXCITATION_HEADROOM` reuses the formant cascade's own
+    `SPEECH_EXCITATION_HEADROOM` value rather than a separate constant**
+    — an initial, smaller headroom left the fricative allophone
+    uncomfortably close to clipping at full velocity; the formant
+    tract's own value, already proven safe at the same frication-branch
+    target values, brought every fixture entry comfortably under the
+    ceiling.
+39. **CC102 (tract select) changed from a two-way to a three-way band**
+    (formant / LPC lattice / SAM), the same banding shape CC27's mode
+    select already uses, rather than reserving a separate CC for the new
+    tract — CC102 already meant "which tract," so a third band extends
+    that meaning instead of introducing a second, overlapping control.
+40. **The SAM tract's bring-up fixture reuses CC20's existing
+    phoneme-select band** (wrapped onto the smaller `SAM_ALLOPHONE_COUNT`)
+    rather than a dedicated CC of its own — cheap reachability from a
+    real MIDI channel ahead of any SAM-specific addressing scheme, the
+    same reasoning CC102 alone gave the LPC lattice tract's own hardcoded
+    test word before `KEY_PER_WORD` existed.
 
 ## Glossary
 

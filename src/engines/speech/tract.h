@@ -2,6 +2,7 @@
 
 #include "lattice.h"
 #include "res2p.h"
+#include "sam.h"
 #include <cstdint>
 #include <new>
 
@@ -209,29 +210,28 @@ inline float tract_process_mixed(FormantVoiceState &sv, float voiced_src, float 
     return cascade_out + fric_out + nasal_out;
 }
 
-// Selects which of SpeechVoice's two union members is valid (module_speech.md
-// "LPC sibling engine"). SPEECH_TRACT_FORMANT is the default -- every voice
-// behaves exactly as before this field existed unless something explicitly
-// switches it.
-enum SpeechTract : uint8_t { SPEECH_TRACT_FORMANT, SPEECH_TRACT_LATTICE };
+// Selects which of SpeechVoice's three union members is valid.
+// SPEECH_TRACT_FORMANT is the default -- every voice behaves exactly as
+// before this field existed unless something explicitly switches it.
+enum SpeechTract : uint8_t { SPEECH_TRACT_FORMANT, SPEECH_TRACT_LATTICE, SPEECH_TRACT_SAM };
 
 // Per-voice render state (Core 1 only, never crosses ParamExchange). The
-// fields above `tract` are shared by both tracts: excitation phase/LFSR
+// fields above `tract` are shared by every tract: excitation phase/LFSR
 // state, the amplitude declick smoother, and the segment/frame sequencer
-// bookkeeping both render.h's formant and lattice render loops use the same
-// way. `fmt`/`lat` below are mutually exclusive -- only the member `tract`
-// selects is valid, so 8 voices' worth of tract state costs the larger of
-// the two variants, not their sum. A voice that switches tract is always
+// bookkeeping the formant and lattice render loops use the same way. `fmt`/
+// `lat`/`sam` below are mutually exclusive -- only the member `tract`
+// selects is valid, so 8 voices' worth of tract state costs the largest of
+// the three variants, not their sum. A voice that switches tract is always
 // mid-retrigger when it does (a new note-on, `trigger` changed) -- render.h's
-// three render functions each placement-construct their own union member
-// fresh on that edge before writing into it, so a stale read of the other
-// tract's last values across a switch never happens.
+// render functions each placement-construct their own union member fresh on
+// that edge before writing into it, so a stale read of another tract's last
+// values across a switch never happens.
 struct SpeechVoice {
     uint32_t glottal_phase = 0;
     uint16_t noise_lfsr = 0xACE1u;     // groovebox's LFSR seed (osc/noise.h) -- must be nonzero
     float    cur_amp = 0.0f;           // smoothed toward gate target, declicks on/off
     uint8_t  last_trigger = 0xFF;      // forces a retrigger on first render
-    uint8_t  last_phoneme = 0xFF;      // formant tract only: forces a target load on first render
+    uint8_t  last_phoneme = 0xFF;      // formant and SAM tracts: forces a target load on first render
     // Vibrato/jitter/shimmer state (module_speech.md, excitation.h). Reset
     // on retrigger, not on a plain segment/phoneme/frame target change --
     // these track the *note*, the same lifetime as glottal_phase above.
@@ -255,6 +255,7 @@ struct SpeechVoice {
     union {
         FormantVoiceState fmt;
         LatticeVoiceState lat;
+        SamVoiceState     sam;
     };
 
     SpeechVoice() : fmt() {}
