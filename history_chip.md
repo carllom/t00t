@@ -2,6 +2,31 @@
 
 Dated build-phase results, measurement scorecards, and bug-discovery narrative for the chip synthesis module. See `module_chip.md` for the current spec/design.
 
+## Original Build Order (as planned)
+
+The module was planned in this order; §14a-§14g below are the dated results
+of actually building it. P0 was a hard gate — nothing in the CPU budget was
+trusted until it cleared.
+
+1. **P0 measurement rig** — SID oscillator + `EnvSID` + LFSR + 6581 filter as
+   standalone primitives; `CHIP_STRICT` host harness; reSID diff. Then on
+   hardware: per-voice cost, filtered-voice cost *with* bus round trip, sync
+   1× vs 2×.
+2. **P1 skeleton** — `engines/chip/`, `VoiceType` dispatch, static MIDI map,
+   register-stream playback. Proves the synth core before any instrument VM
+   exists.
+3. **P2 buses** — `FilterBusParams`, two-phase render, binding policy, 6581
+   LUT.
+4. **P3 frame VM** — wave/pulse/filter tables, vibrato, arpeggio, hard
+   restart, `mod_inc` as a table target.
+5. **P4 instruments** — `.ins` converter, text format + generator, dynamic
+   allocation.
+6. **P5 speaker stage** + LCD UI.
+7. **P6 polish** — 8580 table, combined-waveform LUTs. Deferred (licensing —
+   see `module_chip.md`'s Future/TODO).
+8. **Later** — AY, SN76489, NES, GB DMG as additional `VoiceType`s. AY
+   P0-P3 built — see §14g.
+
 ---
 
 *(The section below was originally recorded in `engine.md` while chip module work
@@ -1122,3 +1147,294 @@ picture. Instrument names aren't shown (only the numeric index) --
 `chipgen.py` doesn't currently emit a name table, and adding one felt like
 scope creep on top of everything else this phase already touched; a
 reasonable next small addition, not a gap in the design.
+
+---
+
+## 14g. AY-3-8910/YM2149 Results
+
+The control model (frame tick driving per-voice tables) is shared across
+chip families, so AY support landed as additional `VoiceType`s in this same
+module rather than a new one.
+
+### 14g.1 P0 — Measurement gate, primitives only
+
+The author picked AY as the next chip: simple (3 tone + noise, no filter
+model), and — unlike SID's combined-waveform problem, which needed real
+chip-measurement data under a GPL license that couldn't be vendored — no
+equivalent licensing wall. The best available reference,
+[ayumi](https://github.com/true-grue/ayumi) (Peter Sovietov), is
+MIT-licensed, confirmed via GitHub's API and its own `LICENSE` file
+directly, not recalled. Unlike `tools/sid_ref/resid/` (GPL-2, gitignored,
+never shipped — §14a.7), `tools/ay_ref/ayumi/` vendors `ayumi.c`/`ayumi.h`
+outright, `LICENSE` committed alongside.
+
+Read in full before writing anything. Three facts came directly out of
+`ayumi.c`, not out of memory or a datasheet paraphrase:
+
+- **Noise LFSR**: 17-bit, feedback `bit0 = bit0 XOR bit3` of the pre-shift
+  register, fed into the vacated bit 16. Confirmed against ayumi's own
+  `update_noise()`, the same "read the reference, don't guess the taps"
+  discipline that caught SID's own tap error at F0 (§14a.1).
+- **Envelope shape table**: ayumi's `Envelopes[16][2]` — 16 raw 4-bit codes,
+  10 musically distinct shapes — ported verbatim into an enum/switch
+  (`AY_ENVELOPE_SEGMENTS`, `src/chip/ay_envelope.h`) rather than ayumi's
+  function-pointer table. Same information, this project's style.
+- **Internal tick rate**: real hardware documents a clock/16 divider for the
+  tone generator and clock/256 for the envelope generator (two different
+  base rates) — but reconciling that prose against ayumi's own calibration
+  didn't resolve cleanly by hand. Rather than trust a derivation that
+  wouldn't close, this went with what could be proven: ayumi ticks every
+  generator (tone, noise, envelope) once per call to its own internal
+  `update_mixer()`, at a rate of clock/8 — derived directly from
+  `ayumi_configure()`'s own `step` calibration, cross-checked against the
+  textbook tone-frequency formula (clock/16/period) with no unaccounted
+  factor, and then actually proven correct empirically rather than argued
+  for: `tools/ay_ctl_diff.py` compares every tick of t00t's own primitives
+  against ayumi's, bit-exact.
+
+**Files**: `src/chip/ay_osc.h` (`AyTone`, `AyNoise`), `src/chip/ay_envelope.h`
+(`AyEnvelope`, DAC tables, `ay_mix()`) — topology-free, same as
+`sid_osc.h`/`env_sid.h`. Real hardware has 3 tone channels sharing one noise
+generator and one envelope generator; these primitives don't assume that
+sharing, so a future engine can give each dynamically-allocated voice its
+own noise + envelope instead. The validation harness (below) wires the real
+shared topology, since that's what ayumi itself models and what a bit-exact
+diff needs.
+
+**Host validation** (`tools/ay_ref/`, `tools/ay_ctl_diff.py`,
+`tools/host_render/render_ay.cpp` + `t00t_ay_dump.cpp`) mirrors the
+`CHIP_STRICT` split exactly:
+
+| Domain | Result |
+|---|---|
+| tone (toggle sequence, 6 periods) | PASS, 4624/4624 ticks exact |
+| noise (LFSR sequence) | PASS, 200000/200000 shifts exact |
+| envelope (all 16 shape codes) | PASS, 2048/2048 points exact |
+| dac (AY + YM tables) | PASS, 64/64 entries within float32 precision (1e-6) |
+
+Every domain here is bit-exact — no sample-quantisation tolerance the way
+SID's `env` domain needs one (§14a.2), because this is a plain ramp counter,
+not a piecewise-exponential one.
+
+**Spectral comparison** (`tools/sid_compare.py`, reused unmodified — it's
+generic over any two float32 WAVs) against `ayumi_render`'s real
+oversampled/decimated/DC-filtered output shows the same category of gap
+SID's own P0 found and accepted (§14a.4): `render_ay.cpp` generates
+directly at 44.1 kHz with no band-limiting, same as `render_sid.cpp`
+always has, so a `centroid_ratio` around 2.0-2.4 across every stream is
+aliasing, not a logic bug — the control-plane table above already proves
+the logic.
+
+**One real, non-aliasing gap, found not assumed**: the `mixer_combos`
+stream (tone-disabled + noise-disabled at once — a documented AY quirk that
+outputs a constant level, not silence) scored far worse than every other
+stream (`coactive_frac` 0.61 against 1.0 everywhere else, `envelope_mae_db`
+28.4 against ~1). Cause: `ayumi_remove_dc()` is a DC-blocking filter
+ayumi's own reference renderer applies, which drives a sustained constant
+level toward silence over time; `render_ay.cpp` has no equivalent stage, so
+its output for that combo stays flat where ayumi's decays. Real AY-3-8910
+hardware is very likely AC-coupled at its actual analog output the same
+way — this is closer to a free-bonus stage the primitives don't have yet
+(the C64 board network's own precedent, §14a.6) than an error in the
+digital logic itself, but it's a real difference future engine integration
+should know about rather than rediscover by ear.
+
+**Hardware-verified.** The author, on real breadboard_rp2350: "everything
+sounds fine and voices have quite low duty cycle" — confirms the primitives
+and the P1 engine wiring (§14g.2) both by ear and, qualitatively, on CPU
+cost. AY's own primitives are cheaper than SID's by construction (no
+filter, no combined-waveform AND, no DAC-table envelope lookup, just a
+period counter, a 17-bit LFSR and a 32-step ramp).
+
+### 14g.2 P1 — Engine integration
+
+Wires the P0 primitives into the real engine. `VT_AY` added alongside
+`VT_SID` (`engine.h`) in the same `MAX_VOICES` pool and the same
+`voice_alloc` dynamic allocation P4 already built for SID — unlike SID's
+own P1 (which needed a static channel map because dynamic allocation
+didn't exist yet), this skipped straight to the mature infrastructure. No
+new allocator, no new MIDI note-routing plumbing.
+
+**Instrument format** (`ay_instrument.h`/`ay_instruments.h`) is
+deliberately static, no frame table — the same shape SID's own P1 had (§14b.1's
+"no instrument system yet... one fixed default patch") grown to three
+hand-authored patches instead of one: a tone-only lead, an envelope-driven
+"buzzer bass" (shape 8, a repeating sawtooth decay tuned to a ~50 Hz buzz),
+and a noise-only percussive hit using shape 9's one-shot decay-to-silence
+as its own release. A per-frame table (arpeggio, software volume/mixer
+envelopes) was AY-P2's job, mirroring SID's own P1 → P3 gap.
+
+**One combined instrument-selection space** spans both chip types
+(`midi_controller.cpp`'s `TOTAL_INSTRUMENT_COUNT = INSTRUMENT_COUNT +
+AY_INSTRUMENT_COUNT`) rather than a separate chip-type selector — a player
+picks a patch, not a silicon.
+
+**Real, load-bearing bug caught before it shipped**: the existing
+`render_mask`/frame-tick/bus-feed loops all gated purely on
+`render_mask & (1 << v)`, which now also includes `VT_AY` voices. Left
+alone, SID's own frame-VM loop would have read `INSTRUMENTS[]` with an
+AY-table index on an AY voice slot, and the bus-feed loop would have called
+`SidVoice::tick()` on a slot that was never a `SidVoice` this trigger —
+garbage audio, not a crash, so nothing would have flagged it short of
+noticing the output was wrong. Fixed by adding an explicit `vp.voices[v].
+type != VT_SID` guard to both loops before they were ever run.
+
+**Real AY-3-8910 hardware has no gate/release concept at the chip level at
+all** — every tracker's "note off" is a software fiction. AY-P1 doesn't
+invent one yet either: the mixed output mutes the instant MIDI gate goes
+false, envelope-driven or not, so `active_mask`/`render_mask` for `VT_AY`
+voices track `p.gate` directly rather than a decaying counter the way
+`VT_SID`'s do.
+
+**Mix scaling, not yet calibrated**: AY's own mixer/DAC output
+(`ay_envelope.h`'s `ay_mix()`) is normalized and effectively unipolar
+(silence is a literal 0, not a centred value) — summed into `dry[]` as-is
+it would inject a real DC bias into an otherwise-bipolar bus SID's
+`(w - wave_zero()) * amp` voices already populate correctly. Fixed for the
+common case by treating the mixer's gate bit as bipolar (0/1 → -1/+1)
+before scaling, which recovers real AC content for every ordinary
+tone/noise combination; the one case this doesn't fully fix is the
+documented "both tone and noise disabled" AY quirk (§14g.1's own finding)
+landing as a half-scale residual DC instead of a full one. `AY_MIX_SCALE`
+(the constant mapping AY's [0,1] DAC output onto SID's raw `dry[]`
+magnitude) was a first guess against SID's own typical peak, not a
+calibrated one — same status P3's vibrato constants had before the by-ear
+pass found them 4x off (§14d.5 finding 2).
+
+**Hardware-verified**: confirms the mix-scaling/bipolar-gate fix above
+actually sums correctly against SID voices in practice, not just in
+theory, and that the abrupt gate-mute (no release tail) doesn't read as
+broken by ear even though it's a known, real limitation.
+
+**Not built at this point**: AY-P2's frame table, YM2149 model selection
+(hardcoded to AY8910's DAC table), AY voices in `display.cpp`'s per-voice
+grid (SID-only for now).
+
+### 14g.3 P2 — Frame table
+
+Built on the hardware-confirmed P1 base without touching it: an instrument
+with no tone/volume table rows behaves exactly as it did before this
+phase, since `ay_vm_frame_tick()` only steps a table that has rows.
+
+`ay_instrument.h` grows a tone table (`AyToneTable`/`AyToneRow`, arpeggio)
+and reuses `instrument.h`'s `SweepTable`/`SweepRow` verbatim for a software
+volume envelope — the real mechanism every AY tracker instrument has
+always needed, since the chip itself has no release. Real hardware's
+`e_on` bit is exclusive with manual volume, so the format keeps that:
+`use_envelope` instruments never read the volume table at all. Two more
+instruments demonstrate the new rows: `AY_INS_ARP` (major-triad arpeggio +
+light vibrato) and `AY_INS_PLUCK` (a fast volume-table decay plus
+`gate_off_timer` — AY's actual answer to "no hardware release", finally
+built).
+
+**Arpeggio is exact, vibrato is a documented approximation, and the two
+are deliberately not the same math.** AY's period register is inversely
+proportional to pitch (`note_freq.h`'s `ay_hz_to_period`), unlike SID's
+`freq_reg`, so reusing SID's additive-ratio approach verbatim would wobble
+asymmetrically — sharper on one side of centre than the other. Arpeggio
+divides the base period by the same Q16 `semitone_ratio_q16[]` table SID's
+own vibrato already multiplies by (multiplying Hz by a ratio is dividing
+period by it — no inverted copy of the table needed), which is exact.
+Vibrato stays additive-on-period, a small-angle approximation of that same
+correction, chosen because neither implementation claims to be physically
+calibrated yet (SID's own vibrato_depth carries the identical "raw wobble
+scale, not cents" caveat, §14d.5 finding 2) — not worth a second, more
+expensive code path to fix an approximation nobody has tuned by ear
+regardless.
+
+**Trigger handling mirrors SID's own P3 fix, not its P1 mistake.**
+`ay_tone[v].set_period()` is set unconditionally only once, at trigger —
+not every buffer. `ay_vm_frame_tick()` becomes the ongoing authority on it
+from the next frame tick onward, exactly SID's pattern for exactly the
+same reason: setting it every buffer would stomp arpeggio/vibrato on every
+buffer that doesn't also contain a frame tick, the precise bug SID's P3
+by-ear pass found and fixed (§14d.5 finding 3).
+
+**Heard on hardware, and the vibrato bug this section warned about turned
+out to be real, not just theoretical.** The author, on real hardware: "the
+arp messes up after a couple of laps (3-4) ... more pronounced ... the
+higher the base pitch." Exactly the failure mode the additive-on-period
+design above should have been checked against before it shipped: with
+`vibrato_delay = 30` frames (~3-4 laps of `AY_INS_ARP`'s 8-row table), a
+fixed absolute delta subtracted from period is a tiny relative pitch shift
+at a large (low-pitch) period and a huge one at a small (high-pitch)
+period, since period is inversely related to pitch. Traced on host before
+touching the code again: at an 880 Hz base, period went 84 → 38 → 26
+across three frames the instant vibrato armed — a jump from ~1319 Hz to
+~4263 Hz, not a wobble. Fixed by scaling the delta by the current period
+(`(period * tri * depth) >> 24`) so the fractional deviation stays
+constant across the pitch range instead of the absolute one — the same
+fix arpeggio's own divide-by-ratio already had. Re-traced at both a low
+(110 Hz) and high (880 Hz) base after the fix: both now show a bounded,
+comparable proportional wobble, not a runaway one. `vibrato_depth`'s scale
+is unchanged (still "raw, not cents") — only the structural bug is fixed,
+not promoted to a claim of precision it doesn't have.
+
+**Not built at this point**: YM2149 model selection, AY voices in the LCD
+grid (both carried over from P1, unchanged).
+
+### 14g.4 P3 — YM2149 model, named display
+
+Two of P1/P2's own "not built" gaps, both small and well-understood
+enough not to need their own phase.
+
+`AyInstrument` grows a `model` field (`AyModel`, `ay_envelope.h`) —
+per-instrument, not per-song or per-build, since a patch already owns its
+mixer/envelope settings and a real tune was authored for one specific
+chip. `AY_INS_LEAD_YM` (`AY_INS_LEAD`, byte-for-byte, model swapped)
+exists to prove the one real, documented AY8910-vs-YM2149 difference (the
+DAC tables) is actually reachable through an instrument. `audio_engine.cpp`'s
+mix loop reads `ins.model` instead of the P1/P2 hardcoded `AY_MODEL_AY8910`.
+
+**Display: the author's own ask** ("improve the display with proper
+instrument names ... instrument # as well as name, preferably on the same
+line") — the INSTR row (the currently selected instrument, one line) was a
+bare combined index before this. First pass also renamed the per-voice
+grid's cells to names; the author's own correction: names for the one-line
+INSTR row only, the grid stays numeric — a name doesn't fit eight cells at
+once the way it fits one summary line, and that was never the ask. The
+grid also now shows `VT_AY` voices (still SID-only through P2), same
+numeric `voice:instrument/table-row` shape as before, just able to report
+an AY voice's own state instead of always reporting inactive.
+
+- `chipgen.py` now emits `INSTRUMENT_NAMES[]` alongside the existing
+  `ChipInstrumentId` enum. `ay_instruments.h` gets the hand-written
+  equivalent (`AY_INSTRUMENT_NAMES[]`).
+- `ChipVoiceUiState` grows a `type` field — without it, `display.cpp` had
+  no way to know whether a voice's `instrument` index meant `INSTRUMENTS[]`
+  or `AY_INSTRUMENTS[]`, which is exactly why AY voices reported the
+  all-zero/inactive state through P1 and P2 rather than real telemetry.
+- Every instrument number shown anywhere on the screen is the combined
+  CC16/Program Change number, not either table's own per-chip index.
+
+**Hardware-verified.** The author, on real hardware: "sounds fine. Very
+similar to [AY_INS_LEAD], but I think the differences are subtle" —
+comparing `AY_INS_LEAD` against `AY_INS_LEAD_YM`, exactly the outcome the
+real, documented AY8910-vs-YM2149 difference should produce (a real but
+subtle DAC-curve difference, not a night-and-day one).
+
+**First real AY duty-cycle measurement, `AY_INS_LEAD`, no speaker filter,
+no FX:**
+
+| Voices | Duty cycle |
+|---|---|
+| idle | 2.8% |
+| 1 | 4.5% |
+| 4 | 8.6% |
+| 8 | 14.1% |
+| 16 | 23.7% |
+
+Per-voice slope (idle → 16v, the widest span, least sensitive to
+single-measurement rounding): (23.7 - 2.8) / 16 = **1.31 pp/voice**, ~**44
+c/f** at the 3401 c/f = 100% baseline. Narrower pairs agree within a few
+c/f (8v→16v: 40.8 c/f; 4v→8v: 46.8 c/f; 1v→4v: 46.5 c/f) — consistent, not
+just a two-point average.
+
+This retires the old placeholder estimate ("a PSG voice is roughly a third
+of a SID voice's cost", never measured). The real number, ~44 c/f, is
+higher than that estimate by roughly 2-4× — the same shape of miss
+("up to 3.7×") SID's own P0 already found for itself (§14a.9), now
+confirmed to not have been a fluke specific to SID. Real AY is still
+cheaper than the measured SID voice (~108 c/f) by a wide margin, so SID
+remains the most expensive chip in the family; only the specific multiple
+was wrong.
