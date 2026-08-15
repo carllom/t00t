@@ -579,3 +579,79 @@ device, not just in the host harness.
 **Not yet done at this point:** the corpus converter, real word-selection
 MIDI addressing, and per-voice LPC render-cost measurement are separate,
 later slices of #39, not this skeleton.
+
+## Speech Engine — Talkie TMS5220 Corpus Converter (#64)
+
+The data pipeline #63 deferred: `tools/talkie2lattice.py` decodes the
+TI-99/4A "Talkie" TMS5220 wordset's own bitstream format into #63's
+`LatticeFrame` format (reflection coefficients, gain, pitch), following
+`syx2patch.py`'s established gitignored-output shape.
+
+**Licensing check before writing any table.** The Talkie library
+(going-digital/Talkie, Peter Knight, GPLv2) is the reference decoder for
+this bitstream format — a stricter, copyleft license than Dexed's
+Apache-2.0, which `syx2patch.py`'s `DX7_ALGORITHMS` table was ported
+from. Flagged to the author before writing any code: the bitstream
+*format* (4-bit energy, 1-bit repeat, 6-bit period, 5/5/4/4-bit K1-K4,
+conditionally 4/4/4/3/3/3-bit K5-K10, LSB-reversed-per-byte packing) is
+almost certainly not copyrightable — it's the chip's own hardware
+behavior, the same standing the DX7 sysex byte layout already has — but
+the ~200 specific table values were a closer call. Resolved: re-express
+the values as this project's own Python data (verified against Talkie's
+`talkie.cpp` programmatically — hex-to-decimal via a script, not manual
+transcription, to eliminate transcription risk across that many numbers
+— not copied file text), attributed by comment. `_validate_tables()`
+re-checks every table's shape and every reflection coefficient's `|k|<1`
+range at import time, not just trusted on sight.
+
+**Bit-level correctness proven two ways.** A `BitWriter` test helper
+(the literal inverse of the real chip's bit-reversed packing) builds
+synthetic bitstreams with known field values for every frame kind (normal
+voiced, normal unvoiced — proving the bit cursor lands correctly after a
+shorter K1-K4-only frame — rest, repeat, stop). Separately, the finished
+converter was run against the real Talkie corpus (all six of the
+library's own example vocab files, fetched for this session only, never
+committed): **1173 words decoded, 0 skipped, 0 out-of-range coefficients,
+26667 frames (~667 s of audio)** — close enough to #39's own "~1,163
+words" estimate to confirm "the standard vocab files" meant all of them,
+not one. The generated header was also compiled and run against the real
+`lattice.h` types (not just Python-side checks), confirming the emitted
+C++ is well-formed. None of that corpus data or the generated header
+touched the repo — `talkie/` (source) and
+`src/engines/speech/lattice_words.h` (generated) are both gitignored, so
+this validation had to be redone from scratch, locally, and is not
+reproducible from the commit history alone.
+
+**Two deliberate deviations from `syx2patch.py`'s precedent**, both
+recorded rather than silently diverging: a per-word decode failure is a
+skipped-with-warning, not a whole-run abort (the Talkie corpus is roughly
+35x a DX7 bank's voice count, so one bad word blocking all ~1,163 is a
+worse failure mode at that scale); and the TMS5220's raw energy table
+value is normalized to `LatticeFrame.gain` by straight division (÷255),
+a different unit and calibration than #63's own `LATTICE_TEST_WORD` gain
+values (Levinson-Durbin-derived, then re-scaled by
+`SPEECH_LATTICE_GAIN_BOOST`) — real corpus playback will likely need its
+own loudness pass once heard on hardware.
+
+**Generic by construction, not by promise:** `ChipTables` carries every
+TMS5220-specific piece (bit widths, all ten K tables, energy/period
+tables) as data, and `decode_word()` takes a `ChipTables` instance as a
+parameter rather than hardcoding TMS5220 values inline — adding a
+TMS5100 (Speak & Spell) path later is "write a second `ChipTables`
+instance," not a pipeline rewrite.
+
+Test suite (`tools/test_talkie2lattice.py`, 14 checks): bit
+reader/writer round-trip, table shape/stability, all five frame kinds
+against hand-built synthetic bitstreams, vocab-source parsing (commented
+and uncommented declarations, mixed hex/decimal byte literals), identifier
+de-duplication, decode-failure-is-a-skip behavior, and generated-header
+field-count regression lock. All pass with no corpus present; the
+corpus-gated path (looking in `../talkie/`, gitignored) was confirmed
+working both ways -- skips cleanly with a message when empty, and runs
+real per-file checks once populated (proven with a throwaway synthetic
+fixture during this session, not committed).
+
+**Not yet done at this point:** `lattice_words.h` isn't generated or
+wired into the build (no `talkie/` corpus is committed, by design); no
+MIDI addressing mode exists yet to select a word from it even once it is;
+the gain calibration above is a first pass, not hardware-confirmed.
