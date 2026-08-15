@@ -1431,11 +1431,46 @@ static bool test_lattice_chip_noise_two_level() {
     return ok;
 }
 
+// Renders a SamAllophoneTarget directly (bypassing sam_allophone_target()'s
+// index resolver) -- used so the fixture check below (and any future
+// target-specific check) always exercises the exact data given, regardless
+// of which table the resolver would currently pick. Calls the same sam.h
+// primitives speech_render_voice_sam() does, minus the amplitude declick/
+// pan/ZOH wrapper that isn't needed for this measurement (same relationship
+// as render_target_native() has to speech_render_voice() above).
+static std::vector<float> render_sam_target_native(const SamAllophoneTarget &tgt, float note_hz,
+                                                     float seconds, int16_t amplitude = 32767) {
+    SamVoiceState sv{};
+    sam_retrigger(sv, tgt);
+    const uint32_t total = (uint32_t)(SPEECH_RATE * seconds);
+    std::vector<float> y(total);
+    uint32_t phase = 0;
+    uint16_t lfsr = 0xACE1u;
+    uint32_t inc = glottal_phase_inc(note_hz, (float)SPEECH_RATE);
+    float amp_scale = (float)amplitude * SAM_EXCITATION_HEADROOM;
+
+    uint32_t done = 0;
+    while (done < total) {
+        uint32_t k = std::min((uint32_t)SPEECH_SUBBLOCK, total - done);
+        sam_advance_subblock(sv, (float)SPEECH_RATE);
+        for (uint32_t i = 0; i < k; i++) {
+            float voiced_src = glottal_pulse(phase) * amp_scale;
+            float noise_src = (float)osc_noise(lfsr) * (1.0f / 32768.0f) * amp_scale;
+            phase += inc;
+            y[done + i] = sam_process_mixed(sv, voiced_src, noise_src);
+        }
+        done += k;
+    }
+    return y;
+}
+
 // SAM tract bring-up regression: renders every entry in sam.h's hardcoded
-// SAM_TEST_ALLOPHONES fixture through speech_render_voice_sam() -- the same
-// function audio_engine.cpp's Core 1 render loop calls for a SAM-tract
-// voice -- checking each is finite and unclipped, the same bar
-// run_full_table_render() applies to the formant tract's phoneme table.
+// SAM_TEST_ALLOPHONES fixture directly (not through speech_render_voice_sam(),
+// since that goes through sam_allophone_target()'s resolver, which would
+// silently render the *generated* table's own first few entries instead of
+// the fixture whenever one happens to be present locally) -- checking each
+// is finite and unclipped, the same bar run_full_table_render() applies to
+// the formant tract's phoneme table.
 static bool run_sam_fixture_check() {
     static constexpr float NOTE_HZ = 150.0f;
     static constexpr float SECONDS = 0.6f;
@@ -1443,25 +1478,9 @@ static bool run_sam_fixture_check() {
     printf("\n== SAM tract: %u hardcoded bring-up allophones ==\n", (unsigned)SAM_ALLOPHONE_COUNT);
 
     static const char *NAMES[SAM_ALLOPHONE_COUNT] = { "sil", "aa", "iy", "uw", "s" };
-    uint32_t phase_inc = glottal_phase_inc(NOTE_HZ, (float)SPEECH_RATE);
 
     for (uint32_t a = 0; a < SAM_ALLOPHONE_COUNT; a++) {
-        SpeechVoice sv{};
-        uint32_t total = (uint32_t)(SPEECH_RATE * SECONDS);
-        std::vector<float> mono(total);
-        std::vector<int32_t> dry_l(NATIVE_BUFFER * 2), dry_r(NATIVE_BUFFER * 2);
-
-        uint32_t done = 0;
-        while (done < total) {
-            uint32_t n = std::min((uint32_t)NATIVE_BUFFER, total - done);
-            std::fill(dry_l.begin(), dry_l.begin() + n * 2, 0);
-            std::fill(dry_r.begin(), dry_r.begin() + n * 2, 0);
-            speech_render_voice_sam(sv, phase_inc, (float)SPEECH_RATE, /*trigger=*/1,
-                                     /*amplitude=*/32767, /*gate=*/true, (uint8_t)a, /*pan=*/0,
-                                     dry_l.data(), dry_r.data(), n);
-            for (uint32_t i = 0; i < n; i++) mono[done + i] = (float)dry_l[i * 2];
-            done += n;
-        }
+        std::vector<float> mono = render_sam_target_native(SAM_TEST_ALLOPHONES[a], NOTE_HZ, SECONDS);
 
         float peak = 0.0f;
         bool finite = true;
@@ -1497,10 +1516,13 @@ static bool run_sam_index_wrap_check() {
     uint32_t total = SPEECH_RATE / 2;
     std::vector<int32_t> dry_l(total * 2, 0), dry_r(total * 2, 0);
     uint32_t phase_inc = glottal_phase_inc(150.0f, (float)SPEECH_RATE);
-    // 254 % SAM_ALLOPHONE_COUNT == SAM_AL_S -- picked so the wrapped index
-    // is a real, non-silent allophone, not a coincidental SIL.
+    // 254 % SAM_ALLOPHONE_COUNT (sam.h's fixture) == SAM_AL_S -- picked so
+    // the wrapped index is a real, non-silent allophone in the fixture-only
+    // build; wraps to a different (also non-silent) index when the
+    // generated table is present, sam_allophone_target()'s own modulo used
+    // either way.
     constexpr uint8_t OUT_OF_RANGE = 254;
-    static_assert(OUT_OF_RANGE % SAM_ALLOPHONE_COUNT == SAM_AL_S, "test constant no longer wraps to a non-silent allophone");
+    static_assert(OUT_OF_RANGE % SAM_ALLOPHONE_COUNT == SAM_AL_S, "test constant no longer wraps to a non-silent fixture allophone");
     speech_render_voice_sam(sv, phase_inc, (float)SPEECH_RATE, /*trigger=*/1, /*amplitude=*/32767,
                              /*gate=*/true, /*phoneme=*/OUT_OF_RANGE, /*pan=*/0, dry_l.data(), dry_r.data(), total);
 
@@ -1511,10 +1533,61 @@ static bool run_sam_index_wrap_check() {
         peak = std::max(peak, std::fabs((float)dry_l[i]));
     }
     bool ok = finite && peak > 0.0f;
-    printf("  phoneme=%u (wraps to index %u): peak=%.0f finite=%s -> %s\n",
-           OUT_OF_RANGE, OUT_OF_RANGE % SAM_ALLOPHONE_COUNT, peak, finite ? "yes" : "no", ok ? "PASS" : "FAIL");
+    printf("  phoneme=%u: peak=%.0f finite=%s -> %s\n", OUT_OF_RANGE, peak, finite ? "yes" : "no", ok ? "PASS" : "FAIL");
     return ok;
 }
+
+#ifdef T00T_SPEECH_HAS_SAM_DATA
+// Renders every allophone in the generated table (SAM_ALLOPHONES[],
+// sam_allophones.h, gitignored -- generated locally by tools/
+// sam2allophones.py from locally-supplied S.A.M. reference headers, see that
+// tool's own module docstring) through speech_render_voice_sam(), checking
+// each is finite and unclipped -- the same bar run_full_table_render()
+// applies to the formant tract's phoneme table.
+static bool run_sam_generated_table_render() {
+    bool all_ok = true;
+    printf("\n== SAM tract: full generated allophone table (%u allophones) ==\n",
+           (unsigned)SAM_ALLOPHONE_DATA_COUNT);
+
+    static constexpr float NOTE_HZ = 150.0f;
+    static constexpr float SECONDS = 0.5f;
+    uint32_t phase_inc = glottal_phase_inc(NOTE_HZ, (float)SPEECH_RATE);
+    float worst_peak = 0.0f;
+
+    for (uint32_t a = 0; a < SAM_ALLOPHONE_DATA_COUNT; a++) {
+        SpeechVoice sv{};
+        uint32_t total = (uint32_t)(SPEECH_RATE * SECONDS);
+        std::vector<float> mono(total);
+        std::vector<int32_t> dry_l(NATIVE_BUFFER * 2), dry_r(NATIVE_BUFFER * 2);
+
+        uint32_t done = 0;
+        while (done < total) {
+            uint32_t n = std::min((uint32_t)NATIVE_BUFFER, total - done);
+            std::fill(dry_l.begin(), dry_l.begin() + n * 2, 0);
+            std::fill(dry_r.begin(), dry_r.begin() + n * 2, 0);
+            speech_render_voice_sam(sv, phase_inc, (float)SPEECH_RATE, /*trigger=*/1,
+                                     /*amplitude=*/32767, /*gate=*/true, (uint8_t)a, /*pan=*/0,
+                                     dry_l.data(), dry_r.data(), n);
+            for (uint32_t i = 0; i < n; i++) mono[done + i] = (float)dry_l[i * 2];
+            done += n;
+        }
+
+        float peak = 0.0f;
+        bool finite = true;
+        for (float s : mono) { peak = std::max(peak, std::fabs(s)); finite = finite && std::isfinite(s); }
+        worst_peak = std::max(worst_peak, peak);
+        bool clipped = peak >= 32767.0f;
+        bool ok = finite && !clipped;
+        if (!ok) {
+            printf("  FAIL %-16s peak=%.0f finite=%s\n", SAM_ALLOPHONE_DATA_NAMES[a], peak, finite ? "yes" : "no");
+        }
+        all_ok = all_ok && ok;
+    }
+    printf("  %u allophones, worst-case peak=%.0f, all finite/unclipped: %s\n",
+           (unsigned)SAM_ALLOPHONE_DATA_COUNT, worst_peak, all_ok ? "PASS" : "FAIL");
+    return all_ok;
+}
+#endif  // T00T_SPEECH_HAS_SAM_DATA
 
 #ifdef T00T_SPEECH_HAS_LATTICE_WORDS
 // Renders every word in the converted corpus (LATTICE_WORDS[],
@@ -1642,6 +1715,9 @@ int main() {
 
     ok = run_sam_fixture_check() && ok;
     ok = run_sam_index_wrap_check() && ok;
+#ifdef T00T_SPEECH_HAS_SAM_DATA
+    ok = run_sam_generated_table_render() && ok;
+#endif
 #ifdef T00T_SPEECH_HAS_LATTICE_WORDS
     ok = run_lattice_corpus_render() && ok;
     ok = run_lattice_corpus_render(/*chirp_exciter=*/true, /*write_wav=*/false) && ok;
