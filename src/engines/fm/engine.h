@@ -39,3 +39,19 @@ inline VoiceParams voice_params_default<VoiceParams>() {
 
 using VoiceParamBlock = VoiceParamBlockT<VoiceParams>;
 using ParamExchange = ParamExchangeT<VoiceParams>;
+
+// Channel -> patch lookup for the display (module_fm.md "Display"). Same
+// Core-0-only state midi_controller.cpp's note-on path already reads;
+// always valid (defaults to &FM_TEST_PATCH), whether or not patches.h is
+// present.
+const FmPatch *fm_channel_patch(uint8_t channel);
+
+// Per-voice channel/patch telemetry for the display's multitimbral grid.
+// `program` is the channel's FM_PATCHES[] index at that voice's last
+// note-on, for display alongside voice_alloc_active_mask() -- the caller
+// decides whether a voice slot is worth showing.
+struct FmVoiceUiState {
+    uint8_t channel;
+    uint8_t program;
+};
+void fm_voice_ui_state(uint32_t voice, FmVoiceUiState *out);
