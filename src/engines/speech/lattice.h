@@ -36,6 +36,54 @@ inline constexpr float SPEECH_LATTICE_GAIN_BOOST = 2.5f;
 // contour -- one octave down to one octave up.
 inline constexpr float SPEECH_LATTICE_PITCH_SHIFT_MIN = 0.5f, SPEECH_LATTICE_PITCH_SHIFT_MAX = 2.0f;
 
+// TMS5220 "chirp" excitation table (module_speech.md "LPC Lattice Tract"):
+// the real chip's own voiced-excitation waveform, decap-verified data --
+// re-expressed here as this project's own array, not copied file text,
+// the same standing talkie2lattice.py's own K-coefficient tables already
+// have (chip hardware behavior, not any one emulator's creative work).
+// Cross-checked against two independent MAME source trees: the current
+// mame/src/devices/sound/tms5110r.hxx TI_LATER_CHIRP table (used by
+// TMS5110A/TMS5200/TMS5220 -- the chip family this tract targets) and the
+// older historic-mame single chirptable[] (used by the earlier
+// TMS5100/TMC0281 and kept only as an independent check on the fetch
+// itself, not as this table's source -- its values differ, correctly,
+// since it's a different, earlier chip). Values are the table's own raw
+// bytes, unnormalized; lattice_chirp_pulse() below normalizes them.
+//
+// Real voiced speech has an excitation shape much closer to this --  a
+// short, sharp burst at the start of each pitch period followed by
+// silence for the rest of it -- than excitation.h's glottal_pulse(), a
+// smooth bipolar triangle spanning the whole period. That difference is
+// most of what gives the TMS5220 its characteristic buzzy edge, which the
+// shared, smoother triangle doesn't reproduce.
+inline constexpr uint32_t LATTICE_CHIRP_LENGTH = 52;
+inline constexpr int16_t LATTICE_CHIRP_TABLE[LATTICE_CHIRP_LENGTH] = {
+    0x00, 0x03, 0x0f, 0x28, 0x4c, 0x6c, 0x71, 0x50,
+    0x25, 0x26, 0x4c, 0x44, 0x1a, 0x32, 0x3b, 0x13,
+    0x37, 0x1a, 0x25, 0x1f, 0x1d, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00,
+};
+// The table's own peak magnitude (0x71 = 113) -- normalizing by this,
+// not an assumed full-scale 127, reproduces the real chip's actual
+// headroom instead of over- or under-driving a rescaled version of it.
+inline constexpr float LATTICE_CHIRP_PEAK = 113.0f;
+
+// `sample_in_period` is how many native samples into the current pitch
+// period this sample is (render.h tracks it in LatticeVoiceState::chirp_idx,
+// reset on every glottal-phase wraparound) -- the real chip indexes its
+// chirp ROM the same way, sample-locked to the pitch period, and holds at
+// the table's last (zero) entry once the period outlasts it. Unlike
+// glottal_pulse()'s continuous phase-fraction lookup, this is a discrete,
+// per-sample counter, matching how the table itself is sample-quantized
+// hardware data, not a continuously-defined waveform.
+inline float lattice_chirp_pulse(uint32_t sample_in_period) {
+    uint32_t idx = sample_in_period < LATTICE_CHIRP_LENGTH ? sample_in_period : LATTICE_CHIRP_LENGTH - 1;
+    return (float)LATTICE_CHIRP_TABLE[idx] * (1.0f / LATTICE_CHIRP_PEAK);
+}
+
 // One 25 ms coefficient frame -- the TMS5220's own frame period, at the
 // lattice's 8 kHz native rate that's exactly 200 samples. `pitch_hz == 0`
 // marks an unvoiced/silent frame (LFSR noise excitation, scaled by `gain`,
@@ -75,7 +123,12 @@ static_assert(SPEECH_LATTICE_FRAME_SAMPLES % SPEECH_LATTICE_SUBBLOCK == 0,
 // interpolating biquad coefficients can (tract.h's stability rule).
 // `resample_frac`/`y_prev`/`y_cur` are the fractional-ratio upsampler's
 // state (44.1 kHz/8 kHz has no integer shortcut) -- carried across render
-// calls so buffer boundaries don't introduce phase drift.
+// calls so buffer boundaries don't introduce phase drift. `chirp_idx` is
+// lattice_chirp_pulse()'s own state -- how many native samples into the
+// current pitch period, reset on every glottal-phase wraparound -- kept
+// unconditionally regardless of which exciter is selected, since tracking
+// it is cheap and it means a mid-note exciter switch has correct state
+// from its very first sample instead of a stale or default one.
 struct LatticeVoiceState {
     float    k[SPEECH_LATTICE_ORDER] = {0};
     float    k_step[SPEECH_LATTICE_ORDER] = {0};
@@ -88,6 +141,7 @@ struct LatticeVoiceState {
     bool     word_done = false;
     float    resample_frac = 0.0f;
     float    y_prev = 0.0f, y_cur = 0.0f;
+    uint32_t chirp_idx = 0;
 };
 
 inline void lattice_reset(LatticeVoiceState &ls) {
@@ -103,6 +157,7 @@ inline void lattice_reset(LatticeVoiceState &ls) {
     ls.word_done = false;
     ls.resample_frac = 0.0f;
     ls.y_prev = ls.y_cur = 0.0f;
+    ls.chirp_idx = 0;
 }
 
 // Loads frame `idx` of `w` into `ls`: `retrigger` snaps straight to the

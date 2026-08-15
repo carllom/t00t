@@ -87,6 +87,7 @@ static float   channel_lfo_depth[NUM_CHANNELS];        // CC1, 0-1 (live)
 static SpeechTract channel_tract[NUM_CHANNELS];        // CC102, next-note: formant vs. LPC lattice tract
 static uint8_t channel_lattice_page[NUM_CHANNELS];      // Program Change under the LPC tract: KEY_PER_WORD page
 static int16_t channel_lattice_pitch_shift[NUM_CHANNELS]; // CC103, Q8.8 (live)
+static bool    channel_lattice_chirp_exciter[NUM_CHANNELS]; // CC104, live: glottal_pulse() vs. TMS5220 chirp table
 static uint8_t channel_preset[NUM_CHANNELS];           // CC16: last preset loaded, for UI only --
                                                          // individual field CCs above can drift it out of
                                                          // sync with presets[channel_preset[ch]], same as
@@ -127,6 +128,7 @@ static void speech_load_preset(uint8_t channel, uint8_t preset_id) {
     channel_tract[channel] = tmp.tract;
     channel_lattice_page[channel] = pr.lattice_page;
     channel_lattice_pitch_shift[channel] = tmp.lattice_pitch_shift;
+    channel_lattice_chirp_exciter[channel] = tmp.lattice_chirp_exciter;
 }
 
 // KEY_PER_WORD addressing (module_speech.md "LPC Lattice Tract"): note
@@ -167,6 +169,7 @@ static void midi_voice_on(VoiceParamBlock &shadow, int v, uint8_t note, uint8_t 
     vp.tract = channel_tract[channel];
     vp.lattice_word = speech_lattice_word_for_key(channel, note);
     vp.lattice_pitch_shift = channel_lattice_pitch_shift[channel];
+    vp.lattice_chirp_exciter = channel_lattice_chirp_exciter[channel];
     vp.pan = channel_pan[channel];
     vp.formant_shift = channel_formant_shift[channel];
     vp.bandwidth_scale = channel_bandwidth_scale[channel];
@@ -405,6 +408,17 @@ void midi_controller_process(const uint8_t *data, uint32_t len, ParamExchange *p
                         for (uint32_t v = 0; v < MAX_VOICES; v++) {
                             if (voice_held[v] && voice_channel[v] == ev.channel)
                                 shadow.voices[v].lattice_pitch_shift = channel_lattice_pitch_shift[ev.channel];
+                        }
+                        ui_state.last_channel = ev.channel;
+                        changed = true;
+                        break;
+                    case 104:  // LPC voiced-excitation select, live -- 0-63 glottal_pulse()
+                               // (shared with the formant tract), 64-127 the TMS5220's own
+                               // chirp table (lattice.h) -- see header comment
+                        channel_lattice_chirp_exciter[ev.channel] = ev.data2 >= 64;
+                        for (uint32_t v = 0; v < MAX_VOICES; v++) {
+                            if (voice_held[v] && voice_channel[v] == ev.channel)
+                                shadow.voices[v].lattice_chirp_exciter = channel_lattice_chirp_exciter[ev.channel];
                         }
                         ui_state.last_channel = ev.channel;
                         changed = true;

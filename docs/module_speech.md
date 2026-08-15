@@ -85,6 +85,7 @@ encoder block.
 | 76 | Vibrato rate (GM) | LFO rate | live |
 | 102 | Tract select | Formant (<64) vs. LPC lattice (>=64) — see LPC lattice tract | next note |
 | 103 | LPC pitch-shift multiplier | Q8.8 override on a word's own recorded pitch contour, 0.5x–2x | live |
+| 104 | LPC voiced-excitation select | `glottal_pulse()` (<64, shared with the formant tract) vs. the TMS5220's own chirp table (≥64) | live |
 
 **Program Change** is tract-dependent: under the formant tract it selects
 an utterance (same value CC23 writes) — phoneme selection is CC20-only;
@@ -434,6 +435,27 @@ note-off rather than cutting mid-glide; ONESHOT ignores note-off for word
 progression; LOOP restarts at frame 0 while still gated and degrades to
 one-shot completion once gate drops.
 
+**Voiced-excitation source (CC104)**: the shared `excitation.h`
+`glottal_pulse()` (a smooth bipolar triangle spanning the whole pitch
+period, also used by the formant tract) is the default; switching to
+`lattice.h`'s `lattice_chirp_pulse()` selects the real TMS5220's own
+52-sample excitation table instead — decap-verified chip data, not a
+hand-tuned approximation. Unlike the smooth triangle, the chip's own
+table is a short, sharp, non-negative burst concentrated at the very
+start of each pitch period, followed by silence for the rest of it; that
+shape difference, not just a louder or brighter EQ, is what gives the
+real chip its buzzier, harsher character. `LatticeVoiceState::chirp_idx`
+(how many native samples into the current pitch period) is tracked
+unconditionally regardless of which exciter is selected, so switching
+mid-note has correct state from its very first sample. Live, like the
+pitch-shift CC — both exciters drive the same downstream gain pipeline
+(frame `gain`, `cur_amp`, `SPEECH_LATTICE_GAIN_BOOST`) unchanged, so
+switching doesn't itself change loudness. The unvoiced/fricative source
+(LFSR noise, `osc/noise.h`) is shared by both exciter choices — the real
+chip's own noise generator (a specific-tap LFSR outputting a coarse
+two-level ±64 signal, not read out as multi-bit noise) is a possible
+future refinement, not built.
+
 ### Resonator and the Stability Rule
 
 Never interpolate biquad coefficients directly — walking between two
@@ -779,6 +801,33 @@ Full measurement breakdown: `history_speech.md`.
     in sync with), so "live" has no meaning for it the way it does for
     formant_shift or rate; defaulting on keeps a fresh channel's dynamics
     behaving exactly as they did before this CC existed.
+29. **The TMS5220 chirp table's exact values are decap-verified data,
+    cross-checked against two independent MAME source trees** (the
+    current `tms5110r.hxx`'s `TI_LATER_CHIRP`, used by the
+    TMS5110A/TMS5200/TMS5220 family this tract targets, and the older
+    historic-mame single `chirptable[]` as an independent check on the
+    fetch itself, not as a source — it's a different, earlier chip's
+    table and correctly differs) rather than trusted from memory or
+    written by ear, the same rigor `tools/talkie2lattice.py`'s own K
+    tables already established for exactly this kind of chip-behavior
+    data.
+30. **`lattice_chirp_pulse()` is a lattice-tract-only alternative, not a
+    replacement for `excitation.h`'s `glottal_pulse()`** — the formant
+    tract's own excitation is already tuned and hardware-verified against
+    published vowel formant data, so it stays untouched; CC104 exists
+    specifically so both can be A/B'd live rather than picking a winner
+    outright.
+31. **CC104 is live, not next-note** — unlike a lattice word's frame
+    coefficients, switching excitation source has no filter-state
+    discontinuity to worry about (`LatticeVoiceState::chirp_idx` is
+    tracked unconditionally either way), so there was no reason to make a
+    live A/B comparison wait for the next note.
+32. **The real chip's own coarse two-level LFSR noise (unvoiced/fricative
+    source) isn't wired up alongside the chirp table** — CC104 only
+    switches the voiced source. The shared `osc/noise.h` LFSR stays the
+    unvoiced source for both exciter choices; scope was kept to the
+    complaint that motivated this (voiced speech sounding too smooth),
+    not a full authenticity pass on every excitation path.
 
 ## Glossary
 

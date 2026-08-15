@@ -41,6 +41,7 @@ struct SpeechPreset {
     SpeechTract tract;            // formant vs. LPC lattice (tract.h)
     uint8_t    lattice_page;      // KEY_PER_WORD starting page, LPC tract only
     int16_t    lattice_pitch_shift; // Q8.8, 256 = 1.0x, LPC tract only
+    bool       lattice_chirp_exciter; // voiced-excitation source, LPC tract only (lattice.h)
 };
 
 // Q8.8 fixed-point from a float multiplier, matching tract_cc_to_q8_8()'s
@@ -85,6 +86,7 @@ inline void voice_apply_preset(VoiceParams &vp, const SpeechPreset &pr, uint32_t
     vp.lfo_depth = pr.lfo_depth;
     vp.tract = pr.tract;
     vp.lattice_pitch_shift = pr.lattice_pitch_shift;
+    vp.lattice_chirp_exciter = pr.lattice_chirp_exciter;
 
     if (pr.chorus) speech_chorus_apply(vp, voice_index);
     else            vp.pan = 0;
@@ -113,24 +115,26 @@ enum SpeechPresetId : uint8_t {
 };
 
 static constexpr SpeechPreset presets[SPEECH_PRESET_COUNT] = {
-    // name                utterance             phoneme  mode                rate  fmt_shift          bw_scale                    jit  shim lfo_rate lfo_depth chorus  tract                  page  pitch_shift
+    // name                utterance             phoneme  mode                rate  fmt_shift          bw_scale                    jit  shim lfo_rate lfo_depth chorus  tract                  page  pitch_shift        chirp_exciter
     // PH_I / formant_shift 1.0x / bandwidth_scale 1.0x matches
     // midi_controller.cpp's original power-on default exactly, so this
     // preset being channel 0's initial load is not a behaviour change.
-    { "PHON KEYS",   SPEECH_NO_UTTERANCE, PH_I,   SPEECH_MODE_GATED,   16, speech_q8_8(1.0f), speech_q8_8(1.0f),           0,   0,  0.0f, 0.0f, false, SPEECH_TRACT_FORMANT, 0, speech_q8_8(1.0f) },
-    { "ANNOUNCE",    PHRASE_VOICE_TEST,   PH_SIL, SPEECH_MODE_ONESHOT, 16, speech_q8_8(1.0f), speech_q8_8(1.0f),           0,   0,  0.0f, 0.0f, false, SPEECH_TRACT_FORMANT, 0, speech_q8_8(1.0f) },
-    { "GATED SAY",   PHRASE_NOW_PLAYING,  PH_SIL, SPEECH_MODE_GATED,   16, speech_q8_8(1.0f), speech_q8_8(1.0f),           0,   0,  0.0f, 0.0f, false, SPEECH_TRACT_FORMANT, 0, speech_q8_8(1.0f) },
-    { "LOOP CHANT",  PHRASE_HELLO_WORLD,  PH_SIL, SPEECH_MODE_LOOP,    20, speech_q8_8(1.0f), speech_q8_8(1.0f),           0,   0,  0.0f, 0.0f, false, SPEECH_TRACT_FORMANT, 0, speech_q8_8(1.0f) },
-    { "ROBOTIC",     PHRASE_GOOD_MORNING, PH_SIL, SPEECH_MODE_GATED,   16, speech_q8_8(1.0f), speech_q8_8(0.5f),           0,   0,  0.0f, 0.0f, false, SPEECH_TRACT_FORMANT, 0, speech_q8_8(1.0f) },
-    { "BREATHY",     PHRASE_TRACK_SAVED,  PH_SIL, SPEECH_MODE_GATED,   16, speech_q8_8(1.0f), speech_q8_8(2.4f),          40,  30,  5.0f, 0.15f, false, SPEECH_TRACT_FORMANT, 0, speech_q8_8(1.0f) },
-    { "TRACT UP",    SPEECH_NO_UTTERANCE, PH_I,   SPEECH_MODE_GATED,   16, speech_q8_8(1.55f), speech_q8_8(1.0f),          0,   0,  0.0f, 0.0f, false, SPEECH_TRACT_FORMANT, 0, speech_q8_8(1.0f) },
-    { "TRACT DOWN",  SPEECH_NO_UTTERANCE, PH_U,   SPEECH_MODE_GATED,   16, speech_q8_8(0.75f), speech_q8_8(1.0f),          0,   0,  0.0f, 0.0f, false, SPEECH_TRACT_FORMANT, 0, speech_q8_8(1.0f) },
-    { "BOT CHORUS",  PHRASE_DRUM_MACHINE, PH_SIL, SPEECH_MODE_ONESHOT, 16, speech_q8_8(1.0f), speech_q8_8(0.5f),           0,   0,  0.0f, 0.0f, true,  SPEECH_TRACT_FORMANT, 0, speech_q8_8(1.0f) },
+    { "PHON KEYS",   SPEECH_NO_UTTERANCE, PH_I,   SPEECH_MODE_GATED,   16, speech_q8_8(1.0f), speech_q8_8(1.0f),           0,   0,  0.0f, 0.0f, false, SPEECH_TRACT_FORMANT, 0, speech_q8_8(1.0f), false },
+    { "ANNOUNCE",    PHRASE_VOICE_TEST,   PH_SIL, SPEECH_MODE_ONESHOT, 16, speech_q8_8(1.0f), speech_q8_8(1.0f),           0,   0,  0.0f, 0.0f, false, SPEECH_TRACT_FORMANT, 0, speech_q8_8(1.0f), false },
+    { "GATED SAY",   PHRASE_NOW_PLAYING,  PH_SIL, SPEECH_MODE_GATED,   16, speech_q8_8(1.0f), speech_q8_8(1.0f),           0,   0,  0.0f, 0.0f, false, SPEECH_TRACT_FORMANT, 0, speech_q8_8(1.0f), false },
+    { "LOOP CHANT",  PHRASE_HELLO_WORLD,  PH_SIL, SPEECH_MODE_LOOP,    20, speech_q8_8(1.0f), speech_q8_8(1.0f),           0,   0,  0.0f, 0.0f, false, SPEECH_TRACT_FORMANT, 0, speech_q8_8(1.0f), false },
+    { "ROBOTIC",     PHRASE_GOOD_MORNING, PH_SIL, SPEECH_MODE_GATED,   16, speech_q8_8(1.0f), speech_q8_8(0.5f),           0,   0,  0.0f, 0.0f, false, SPEECH_TRACT_FORMANT, 0, speech_q8_8(1.0f), false },
+    { "BREATHY",     PHRASE_TRACK_SAVED,  PH_SIL, SPEECH_MODE_GATED,   16, speech_q8_8(1.0f), speech_q8_8(2.4f),          40,  30,  5.0f, 0.15f, false, SPEECH_TRACT_FORMANT, 0, speech_q8_8(1.0f), false },
+    { "TRACT UP",    SPEECH_NO_UTTERANCE, PH_I,   SPEECH_MODE_GATED,   16, speech_q8_8(1.55f), speech_q8_8(1.0f),          0,   0,  0.0f, 0.0f, false, SPEECH_TRACT_FORMANT, 0, speech_q8_8(1.0f), false },
+    { "TRACT DOWN",  SPEECH_NO_UTTERANCE, PH_U,   SPEECH_MODE_GATED,   16, speech_q8_8(0.75f), speech_q8_8(1.0f),          0,   0,  0.0f, 0.0f, false, SPEECH_TRACT_FORMANT, 0, speech_q8_8(1.0f), false },
+    { "BOT CHORUS",  PHRASE_DRUM_MACHINE, PH_SIL, SPEECH_MODE_ONESHOT, 16, speech_q8_8(1.0f), speech_q8_8(0.5f),           0,   0,  0.0f, 0.0f, true,  SPEECH_TRACT_FORMANT, 0, speech_q8_8(1.0f), false },
     // LPC lattice tract: utterance/phoneme/formant_shift/bandwidth_scale/
     // jitter/shimmer/lfo are formant-only fields, unread by the lattice
     // render path -- left at the same neutral values PHON KEYS uses so a
     // channel that switches back to a formant preset afterward doesn't
     // inherit anything unusual. GATED (the engine's own default mode) and
     // page 0, the same starting page a channel already has at power-on.
-    { "LPC WORDS",   SPEECH_NO_UTTERANCE, PH_I,   SPEECH_MODE_GATED,   16, speech_q8_8(1.0f), speech_q8_8(1.0f),           0,   0,  0.0f, 0.0f, false, SPEECH_TRACT_LATTICE, 0, speech_q8_8(1.0f) },
+    // chirp_exciter false -- CC104 (midi_controller.cpp) switches it live,
+    // this preset doesn't pick a side.
+    { "LPC WORDS",   SPEECH_NO_UTTERANCE, PH_I,   SPEECH_MODE_GATED,   16, speech_q8_8(1.0f), speech_q8_8(1.0f),           0,   0,  0.0f, 0.0f, false, SPEECH_TRACT_LATTICE, 0, speech_q8_8(1.0f), false },
 };
