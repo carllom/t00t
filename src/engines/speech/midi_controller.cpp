@@ -65,6 +65,7 @@ static SpeechMode channel_mode[NUM_CHANNELS];          // CC27 (live)
 static bool    channel_phrase_bank[NUM_CHANNELS];      // CC28: note number selects the phrase
 static float   channel_lfo_rate[NUM_CHANNELS];         // CC76, Hz (live)
 static float   channel_lfo_depth[NUM_CHANNELS];        // CC1, 0-1 (live)
+static SpeechTract channel_tract[NUM_CHANNELS];        // CC102, next-note: formant vs. LPC lattice tract
 static uint8_t channel_preset[NUM_CHANNELS];           // CC16: last preset loaded, for UI only --
                                                          // individual field CCs above can drift it out of
                                                          // sync with presets[channel_preset[ch]], same as
@@ -110,6 +111,7 @@ static void midi_voice_on(VoiceParamBlock &shadow, int v, uint8_t note, uint8_t 
     vp.phase_inc = glottal_phase_inc(freq, (float)SPEECH_RATE);
     vp.amplitude = (int16_t)(velocity * 258);
     vp.phoneme = channel_phoneme[channel];
+    vp.tract = channel_tract[channel];
     vp.pan = channel_pan[channel];
     vp.formant_shift = channel_formant_shift[channel];
     vp.bandwidth_scale = channel_bandwidth_scale[channel];
@@ -154,6 +156,7 @@ void midi_controller_init() {
         speech_load_preset(ch, PRESET_PHONEME_KEYBOARD);
         channel_pan[ch] = 0;
         channel_phrase_bank[ch] = false;
+        channel_tract[ch] = SPEECH_TRACT_FORMANT;
     }
     ui_state.last_note = 0xFF;
     ui_state.last_velocity = 0;
@@ -330,6 +333,15 @@ void midi_controller_process(const uint8_t *data, uint32_t len, ParamExchange *p
                         shadow.fx.p2 = ev.data2;
                         ui_state.fx_p2 = ev.data2;
                         changed = true;
+                        break;
+                    case 102:  // tract select (LPC bring-up slice), next-note only --
+                               // reserved CC102-119 range for LPC-specific
+                               // controls; word-select modes aren't built yet,
+                               // so this just switches a channel's new notes
+                               // between the formant tract and the one
+                               // hardcoded LPC test word (lattice.h).
+                        channel_tract[ev.channel] = ev.data2 >= 64 ? SPEECH_TRACT_LATTICE : SPEECH_TRACT_FORMANT;
+                        ui_state.last_channel = ev.channel;
                         break;
                     case 76:  // vibrato rate (GM standard "Vibrato Rate"), live
                         channel_lfo_rate[ev.channel] = (float)ev.data2 / 127.0f * SPEECH_LFO_RATE_HZ_MAX;

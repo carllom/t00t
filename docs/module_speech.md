@@ -1,8 +1,9 @@
 # T00T — Speech Synthesis Module
 
 A formant (Klatt-reduced) speech synthesis engine: a phoneme keyboard,
-utterance/phrase playback, and a reserved-but-unimplemented singing mode.
-See `engine.md` for the shared dual-core architecture; `architecture.md`
+utterance/phrase playback, a reserved-but-unimplemented singing mode, and
+a sibling LPC lattice tract still at its hardcoded-test-word bring-up
+stage. See `engine.md` for the shared dual-core architecture; `architecture.md`
 for the cross-engine `VoiceParams`/CMake pattern this module follows;
 `history_speech.md` for build-phase results and full performance
 measurements.
@@ -41,8 +42,15 @@ shimmer are all live MIDI controls) rather than just a talking clock.
   simultaneously-held voices across the stereo field with per-voice detune
 - **Effects**: shared post-mix insert (delay or reverb) — no overdrive (see
   Future/TODO)
-- No LPC sibling engine yet (optional future work — the excitation,
-  sequencer, and control plane are designed to be reused by one)
+- **LPC lattice tract**: a second, sibling tract — a 10th-order all-pole
+  lattice filter reusing the same glottal-pulse/LFSR-noise excitation,
+  selected per voice by `VoiceParams::tract`. Renders natively at 8 kHz
+  (the TMS5220's real frame rate) and reaches the shared 44.1 kHz output
+  through its own fractional-ratio linear-interpolation resampler, unlike
+  the formant tract's exact-integer zero-order-hold doubling. No corpus
+  converter or real word-selection exists yet — every lattice voice plays
+  one hardcoded test word (`lattice.h`'s `LATTICE_TEST_WORD`), reachable
+  from CC102 (see MIDI Mapping); see Future/TODO for what's still missing.
 
 ### MIDI Mapping (Input Capabilities)
 
@@ -67,11 +75,14 @@ subtractive engine's own CC1/CC10 precedent.
 | 27 | Mode select | `SpeechMode` (3 live bands: ONESHOT/GATED/LOOP) | live |
 | 28 | Phrase-bank toggle | Note number selects the phrase directly, instead of Program Change/CC23 | next note |
 | 76 | Vibrato rate (GM) | LFO rate | live |
+| 102 | Tract select | Formant (<64) vs. LPC lattice (>=64) — see LPC lattice tract | next note |
 
 **Program Change** selects an utterance (same value CC23 writes) —
 phoneme selection is CC20-only. "Live" CCs push directly into every
 currently-held voice on the channel, not just the per-channel default for
-future notes.
+future notes. CC102 is the first of a reserved CC102–119 block for
+LPC-specific controls, disjoint from the formant tract's CC16–28 — word
+selection isn't built yet, so it's the only one wired so far.
 
 ### Display (Presentation Capabilities)
 
@@ -90,10 +101,14 @@ src/engines/speech/
   engine.h          VoiceParams, MAX_VOICES, engine constants
   audio_engine.h    audio_engine_run()/audio_engine_load() declarations
   audio_engine.cpp  render pass entry point, effects mix, profiling rig
-  render.h          per-voice render core (phoneme-keyboard + sequenced
-                     paths) — no pico-sdk dependency, shared with host tooling
-  tract.h           formant resonator cascade + coefficient computation,
-                     SpeechVoice state
+  render.h          per-voice render core (phoneme-keyboard + sequenced +
+                     LPC-lattice paths) — no pico-sdk dependency, shared
+                     with host tooling
+  tract.h           formant resonator cascade + coefficient computation;
+                     SpeechVoice state (shared fields + the FormantVoiceState/
+                     LatticeVoiceState union)
+  lattice.h         LPC lattice tract: reflection-coefficient filter,
+                     per-voice state, hardcoded test word
   excitation.h      glottal pulse train, jitter/shimmer/vibrato
   sequencer.h       per-voice segment advance, SpeechMode
   phoneme_def.h     PhonemeDef struct, phoneme_unpack()
@@ -225,6 +240,7 @@ struct VoiceParams {
     uint8_t    rate;                // Q4.4 segment-duration scale, 16 = 1.0x
     uint8_t    jitter, shimmer;     // 0-255, 0 = perfectly periodic
     float      lfo_rate, lfo_depth; // vibrato on glottal pitch
+    SpeechTract tract;               // formant vs. LPC lattice (tract.h)
 };
 ```
 
@@ -233,8 +249,35 @@ voices, gate on/off runs through `render.h`'s own exponential `cur_amp`
 smoothing, a simpler declick filter rather than the shared ADSR model.
 
 ```cpp
-// tract.h — per-voice render state, Core 1 only, never crosses ParamExchange
+// tract.h — per-voice render state, Core 1 only, never crosses ParamExchange.
+// Fields above `tract` are shared by both tracts; `fmt`/`lat` are a union
+// (mutually exclusive, selected by `tract`) so 8 voices' worth of tract
+// state costs the larger of the two variants, not their sum.
 struct SpeechVoice {
+    uint32_t glottal_phase;
+    uint16_t noise_lfsr;
+    float    cur_amp;              // smoothed toward gate target, declicks on/off
+    uint8_t  last_trigger, last_phoneme;  // force a retrigger/target-load on first render
+    float    lfo_phase;            // vibrato LFO phase, 0..1
+    uint32_t glot_cycle_inc;       // this glottal cycle's jittered phase increment
+    float    glot_cycle_amp;       // this glottal cycle's shimmer amplitude multiplier
+    uint16_t jitter_lfsr;          // separate seed from noise_lfsr
+    uint16_t seg_index;            // position within the current utterance (formant tract)
+    uint32_t seg_remaining;        // native samples left in the current segment (formant tract)
+    bool     seq_done;             // utterance complete; voice still allocated but silent
+    bool     gate_prev;            // previous call's gate, to find the note-off edge
+    bool     active;               // still sounding
+
+    SpeechTract tract;
+
+    union {
+        FormantVoiceState fmt;
+        LatticeVoiceState lat;
+    };
+};
+
+// tract.h — formant tract's own state, one of SpeechVoice's two union members
+struct FormantVoiceState {
     Res2p    formant[SPEECH_FORMANTS];
     Res2p    fric, nasal;
     float    F[SPEECH_FORMANTS], B[SPEECH_FORMANTS];         // current, ramped
@@ -244,19 +287,19 @@ struct SpeechVoice {
     float    av, af, an, av_tgt, af_tgt, an_tgt;              // branch amplitudes
     float    formant_shift, formant_shift_tgt;
     float    bandwidth_scale, bandwidth_scale_tgt;
-    uint32_t glottal_phase;
-    uint16_t noise_lfsr;
-    float    cur_amp;              // smoothed toward gate target, declicks on/off
-    uint8_t  last_trigger, last_phoneme;  // force a retrigger/target-load on first render
-    float    lfo_phase;            // vibrato LFO phase, 0..1
-    uint32_t glot_cycle_inc;       // this glottal cycle's jittered phase increment
-    float    glot_cycle_amp;       // this glottal cycle's shimmer amplitude multiplier
-    uint16_t jitter_lfsr;          // separate seed from noise_lfsr
-    uint16_t seg_index;            // position within the current utterance
-    uint32_t seg_remaining;        // native samples left in the current segment
-    bool     seq_done;             // utterance complete; voice still allocated but silent
-    bool     gate_prev;            // previous call's gate, to find the note-off edge
-    bool     active;               // still sounding
+};
+
+// lattice.h — LPC lattice tract's own state, SpeechVoice's other union member
+struct LatticeVoiceState {
+    float    k[SPEECH_LATTICE_ORDER], k_step[SPEECH_LATTICE_ORDER];  // reflection coeffs, linear ramp
+    float    gain, gain_step;
+    float    b[SPEECH_LATTICE_ORDER];   // backward-residual delay line (the filter's only memory)
+    uint16_t frame_index;
+    uint32_t frame_remaining;
+    uint32_t phase_inc;                 // this frame's glottal phase increment, at SPEECH_LATTICE_RATE
+    bool     voiced;                    // this frame's excitation: glottal pulse vs. LFSR noise
+    bool     word_done;
+    float    resample_frac, y_prev, y_cur;  // fractional-ratio upsampler state
 };
 ```
 
@@ -265,7 +308,8 @@ struct SpeechVoice {
 see Resonator and the Stability Rule for why coefficients are never
 interpolated directly. Vibrato/jitter/shimmer state resets on retrigger,
 not on a plain segment/phoneme change — it tracks the *note*, the same
-lifetime as `glottal_phase`.
+lifetime as `glottal_phase`. `LatticeVoiceState`'s `k`/`gain` are the
+lattice-only exception to that rule — see LPC Lattice Tract below.
 
 ```cpp
 // phoneme_def.h — generated data, 26 bytes/phoneme, no padding
@@ -293,7 +337,47 @@ uncomfortably tight. 22.05 kHz is exactly `SAMPLE_RATE / 2`, which makes
 the resampler a bare integer doubling — no fractional accumulator, no
 phase drift, and the zero-order-hold imaging is a genuine part of the
 lo-fi character rather than a defect. Halving the render rate also halves
-per-voice cost.
+per-voice cost. This applies to the formant tract only — the LPC lattice
+tract (below) uses a different native rate and resampler entirely.
+
+### LPC Lattice Tract
+
+A 10th-order all-pole lattice filter, the sibling tract `VoiceParams::tract`
+selects per voice. Reuses the formant tract's glottal-pulse/LFSR-noise
+excitation and the sequencer's sub-block-driven render loop shape
+unchanged — only the tract filter itself (`lattice.h`) and its frame data
+are new.
+
+**Native rate**: 8 kHz, the TMS5220's real frame rate — half the formant
+tract's own 22.05 kHz, since an all-pole model of a full vocal tract in one
+filter doesn't need formant-cascade headroom. `SAMPLE_RATE / 8000` has no
+integer shortcut (44100/8000 = 5.5125), so `speech_render_voice_lattice()`
+pulls native samples through a linear-interpolation upsampler on demand,
+one native sample at a time whenever its fractional accumulator
+(`LatticeVoiceState::resample_frac`) crosses 1.0 — carried across render
+calls, not reset per buffer, so a buffer boundary can't introduce phase
+drift.
+
+**Coefficient frames**: 25 ms each (200 samples at 8 kHz) — the TMS5220's
+own frame period — interpolated 8 times per frame (every
+`SPEECH_LATTICE_SUBBLOCK` = 25 native samples), matching the real chip's
+own interpolation cadence. Unlike the formant cascade's `F`/`B`
+(Resonator and the Stability Rule below), lattice reflection coefficients
+`k[i]` are ramped and used directly as filter coefficients, with no
+recompute step in between: this is safe because a stable, order-10
+all-pole lattice only requires every `|k[i]| < 1`, and that interval is
+convex, so linearly interpolating between two in-range coefficients can
+never leave it. Debug builds assert this after every interpolation step.
+
+**Word data**: no corpus converter exists yet. Every lattice voice plays
+one hardcoded fixture, `lattice.h`'s `LATTICE_TEST_WORD` — reflection
+coefficients from a real order-10 Levinson-Durbin analysis of this
+module's own `/i/`/`/a/`/`/u/` formant-cascade impulse responses
+(`phonemes.h`), not hand-guessed or corpus-derived. `SPEECH_LATTICE_GAIN_BOOST`
+(`lattice.h`) compensates for the gap between a Levinson-Durbin gain
+(correct for a white-noise-driven signal) and this tract's glottal-pulse
+excitation, which has a much higher crest factor and comes out quieter at
+the same nominal gain.
 
 ### Resonator and the Stability Rule
 
@@ -423,9 +507,11 @@ breakdown: `history_speech.md`.
 
 ### Future / TODO
 
-- **LPC sibling engine** (optional) — a lattice-filter tract replacing the
-  resonator cascade, sharing excitation/sequencer/control-plane unchanged.
-  Native rate would drop to 8 kHz, introducing a fractional resampler.
+- **LPC corpus + real word selection** — the lattice tract itself is built
+  and hardware-confirmed audible (see Architecture's LPC Lattice Tract),
+  but every voice still plays one hardcoded test word; no corpus
+  converter, no `KEY_PER_WORD` (or any other) MIDI addressing mode, and no
+  per-voice LPC render-cost measurement on real hardware yet.
 - **Singing mode** — the `SUSTAINABLE` flag is reserved (see Architecture)
   but nothing reads it yet; holding a vowel segment open under gate
   instead of advancing at its nominal duration is unbuilt.
@@ -510,6 +596,31 @@ breakdown: `history_speech.md`.
     preset/sample types, so gating on presets.h's mere existence
     incorrectly pulled it into the speech build once speech got its own
     preset table.
+13. **`SpeechVoice`'s tract-specific state is a union
+    (`FormantVoiceState`/`LatticeVoiceState`), not two flat members** —
+    only one tract renders per voice at a time, so a union bounds 8
+    voices' cost by the larger variant instead of both combined. The
+    union switch always lands on a note-on retrigger, which
+    placement-constructs the newly-selected member before writing into
+    it, so a voice that changes tract between notes never reads the
+    other tract's stale state.
+14. **Lattice reflection coefficients are ramped and used directly as
+    filter coefficients**, unlike the formant cascade's `F`/`B` (which are
+    ramped and then recomputed into biquad coefficients every sub-block)
+    — a documented, lattice-only exception to the Resonator and the
+    Stability Rule, safe specifically because the all-pole lattice stays
+    stable for any `|k[i]| < 1`, and that range is convex.
+15. **The LPC test word's coefficients come from a real Levinson-Durbin
+    analysis of this module's own formant-cascade impulse responses**,
+    not hand-guessed numbers or Talkie-corpus data — the corpus converter
+    doesn't exist yet (see Future/TODO), and the module's existing
+    `/i/`/`/a/`/`/u/` targets already had published-value cross-checks
+    (`vowel_reference.h`) backing their own correctness.
+16. **CC102 (tract select) is the only LPC-specific CC wired so far**,
+    ahead of any real word-selection mode — cheap, forward-compatible
+    (inside the CC102–119 range already reserved for LPC controls), and
+    it's what lets the hardcoded test word actually be reached from a
+    MIDI channel instead of only from host-render tooling.
 
 ## Glossary
 
@@ -533,3 +644,9 @@ breakdown: `history_speech.md`.
 - **Coarticulation**: how a phoneme's realized sound is influenced by
   its neighbours; this engine currently only ramps linearly between
   adjacent targets (see Future/TODO).
+- **Lattice filter**: an all-pole IIR filter structured as a chain of
+  stages, each parameterised by one reflection coefficient, rather than
+  the direct-form biquad coefficients the formant cascade uses.
+- **Reflection coefficient**: a lattice filter's per-stage parameter
+  (`k[i]`, `|k[i]| < 1` for stability); the LPC lattice tract's analogue
+  of the formant cascade's per-formant F/B pair.

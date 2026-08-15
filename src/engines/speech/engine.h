@@ -56,12 +56,18 @@ struct VoiceParams {
     uint8_t  shimmer;     // 0-255, 0 = perfectly periodic amplitude (excitation.h)
     float    lfo_rate;    // vibrato LFO rate, Hz, 0 = off (excitation.h VIBRATO_*)
     float    lfo_depth;   // vibrato depth, 0.0-1.0
+    // Selects which tract render.h renders this voice through (tract.h's
+    // SpeechTract). No MIDI control wired to it yet -- every voice defaults
+    // to SPEECH_TRACT_FORMANT, so this field is currently only set by a
+    // caller that constructs VoiceParams directly (the profiling rig,
+    // audio_engine.cpp's LPC smoke-test phase).
+    SpeechTract tract;
 };
 
 template <>
 inline VoiceParams voice_params_default<VoiceParams>() {
     return { 0, 0, 0, false, 0, 0, 256, 256, SPEECH_NO_UTTERANCE, SPEECH_MODE_GATED, 16,
-             0, 0, 0.0f, 0.0f };
+             0, 0, 0.0f, 0.0f, SPEECH_TRACT_FORMANT };
 }
 
 using VoiceParamBlock = VoiceParamBlockT<VoiceParams>;

@@ -215,9 +215,9 @@ static std::vector<float> render_phoneme_native(Phoneme p, float note_hz, float 
 static std::vector<float> render_target_native(const FormantTarget &tgt, float note_hz, float seconds,
                                                  float af_override = -1.0f, float an_override = -1.0f) {
     SpeechVoice sv{};
-    tract_retrigger(sv, tgt);
-    if (af_override >= 0.0f) sv.af = sv.af_tgt = af_override;
-    if (an_override >= 0.0f) sv.an = sv.an_tgt = an_override;
+    tract_retrigger(sv.fmt, tgt);
+    if (af_override >= 0.0f) sv.fmt.af = sv.fmt.af_tgt = af_override;
+    if (an_override >= 0.0f) sv.fmt.an = sv.fmt.an_tgt = an_override;
 
     const uint32_t total = (uint32_t)(SPEECH_RATE * seconds);
     std::vector<float> y(total);
@@ -228,12 +228,12 @@ static std::vector<float> render_target_native(const FormantTarget &tgt, float n
     uint32_t done = 0;
     while (done < total) {
         uint32_t k = std::min((uint32_t)SPEECH_SUBBLOCK, total - done);
-        tract_advance_subblock(sv, (float)SPEECH_RATE);
+        tract_advance_subblock(sv.fmt, (float)SPEECH_RATE);
         for (uint32_t i = 0; i < k; i++) {
-            float voiced_src = glottal_pulse(phase) * sv.av;
-            float noise_src = (float)osc_noise(lfsr) * (1.0f / 32768.0f) * sv.af;
+            float voiced_src = glottal_pulse(phase) * sv.fmt.av;
+            float noise_src = (float)osc_noise(lfsr) * (1.0f / 32768.0f) * sv.fmt.af;
             phase += inc;
-            y[done + i] = tract_process_mixed(sv, voiced_src, noise_src);
+            y[done + i] = tract_process_mixed(sv.fmt, voiced_src, noise_src);
         }
         done += k;
     }
@@ -252,14 +252,14 @@ static std::vector<float> render_target_native(const FormantTarget &tgt, float n
 // spacing.
 static std::vector<float> render_phoneme_impulse_response(Phoneme p, uint32_t n_samples) {
     SpeechVoice sv{};
-    tract_retrigger(sv, phoneme_unpack(PHONEME_TARGETS[p]));
+    tract_retrigger(sv.fmt, phoneme_unpack(PHONEME_TARGETS[p]));
     std::vector<float> y(n_samples);
     uint32_t done = 0;
     while (done < n_samples) {
         uint32_t k = std::min((uint32_t)SPEECH_SUBBLOCK, n_samples - done);
-        tract_advance_subblock(sv, (float)SPEECH_RATE);
+        tract_advance_subblock(sv.fmt, (float)SPEECH_RATE);
         for (uint32_t i = 0; i < k; i++) {
-            y[done + i] = tract_process(sv, (done + i == 0) ? 1.0f : 0.0f);
+            y[done + i] = tract_process(sv.fmt, (done + i == 0) ? 1.0f : 0.0f);
         }
         done += k;
     }
@@ -547,20 +547,20 @@ static bool test_cc_sweep_stability() {
         for (uint32_t cc_shift = 0; cc_shift <= 127; cc_shift++) {
             for (uint32_t cc_bw = 0; cc_bw <= 127; cc_bw += 4) {
                 SpeechVoice sv{};
-                tract_retrigger(sv, tgt);
+                tract_retrigger(sv.fmt, tgt);
                 int16_t shift_q88 = tract_cc_to_q8_8((uint8_t)cc_shift, FORMANT_SHIFT_MIN, FORMANT_SHIFT_MAX);
                 int16_t bw_q88 = tract_cc_to_q8_8((uint8_t)cc_bw, BANDWIDTH_SCALE_MIN, BANDWIDTH_SCALE_MAX);
                 // Snap current == target so this checks the coefficients at
                 // the extreme value itself (mirrors what a sustained CC
                 // sweep settles to), not mid-ramp toward it.
-                sv.formant_shift = sv.formant_shift_tgt = (float)shift_q88 * (1.0f / 256.0f);
-                sv.bandwidth_scale = sv.bandwidth_scale_tgt = (float)bw_q88 * (1.0f / 256.0f);
-                tract_advance_subblock(sv, (float)SPEECH_RATE);
+                sv.fmt.formant_shift = sv.fmt.formant_shift_tgt = (float)shift_q88 * (1.0f / 256.0f);
+                sv.fmt.bandwidth_scale = sv.fmt.bandwidth_scale_tgt = (float)bw_q88 * (1.0f / 256.0f);
+                tract_advance_subblock(sv.fmt, (float)SPEECH_RATE);
                 checked++;
 
                 bool fail = false;
-                for (uint32_t i = 0; i < SPEECH_FORMANTS; i++) fail = fail || bad_pole(sv.formant[i]);
-                fail = fail || bad_pole(sv.fric) || bad_pole(sv.nasal);
+                for (uint32_t i = 0; i < SPEECH_FORMANTS; i++) fail = fail || bad_pole(sv.fmt.formant[i]);
+                fail = fail || bad_pole(sv.fmt.fric) || bad_pole(sv.fmt.nasal);
                 if (fail) {
                     printf("  FAIL phoneme=%u cc_shift=%u cc_bw=%u -> pole outside unit circle\n", p, cc_shift, cc_bw);
                     all_ok = false;
@@ -1054,6 +1054,110 @@ static bool run_vibrato_checks() {
     return all_ok;
 }
 
+// LPC lattice tract bring-up. No corpus converter exists yet, so this
+// renders lattice.h's one hardcoded test word (LATTICE_TEST_WORD) through
+// speech_render_voice_lattice() -- the same function audio_engine.cpp's
+// Core 1 render loop calls for a lattice-tract voice -- and checks the
+// result is finite, unclipped, and actually reaches completion.
+static bool run_lattice_word_check() {
+    printf("\n== LPC lattice tract: hardcoded test word ==\n");
+
+    SpeechVoice sv{};
+    uint32_t total = SAMPLE_RATE * 2;  // comfortably longer than the word
+    std::vector<int32_t> dry_l(total, 0), dry_r(total, 0);
+    speech_render_voice_lattice(sv, /*trigger=*/1, /*amplitude=*/32767, /*gate=*/true,
+                                 LATTICE_TEST_WORD, /*pan=*/0, (float)SAMPLE_RATE,
+                                 dry_l.data(), dry_r.data(), total);
+
+    float peak = 0.0f;
+    bool finite = true;
+    for (uint32_t i = 0; i < total; i++) {
+        finite = finite && std::isfinite((float)dry_l[i]) && std::isfinite((float)dry_r[i]);
+        peak = std::max(peak, std::fabs((float)dry_l[i]));
+    }
+    bool finished = !sv.active;  // word completed and cleared itself within `total`
+    bool clipped = peak >= 32767.0f;
+    bool ok = finite && !clipped && finished;
+
+    std::vector<int16_t> out(total * 2);
+    for (uint32_t i = 0; i < total; i++) {
+        out[i * 2 + 0] = (int16_t)std::max(-32768.0f, std::min(32767.0f, (float)dry_l[i]));
+        out[i * 2 + 1] = (int16_t)std::max(-32768.0f, std::min(32767.0f, (float)dry_r[i]));
+    }
+    write_wav_pcm16("speech_lattice_test_word.wav", out, SAMPLE_RATE, 2);
+
+    printf("  test word: peak=%.0f finite=%s finished=%s -> %s (speech_lattice_test_word.wav)\n",
+           peak, finite ? "yes" : "no", finished ? "yes" : "no", ok ? "PASS" : "FAIL");
+    if (clipped) printf("  FAIL: clipped (peak=%.0f)\n", peak);
+    if (!finished) printf("  FAIL: word never completed within the render time budget\n");
+    return ok;
+}
+
+// Mirrors run_malformed_utterance_check() above, for the lattice tract's own
+// equivalent guard: a null/empty word renders exact silence and reports
+// itself immediately reclaimable rather than dereferencing null.
+static bool run_lattice_malformed_check() {
+    printf("\n== LPC lattice tract: malformed word renders silence ==\n");
+
+    LatticeWord bad{ nullptr, 0 };
+    SpeechVoice sv{};
+    uint32_t total = SAMPLE_RATE / 2;
+    std::vector<int32_t> dry_l(total, 0), dry_r(total, 0);
+    speech_render_voice_lattice(sv, /*trigger=*/1, /*amplitude=*/32767, /*gate=*/true,
+                                 bad, /*pan=*/0, (float)SAMPLE_RATE, dry_l.data(), dry_r.data(), total);
+
+    bool silent = true;
+    for (uint32_t i = 0; i < total; i++) silent = silent && dry_l[i] == 0 && dry_r[i] == 0;
+    bool ok = silent && !sv.active;
+    printf("  malformed word (null frames, length=0): silent=%s active=%s -> %s\n",
+           silent ? "yes" : "no", sv.active ? "yes" : "no", ok ? "PASS" : "FAIL");
+    if (!silent) printf("  FAIL: malformed word produced non-zero output\n");
+    if (sv.active) printf("  FAIL: voice reports itself still sounding after a malformed word\n");
+    return ok;
+}
+
+// The fractional-ratio (44.1 kHz / 8 kHz) upsampler's accumulator persists
+// across render calls rather than resetting per buffer -- this holds one
+// voiced test frame for 10 s (well beyond any single buffer) and checks the
+// measured F0 hasn't drifted between an early and a late window. A resampler
+// that lost fractional precision over a long render would show up here as a
+// measurable frequency error, not just a click.
+static bool run_lattice_resample_stability_check() {
+    printf("\n== LPC lattice tract: fractional resampler stability over a long render ==\n");
+
+    static constexpr uint32_t HOLD_FRAMES = 400;  // 400 * 25 ms = 10 s
+    std::vector<LatticeFrame> word_frames(HOLD_FRAMES, LATTICE_TEST_I);
+    LatticeWord word{ word_frames.data(), (uint16_t)word_frames.size() };
+
+    SpeechVoice sv{};
+    uint32_t total = SAMPLE_RATE * 10;
+    std::vector<int32_t> dry_l(total, 0), dry_r(total, 0);
+    speech_render_voice_lattice(sv, /*trigger=*/1, /*amplitude=*/32767, /*gate=*/true,
+                                 word, /*pan=*/0, (float)SAMPLE_RATE, dry_l.data(), dry_r.data(), total);
+
+    bool finite = true;
+    float peak = 0.0f;
+    std::vector<float> mono(total);
+    for (uint32_t i = 0; i < total; i++) {
+        mono[i] = (float)dry_l[i];
+        finite = finite && std::isfinite(mono[i]);
+        peak = std::max(peak, std::fabs(mono[i]));
+    }
+    bool clipped = peak >= 32767.0f;
+
+    size_t win = SAMPLE_RATE / 4;  // 250 ms analysis windows
+    float early = local_peak_freq(mono, win, win, LATTICE_TEST_I.pitch_hz, (float)SAMPLE_RATE);
+    float late = local_peak_freq(mono, total - 2 * win, win, LATTICE_TEST_I.pitch_hz, (float)SAMPLE_RATE);
+    float drift = std::fabs(late - early);
+    bool no_drift = drift < 2.0f;  // well under local_peak_freq's own 5 Hz search grid
+
+    bool ok = finite && !clipped && no_drift;
+    printf("  10 s render: peak=%.0f finite=%s  F0 early=%.1f late=%.1f (drift=%.1f Hz) -> %s\n",
+           peak, finite ? "yes" : "no", early, late, drift, ok ? "PASS" : "FAIL");
+    if (!no_drift) printf("  FAIL: fractional resampler phase drifted over a long render\n");
+    return ok;
+}
+
 int main() {
     res2p_init();       // must run before any res2p_radius()/res2p_set() call
     osc_init_sine();     // speech_render_test_tone()/pan_gains_q15()'s wavetable source
@@ -1077,6 +1181,10 @@ int main() {
     ok = run_phrase_pitch_tracking_checks() && ok;
     ok = run_jitter_shimmer_checks() && ok;
     ok = run_vibrato_checks() && ok;
+
+    ok = run_lattice_word_check() && ok;
+    ok = run_lattice_malformed_check() && ok;
+    ok = run_lattice_resample_stability_check() && ok;
 
     printf(ok ? "\nALL CHECKS PASSED\n" : "\nCHECKS FAILED\n");
     return ok ? 0 : 1;
