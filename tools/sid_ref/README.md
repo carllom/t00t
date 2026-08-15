@@ -1,6 +1,6 @@
 # Chip module reference rig (F0)
 
-Ground-truth comparison harness for the chip (SID) module. See [module_chip.md](../../module_chip.md)
+Ground-truth comparison harness for the chip (SID) module. See module_chip.md
 §11 for why it exists and §1 for how it gates the phases.
 
 The short version: this module's primitives are a chain of small, exact,
@@ -11,7 +11,7 @@ loop runs through numbers instead: render the same register stream through reSID
 and through t00t, diff what is exactly diffable, score the rest.
 
 That ordering is deliberate, and it is the FM module's lesson taken up front
-rather than after the fact ([history_fm.md](../../history_fm.md) §1): its calibration pass was
+rather than after the fact (history_fm.md §1): its calibration pass was
 scheduled last, every phase before it was validated by ear, and the result was
 six compensating constants that existed only to cancel each other out.
 

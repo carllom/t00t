@@ -1,6 +1,6 @@
 # FM reference rig (F0)
 
-Ground-truth comparison harness for the FM module rewrite. See [history_fm.md](../../history_fm.md)
+Ground-truth comparison harness for the FM module rewrite. See history_fm.md
 §3 for why it exists and §4 for how it gates the phases.
 
 The short version: attempt 1 was validated by ear on hardware, which cannot tell

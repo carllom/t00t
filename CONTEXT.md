@@ -29,7 +29,7 @@ when switching):
 - `make` → `build/t00t.uf2` (breadboard). `make BOARD=vgaboard_rp2350` for the other.
 - MIDI transport overrides: `make MIDI_USB=0` (DIN only) / `make MIDI_UART=0` (USB only);
   default `"default"` lets the board header decide (both on).
-- pico-sdk/ and pico-extras/ are vendored at repo root (see [building.md](building.md) if missing).
+- pico-sdk/ and pico-extras/ are vendored at repo root (see [docs/building.md](docs/building.md) if missing).
 - Flash: hold BOOTSEL, plug in, `cp build/t00t.uf2 /media/$USER/RPI-RP2/`.
 
 ## Architecture (dual-core)
@@ -113,20 +113,20 @@ parses raw bytes and maps notes to voices; fed by pluggable transports:
 
 ## Docs
 
-- [architecture.md](architecture.md) — full system design (detailed).
-- [engine.md](engine.md) — cross-module dual-core architecture (pin allocation, buffer
+- [docs/logs/architecture.md](docs/logs/architecture.md) — full system design (detailed).
+- [docs/engine.md](docs/engine.md) — cross-module dual-core architecture (pin allocation, buffer
   flow, IPC, voice allocation, MIDI input) shared by every synthesis module.
-- [building.md](building.md) — toolchain, SDK setup, build/flash steps.
-- [migration.md](migration.md) — porting notes.
-- **Per-module docs** — one `module_<name>.md` (current spec/usage) and, where the module
-  has development history worth keeping, a `history_<name>.md` (dated build/measurement
+- [docs/building.md](docs/building.md) — toolchain, SDK setup, build/flash steps.
+- [docs/logs/migration.md](docs/logs/migration.md) — porting notes.
+- **Per-module docs** — one `docs/module_<name>.md` (current spec/usage) and, where the module
+  has development history worth keeping, a `docs/logs/history_<name>.md` (dated build/measurement
   narrative, kept separate so it doesn't clutter the spec):
-  [module_subtractive.md](module_subtractive.md) / [history_subtractive.md](history_subtractive.md),
-  [module_chip.md](module_chip.md) / [history_chip.md](history_chip.md),
-  [module_fm.md](module_fm.md) / [history_fm.md](history_fm.md),
-  [module_groovebox.md](module_groovebox.md),
-  [module_speech.md](module_speech.md) / [history_speech.md](history_speech.md),
-  [module_tracker.md](module_tracker.md) / [history_tracker.md](history_tracker.md).
+  [module_subtractive.md](docs/module_subtractive.md) / [history_subtractive.md](docs/logs/history_subtractive.md),
+  [module_chip.md](docs/module_chip.md) / [history_chip.md](docs/logs/history_chip.md),
+  [module_fm.md](docs/module_fm.md) / [history_fm.md](docs/logs/history_fm.md),
+  [module_groovebox.md](docs/module_groovebox.md),
+  [module_speech.md](docs/module_speech.md) / [history_speech.md](docs/logs/history_speech.md),
+  [module_tracker.md](docs/module_tracker.md) / [history_tracker.md](docs/logs/history_tracker.md).
 
 ## Notes / gotchas
 
