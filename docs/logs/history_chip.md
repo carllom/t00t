@@ -1438,3 +1438,215 @@ confirmed to not have been a fluke specific to SID. Real AY is still
 cheaper than the measured SID voice (~108 c/f) by a wide margin, so SID
 remains the most expensive chip in the family; only the specific multiple
 was wrong.
+
+### 14g.6 Stale claim in the "Hardware re-measurement owed" TODO
+
+`module_chip.md`'s Future/TODO claimed P4 (dynamic allocation) and P5
+(speaker stage/LCD) "have not had a by-ear pass at all yet, unlike
+P1-P3." False by the time this was checked: §14e.1 is explicitly "the
+author, first P4 by-ear/by-scope pass" (found and fixed the
+`render_mask` bug), and §14f.1 is the author hearing the `BYPASS`
+speaker preset ("a tiny bit dull") and catching the `res2p_radius()`
+clamp bug. Both phases caught a real bug from a real listen.
+
+What's actually still true, and what the bullet now says instead: the
+Performance section's SID-side per-item costs (voice ~108 c/f, filter
+bus ~80 c/f, speaker sim ~75 c/f, delay ~41 c/f, reverb ~255 c/f, the
+86.6% worst case) all trace back to §14a.9's `CHIP_RIG_*` rig —
+compile-time-fixed routing, not the real dynamically-routed engine —
+and have never been re-measured under it. AY's own ~44 c/f (§14g.4) is
+the one number in that list that *did* come from the real engine, which
+is what made the gap visible: SID's own filter-bus/frame-VM path has
+been heard and confirmed correct (P3's `FILTER_PAD` instrument routes
+through a bound bus, §14d.5) but never given its own real-engine cycle
+count. Corrected to "CPU cost only, not correctness" rather than
+removed outright, since that part of the claim still holds.
+
+### 14g.7 Stale TODO: AY instrument names on the display
+
+`module_chip.md`'s Future/TODO carried a bullet claiming AY instrument
+names weren't wired to any display row. They already were, since §14g.4
+(P3): `combined_instrument_name()` in `display.cpp` reads
+`AY_INSTRUMENT_NAMES[]` for combined indices `>= INSTRUMENT_COUNT` the
+same way it reads `INSTRUMENT_NAMES[]` below that, and the INSTR row has
+shown both SID and AY names by this path since that P3 commit. The bullet
+was leftover from before that work landed and never removed; no code
+change was needed, only removing the stale TODO.
+
+## 14h. Real-engine CPU re-measurement (closing §14g.6's SID gap)
+
+§14g.6 found that the Performance section's SID-side numbers were still
+P0's `CHIP_RIG_*` rig — compile-time-fixed routing — never re-measured
+under the real dynamically-routed engine the way AY's own ~44 c/f
+(§14g.4) was. The author supplied a fresh sweep on a current build to
+close it: no speaker sim, no FX, `PROFILE_PIN` duty cycle at 0/1/4/8/16
+voices. Two SID instruments deliberately isolate the filter-bus cost —
+`ARP_LEAD` (unfiltered) against `FILTER_PAD` (routes through a bound
+bus) — and one AY instrument, `LEAD`, re-checks §14g.4's own number on
+the same build (the author confirms every other AY instrument, including
+`LEAD_YM`, performs almost identically).
+
+| Voices | SID `ARP_LEAD` | SID `FILTER_PAD` | AY `LEAD` |
+|---|---|---|---|
+| idle | 1.56% | 1.56% | 1.56% |
+| 1 | 5.0% | 7.6% | 3.3% |
+| 4 | 14.0% | 17.0% | 7.5% |
+| 8 | 26.0% | 29.5% | 13.0% |
+| 16 | 50% | 54% | 23.9% |
+
+Converted at the same `3401 c/f = 100%` baseline §14g.4 used (a fixed
+hardware constant — core clock / sample rate — not specific to that
+measurement, so it carries over even though this build's idle overhead,
+1.56%, differs from §14g.4's 2.8%):
+
+- **`ARP_LEAD` (unfiltered SID voice, frame VM active — arpeggio
+  table)**: 1→4, 4→8 and 8→16 all agree at exactly 3.0 pp/voice, **~102
+  c/f**. `idle→1` reads high (3.44 pp, ~117 c/f) — a small, consistent
+  one-time cost the next section's delta calc shows isn't specific to
+  this instrument. This lands within ~6% of the rig's own ~108 c/f
+  estimate (§14a.9) — real dynamic routing costs about what the rig
+  said, no multi-fold miss the way F0's *static* estimates had.
+- **`FILTER_PAD` (SID voice bound to a filter bus, frame VM active —
+  filter-sweep table)**: 1→4, 4→8, 8→16 agree at 3.06–3.13 pp/voice,
+  **~104–107 c/f**. Also elevated at `idle→1` (6.04 pp, ~205 c/f).
+- **Isolating the filter-bus cost alone** (`FILTER_PAD` − `ARP_LEAD` at
+  each voice count, which cancels the shared one-time `idle→1` cost):
+  1v 2.6 pp (~88 c/f), 4v 3.0 pp (~102 c/f), 8v 3.5 pp (~119 c/f), 16v
+  4.0 pp (~136 c/f). This *rises* with voice count rather than staying
+  flat — consistent with §5.2's binding policy: bus ownership is
+  per-channel, so as more channels get held notes, more of the 4 buses
+  go from unbound to bound, and each newly-bound bus adds its own
+  filter-tick cost on top of the per-voice bus-accumulate cost. The
+  rig's own ~80 c/f/bus estimate (§14a.9, a *different* quantity — pure
+  per-bus filter-tick cost with a fixed bus count, not this per-voice
+  delta across a growing bus count) is in the same ballpark as the low
+  end of this range, not contradicted by it.
+- **AY `LEAD`**: 1→4, 4→8, 8→16 agree at 1.36–1.40 pp/voice, **~46–48
+  c/f** — matches §14g.4's own real-engine ~44 c/f within measurement
+  noise, confirming both that measurement's own methodology and that
+  nothing regressed for AY between the two builds.
+
+**Frame VM cost** was never isolated as its own line (both SID
+instruments here actively drive a frame-VM table), but its real
+contribution is now implicitly bounded: `ARP_LEAD`'s ~102 c/f is close
+enough to the rig's own ~108 c/f *oscillator+envelope-only* estimate
+that arpeggio-table stepping isn't adding a large, previously-unbudgeted
+cost.
+
+**What this does and doesn't close.** SID voice cost, filter-bus binding
+cost, and AY voice cost are all now real-engine-confirmed, each within
+shouting distance of the rig's own numbers — no anomaly, no regression.
+Frame VM's steady-state cost is bounded by the same data even though it
+isn't isolated. What this sweep does *not* touch: speaker simulation,
+delay, reverb, and the 20v/4-bus/reverb/speaker 86.6% worst-case total
+(no speaker sim, no FX, by design — "we want to observe the SID filter
+load for comparison," not the full signal chain) all remain the rig's
+own numbers; and hard-restart's specific interaction with rapid
+retrigger, which a steady held-voice-count sweep doesn't exercise at
+all. `module_chip.md`'s TODO was narrowed to just those two remaining
+items rather than closed outright.
+
+## 14i. Closing the gate: FX/speaker real costs, worst-case total, retrigger
+
+§14h's own recommendation was that the remaining items (speaker/delay/
+reverb real cost, the 20v worst-case total, hard-restart under rapid
+retrigger) didn't need an automated voice-sweep build — the per-voice
+slopes measured so far were linear and tight enough to extrapolate a
+few voices past what could be held by hand, and the fixed-stage costs
+(delay/reverb/speaker) could be isolated at any voice count since
+they're additive, not per-voice. The author's own hardware limit is 16
+concurrent voices; the sweep below stays inside that and extrapolates
+only the last 4 of the 20v target.
+
+**Fixed-stage costs, isolated the same way §14h isolated the filter-bus
+cost** (delta against `ARP_LEAD`'s own idle/1/4/8 baseline from §14h:
+1.56% / 5.0% / 14.0% / 26.0%), each with `ARP_LEAD` (unfiltered) so the
+FX/speaker cost isn't entangled with filter-bus binding:
+
+| | idle | 1v | 4v | 8v |
+|---|---|---|---|---|
+| delay only (max params) | 2.9% | 6.4% | 15.8% | 27.8% |
+| reverb only (max params) | 9.12% | 13.0% | 22.5% | 34.8% |
+| speaker only (`arcade`) | 3.90% | 7.5% | 16.8% | 29.0% |
+
+Idle-vs-idle isolates each stage's own always-on cost (it ticks every
+sample regardless of whether a voice is feeding it): delay `2.9 − 1.56 =
+1.34pp` → **~46 c/f** (rig estimate: ~41 c/f); reverb `9.12 − 1.56 =
+7.56pp` → **~257 c/f** (rig: ~255 c/f, almost exact); speaker `3.90 −
+1.56 = 2.34pp` → **~80 c/f** (rig: ~75 c/f). All three land within ~12%
+of the P0 rig's own numbers (§14a.9) — same conclusion as §14h's SID/AY
+figures, no anomaly.
+
+The per-voice slope inside each of these three tables (1→4, 4→8: delay
+106.6/102.0 c/f, reverb 107.7/104.6 c/f, speaker 105.4/103.7 c/f) all
+land in the same ~102–108 c/f band §14h already measured for bare
+`ARP_LEAD` with nothing else running. **Voice cost and stage cost are
+confirmed additive** — no cross-term where, say, reverb makes each
+voice more expensive to render into it.
+
+**Worst case**: `FILTER_PAD` (filter-bus-bound) with `arcade` speaker
+and max-param reverb together, up to 16 voices — the closest reachable
+approximation of the 20v/4-bus/reverb/speaker target config, using
+exactly 4 MIDI channels so all 4 buses are bound early and every voice
+past the first few is genuinely routed through a bus, not idle capacity:
+
+| Voices | Duty cycle |
+|---|---|
+| idle | 11.5% |
+| 1 | 17.7% |
+| 4 | 27.9% |
+| 8 | 40.7% |
+| 16 | 66.0% |
+
+Idle additivity check: `1.56 + (9.12−1.56) + (3.90−1.56) = 11.46%`
+predicted vs **11.5%** measured — confirms the three fixed costs above
+stack with no synergy overhead even layered together. Per-voice slope
+settles at 4→8: 108.8 c/f, 8→16: 107.6 c/f — matching the prediction at
+the end of §14h's own discussion (the earlier 88→136 c/f *delta*
+between `FILTER_PAD` and `ARP_LEAD` was buses coming online one at a
+time as channel count grew; here, with only 4 channels and all 4 buses
+already bound within the first few voices, the marginal per-voice rate
+settles back down near `ARP_LEAD`'s own ~102–108 c/f, just slightly
+above it for the extra bus-accumulate write).
+
+Extrapolating the last 4 voices at the stable 8→16 slope (3.1625
+pp/voice): `66.0 + 4×3.1625 = 78.65%` at 20v — **~7.95 percentage
+points below** P0 rig's own 86.6% worst-case figure (§14a.9). The real
+dynamically-routed engine has more headroom at the target configuration
+than the conservative rig-derived budget assumed, consistent with every
+individual real-engine number in this section and §14h landing at or
+below its rig-estimated counterpart.
+
+**Hard restart under rapid retrigger**: 2, 4, and 8 voices held and
+retriggered rapidly, both for `FILTER_PAD` (long release) and
+`ARP_LEAD` (abrupt release). No CPU spikes, distortion, or glitches;
+duty cycle as steady as expected. One real, correct interaction
+observed rather than a bug: retriggering `FILTER_PAD` while its long
+release tail is still ringing out allocates a *new* voice rather than
+reusing the retriggered one — `voice_alloc`'s three-tier steal policy
+(§8: silent → released → oldest active) is working exactly as
+designed, since a released-but-still-ringing voice loses to whichever
+tier actually matches it. `ARP_LEAD`'s abrupt release goes silent fast
+enough that this effect isn't visible by ear. Confirms Decision Record
+#10 (hard restart is an instantaneous envelope reset) holds up under
+real rapid retrigger, not just a single hard restart in isolation.
+
+**This closes the gate.** Every item `module_chip.md`'s "Hardware
+re-measurement owed" TODO named — SID voice, filter-bus binding, AY
+voice (§14h), delay, reverb, speaker simulation, the 20v worst-case
+total, and hard-restart/retrigger interaction (this section) — now has
+a real-engine measurement or a directly-observed real-hardware check,
+each consistent with (and mostly slightly better than) the P0 rig's own
+numbers. The TODO bullet was removed from `module_chip.md` rather than
+narrowed further.
+
+## 14j. >32 voices closed as out of scope
+
+The author's own call: the chip module will not attempt more than 32
+voices. `module_chip.md`'s Future/TODO bullet (the tag-bit MSB scheme
+for the active-voice FIFO word, recorded as the answer if this were ever
+revisited) is removed rather than left open, and Decision Record #11 is
+reworded from "considered and rejected for now" to "out of scope, not
+just deferred" — the tag-bit scheme itself stays on record there in case
+a future author wants the reasoning, but Future/TODO no longer lists it
+as pending work.

@@ -53,9 +53,11 @@ DX7 emulator) as ground truth rather than by ear alone.
   interpolation isn't used
 - **Patches**: no built-in bank ships in the repository — real DX7 `.syx`
   banks are Yamaha's commercial data (gitignored, generated locally); the
-  engine plays a single hardcoded test patch until one is converted
-- **No PSRAM, no streaming, no dynamic allocation** — total working set is
-  ~12.5 KB of SRAM
+  engine plays a single hardcoded test patch until one is converted.
+  `FM_PATCHES` itself lives in RAM, not flash — see Decision Record
+- **No PSRAM, no streaming, no dynamic allocation** — ~12.5 KB of SRAM fixed
+  working set, plus up to ~26.5 KB for the patch table itself (212
+  bytes/patch, up to 128 patches)
 
 ### MIDI Mapping (Input Capabilities)
 
@@ -123,13 +125,17 @@ other engine's measurement-rig levers.
 
 ### Tools
 
-`tools/syx2patch.py` — converts a DX7 32-voice bulk `.syx` dump into
-`patches.h`:
+`tools/syx2patch.py` — converts one to four DX7 32-voice bulk `.syx` dumps
+into a single `patches.h`, banks concatenated in the given file order:
 
 ```
-syx2patch.py convert <in.syx> <out.h>   # writes patches.h
-syx2patch.py dump <in.syx>              # per-voice summary, writes nothing
+syx2patch.py convert <in.syx> [in2.syx ...] <out.h>   # writes patches.h
+syx2patch.py dump <in.syx> [in2.syx ...]               # per-voice summary, writes nothing
 ```
+
+Capped at 4 files (128 patches): `FM_PATCH_COUNT` indexes Program Change
+and CC30 directly, both 7-bit MIDI values, so a larger table would leave
+some patches permanently unreachable.
 
 Both the `.syx` input and the generated header are gitignored — real DX7
 patch data is Yamaha's commercial work, the same policy the tracker's
@@ -313,36 +319,25 @@ free.
 
 ### Performance
 
-**Open again, not settled.** An early measurement pass (P0's synthetic
-rig, then an early real-engine build) projected `MAX_VOICES = 16` with
-comfortable margin — kernel-only cost measured ~100 c/f/voice, projected
-full-voice cost (with `EnvDX`) ~120–137 c/f/voice, well under the
-available budget. A later measurement against the *current*, fully
-Dexed-conformant engine, using real DX7 patches from `patches.h` rather
-than synthetic fixtures, came back markedly higher: **182.4 c/f/voice
-above idle** (16 voices, 87.9% duty, no FX), 1.2–1.8× every earlier
-checkpoint — real patch data drives real per-block cost in a way the
-synthetic rigs never exercised. Re-solving the budget with this reading
-and the last confirmed FX cost suggests roughly **11–14 voices** as the
-reverb-safe count, not 16.
+**Re-confirmed, `MAX_VOICES = 16` kept.** Clean idle baseline: 24.8 c/f
+(the earlier 71.4 c/f figure was a stale reading with the power-on-default
+delay silently running, not a real idle cost — see Decision Record).
+Typical per-voice cost: ~182 c/f/voice, confirmed independently twice.
+Reverb + delay costs measured directly against the real engine for the
+first time and land close to the previously-reused subtractive-engine
+figures. Measured directly, not projected: 16 voices + reverb on a typical
+patch runs high-80s to 91% duty. Patch data (`FM_PATCHES`) lives in SRAM,
+not flash — see Decision Record #18.
 
-`MAX_VOICES` has not been changed on this reading: the idle-measurement
-jump itself (71.4 c/f vs. the earlier ~15 c/f) hasn't been confirmed to be
-the same measurement convention, there is no FX-on reading yet against the
-current engine, and per this module's own acceptance standard this is
-meant to be a listening-verified decision, not a number set from a cycle
-count alone. The by-ear pass is partial: 5 of 32 ROM1A patches heard on
-real `breadboard_rp2350` hardware, reported as sounding "much more
-authentic" than the pre-conformance build; the rest of the bank, and a
-check with the mod wheel actually moved, remain. Full numbers and the open
-items: `history_fm.md`, "F8 — hardware voice-count sweep".
+Coverage caveat: real per-patch cycle numbers exist for only 6 of 256
+factory patches, spanning 176.9–234.7 c/f/voice. The full 256-patch
+by-ear pass (all banks, done) confirmed audible correctness bank-wide, but
+isn't a cycle-accurate cost for each one. Full numbers: `history_fm.md`,
+"F8 — hardware voice-count sweep" and "Multi-Bank syx2patch, Full ROM
+By-Ear Pass, and the ORCH-CHIME RAM Fix".
 
 ### Future / TODO
 
-- **`MAX_VOICES` re-confirmation** — needs: the idle-measurement-convention
-  check, an FX-on reading against the current engine, and the rest of the
-  by-ear pass (27 more ROM1A patches, plus other banks, plus a mod-wheel-
-  moved check). See Performance above.
 - **FM-specific display** — currently a stub; no status UI exists yet.
 - **Operator-budget readout on the LCD** — once the display itself exists,
   extend it to show operator-budget utilisation alongside per-voice dots.
@@ -449,6 +444,16 @@ items: `history_fm.md`, "F8 — hardware voice-count sweep".
     released-but-decaying voice at lower steal priority), and the
     override silently discarded a real, deliberate part of some patches'
     design (sustained ring-out after key-off).
+18. **`FM_PATCHES` lives in RAM, not flash** — op.h rereads a patch's fields
+    every control block (`am_sensitivity`, `pitch_eg`, `lfo`), not just once
+    at note-on, so unlike the kernel itself (Decision Record above), this
+    table's cost is sensitive to where it sits, and flash placement measured
+    a real, reproducible cost swing for one patch depending on unrelated
+    changes to the rest of the table (a flash XIP-cache placement effect,
+    not a converter or data bug). RAM access has no such sensitivity. This
+    doesn't reopen the kernel-placement question: that one was rejected for
+    a code-only branch-range cost (linker veneers) that plain data never
+    pays.
 
 ## Glossary
 

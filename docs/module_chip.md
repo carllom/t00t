@@ -309,17 +309,32 @@ error the exact diff can't express, since t00t generates directly at
 
 ### Performance
 
-Target configuration is 20 voices / 4 filter buses; worst case (all 4
-buses bound, reverb, speaker stage) measures 86.6% of Core 1 on real
-`breadboard_rp2350` hardware. Per-item measured costs: SID voice ~108 c/f
-(3.2%), filter bus ~80 c/f (2.4%, filtered and unfiltered voice cost are
-otherwise indistinguishable), AY voice ~44 c/f (1.3%), speaker simulation
-~75 c/f (2.2%), delay ~41 c/f (1.2%), reverb ~255 c/f (7.5%). Frame VM
-cost is still an estimate (~0.2%) — P3 has not had its own cycle cost
-re-measured on hardware since the P0 gate closed. Full breakdown,
-including two real bugs found and fixed during measurement (a pathological
-rig-only envelope config, and a software-divide in the filter saturation
-path): `history_chip.md`.
+Target configuration is 20 voices / 4 filter buses. All per-item figures
+below are now cross-checked against the real dynamically-routed engine,
+not just P0's compile-time-fixed-routing rig (`history_chip.md` §14h,
+§14i). SID voice, unfiltered (`ARP_LEAD`) ~102–108 c/f (~3.1%) regardless
+of which FX/speaker stage is layered on top (confirmed additive, no
+cross-term); a voice bound to its own filter bus, all 4 buses bound
+(`FILTER_PAD`) ~105–110 c/f (~3.2%) once every bus is already bound,
+rising above that only while buses are still coming online one at a
+time; AY voice ~47 c/f (1.4%). Fixed (not per-voice) stage costs: delay
+~46 c/f (1.3%), reverb ~257 c/f (7.6%), speaker simulation ~80 c/f
+(2.4%, `arcade` preset — the other four presets share the same DSP
+shape). Frame VM cost is folded into the SID figures above (both test
+instruments drive their own frame-VM tables) and confirmed small, though
+not isolated as its own line. **Worst case** (20v / 4 buses bound /
+reverb / speaker): 16v measured directly at 66.0%, extrapolated to 20v
+via the measured 8→16v slope at ~78.6% — notably *below* P0's rig-derived
+86.6%, i.e. the real dynamically-routed engine has more headroom here
+than the conservative rig estimate implied. Hard restart under rapid
+retrigger (2/4/8 voices held, both `FILTER_PAD`'s long release and
+`ARP_LEAD`'s abrupt one) showed no CPU spikes, distortion, or glitches —
+`FILTER_PAD` allocates additional voices under rapid retrigger rather
+than reusing the still-ringing one, which is the three-tier steal
+policy working as designed, not an anomaly. Full breakdown, including
+two real bugs found and fixed during the original P0 measurement (a
+pathological rig-only envelope config, and a software-divide in the
+filter saturation path): `history_chip.md`.
 
 ### Future / TODO
 
@@ -342,24 +357,12 @@ path): `history_chip.md`.
 - **Multispeed frame rate** (2×/3×/4×) — open question; affects the
   instrument data format, so it wants deciding before more assets are
   generated at the current 50 Hz-only rate.
-- **>32 voices** — a tag-bit MSB scheme for the active-voice FIFO word is
-  recorded as the answer if this is ever wanted, but not built; not
-  currently reachable except by the cheapest PSG voices, and CPU is better
-  spent on the speaker stage.
-- **Hardware re-measurement owed**: P2's dynamic filter-bus binding cost
-  hasn't been re-measured since P0 (which used compile-time-fixed
-  routing); P3's frame VM timing and hard-restart interaction; P4 (dynamic
-  allocation) and P5 (speaker stage/LCD) have not had a by-ear pass at
-  all yet, unlike P1–P3.
 - **GoatTracker `.ins` import gaps**, all documented refusals rather than
   silent mistranslation: WAVECMD rows (no frame-VM equivalent),
   absolute-pitch wavetable rows (chip's rows are always relative),
   per-song shared-table tricks (not reconstructable from one instrument
   file alone), and standalone-file vibrato commands (pattern-level in
   GoatTracker, not present in a `.ins` at all).
-- **AY instrument names** aren't shown anywhere in the display —
-  `chipgen.py` emits a name table for SID instruments; the AY equivalent
-  is hand-written but not yet wired to a display row.
 
 ## Decision Record
 
@@ -411,8 +414,10 @@ path): `history_chip.md`.
 10. **Hard restart is an instantaneous envelope reset**, not the
     hardware's frame-delayed ADSR-bug workaround — see SID Oscillator,
     Waveforms, and Envelope above for why.
-11. **>32 voices was considered and rejected** for now — see Future/TODO
-    for the tag-bit scheme recorded as the answer if it's revisited.
+11. **>32 voices is out of scope**, not just deferred — a tag-bit MSB
+    scheme for the active-voice FIFO word was considered as the answer if
+    it were ever wanted, but won't be built: not reachable except by the
+    cheapest PSG voices, and CPU is better spent on the speaker stage.
 
 ## Glossary
 
