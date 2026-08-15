@@ -31,6 +31,11 @@ static int8_t midi_note_voice[128];
 // --- Per-voice tracking (Core 0) ---
 static uint32_t voice_base_inc[MAX_VOICES];  // unbent phase_inc, for bend scaling
 static uint8_t  voice_channel[MAX_VOICES];   // owning MIDI channel
+static uint8_t  voice_program[MAX_VOICES];   // FM_PATCHES[] index at this voice's note-on -- a
+                                              // held voice keeps the patch it started with even
+                                              // if its channel's program changes mid-note (module_fm.md
+                                              // "Display"), so this can't be read back from
+                                              // channel_program[voice_channel[v]] after the fact
 static bool     voice_held[MAX_VOICES];      // true between note-on and note-off
 
 // --- Per-channel state (16 MIDI channels) ---
@@ -62,6 +67,7 @@ static void midi_voice_on(VoiceParamBlock &shadow, int v, uint8_t note, uint8_t 
 
     voice_base_inc[v] = base;
     voice_channel[v] = channel;
+    voice_program[v] = channel_program[channel];
     voice_held[v] = true;
 
     VoiceParams &vp = shadow.voices[v];
@@ -249,5 +255,19 @@ void midi_controller_process(const uint8_t *data, uint32_t len, ParamExchange *p
 
     if (changed) {
         params->commit();
+    }
+}
+
+const FmPatch *fm_channel_patch(uint8_t channel) {
+    return channel < NUM_CHANNELS ? channel_patch[channel] : &FM_TEST_PATCH;
+}
+
+void fm_voice_ui_state(uint32_t voice, FmVoiceUiState *out) {
+    if (voice < MAX_VOICES) {
+        out->channel = voice_channel[voice];
+        out->program = voice_program[voice];
+    } else {
+        out->channel = 0;
+        out->program = 0;
     }
 }

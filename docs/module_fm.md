@@ -63,11 +63,11 @@ DX7 emulator) as ground truth rather than by ear alone.
 
 | Message | Function |
 |---|---|
-| Note On/Off | Standard dynamic allocation, weighted by each voice's active operator count (see Architecture) |
+| Note On/Off | Standard dynamic allocation (`voice_alloc`), one voice slot per note |
 | Pitch Bend | Folded into `phase_inc` by Core 0 before it reaches Core 1 |
 | CC1 | Mod wheel — a separate modulation source competing with the patch's own configured LFO depth (`max()`, not a multiplier — see Decision Record) |
 | CC10 | Pan |
-| CC30 | Patch select — CC alternative to Program Change (this project's BeatStep Pro can't reliably send real Program Change) |
+| CC30 | Patch select — CC alternative to Program Change, for controllers with encoder-only CC control surfaces |
 | CC72 | FX param 1 |
 | CC73 | FX wet/dry mix |
 | CC74 | FX type select |
@@ -76,9 +76,14 @@ DX7 emulator) as ground truth rather than by ear alone.
 
 ### Display (Presentation Capabilities)
 
-Currently a stub — `display_init()`/`display_task()`/`display_bringup_test()`
-exist only so the shared LCD driver path still links. No FM-specific status
-UI has been built yet (see Future/TODO).
+Same chrome every engine's panel shares (title bar, VOICES dot bar, CPU load
+bar, NOTE row), plus FM-specific rows: the current patch (bank index and DX7
+voice name, for whichever channel most recently triggered a note or a
+Program Change/CC30), its algorithm as six operator-role cells
+(carrier/modulator/feedback, derived from `FmOpParams` directly — no
+algorithm number is stored anywhere at runtime), and a compact per-voice
+grid (voice, channel, patch index) covering voices 0–7, which is what makes
+multitimbral use visible instead of assumed.
 
 ## Technical Overview
 
@@ -105,7 +110,9 @@ src/engines/fm/
   render.h            fm_render_test_tone(), shared by the device skeleton
                        and the host build
   midi_controller.cpp note on/off, bend, pan, mod wheel, patch select
-  display.cpp         stub (see Display above)
+  display.cpp         status panel: voices/CPU/note, current patch,
+                       algorithm operator-role cells, per-voice multitimbral
+                       grid (see Display above)
 ```
 
 There is no `presets.h`/`VoicePreset` — FM's whole timbre is the single
@@ -328,7 +335,6 @@ By-Ear Pass, and the ORCH-CHIME RAM Fix".
 
 ### Future / TODO
 
-- **FM-specific display** — currently a stub; no status UI exists yet.
 - **Patch bank source** — currently a curated local conversion only; open
   question whether `.syx` loading should become a runtime feature over
   MIDI SysEx instead.
