@@ -9,54 +9,45 @@
 #include "mixer.h"
 #include "pan.h"
 
-// Core 0 tracker player (#17/#18 landed the notes-only walk; #19 added the
-// 90%-usage effect set; #20 adds instruments -- volume/panning envelopes,
-// key-off/fadeout, the full volume column, autovibrato) — order-list/pattern
-// walk, note triggering, the TickBlock/TickRing shapes from the design doc,
-// per-tick effect state machines (arpeggio, porta up/down, tone porta,
-// vibrato, volume slide, set volume/panning, position jump, pattern break,
-// set speed/tempo), and #20's per-instrument state (envelopes, fadeout,
-// autovibrato) resolved once per tick regardless of whether a pattern effect
-// is active. Pure integer/double math over a `SongHeader*` blob, no
-// pico-sdk: this header is included by both
-// tools/host_render/render_xm_device.cpp (the #17 reference-diff harness)
-// and the real Core 0 engine (player_task.cpp). `player_produce_tick()` is a
+// Core 0 tracker player: order-list/pattern walk, note triggering, the
+// TickBlock/TickRing shapes from the design doc, per-tick effect state
+// machines (arpeggio, porta up/down, tone porta, vibrato, volume slide, set
+// volume/panning, position jump, pattern break, set speed/tempo, 9xx sample
+// offset, ping-pong loop direction, and the bounded Exy sub-commands -- fine
+// porta E1x/E2x, fine volslide EAx/EBx, note cut ECx
+// (tracker_apply_tick_note_cut()), note delay EDx (player_produce_tick()'s
+// row_boundary dispatch), pattern delay EEx (same function's rollover), and
+// retrigger E9x/Rxy (tracker_apply_tick_retrigger())), and per-instrument
+// state (envelopes, fadeout, autovibrato) resolved once per tick regardless
+// of whether a pattern effect is active. Pure integer/double math over a
+// `SongHeader*` blob, no pico-sdk: this header is included by both
+// tools/host_render/render_xm_device.cpp (the reference-diff harness) and
+// the real Core 0 engine (player_task.cpp). `player_produce_tick()` is a
 // pure function of `PlayerState` plus the blob -- identical behaviour on
-// host or device is the whole point (tracker.md: "Any divergence between the
-// host and device render paths defeats the purpose").
+// host or device is the whole point.
 //
-// #21 adds 9xx sample offset (tracker_trigger_note()) and ping-pong loops
-// (mixer.h's wrap_ping_pong()). #22 adds the remaining bounded Exy
-// sub-commands -- fine porta (E1x/E2x), fine volslide (EAx/EBx), note cut
-// (ECx, tracker_apply_tick_note_cut()), note delay (EDx,
-// player_produce_tick()'s row_boundary dispatch), pattern delay (EEx, same
-// function's rollover), and retrigger (E9x/Rxy,
-// tracker_apply_tick_retrigger()). Still no-ops: glissando control (E3x --
-// tried, reverted: two reasonable snap-to-semitone implementations both
-// diverged from openmpt123 within a couple of ticks, which makes this
-// genuinely diff-driven quirk work, not the bounded/mechanical case the rest
-// of this slice is), tremolo, tremor, global volume, effect-column panning
-// slide, and the four named FT2 quirks (E60 pattern loop, envelope-on-
-// note-off, portamento-with-instrument-change, arpeggio wraparound) --
-// deliberately deferred, tracker.md's "long tail of FT2 quirks" (#25, split
-// out of #22 2026-08-08). Key-off (note 97) does not cut a voice
-// directly: it only marks the channel key_off, which the envelope/fadeout
-// machinery (tracker_resolve_envelope_volpan()) consumes every tick from
-// then on -- an instrument with an enabled volume envelope releases through
-// it (plus fadeout, once the envelope itself isn't holding sustain); one
-// with no envelope at all cuts (almost) instantly, matching openmpt123 (see
+// Still no-ops: glissando control (E3x -- straightforward snap-to-semitone
+// implementations diverge from openmpt123 within a couple of ticks; this is
+// diff-driven quirk work, not the bounded/mechanical case the rest of this
+// slice is), tremolo, tremor, global volume, effect-column panning slide,
+// and the four named FT2 quirks (E60 pattern loop, envelope-on-note-off,
+// portamento-with-instrument-change, arpeggio wraparound) -- deliberately
+// deferred, part of module_tracker.md's quirk tail. Key-off (note 97) does
+// not cut a voice directly: it only marks the channel key_off, which the
+// envelope/fadeout machinery
+// (tracker_resolve_envelope_volpan()) consumes every tick from then on -- an
+// instrument with an enabled volume envelope releases through it (plus
+// fadeout, once the envelope itself isn't holding sustain); one with no
+// envelope at all cuts (almost) instantly, matching openmpt123 (see
 // tracker_resolve_envelope_volpan()'s header comment).
 //
 // Requires osc_init_sine() to have been called first (pan_gains_q15's
 // quadrature source), same precondition as mixer.h's consumers.
 
-// Ring depth: tracker.md open question 1, resolved here. 2 slots is
-// sufficient given 20ms of tick slack per tracker.md's own reasoning; a host
-// harness driving this synchronously doesn't need lookahead at all, and #18
-// inherits this constant as-is for the real cross-core case. This struct's
-// head/tail bookkeeping is NOT atomic/barrier-safe -- cross-core memory
-// ordering is hardware-specific and stays #18's job to add once Core 0 and
-// Core 1 actually run this split across cores.
+// Ring depth: 2 slots is sufficient given 20ms of tick slack per
+// module_tracker.md's own reasoning; a host harness driving this
+// synchronously doesn't need lookahead at all, and the real cross-core case
+// (TickRing below) inherits this constant as-is.
 static constexpr uint32_t TICK_RING_DEPTH = 2;
 
 // Fixed at 32 regardless of a given song's num_channels (2-32): TickBlock is
@@ -68,20 +59,19 @@ static constexpr uint32_t TRACKER_MAX_CHANNELS = 32;
 enum ChannelTickFlags : uint8_t {
     TICK_NOTE_ON  = 0x01,  // (re)triggered this tick -- reset position, latch inc
     TICK_KEY_OFF  = 0x02,  // note-off (XM note 97) -- pre-envelope: volume target cut to 0
-    TICK_NOTE_CUT = 0x04,  // #22: ECx (Note Cut) fired this tick -- vol64 was just zeroed
+    TICK_NOTE_CUT = 0x04,  // ECx (Note Cut) fired this tick -- vol64 was just zeroed
 };
 
 // One channel's state as of this tick. Restated every tick, not just on
-// change -- tracker.md's render loop pseudocode re-applies whatever the
-// latest TickBlock says unconditionally ("apply_tick(tick): latch
-// inc/targets/triggers"), so the consumer never needs its own "did this
-// change" logic. `trigger` is what lets it tell a restated-but-unchanged
-// note apart from a genuine retrigger.
+// change -- module_tracker.md's render loop pseudocode re-applies whatever
+// the latest TickBlock says unconditionally, so the consumer never needs
+// its own "did this change" logic. `trigger` is what lets it tell a
+// restated-but-unchanged note apart from a genuine retrigger.
 struct ChannelTick {
     uint32_t inc;                 // Q8.24, 0 = channel silent
     int32_t tgt_volL, tgt_volR;   // Q15, post-pan
     uint32_t sample_id;           // global sample index (SongHeader's sample table)
-    uint32_t start_pos;           // Q18.14; 0 unless this tick's trigger carried a #21 9xx sample offset
+    uint32_t start_pos;           // Q18.14; 0 unless this tick's trigger carried a 9xx sample offset
     uint8_t trigger;              // generation counter, bumped on note-on
     uint8_t flags;                // ChannelTickFlags
 };
@@ -91,17 +81,17 @@ struct TickBlock {
     ChannelTick ch[TRACKER_MAX_CHANNELS];
 };
 
-// Single-producer/single-consumer ring, genuinely cross-core safe (#18):
-// Core 0 is the sole writer of `head`, Core 1 the sole writer of `tail`.
-// `push()`/`pop()` release-store their own index; `full()`/`empty()`
-// acquire-load the *other* index before touching a slot, so the producer's
-// slot write happens-before the consumer sees `head` advance, and the
-// consumer's slot read happens-before the producer reuses that slot for a
-// new write. std::atomic (rather than hand-rolled ARM barriers, cf.
-// engine_base.h's ParamExchangeT) because this file has to stay
-// host-buildable -- tools/host_render links it with the host compiler, no
-// pico-sdk headers allowed. Used single-threaded by the host harness today;
-// real cross-core use starts with #18's Core 0 player task / Core 1 mixer.
+// Single-producer/single-consumer ring, genuinely cross-core safe: Core 0 is
+// the sole writer of `head`, Core 1 the sole writer of `tail`. `push()`/
+// `pop()` release-store their own index; `full()`/`empty()` acquire-load the
+// *other* index before touching a slot, so the producer's slot write
+// happens-before the consumer sees `head` advance, and the consumer's slot
+// read happens-before the producer reuses that slot for a new write.
+// std::atomic (rather than hand-rolled ARM barriers, cf. engine_base.h's
+// ParamExchangeT) because this file has to stay host-buildable --
+// tools/host_render links it with the host compiler, no pico-sdk headers
+// allowed. Used single-threaded by the host harness; genuinely cross-core
+// between Core 0's player task and Core 1's mixer in the real engine.
 struct TickRing {
     TickBlock slots[TICK_RING_DEPTH];
     std::atomic<uint32_t> head{0};  // next slot to write -- Core 0 only
@@ -122,7 +112,7 @@ struct TickRing {
 // Per-channel memory carried between ticks: the currently-sounding inc/
 // volume (restated into every produced ChannelTick), the "current
 // instrument" FT2 remembers across notes that omit the instrument column,
-// and (#19) the per-tick effect state machines -- pitch (`period`, the
+// and the per-tick effect state machines -- pitch (`period`, the
 // portamento/vibrato/arpeggio source of truth), volume, and each effect
 // family's own memory slot (an XM row with a zero effect param reuses the
 // last nonzero one, per-command -- porta up/down and tone porta each keep a
@@ -135,7 +125,7 @@ struct PlayerChannelState {
     uint8_t trigger = 0;
 
     // Volume/pan source of truth -- volL/volR above are derived from these
-    // (plus envelopes/fadeout, #20) every tick by
+    // (plus envelopes/fadeout) every tick by
     // tracker_resolve_envelope_volpan(). pan_xm stays in XM's 0..255
     // domain, not Q15, because the panning envelope's asymmetric formula
     // (tracker_resolve_envelope_volpan()) needs |pan - 128| in that domain;
@@ -144,7 +134,7 @@ struct PlayerChannelState {
     uint32_t pan_xm = 128;  // 0..255, XM convention; 128 = center
 
     // Pitch source of truth. `period` is in the song's native period units
-    // (linear or Amiga, tracker.md/periods.py convention) -- portamento and
+    // (linear or Amiga, module_tracker.md/periods.py convention) -- portamento and
     // tone portamento move it directly; arpeggio and vibrato compute a
     // *transient* offset from it each tick without writing back (they must
     // not leave the channel detuned once the effect stops). `base_note` /
@@ -159,7 +149,7 @@ struct PlayerChannelState {
     uint8_t porta_down_memory = 0;
     uint8_t tone_porta_memory = 0;
     uint8_t volslide_memory = 0;
-    // #21: 9xx sample-offset memory. Unlike porta/tone-porta/volslide's
+    // 9xx sample-offset memory. Unlike porta/tone-porta/volslide's
     // memory (substituted whenever the effect is restated, param or not),
     // this one is only ever written on a row that both carries 9xx *and*
     // actually triggers a note (tracker_trigger_note()'s own comment) --
@@ -170,7 +160,7 @@ struct PlayerChannelState {
     uint8_t vibrato_depth = 0;
     uint8_t vibrato_pos = 0;  // 0..255, advances by vibrato_speed each active tick
 
-    // #22: remaining Exy sub-commands. Fine porta/volslide (E1x/E2x/EAx/EBx)
+    // Remaining Exy sub-commands. Fine porta/volslide (E1x/E2x/EAx/EBx)
     // apply once, at tick 0 only -- own memory slots, separate from the
     // continuous 1xx/2xx/Axy commands' (FT2 does not share them).
     uint8_t fine_porta_up_memory = 0;
@@ -191,7 +181,7 @@ struct PlayerChannelState {
     Effect active_effect = Effect::NONE;
     uint8_t active_param = 0;
 
-    // #20: the volume column is a logically independent second effect slot
+    // The volume column is a logically independent second effect slot
     // -- XM allows a volume-column command and an effect-column command on
     // the same row -- so its continuous commands (volslide, panslide,
     // vol-column vibrato/tone-porta) get their own active-effect slot and
@@ -201,7 +191,7 @@ struct PlayerChannelState {
     uint8_t vol_volslide_memory = 0;
     uint8_t vol_panslide_memory = 0;
 
-    // #20: instrument envelopes, key-off/fadeout, autovibrato. Reset on
+    // Instrument envelopes, key-off/fadeout, autovibrato. Reset on
     // every real trigger (tracker_trigger_note()); key_off persists across
     // ticks/rows until the next trigger, driving both the envelopes'
     // sustain-hold and fadeout's decay.
@@ -233,7 +223,7 @@ struct PlayerState {
     bool break_pending = false;
     uint32_t break_row = 0;
 
-    // #22 EEx (pattern delay): extra full-speed passes still owed on the
+    // EEx (pattern delay): extra full-speed passes still owed on the
     // current row, and whether *this* call's tick_in_row == 0 is one of
     // those held repeats rather than a genuine new row -- see
     // player_produce_tick()'s row_boundary computation and rollover logic.
@@ -241,7 +231,7 @@ struct PlayerState {
     bool pattern_delay_holding = false;
 };
 
-// tracker.md "Fxx tempo changes ... samples_per_tick": 44100 * 2.5 / bpm,
+// module_tracker.md "Fxx tempo changes ... samples_per_tick": 44100 * 2.5 / bpm,
 // rounded to nearest rather than truncated so tick length doesn't
 // systematically drift short over a long render.
 inline uint32_t tracker_samples_per_tick(uint32_t bpm) {
@@ -288,7 +278,7 @@ inline int16_t tracker_xm_pan_to_q15(uint32_t xm_pan) {
     return (int16_t)(int32_t)(p16 - 32768u);
 }
 
-// --- Period/frequency math (#19): a runtime C++ port of
+// --- Period/frequency math: a runtime C++ port of
 // tools/xm2t00t/periods.py's linear/Amiga formulas. periods.py's own table
 // (SampleHeader.note_increments_offset) only covers the no-effects-active
 // case -- computed once, offline, per (sample, note). Portamento, tone
@@ -297,11 +287,10 @@ inline int16_t tracker_xm_pan_to_q15(uint32_t xm_pan) {
 // Deliberately the same double-precision formulas as the host converter
 // (not a fixed-point or table-based reimplementation) so a channel with no
 // active pitch effect still lands on exactly the note_increments table's
-// Q8.24 value -- see tracker_apply_pitch_vol_effect()'s callers, which only
-// ever call into this math when an effect is actually modulating pitch this
-// tick. 32 channels x a few effects x ~50Hz is nowhere near enough double
-// math to dent Core 0's budget (tracker.md: "three million cycles per 20ms
-// tick" against "~4000 cycles of work").
+// Q8.24 value -- see tracker_tick_period() and tracker_process_effects_tick0(),
+// which only ever call into this math when an effect is actually modulating
+// pitch this tick. Double-precision math for a handful of channels at tick
+// rate is nowhere near enough to dent Core 0's budget.
 static constexpr double TRACKER_XM_BASE_FREQ_HZ = 8363.0;
 static constexpr double TRACKER_LINEAR_BASE_PERIOD = 10.0 * 12.0 * 16.0;  // 1920
 static constexpr double TRACKER_LINEAR_FREQ_PERIOD = 6.0 * 12.0 * 16.0;   // 1152
@@ -357,7 +346,7 @@ inline double tracker_period_to_freq(double period, bool linear) {
     return TRACKER_AMIGA_NTSC_CLOCK / (2.0 * period);
 }
 
-// tracker.md "Fixed-Point Formats": inc = f_note / f_mix, Q8.24, rounded to
+// module_tracker.md "Fixed-Point Formats": inc = f_note / f_mix, Q8.24, rounded to
 // nearest and clamped -- identical convention to periods.py's
 // q8_24_increment(), except the floor is 1 rather than 0. This function is
 // only ever called for a channel a pitch effect is actively driving (a
@@ -381,8 +370,8 @@ inline uint32_t tracker_period_to_inc(double period, bool linear) {
 }
 
 // Sanity clamp on the persistent pitch state -- not a claimed-exact FT2
-// limit (that level of precision is the "deep quirk tail", #19's own issue
-// text), just a floor/ceiling so a long chain of unclamped portamento can't
+// limit (that level of precision belongs to the deep quirk tail, not this
+// clamp), just a floor/ceiling so a long chain of unclamped portamento can't
 // walk `period` somewhere tracker_period_to_freq() turns pathological.
 inline void tracker_clamp_period(double &period) {
     if (period < 1.0) period = 1.0;
@@ -395,7 +384,7 @@ static constexpr uint8_t TRACKER_VIBRATO_SINE[32] = {
     180, 161, 141, 120, 97, 74, 49, 24,
 };
 
-// #20: instrument envelopes / key-off / volume column / autovibrato.
+// Instrument envelopes / key-off / volume column / autovibrato.
 //
 // Envelope flags (matches blob_format.py's _envelope_flags(): "bit0 enabled,
 // bit1 sustain, bit2 loop").
@@ -417,8 +406,8 @@ enum : uint32_t {
 // need to replicate bit-for-bit: it exists in the original to avoid a
 // division on 1990s hardware, not for behavioural reasons). Equivalent for
 // well-formed envelopes, which is the overwhelming majority; loop-end/
-// sustain-point coincidence edge cases are exactly the kind of "classic FT2
-// divergence point" tracker.md defers to the quirk tail (#25).
+// sustain-point coincidence edge cases are the kind of FT2 divergence
+// module_tracker.md defers to the quirk tail.
 inline double tracker_envelope_tick(const EnvelopePoint *points, uint32_t count,
                                      uint32_t flags, uint32_t sustain_idx,
                                      uint32_t loop_start_idx, uint32_t loop_end_idx,
@@ -458,10 +447,9 @@ inline double tracker_envelope_tick(const EnvelopePoint *points, uint32_t count,
 // trigger (tracker_trigger_note()). Only called (tracker_resolve_envelope_
 // volpan()) when the instrument's volume envelope is enabled -- fadeout is
 // a *release* mechanism for an envelope-driven instrument, not a substitute
-// for one. Verified against openmpt123 (#20, fadeout_basic vs
-// volume_envelope_basic): an instrument with no envelope at all cuts
-// (almost) instantly at key-off regardless of its fadeout field, rather
-// than fading over 32768/fadeout ticks -- see tracker_resolve_envelope_
+// for one. Verified against openmpt123: an instrument with no envelope at
+// all cuts (almost) instantly at key-off regardless of its fadeout field,
+// rather than fading over 32768/fadeout ticks -- see tracker_resolve_envelope_
 // volpan()'s no-envelope branch for that case.
 inline void tracker_fadeout_tick(const InstrumentHeader &inst, PlayerChannelState &pcs) {
     if (pcs.key_off) {
@@ -494,8 +482,8 @@ static constexpr int8_t TRACKER_AUTOVIB_SINE[256] = {
 
 // Standard XM volume-column tone-portamento coarse rate table (vol-column
 // param 0..15 -> glide speed in this engine's period units/tick, same units
-// as the effect-column 3xx param). Spot-checked against openmpt123 (#20,
-// param 8 -> rate 128): a clean match. Not exhaustively verified against
+// as the effect-column 3xx param). Spot-checked against openmpt123
+// (param 8 -> rate 128): a clean match. Not exhaustively verified against
 // every one of the 16 entries -- a rare command (far less common in real
 // modules than the effect-column 3xx it's an alternate spelling of), and
 // once the rate is "fast enough" to reach the target note within a couple
@@ -504,8 +492,8 @@ static constexpr int8_t TRACKER_AUTOVIB_SINE[256] = {
 // unreliable for anything but the smallest params. Indices 10..15 are
 // effectively unused by real modules (the format only defines 0..9) but
 // filled in for safety rather than left to read garbage. Long-tail
-// precision here belongs to #25, same as the manual vibrato effect's own
-// "not chased to bit-exactness" caveat.
+// precision here belongs to the deep quirk tail, same as the manual
+// vibrato effect's own "not chased to bit-exactness" caveat.
 static constexpr uint8_t TRACKER_VOLCOL_TONEPORTA_RATE[16] = {
     0, 1, 4, 8, 16, 32, 64, 96, 128, 255, 255, 255, 255, 255, 255, 255,
 };
@@ -514,9 +502,9 @@ inline double tracker_volcol_toneporta_rate(uint8_t vol_param) {
     return (double)TRACKER_VOLCOL_TONEPORTA_RATE[vol_param & 0x0F];
 }
 
-// #20 autovibrato: per-instrument sweep/depth/rate/waveform pitch LFO,
-// applied every tick on top of whatever the pattern effects computed --
-// FT2's updateVolPanAutoVib() auto-vibrato section, ported to this engine's
+// Autovibrato: per-instrument sweep/depth/rate/waveform pitch LFO, applied
+// every tick on top of whatever the pattern effects computed -- FT2's
+// updateVolPanAutoVib() auto-vibrato section, ported to this engine's
 // double-precision period math (tracker_note_to_period()'s own convention,
 // same reasoning as that function's header comment: nowhere near Core 0's
 // budget). Sweep ramps amplitude from 0 to depth over `sweep` ticks (or
@@ -524,8 +512,8 @@ inline double tracker_volcol_toneporta_rate(uint8_t vol_param) {
 // the note is released. The resulting swing is intentionally small (~4
 // period units at max depth): FT2's own internal period units are 4x finer
 // than this engine's linear period scale (the same *4 factor as
-// tracker_apply_pitch_vol_effect()'s porta comment), and autovibrato is
-// meant to be a subtle chorus-like wobble, not a bend.
+// tracker_tick_period()'s porta comment), and autovibrato is meant to be a
+// subtle chorus-like wobble, not a bend.
 inline double tracker_autovibrato_delta(const InstrumentHeader &inst, PlayerChannelState &pcs) {
     if (inst.vibrato_depth == 0) return 0.0;
 
@@ -593,7 +581,7 @@ inline TrackerSampleResolution tracker_resolve_note_sample(const SongHeader *son
 // behaviour rather than cutting a note that just has no data behind it.
 // Never called for a tone-portamento row with a note -- that's a retarget,
 // not a retrigger (see tracker_process_effects_tick0()). Key-off (note 97)
-// does not touch volume directly (#20) -- it only marks `key_off`, which
+// does not touch volume directly -- it only marks `key_off`, which
 // tracker_resolve_envelope_volpan()/tracker_fadeout_tick() consume every
 // tick from here on to release the envelope/fadeout naturally.
 inline void tracker_trigger_note(const SongHeader *song, const Event &ev,
@@ -611,7 +599,7 @@ inline void tracker_trigger_note(const SongHeader *song, const Event &ev,
     if (!res.ok) return;
     const SampleHeader &sh = *res.sh;
 
-    // #21: 9xx sample offset. Memory is written here unconditionally (any
+    // 9xx sample offset. Memory is written here unconditionally (any
     // 9xx next to this note updates it, even if the resulting offset turns
     // out to be past the sample's end below) -- only a 9xx with *no* note on
     // its row leaves the memory untouched, which is why this lives inside
@@ -748,8 +736,7 @@ inline void tracker_process_vol_column_tick0(const Event &ev, PlayerChannelState
 // this row -- resolved here (memory substituted) so later ticks never
 // re-touch the memory slots. An event with no effect column entry correctly
 // resets active_effect to NONE, which is what makes a continuous effect
-// require restating every row it runs on (tracker.md/#19: "tick-0-vs-later-
-// tick semantics ... is where the real work is").
+// require restating every row it runs on.
 inline void tracker_process_effects_tick0(const SongHeader *song, PlayerState &st, uint32_t c,
                                            const Event &ev, ChannelTick &ct, bool linear) {
     PlayerChannelState &pcs = st.ch[c];
@@ -846,7 +833,7 @@ inline void tracker_process_effects_tick0(const SongHeader *song, PlayerState &s
             st.samples_per_tick = tracker_samples_per_tick(param);
             break;
 
-        // #22: remaining Exy sub-commands.
+        // Remaining Exy sub-commands.
         case Effect::FINE_PORTA_UP:
             // Applied once, here, at tick 0 -- unlike the continuous 1xx
             // (tracker_tick_period()'s PORTA_UP case), which reapplies every
@@ -922,11 +909,9 @@ inline double tracker_glide_period(double period, double target, double step) {
 
 // One tick of the shared vibrato oscillator (effect-column 4xy and
 // volume-column Bx both drive this same position/speed/depth state --
-// tracker_process_vol_column_tick0()'s header comment). Empirically
-// calibrated against openmpt123 (pitch-tracked a long held vibrato run):
-// this table's "quarter cycle" (index 0 to its peak at 16) took roughly 22
-// ticks at speed 1, closer to a >>1 position-to-index shift than the >>2
-// some published FT2 pseudocode uses. Not chased to bit-exactness -- a
+// tracker_process_vol_column_tick0()'s header comment). Calibrated against
+// openmpt123: uses a >>1 position-to-index shift, not the >>2 some
+// published FT2 pseudocode uses. Not chased to bit-exactness -- a
 // continuous oscillation has no settling point to converge on the way
 // porta/tone porta do, so any small rate mismatch is permanent phase drift.
 inline double tracker_vibrato_delta(PlayerChannelState &pcs) {
@@ -972,10 +957,8 @@ inline double tracker_tick_period(PlayerChannelState &pcs, uint32_t tick_in_row,
         // for a period scale (64 units/semitone) this engine doesn't use --
         // periods.py's linear period is already 16 units/semitone (see
         // TRACKER_LINEAR_BASE_PERIOD's comment), so applying that *4 here
-        // on top would double the compensation. Verified against
-        // openmpt123: pitch-tracking a held porta-up run showed this
-        // engine's frequency climbing ~4x faster per tick than the
-        // reference's until the multiplier was removed.
+        // on top would double the compensation. Verified against openmpt123
+        // by pitch-tracking a held porta-up run.
         case Effect::PORTA_UP:
             pcs.period -= (double)pcs.active_param;
             tracker_clamp_period(pcs.period);
@@ -1052,7 +1035,7 @@ inline void tracker_apply_tick_volume_effects(PlayerChannelState &pcs) {
     }
 }
 
-// #22 ECx: fires exactly once, on the tick within the row that matches
+// ECx: fires exactly once, on the tick within the row that matches
 // active_param (0 cuts on the trigger tick itself) -- checked every tick,
 // including tick 0, unlike the other continuation effects above which only
 // ever run on ticks 1..speed-1. tick_in_row only ever increases within a
@@ -1065,7 +1048,7 @@ inline void tracker_apply_tick_note_cut(PlayerChannelState &pcs, ChannelTick &ct
     }
 }
 
-// #22 E9x/Rxy retrigger volume-change table, keyed by the param's high
+// E9x/Rxy retrigger volume-change table, keyed by the param's high
 // nibble -- standard XM/FT2 table (additive for 1-5/9-D, multiplicative for
 // 6/7/E/F, no-op for 0/8). E9x always reaches here with this nibble zeroed
 // (effects.py's decode strips it), so the table's 0x0 "no change" entry is
@@ -1095,7 +1078,7 @@ inline void tracker_retrig_apply_volume(PlayerChannelState &pcs, uint8_t volchg)
     pcs.vol64 = (uint32_t)v;
 }
 
-// #22 E9x/Rxy: ticks 1..speed-1 only (tick 0 already got this row's own
+// E9x/Rxy: ticks 1..speed-1 only (tick 0 already got this row's own
 // natural trigger, if any -- matching arpeggio/vibrato's tick-0 exclusion).
 // Retriggers the *currently playing* sample from position 0 at its current
 // pitch -- no note/instrument re-resolution, just the same generation-bump/
@@ -1113,7 +1096,7 @@ inline void tracker_apply_tick_retrigger(PlayerChannelState &pcs, ChannelTick &c
 // Runs every tick (tick 0 included, independent of any pattern effect):
 // advances the volume/panning envelopes and fadeout, and resolves the
 // result into `pcs.volL`/`pcs.volR` (Q15, post-pan) -- the FT2 formula this
-// ports is tracker.md/#20's `updateVolPanAutoVib()`. The panning envelope's
+// ports is `updateVolPanAutoVib()`. The panning envelope's
 // effect is deliberately asymmetric: `pan_mul` shrinks toward 0 as the
 // channel's base pan approaches either extreme, so the envelope can't push
 // panning further out than the channel's own pan already allows -- centered
@@ -1133,7 +1116,7 @@ inline void tracker_resolve_envelope_volpan(const SongHeader *song, const Instru
         tracker_fadeout_tick(inst, pcs);
     } else if (pcs.key_off) {
         // Fadeout is a *release* mechanism for an envelope-driven
-        // instrument -- verified against openmpt123 (#20): an instrument
+        // instrument -- verified against openmpt123: an instrument
         // with no volume envelope at all cuts at key-off almost instantly,
         // regardless of its fadeout field's value, rather than fading over
         // 32768/fadeout ticks. Reusing fadeout_vol for the cut (instead of
@@ -1181,7 +1164,7 @@ inline bool player_produce_tick(PlayerState &st, const SongHeader *song, TickBlo
     uint32_t pat_idx = orders[st.order_idx];
     const PatternHeader &pat = tracker_pattern_table(song)[pat_idx];
 
-    // #22 EEx: a pattern-delay held repeat reaches tick_in_row == 0 again
+    // EEx: a pattern-delay held repeat reaches tick_in_row == 0 again
     // (the row doesn't advance), but must not be treated as a genuine new
     // row -- pattern_delay_holding (set at the previous call's rollover,
     // below) tells the two apart. Every per-channel dispatch below keys off
@@ -1201,7 +1184,7 @@ inline bool player_produce_tick(PlayerState &st, const SongHeader *song, TickBlo
         double base_period;
         if (row_boundary) {
             const Event &ev = tracker_event_at(song, pat, st.row, c, num_channels);
-            // #22 EDx: a nonzero note-delay param defers this channel's
+            // EDx: a nonzero note-delay param defers this channel's
             // *entire* tick-0 processing (trigger, volume column, every
             // other tick-0-only effect -- EDx occupies the whole effect
             // column, so none of those can coexist with it on this cell
@@ -1236,16 +1219,15 @@ inline bool player_produce_tick(PlayerState &st, const SongHeader *song, TickBlo
         }
         tracker_apply_tick_note_cut(pcs, ct, st.tick_in_row);
 
-        // Instrument envelopes/fadeout/autovibrato (#20): run every tick,
+        // Instrument envelopes/fadeout/autovibrato run every tick,
         // independent of row_boundary or any pattern effect. When nothing
         // modulated the pitch this tick -- no pattern/vol-column pitch
         // effect (base_period came back exactly equal to pcs.period, a
         // plain reassignment with no arithmetic in that case) and no
         // autovibrato (by far the common case for both) -- reuse pcs.inc
         // as-is rather than paying a tracker_period_to_inc() round-trip:
-        // byte-identical to pre-#20 output, and exactly what
-        // tracker_trigger_note()'s precomputed note_increments table
-        // latched on tick 0.
+        // exactly what tracker_trigger_note()'s precomputed note_increments
+        // table latched on tick 0.
         double autovib_delta = 0.0;
         bool has_inst = pcs.instrument != 0 && pcs.instrument <= song->num_instruments;
         const InstrumentHeader *inst_hdr = nullptr;
@@ -1268,10 +1250,9 @@ inline bool player_produce_tick(PlayerState &st, const SongHeader *song, TickBlo
         ct.trigger = pcs.trigger;
     }
 
-    // Fxx (tick 0, above) must be visible in the block it belongs to --
-    // tracker.md: "Fxx tempo changes have to take effect at the tick
-    // boundary they belong to" -- so this reads st.samples_per_tick after
-    // the per-channel loop, not before it.
+    // Fxx (tick 0, above) must be visible in the block it belongs to -- so
+    // this reads st.samples_per_tick after the per-channel loop, not
+    // before it.
     out.samples_per_tick = st.samples_per_tick;
 
     bool looped = false;
@@ -1279,7 +1260,7 @@ inline bool player_produce_tick(PlayerState &st, const SongHeader *song, TickBlo
     if (st.tick_in_row >= st.speed) {
         st.tick_in_row = 0;
         if (st.pattern_delay_remaining > 0) {
-            // #22 EEx: hold the current row for one more full-speed pass --
+            // EEx: hold the current row for one more full-speed pass --
             // row/order untouched, and the *next* call's tick_in_row == 0 is
             // flagged as a held repeat (this function's row_boundary
             // computation, top) rather than a genuine new row, so it won't
@@ -1321,11 +1302,9 @@ inline bool player_produce_tick(PlayerState &st, const SongHeader *song, TickBlo
 
 // Builds a small SRAM-resident TrackerSample descriptor per song sample,
 // read once at song-load time -- the only place that ever dereferences
-// SampleHeader (flash-resident on device). tracker.md's rationale for
-// putting the player on Core 0 is explicitly to keep pattern-data flash
-// reads off Core 1 ("never thrashes the XIP cache"); tracker_apply_tick()
-// below only ever indexes the array this produces, never `song` itself, so
-// Core 1's hot path stays flash-free.
+// SampleHeader (flash-resident on device). tracker_apply_tick() below only
+// ever indexes the array this produces, never `song` itself, so Core 1's
+// hot path stays flash-free.
 //
 // `sample_data_base`/`sample_data_base_offset` let one function serve both
 // callers: the host harness has the whole blob resident already (base =
@@ -1347,7 +1326,7 @@ inline void tracker_build_resident_samples(const SongHeader *song, const int8_t 
 }
 
 // Consumes one produced TickBlock into the mixer's per-channel voice state
-// -- tracker.md's render-loop pseudocode calls this apply_tick(). Pure
+// -- module_tracker.md's render-loop pseudocode calls this apply_tick(). Pure
 // function of `tb` and `resident_samples` (built once by
 // tracker_build_resident_samples() above): no SongHeader/flash access, so
 // it's safe to call from Core 1's real-time render path. `voice_sample_desc`
@@ -1366,7 +1345,7 @@ inline void tracker_apply_tick(const TickBlock &tb, const TrackerSample *residen
             v.pos = ct.start_pos;
             v.inc = tracker_latch_inc(ct.inc);
             v.active = true;
-            // #21: every real trigger starts a ping-pong sample playing
+            // Every real trigger starts a ping-pong sample playing
             // forward, even one retargeted mid-loop-region by a 9xx offset
             // (start_pos) -- FT2/openmpt123 never trigger a note already
             // mid-bounce.
@@ -1384,8 +1363,7 @@ inline void tracker_apply_tick(const TickBlock &tb, const TrackerSample *residen
             // as impossible ("a silent voice is active = false, never inc ==
             // 0"): pos never reaches end_pos through a zero increment, so
             // wrap_loop() never fires either, and mix_voice()'s `while (n >
-            // 0)` spins forever on Core 1 (100% duty, frozen UI, silence --
-            // exactly what stop-then-restart reproduced).
+            // 0)` spins forever on Core 1.
             if (v.inc == 0) v.active = false;
         }
         v.tgt_volL = ct.tgt_volL;

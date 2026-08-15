@@ -1,27 +1,25 @@
 #pragma once
 
-// The AY-3-8910/YM2149 register stream format, mirroring
-// tools/sid_ref/sidreg.h's shape exactly (same grammar, same frame-boundary-
-// only write rule, same reasoning) so a reader who already knows one knows
-// both. Shared verbatim by tools/ay_ref/ayumi_dump.cpp/ayumi_render.cpp
-// (ayumi reference) and tools/host_render/render_ay.cpp (t00t/AY_STRICT).
+// The AY-3-8910/YM2149 register stream format (same grammar and
+// frame-boundary-only write rule as tools/sid_ref/sidreg.h). Shared verbatim
+// by tools/ay_ref/ayumi_dump.cpp/ayumi_render.cpp (ayumi reference) and
+// tools/host_render/render_ay.cpp (t00t/AY_STRICT).
 //
 // Format (text, one directive per line, '#' to end of line is a comment):
 //
 //   model ay|ym            chip model                        (default ay)
 //   clock zx|msx|<hz>      master clock                      (default zx)
 //   frame_cycles <n>       cycles per control frame           (default:
-//                          clock/50, a nominal 50 Hz frame -- AY has no
-//                          raster tie the way SID's authentic frame does)
+//                          clock/50 -- the AY has no raster tie, so this is
+//                          a nominal 50 Hz frame)
 //   frames <n>             total length of the render          (required)
 //   @<frame> <reg> <val>   write AY register <reg> = <val> at that frame
 //                          (reg and val are hex, reg 00-0d -- R0-R13;
 //                          R14/R15 are I/O ports, out of scope here)
 //
-// Writes are applied at frame boundaries only, same rationale as
-// tools/sid_ref/sidreg.h: the frame is the chip control clock (chip.md
-// §6.2), and a shared timebase coarser than either renderer is the only one
-// both can honour exactly.
+// Writes are applied at frame boundaries only (module_chip.md §6.2): the
+// frame is the chip control clock, and a shared timebase coarser than either
+// renderer is the only one both can honour exactly.
 
 #include <cstdint>
 #include <cstdio>

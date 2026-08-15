@@ -4,13 +4,12 @@
 #include <cmath>
 #include <cstdint>
 
-// FM operator sine table (fm.md §5.1, §41): the FM engine's own 4096-entry
+// FM operator sine table (module_fm.md §5.1): the FM engine's own 4096-entry
 // table, distinct from the shared osc/sine.h 1024-entry interpolating one.
-// fm.md §3.5: interpolation costs ~45% more per operator for no audible
-// benefit under FM's own harmonic density, so operators index this table
-// directly with the top FM_TABLE_BITS of a 32-bit phase accumulator -- no
-// interpolation, no mask (the shift already produces an index of exactly
-// the right width, so phase wrap is free).
+// Operators index it directly with the top FM_TABLE_BITS of a 32-bit phase
+// accumulator -- no interpolation, no mask (the shift already produces an
+// index of exactly the right width, so phase wrap is free). See module_fm.md
+// §3.5 for why interpolation isn't used here.
 static constexpr uint32_t FM_TABLE_BITS = 12;
 static constexpr uint32_t FM_TABLE_SIZE = 1u << FM_TABLE_BITS;  // 4096
 static constexpr uint32_t FM_PHASE_SHIFT = 32 - FM_TABLE_BITS;  // 20
@@ -22,8 +21,7 @@ inline int16_t fm_sine_table[FM_TABLE_SIZE];
 
 // Quarter-wave symmetric generation -- only the first quarter is computed
 // with sinf(), the rest mirrored/negated into place -- but the full table is
-// stored: the lookup itself never unfolds symmetry at runtime (fm.md §5.1:
-// "8 KB is cheaper than the instructions").
+// stored: the lookup itself never unfolds symmetry at runtime (module_fm.md §5.1).
 inline void fm_init_sine_tab() {
     constexpr uint32_t quarter = FM_TABLE_SIZE / 4;
 
@@ -42,13 +40,13 @@ inline void fm_init_sine_tab() {
 }
 
 // No interpolation: phase >> FM_PHASE_SHIFT (== phase >> 20) indexes
-// directly. fm.md §3.2's kernel comment applies: "phase wrap is free."
+// directly (module_fm.md §3.2).
 inline int32_t fm_sine(uint32_t phase) {
     return fm_sine_table[phase >> FM_PHASE_SHIFT];
 }
 
 // Q32 phase increment for a given frequency, matching fm_sine()'s bare
-// 32-bit accumulator (fm.md §5.2: "Q32 phase increment"). Distinct from
+// 32-bit accumulator (module_fm.md §5.2). Distinct from
 // osc/common.h's osc_phase_inc() -- that one targets the shared table's
 // 22.10 fixed-point format, which this table doesn't use.
 inline uint32_t fm_phase_inc(float freq_hz) {

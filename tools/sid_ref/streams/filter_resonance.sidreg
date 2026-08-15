@@ -3,7 +3,7 @@
 # Cutoff parked mid-range, resonance stepped 0-15, then the mode bits
 # swept LP, BP, HP, LP+HP (the notch a SID makes by summing two).
 #
-# sid.md §5.1's first change is that FilterMode becomes a *mask* because
+# module_chip.md §5.1's first change is that FilterMode becomes a *mask* because
 # the SID sums outputs simultaneously. The LP+HP section is what proves
 # it: a selector implementation renders one of the two and scores as a
 # gain error rather than as the wrong filter.

@@ -3,14 +3,14 @@
 #include "res2p.h"
 #include <cstdint>
 
-// Formant cascade + parallel fricative/nasal branches (#28 cascade, #29
-// parallel branches, speech.md "Cascade vs parallel"): F1->F2->F3->F4->F5
+// Formant cascade + parallel fricative/nasal branches (module_speech.md
+// "Cascade vs parallel"): F1->F2->F3->F4->F5
 // two-pole resonators in series get relative formant amplitudes right
 // automatically from the bandwidths -- what makes vowels sound natural
 // without per-formant amplitude data. A single parallel resonator each for
-// frication and the nasal pole, mixed into the cascade output, is "the
-// Klatt split, reduced" -- covers everything the SC-01 could do without a
-// full Klatt implementation. res2p.h is pure math with no pico-sdk
+// frication and the nasal pole, mixed into the cascade output, covers
+// everything the SC-01 could do without a full Klatt implementation.
+// res2p.h is pure math with no pico-sdk
 // dependency, so this header is shared by the device engine
 // (audio_engine.cpp) and tools/host_render/render_speech.cpp.
 inline constexpr uint32_t SPEECH_FORMANTS = 5;
@@ -22,7 +22,7 @@ inline constexpr uint32_t SPEECH_FORMANTS = 5;
 //   af - frication (LFSR noise) amplitude, feeds the fricative branch
 //   an - nasal branch mix weight
 // Voiced fricatives (/z/, /v/, /ʒ/) are av>0 and af>0 simultaneously
-// (speech.md "Mixed excitation").
+// (module_speech.md "Mixed excitation").
 struct FormantTarget {
     float F[SPEECH_FORMANTS];
     float B[SPEECH_FORMANTS];
@@ -31,7 +31,7 @@ struct FormantTarget {
     float av, af, an;
 };
 
-// Live formant_shift / bandwidth_scale ranges (speech.md "MIDI Mapping":
+// Live formant_shift / bandwidth_scale ranges (module_speech.md "MIDI Mapping":
 // both on a CC by default). Shared by the device MIDI controller
 // (midi_controller.cpp) and the host CC-sweep stability test
 // (render_speech.cpp) so both use identical ranges -- picking the range in
@@ -47,7 +47,7 @@ inline int16_t tract_cc_to_q8_8(uint8_t cc, float lo, float hi) {
 
 // Per-voice tract + excitation render state (Core 1 only, never crosses
 // ParamExchange). formant[] is the cascade; fric/nasal are the two parallel
-// branches (#29). formant_shift/bandwidth_scale are ramped the same way as
+// branches. formant_shift/bandwidth_scale are ramped the same way as
 // F/B -- never applied directly, so a CC sweep can't zipper.
 struct SpeechVoice {
     Res2p    formant[SPEECH_FORMANTS];
@@ -64,7 +64,7 @@ struct SpeechVoice {
     float    cur_amp = 0.0f;          // smoothed toward gate target, declicks on/off
     uint8_t  last_trigger = 0xFF;     // forces tract_retrigger() on first render
     uint8_t  last_phoneme = 0xFF;     // forces a target load on first render
-    // #36 vibrato/jitter/shimmer state (speech.md P4, excitation.h). Reset
+    // Vibrato/jitter/shimmer state (module_speech.md, excitation.h). Reset
     // on retrigger, not on a plain segment/phoneme target change -- these
     // track the *note*, the same lifetime as glottal_phase above, not the
     // phoneme currently sounding.
@@ -72,12 +72,12 @@ struct SpeechVoice {
     uint32_t glot_cycle_inc = 0;       // this glottal cycle's jittered phase increment
     float    glot_cycle_amp = 1.0f;    // this glottal cycle's shimmer amplitude multiplier
     uint16_t jitter_lfsr = 0xF00Du;    // separate seed from noise_lfsr -- must be nonzero
-    // #34 segment sequencer state (speech.md P3). Unused by speech_render_voice()
-    // (#28's SPEECH_HOLD phoneme keyboard has no segments to sequence); only
+    // Segment sequencer state (module_speech.md "Segment sequencer"). Unused by
+    // speech_render_voice() (the SPEECH_HOLD phoneme keyboard has no segments to sequence); only
     // speech_render_voice_seq() (render.h) touches these.
     uint16_t seg_index = 0;      // position within the current utterance (sequencer.h)
     uint32_t seg_remaining = 0;  // native samples left in the current segment
-    bool     seq_done = false;   // utterance complete (#30 note-off) -- voice still allocated but silent
+    bool     seq_done = false;   // utterance complete (note-off handling) -- voice still allocated but silent
     bool     gate_prev = false;  // previous call's gate, to find the note-off edge once per buffer
     bool     active = false;     // still sounding -- audio_engine.cpp's active_mask reads this for sequenced voices
 };
@@ -106,8 +106,7 @@ inline void tract_retrigger(SpeechVoice &sv, const FormantTarget &t) {
     sv.bandwidth_scale = sv.bandwidth_scale_tgt;
     sv.glottal_phase = 0;
     sv.cur_amp = 0.0f;
-    // #36: vibrato restarts at phase 0 (sine == 0, no pitch jump on
-    // trigger, same reasoning the subtractive engine's LFO retrigger uses);
+    // Vibrato restarts at phase 0 (sine == 0, no pitch jump on trigger);
     // shimmer's multiplier resets to unity. glot_cycle_inc is deliberately
     // left to the caller (render.h sets it from the note's actual phase_inc
     // on the same trigger edge) -- tract.h has no phase_inc to seed it with.
@@ -133,7 +132,7 @@ inline void tract_set_target(SpeechVoice &sv, const FormantTarget &t) {
 }
 
 // Segment-advance snap for PHONEME_FLAG_TRANSITION_FAST segments (plosive
-// bursts, #34/speech.md "Plosives"): sets F/B/fric/nasal/av/af/an straight to
+// bursts, module_speech.md "Plosives"): sets F/B/fric/nasal/av/af/an straight to
 // target, no glide -- but unlike tract_retrigger(), does not touch filter
 // memory (res2p_reset) or glottal/noise phase, so the snap itself doesn't
 // click by discontinuing state the preceding closure segment was still
@@ -157,7 +156,7 @@ inline void tract_snap_target(SpeechVoice &sv, const FormantTarget &t) {
 
 // ~4-5 sub-blocks (~12-15 ms at SPEECH_SUBBLOCK/SPEECH_RATE) to settle on a
 // new target -- enough to avoid a click on a mid-note phoneme change, short
-// enough that P1's static, unchanging target reaches it well within a note.
+// enough that a static, unchanging target reaches it well within a note.
 inline constexpr float TRACT_RAMP_COEFF = 0.25f;
 
 // Safety floor/ceiling applied to every resonator's *final* (post
@@ -168,8 +167,8 @@ inline constexpr float TRACT_RAMP_COEFF = 0.25f;
 // formant_shift would fold back rather than sound "shifted". Neither the
 // phoneme table nor the CC range (FORMANT_SHIFT_MIN/MAX,
 // BANDWIDTH_SCALE_MIN/MAX above) should ever reach these, but the floor/
-// ceiling is what the P2 acceptance criterion ("a CC sweep must never be
-// able to push a pole outside the unit circle") actually rests on.
+// ceiling is what guarantees a CC sweep can never push a pole outside the
+// unit circle.
 inline constexpr float TRACT_MIN_BANDWIDTH_HZ = 20.0f;
 inline constexpr float TRACT_MAX_FREQ_FRACTION = 0.45f;   // of fs
 
@@ -185,7 +184,7 @@ inline void tract_apply_coeffs(Res2p &r, float f_raw, float b_raw, float shift, 
 // Ramp every F/B/fric/nasal/av/af/an and formant_shift/bandwidth_scale one
 // sub-block toward its target, and recompute every resonator's coefficients
 // from the ramped values -- never from the target directly, and never by
-// interpolating a1/a2/b0 (speech.md "Resonator and the stability rule").
+// interpolating a1/a2/b0 (module_speech.md "Resonator and the stability rule").
 inline void tract_advance_subblock(SpeechVoice &sv, float fs) {
     sv.formant_shift += (sv.formant_shift_tgt - sv.formant_shift) * TRACT_RAMP_COEFF;
     sv.bandwidth_scale += (sv.bandwidth_scale_tgt - sv.bandwidth_scale) * TRACT_RAMP_COEFF;
@@ -212,14 +211,14 @@ inline void tract_advance_subblock(SpeechVoice &sv, float fs) {
 // Cascade only (F1->F2->F3->F4->F5 in series). Exposed separately from
 // tract_process_mixed() below so the host harness can measure the cascade's
 // transfer function in isolation (tools/host_render/render_speech.cpp's
-// impulse-response check, #28).
+// impulse-response check).
 inline float tract_process(SpeechVoice &sv, float voiced_src) {
     float y = voiced_src;
     for (uint32_t i = 0; i < SPEECH_FORMANTS; i++) y = res2p_tick(sv.formant[i], y);
     return y;
 }
 
-// Full tract (#29): cascade (voiced path) plus the two parallel branches,
+// Full tract: cascade (voiced path) plus the two parallel branches,
 // summed at the output. `voiced_src` (glottal pulse * av) drives both the
 // cascade and -- further scaled by an, since the nasal cavity is excited by
 // the same glottal source -- the nasal pole; `noise_src` (LFSR noise * af)

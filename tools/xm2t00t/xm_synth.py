@@ -4,12 +4,12 @@ modules *from checked-in code* rather than checked-in binary files.
 `test_xm2t00t.py`'s corpus (`../../xm/`) is real, third-party Mod Archive
 material and deliberately gitignored -- not something this repo can commit.
 `tools/host_render/diff_xm.py`'s reference-diff harness needs at least one
-module it can assert a tight tolerance against (a real module will legitimately
-diverge the moment it uses anything beyond notes -- envelopes, effects -- none
-of which src/engines/tracker/player.h implements yet). A module built here,
-by contrast, is authored to stay entirely within player.h's notes-only scope,
-so openmpt123 and the t00t player should agree closely: this is the "expected
-result" half of issue #17's "module + expected result" acceptance criterion.
+module it can assert a tight tolerance against (an arbitrary real module can
+legitimately diverge on the FT2-quirk tail player.h doesn't implement --
+glissando, tremolo, tremor, global volume, and the four named FT2 quirks,
+see player.h's own header comment). A module built here, by contrast, is
+authored to stay entirely within what player.h does implement, so openmpt123
+and the t00t player should agree closely.
 
 #19 adds one small, targeted fixture per effect command (arpeggio, porta
 up/down, tone porta, vibrato, volume slide, set volume, position jump +
@@ -17,10 +17,8 @@ pattern break, speed/tempo) on the same principle: author something narrow
 enough that openmpt123 and player.h's effect state machines should land in
 the same place, so a real divergence reads as a bug instead of noise. Kept
 short and low-tempo on purpose -- a continuous pitch effect (porta, tone
-porta, vibrato) accumulates phase error against the reference every sample
-it runs, so a fixture that held a bend for a long time would fail on a
-timing-precision question the -10dB windowed-RMS metric was never meant to
-answer, not a correctness one.
+porta, vibrato) accumulates phase error against the reference the longer it
+runs, which the -10dB windowed-RMS metric isn't meant to catch.
 
 Implements just enough of the standard FastTracker 2 XM binary layout (the
 inverse of xm_parser.py's read side) to produce a file real players accept:
@@ -337,8 +335,8 @@ def _fx_ev(note=0, inst=0, vol=0, fx=0, param=0):
 
 def arpeggio_basic() -> bytes:
     """One channel, one held note, arpeggio (0xy) cycling base/+x/+y every
-    tick -- exercises tick_in_row%3 cycling (acceptance: 'cycles correctly,
-    including at high speeds') and that an empty effect column stops it."""
+    tick -- exercises tick_in_row%3 cycling at high speeds and that an empty
+    effect column stops it."""
     pad = SynthSample(data=_pad_sample(), loop_start=0, loop_end=len(_pad_sample()), volume=64, panning=128, name="pad")
     instruments = [SynthInstrument(pad, "pad")]
 
@@ -442,9 +440,8 @@ def jump_and_break() -> bytes:
                row 0 of pat1 must never sound.
     pat1 row1: Bxx alone -> position jump to order 2 (pat2), landing row 0.
     pat2 row1: Bxx AND Dxx on the *same row* (different channels) -> jump to
-               order 3 (pat3) landing at row 1, not row 0 -- the "B and D
-               interact ... including break-with-jump on the same row"
-               acceptance criterion.
+               order 3 (pat3) landing at row 1, not row 0 -- covers B and D
+               interacting on the same row.
     pat3 row1: lands here; the order list then ends normally and loops.
     """
     pluck = SynthSample(data=_pluck_sample(), loop_end=0, volume=64, panning=128, name="pluck")
@@ -479,8 +476,8 @@ def jump_and_break() -> bytes:
 def speed_tempo_basic() -> bytes:
     """One held note across a speed change (Fxx, param < 0x20) then a tempo
     change (Fxx, param >= 0x20) -- both must take effect at the tick they're
-    issued on (tracker.md: 'samples_per_tick ... MUST be per-block'), which a
-    timing-sensitive diff against openmpt123 is exactly the right check."""
+    issued on, which a timing-sensitive diff against openmpt123 is exactly
+    the right check."""
     pad = SynthSample(data=_pad_sample(), loop_start=0, loop_end=len(_pad_sample()), volume=64, panning=128, name="pad")
     instruments = [SynthInstrument(pad, "pad")]
 
@@ -505,8 +502,7 @@ def volume_envelope_basic() -> bytes:
     envelope: ramp 0->64 by tick 4, decay to the sustain level (40) by tick
     10, hold there (sustain point, index 2) for as long as the note is held,
     then -- on key-off -- release down to 0 by tick 30. Exercises sustain
-    hold (acceptance: 'matches sustain point') and release-after-key-off
-    ('does not cut the voice instantly')."""
+    hold and release-after-key-off (does not cut the voice instantly)."""
     pad = SynthSample(data=_pad_sample(), loop_start=0, loop_end=len(_pad_sample()), volume=64, panning=128, name="pad")
     inst = SynthInstrument(
         pad, "vol_env",
@@ -649,58 +645,37 @@ def sample_offset_basic() -> bytes:
 
 def voice_count_profile() -> bytes:
     """Not a correctness fixture -- deliberately **not** in FIXTURES below, so
-    `diff_xm.py` never touches it. A device-side hardware profiling aid for
-    #21's acceptance criterion ("per-voice cost after ping-pong support is
-    re-measured against #16's baseline"): reproduces #16's self-cycling
-    idle/8/16/24/32-voice profiling-pin measurement, but as a real song
-    played through the actual #18 player+mixer, since audio_engine.cpp's own
-    synthetic phase-cycling rig (the `PHASE_IDLE`/`PHASE_8`/.../`PHASE_32_*`
-    enum in the #16 commit) no longer exists post-#18 -- the real
-    `tracker_render_buffer()` call in today's `audio_engine.cpp` always
-    renders every channel the song actually uses. No firmware changes
-    needed, just a one-command `tracker_song_blob.h` regenerate (see
-    `tracker_song_blob.h`'s own header comment for the exact command) to
-    swap this in for the normal demo song, then swap back afterward.
+    `diff_xm.py` never touches it. A device-side hardware profiling aid: a
+    real song played through the actual player+mixer, since
+    `tracker_render_buffer()` always renders every channel the song actually
+    uses. No firmware changes needed, just a one-command `tracker_song_blob.h`
+    regenerate (see `tracker_song_blob.h`'s own header comment for the exact
+    command) to swap this in for the normal demo song, then swap back
+    afterward.
 
-    32 channels, one pattern, ~3.8s per phase at speed=6/bpm=125 (32 rows/
-    phase; samples_per_tick=882, so one row = 6*882 = 5292 frames = 120ms,
-    close to #16's 4s PHASE_HOLD_FRAMES): silence, then channels 0-7, 8-15,
-    16-23, 24-31 join cumulatively and hold (8/16/24/32 active), then every
-    channel *retriggers* onto a tiny one-shot silent sample before the
-    pattern loops back to row 0, repeating the whole cycle forever exactly
-    like #16's rig did.
+    32 channels, one pattern: silence, then channels 0-7, 8-15, 16-23, 24-31
+    join cumulatively and hold (8/16/24/32 active), then every channel
+    *retriggers* onto a tiny one-shot silent sample before the pattern loops
+    back to row 0, repeating the whole cycle.
 
     The release row deliberately does **not** use key-off (note 97): this
     engine's key-off never deactivates a `TrackerVoice` in mixer.h, only its
-    *target volume* (via the envelope/fadeout path, #20) -- with no volume
+    *target volume* (via the envelope/fadeout path) -- with no volume
     envelope, that reaches 0 almost instantly, so the channel goes silent,
     but `v->active` stays true and mix_voice() keeps fully interpolating and
-    accumulating it forever at zero output. Measured on real hardware
-    (Carl, 2026-08-07): the profiling pin stays pinned at the 32-voice duty
-    cycle straight through the "silent" idle phase after the first lap --
-    display/UI correctly shows the channels as off (its active_mask reads
-    target volume, not v->active), but the mixer was still doing full
-    32-voice work the whole time. A genuine, pre-existing engine
-    characteristic this song's own idle-phase readings would otherwise
-    mislead about, not a #21 regression -- worth its own future issue
-    (proper `ECx` note-cut, or making key-off deactivate a voice once its
-    volume has fully decayed) but out of scope here. The fix used instead:
-    retrigger each channel onto a **one-shot** sample every real trigger
-    naturally deactivates once played through (mixer.h's `wrap_loop()`:
-    "One-shot voices go inactive at their end instead of wrapping") --
-    silent (all-zero data) and short (256 frames -- a few ms at any
-    realistic pitch, negligible against a 3.8s idle window) so it's both
-    inaudible and fast to finish.
+    accumulating it forever at zero output, which would give a misleading
+    idle-phase reading. Retriggering each channel onto a **one-shot** sample
+    instead makes it deactivate naturally once played through (mixer.h's
+    `wrap_loop()`) -- silent (all-zero data) and short (256 frames) so it's
+    both inaudible and fast to finish.
 
     Channel 0 is always a *ping-pong* tight (4-sample, loop covering the
-    entire sample) loop -- #16's own "one voice on a deliberately tight
-    loop" worst case, carried over to ping-pong specifically since a tighter
-    loop means more `wrap_ping_pong()` boundary crossings per second, the
-    new cost #21 adds -- so it's active, and its overhead measured, through
-    every non-idle phase. Channels 1-31 hold `_pad_sample()`'s ordinary
-    forward loop, same sustain sample every other fixture in this module
-    uses, spread across a couple of octaves so the result isn't a flat
-    unison drone."""
+    entire sample) loop, since a tighter loop means more
+    `wrap_ping_pong()` boundary crossings per second -- so it's active, and
+    its overhead measured, through every non-idle phase. Channels 1-31 hold
+    `_pad_sample()`'s ordinary forward loop, same sustain sample every other
+    fixture in this module uses, spread across a couple of octaves so the
+    result isn't a flat unison drone."""
     tight = SynthSample(data=bytes(v & 0xFF for v in (100, 60, -60, -100)),
                          loop_start=0, loop_end=4, volume=48, panning=128,
                          ping_pong=True, name="tight_pingpong")
@@ -739,7 +714,7 @@ def voice_count_profile() -> bytes:
 
 # --- #22 fixtures: the remaining Exy sub-commands (E60 pattern loop and the
 # other named FT2 quirks are deliberately deferred, not covered here -- see
-# tracker.md's Open Questions / Build Order for the split). Same principle
+# module_tracker.md's Open Questions / Build Order for the split). Same principle
 # as every earlier per-effect fixture in this module: narrow enough that
 # openmpt123 and player.h's implementation should land in the same place.
 
@@ -762,13 +737,11 @@ def fine_slides_basic() -> bytes:
     return build_xm(SynthSong(num_channels=1, rows=rows, instruments=instruments, speed=4, bpm=125))
 
 
-# No glissando_basic fixture: E3x (glissando control) was tried and
-# reverted from player.h -- two reasonable snap-to-semitone implementations
-# both diverged from openmpt123 within a couple of ticks of the glide
-# starting, which makes the exact behaviour genuinely diff-driven quirk work
-# rather than the bounded/mechanical case the rest of this module's #22
-# fixtures cover. Tracked in #25 alongside the four named FT2 quirks
-# (tracker.md's Open Questions).
+# No glissando_basic fixture: E3x (glissando control) is not implemented in
+# player.h -- its exact snap-to-semitone behaviour is diff-driven quirk work,
+# not the bounded/mechanical case the rest of this module's #22 fixtures
+# cover. Tracked in #25 alongside the four named FT2 quirks
+# (module_tracker.md's Open Questions).
 
 
 def retrig_basic() -> bytes:

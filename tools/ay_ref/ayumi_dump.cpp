@@ -1,12 +1,10 @@
 // ayumi_dump -- control-plane ground truth from ayumi, as CSV. No audio.
 //
-// Mirrors tools/sid_ref/resid_dump.cpp's role and domain split exactly
-// (chip.md §11.1's control-plane/signal-plane distinction, applied to the
-// second chip in this module): most of an AY-3-8910/YM2149 voice is
-// control-rate or purely combinational logic, so it compares exactly,
-// numerically, against tools/host_render/t00t_ay_dump.cpp -- no audio
-// rendering, no tolerance to argue about except where the domain itself
-// says otherwise.
+// Mirrors tools/sid_ref/resid_dump.cpp's role and domain split (module_chip.md
+// §11.1): most of an AY-3-8910/YM2149 voice is control-rate or purely
+// combinational logic, so it compares exactly, numerically, against
+// tools/host_render/t00t_ay_dump.cpp -- no audio rendering, no tolerance to
+// argue about except where the domain itself says otherwise.
 //
 //   tone      the toggle sequence for a period, over enough ticks to see
 //             several full cycles. Bit-exact.
@@ -23,14 +21,11 @@
 //             independently-re-typed copy against.
 //
 // Host-only tooling. ayumi.c is vendored (not fetched) at
-// tools/ay_ref/ayumi/ -- its MIT license permits that outright, unlike
-// reSID's GPL-2 (tools/sid_ref/fetch_resid.sh's gitignored checkout).
+// tools/ay_ref/ayumi/ -- its MIT license permits that.
 //
 // update_tone/update_noise/update_envelope are file-local statics in
-// ayumi.c, so this file #includes it directly rather than linking against
-// a separately-compiled object -- the same trick tools/host_render/
-// render_sid.cpp already uses on src/chip/sid_voice.h under CHIP_STRICT, to
-// reach state a public API wouldn't expose.
+// ayumi.c, so this file #includes it directly rather than linking against a
+// separately-compiled object, to reach state a public API wouldn't expose.
 
 #include "ayumi/ayumi.c"
 

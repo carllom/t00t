@@ -17,19 +17,19 @@ MIDI_UART ?= default
 #   make ENGINE=tracker DMA_BUFFER_SIZE=512
 DMA_BUFFER_SIZE ?= default
 
-# #31 P2 profiling rig: replaces the speech engine's normal MIDI-driven render
-# loop with a self-cycling, pin-only measurement build (see engine.md "Speech
-# Engine P2 profiling"). No effect on other engines.
+# #31 profiling rig: replaces the speech engine's normal MIDI-driven render
+# loop with a self-cycling, pin-only measurement build (see history_speech.md
+# "Speech Engine P2 Profiling"). No effect on other engines.
 #   make ENGINE=speech SPEECH_PROFILE=1
 SPEECH_PROFILE ?= 0
 
-# #42 P0 rig: replaces the FM engine's normal test-tone build with the
+# #42 rig: replaces the FM engine's normal test-tone build with the
 # stripped N-voice x 6-operator mixer (src/engines/fm/rig.h). No effect on
-# other engines. See engine.md "FM P0 Rig (#42)".
+# other engines. See history_fm.md "FM P0 Rig (#42)".
 #   make ENGINE=fm FM_PROFILE=1
 FM_PROFILE ?= 0
 
-# fm.md §3.6 tuning levers, each a compile-time switch on the #42 rig (only
+# module_fm.md §3.6 tuning levers, each a compile-time switch on the #42 rig (only
 # meaningful with FM_PROFILE=1) — "default" leaves rig.h's own #ifndef
 # default in place, same sentinel convention as MIDI_USB/DMA_BUFFER_SIZE above.
 #   make ENGINE=fm FM_PROFILE=1 FM_RIG_VOICES=32
@@ -51,26 +51,27 @@ FM_RIG_FB           ?= default
 # #45 BLOCK confirmation: the FM engine's real EG control-rate block size
 # (op.h's FM_BLOCK) — distinct from FM_RIG_BLOCK above, which only affects
 # the #42 profiling rig, not real MIDI-driven playback. "default" leaves
-# op.h's own #ifndef default (16) in place. See engine.md "FM P2 BLOCK
+# op.h's own #ifndef default (16) in place. See history_fm.md "FM Engine — EnvDX + BLOCK
 # Confirmation (#45)".
 #   make ENGINE=fm FM_BLOCK=8
 #   make ENGINE=fm FM_BLOCK=32
 FM_BLOCK ?= default
 
-# Chip module P0 measurement rig (rig.h), preserved behind a flag once P1's
-# real MIDI-driven engine became the default (sid.md §1, §14a.9). Same idiom
-# as SPEECH_PROFILE above -- lets sid.md §9's hardware numbers stay
-# re-measurable against later changes without deleting the rig that produced
-# them. No effect on other engines.
+# Chip module measurement rig (rig.h), preserved behind a flag once the
+# real MIDI-driven engine became the default (module_chip.md §1,
+# history_chip.md §14a.9). Same idiom as SPEECH_PROFILE above -- lets
+# module_chip.md §9's hardware numbers stay re-measurable against later
+# changes without deleting the rig that produced them. No effect on other
+# engines.
 #   make ENGINE=chip CHIP_PROFILE=1
 CHIP_PROFILE ?= 0
 
-# Chip module F0 measurement rig levers (src/engines/chip/rig.h, sid.md P0).
-# Each measurement is its own build -- a runtime switch would put a branch
-# inside the loop whose cycle count is the thing being measured. "default"
-# leaves rig.h's own value in place.
+# Chip module measurement rig levers (src/engines/chip/rig.h,
+# module_chip.md). Each measurement is its own build -- a runtime switch
+# would put a branch inside the loop whose cycle count is the thing being
+# measured. "default" leaves rig.h's own value in place.
 #
-#   make ENGINE=chip                                  # 20 voices, 12 filtered (P0 decision, sid.md §9)
+#   make ENGINE=chip                                  # 20 voices, 12 filtered (module_chip.md §9)
 #   make ENGINE=chip CHIP_RIG_FILTERED=0              # unfiltered, for the diff
 #   make ENGINE=chip CHIP_RIG_MOD=1 CHIP_RIG_OVERSAMPLE=2   # sync at 2x
 #   make ENGINE=chip CHIP_WAVE_DAC=0                  # without the 8 KB DAC LUT

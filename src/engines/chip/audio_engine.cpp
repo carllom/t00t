@@ -16,27 +16,22 @@
 #include <arm_acle.h>
 #include <cmath>
 
-// Chip module Core 1 render (chip.md §1 P1, §14 item 2).
+// Chip module Core 1 render (module_chip.md §1).
 //
 // Two builds live in this file, same idiom as the speech engine's
 // SPEECH_PROFILE flag: the normal MIDI-driven engine (below, default) and
-// the P0 measurement rig (rig.h, preserved unchanged behind
-// T00T_CHIP_PROFILE=1 -- `make ENGINE=chip CHIP_PROFILE=1` -- so the
-// hardware-verified cost numbers in chip.md §9/§14a.9 stay re-measurable
-// against later changes without deleting the rig that produced them).
+// a measurement rig (rig.h) behind T00T_CHIP_PROFILE=1 --
+// `make ENGINE=chip CHIP_PROFILE=1`.
 
 static volatile uint8_t s_load_pct = 0;
 uint8_t audio_engine_load() { return s_load_pct; }
 
 static constexpr uint32_t BUF_PERIOD_US = 1000000u * SAMPLES_PER_BUFFER / SAMPLE_RATE;
 
-// P5 display telemetry (engine.h), unconditional like s_load_pct above --
+// Display telemetry (engine.h), unconditional like s_load_pct above --
 // display.cpp calls this regardless of CHIP_PROFILE, so the getter must
-// link either way (same reasoning as speech's s_voice_ui/
-// speech_voice_ui_state, which are unconditional for the same reason). The
-// CHIP_PROFILE rig has no MIDI/display and never writes it, so it just
-// reads back zero-init silence, same as speech's profiling build leaving
-// its own array at its "none" default.
+// link either way. The CHIP_PROFILE rig has no MIDI/display and never
+// writes it, so it just reads back zero-init silence.
 static ChipVoiceUiState s_voice_ui[MAX_VOICES];
 
 void chip_voice_ui_state(uint32_t voice, ChipVoiceUiState *out) {
@@ -45,22 +40,20 @@ void chip_voice_ui_state(uint32_t voice, ChipVoiceUiState *out) {
 
 #if defined(T00T_CHIP_PROFILE) && T00T_CHIP_PROFILE
 
-// --- P0 measurement rig (chip.md §1 P0, §14 item 1) -------------------------
+// --- Measurement rig (module_chip.md §1) --------------------------------
 //
 // A self-cycling, pin-only rig: no MIDI, no ParamExchange, no display.
 // PROFILE_PIN (GPIO 22) is high for exactly the render, so the duty cycle
-// read on a scope or logic analyser is the number, and the phase table steps
-// through configurations on a fixed hold so one capture covers several of
-// them. Same hands-off shape as the tracker's #16 rig and the speech
-// engine's #31 profiling build.
+// read on a scope or logic analyser is the number, and the phase table
+// steps through configurations on a fixed hold so one capture covers
+// several of them.
 //
 // The levers themselves are compile-time (rig.h), because a runtime switch
-// would put a branch inside the loop being measured. What varies at runtime is
-// only how many of the built voices are rendered -- which is the one axis that
-// must be swept within a single build, since the per-voice cost is the
-// *slope*, and comparing two builds' intercepts would fold their code layout
-// differences into it. That is the #43 lesson from the FM rig: inlining and
-// flash placement move the fixed cost enough to swamp a per-voice figure.
+// would put a branch inside the loop being measured. What varies at
+// runtime is only how many of the built voices are rendered -- the
+// per-voice cost is the slope across that sweep, and comparing two
+// builds' intercepts instead would fold their code layout differences
+// into it.
 
 static ChipRig rig;
 static int32_t dry[CHIP_RIG_SUBBLOCK];
@@ -75,9 +68,9 @@ static FxReverb fx_reverb;
 #endif
 #if CHIP_RIG_FX != 0
 static int32_t fx_buf[SAMPLES_PER_BUFFER];
-// Fixed mid-range settings -- chip.md §9's FX cost lines are the fixed
-// per-sample cost of the effect running, not a function of these knobs
-// (fx/delay.h, fx/reverb.h: both do the same work regardless of p1/p2/mix).
+// Fixed mid-range settings -- fx/delay.h and fx/reverb.h both do the same
+// work regardless of p1/p2/mix, so these values don't affect what's being
+// measured.
 static constexpr EffectParams CHIP_RIG_FX_PARAMS = {
     (uint8_t)(CHIP_RIG_FX == 1 ? FX_DELAY : FX_REVERB), 100, 64, 64
 };
@@ -87,14 +80,13 @@ static constexpr EffectParams CHIP_RIG_FX_PARAMS = {
 static SidSpeakerStage speaker;
 #endif
 
-// Voice counts to step through. The slope across these is the per-voice cost;
-// the intercept at 0 is the fixed per-buffer overhead, which chip.md §9's
-// "idle ~0.6%" line is the comparison for.
+// Voice counts to step through. The slope across these is the per-voice
+// cost; the intercept at 0 is the fixed per-buffer overhead.
 static constexpr uint32_t PHASE_VOICES[] = { 0, 1, 4, 8, 16, CHIP_RIG_VOICES };
 static constexpr uint32_t PHASE_COUNT = sizeof(PHASE_VOICES) / sizeof(PHASE_VOICES[0]);
 
-// ~4 s per phase, matching #16 and #31: long enough for a stable reading and
-// short enough that one capture covers the whole sweep.
+// ~4 s per phase: long enough for a stable reading and short enough that
+// one capture covers the whole sweep.
 static constexpr uint32_t PHASE_HOLD_BUFFERS = (4000000u / BUF_PERIOD_US) + 1;
 
 void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
@@ -143,9 +135,9 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
             rig.render_n(dry, n, voices);
 
             for (uint32_t i = 0; i < n; i++) {
-                // Mono, duplicated -- chip.md §10 says the speaker stage is
-                // mono and "more authentic and half the price", and a stereo
-                // pan here would measure a stage the module does not have.
+                // Mono, duplicated -- the speaker stage is mono (module_chip.md
+                // §10); a stereo pan here would measure a stage the module
+                // does not have.
                 int16_t s = (int16_t)__ssat(dry[i] >> SID_MIX_SHIFT, 16);
                 *out++ = s;
                 *out++ = s;
@@ -161,10 +153,10 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
             for (uint32_t i = 0; i < n; i++) dry_full[base + i] = dry[i];
         }
 
-        // §10: "you want delay -> speaker, or reverb -> speaker" -- the
-        // insert sits upstream of the speaker sim, not after it. Mono send /
-        // stereo return per fx/delay.h and fx/reverb.h's own contract, but
-        // this rig's output is already mono, so the wet add-back is direct.
+        // The insert sits upstream of the speaker sim, not after it
+        // (module_chip.md §10). Mono send / stereo return per fx/delay.h and
+        // fx/reverb.h's own contract, but this rig's output is already
+        // mono, so the wet add-back is direct.
 #if CHIP_RIG_FX != 0
         for (uint32_t i = 0; i < SAMPLES_PER_BUFFER; i++) fx_buf[i] = dry_full[i];
 #if CHIP_RIG_FX == 1
@@ -183,9 +175,9 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
 #else
             v >>= SID_MIX_SHIFT;
 #endif
-            // Mono, duplicated -- chip.md §10 says the speaker stage is
-            // mono and "more authentic and half the price", and a stereo
-            // pan here would measure a stage the module does not have.
+            // Mono, duplicated -- the speaker stage is mono (module_chip.md
+            // §10); a stereo pan here would measure a stage the module
+            // does not have.
             int16_t s = (int16_t)__ssat(v, 16);
             *out++ = s;
             *out++ = s;
@@ -207,61 +199,55 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
 
 #else  // !T00T_CHIP_PROFILE -- the real engine
 
-// --- Engine (chip.md §1 P1/P2/P3/P4, §14 item 2) ------------------------------
+// --- Engine (module_chip.md §1) ------------------------------------------
 //
-// One SidVoice per MAX_VOICES slot, dispatched by VoiceType exactly like the
-// groovebox (§7.3) -- VT_SILENT is skipped, VT_SID renders (render_mask, P4:
-// also skips a VT_SID slot once it's both ungated and fully decayed, so CPU
-// cost tracks currently-audible voices rather than every slot dynamic
-// allocation has ever touched -- see the render_mask comment below).
+// One SidVoice per MAX_VOICES slot, dispatched by VoiceType like the
+// groovebox: VT_SILENT is skipped, VT_SID renders (render_mask also skips a
+// VT_SID slot once it's both ungated and fully decayed, so CPU cost tracks
+// currently-audible voices rather than every slot allocation has ever
+// touched -- see the render_mask comment below).
 //
 // Retrigger uses env.hard_restart() (§4.3's default: instantaneous reset,
 // not the 6581's 1-2 frame delay bug, which isn't modelled) rather than
-// gate_on()'s "only attacks if not already gated" -- P4's dynamic allocator
+// gate_on()'s "only attacks if not already gated" -- the dynamic allocator
 // can steal a slot that's still mid-release from a *different* note (§8's
-// three-tier policy's own priority 2/3), so the attack must restart even
-// though the envelope is neither idle nor freshly gated-off.
+// three-tier policy), so the attack must restart even though the envelope
+// is neither idle nor freshly gated-off.
 //
-// P2 (chip.md §5, §7.2): filter buses. Rendering is sub-blocked so bus
+// Filter buses (module_chip.md §5, §7.2). Rendering is sub-blocked so bus
 // accumulators are sized FILTER_BUS_COUNT x sub-block, not FILTER_BUS_COUNT
-// x SAMPLES_PER_BUFFER. CHIP_SUBBLOCK reuses P0's proven value (rig.h's
-// CHIP_RIG_SUBBLOCK default) -- and per open question 1, this is also
-// P3's frame-tick cut point (see below), not a separate sample-exact one.
+// x SAMPLES_PER_BUFFER. CHIP_SUBBLOCK reuses rig.h's CHIP_RIG_SUBBLOCK
+// value, which is also the frame-tick cut point (see below), not a
+// separate sample-exact one.
 //
-// Per-bus idle skip is chip.md §5.2's "P2 TODO": a bus with zero voices
-// routed to it this sub-block skips its filter tick entirely (the ~80 c/f
-// per sample §14a.9 measured for an idle-but-bound bus), derived directly
-// from the same per-voice scan the render loop already does. bus_was_active
-// tracks the 0->nonzero wake transition so a just-woken bus's SidFilter
-// state resets instead of inheriting a stale resonant tail from whatever
-// voice last fed it.
+// A bus with zero voices routed to it this sub-block skips its filter tick
+// entirely, derived directly from the same per-voice scan the render loop
+// already does. bus_was_active tracks the 0->nonzero wake transition so a
+// just-woken bus's SidFilter state resets instead of inheriting a stale
+// resonant tail from whatever voice last fed it.
 //
-// P3 (chip.md §6): the frame table VM. Resolves open question 1 ("does the
-// VM tick get its own cut point, or ride the existing SUBBLOCK boundary")
-// as the doc's own lean predicted: rides CHIP_SUBBLOCK. ≤64 samples (1.45 ms
-// on a 20 ms frame, 7%) of jitter against a true 50 Hz grid -- "likely fine,
-// unlike Core 0's 29%" -- against building a second, finer cut point for a
-// tick that only ever changes wave/pulse/filter/vibrato state, not the
-// audio-critical bus round trip §7.2 already sub-blocks for.
+// The frame table VM (module_chip.md §6) rides CHIP_SUBBLOCK rather than a
+// separate sample-exact cut point: <=64 samples (1.45 ms on a 20 ms frame)
+// of jitter against a true 50 Hz grid, which only affects wave/pulse/
+// filter/vibrato state, not the audio-critical bus round trip §7.2 already
+// sub-blocks for.
 //
-// A note's instrument index is the *only* synthesis data Core 0 sends
-// (§7.1: "the VM lives on Core 1 and Core 0 only supplies note/CC/
-// instrument-select") -- INSTRUMENTS[] is const, compiled into flash, and
-// identically reachable from both cores, so there is nothing to shuttle
-// through ParamExchange beyond the index and the note itself. FilterBusParams
-// (engine_base.h, P2) is consequently unused by chip's own rendering now:
-// a bound bus's cutoff/resonance/mode come from the *feeding* voice's own
+// A note's instrument index is the only synthesis data Core 0 sends (§7.1)
+// -- INSTRUMENTS[] is const, compiled into flash, and identically
+// reachable from both cores, so there is nothing to shuttle through
+// ParamExchange beyond the index and the note itself. FilterBusParams
+// (engine_base.h) is consequently unused by chip's own rendering: a bound
+// bus's cutoff/resonance/mode come from the *feeding* voice's own
 // instrument (bus_feeder_voice below), same source Core 1 already has
 // locally. The struct stays in engine_base.h for engines that do want a
 // live Core-0-set bus preset; chip just doesn't need it once instruments
 // own their own filter data.
 //
-// Not wired: §4.4's per-voice sub-oscillator (mod_acc/mod_inc/mod_mode) was
-// never added to the real engine's per-voice state at P1 or P2, only to the
-// P0 rig and the CHIP_STRICT harness's adjacency topology. WaveRow's sync/
-// ring flag bits (instrument.h) are consequently reserved, not read --
-// wiring them needs the sub-oscillator built first, a real chunk of work in
-// its own right, not a P3 afterthought. sync_reset/ring_msb_flip stay 0.
+// Not wired: §4.4's per-voice sub-oscillator (mod_acc/mod_inc/mod_mode)
+// exists only in the rig and the CHIP_STRICT harness's adjacency topology,
+// not in the real engine's per-voice state. WaveRow's sync/ring flag bits
+// (instrument.h) are consequently reserved, not read -- wiring them needs
+// the sub-oscillator built first. sync_reset/ring_msb_flip stay 0.
 static constexpr uint32_t CHIP_SUBBLOCK = 64;
 static constexpr uint32_t FRAME_PERIOD_SAMPLES = SAMPLE_RATE / 50;   // §6.2: 50 Hz PAL default
 
@@ -302,13 +288,13 @@ static int32_t fx_buf[SAMPLES_PER_BUFFER];
 static FxDelay  fx_delay;
 static FxReverb fx_reverb;
 static uint8_t  s_last_fx_type = 0xFF;
-static SidSpeakerStage speaker;   // chip.md §1 P5, §10
+static SidSpeakerStage speaker;   // module_chip.md §10
 
-// AY-3-8910/YM2149 voices (chip.md §12.1, AY-P1). One AyTone/AyNoise/
+// AY-3-8910/YM2149 voices (module_chip.md §12.1). One AyTone/AyNoise/
 // AyEnvelope trio per slot, independent -- not the real chip's shared-
-// noise/shared-envelope-across-3-channels topology (§12.1's design note,
-// same file). VT_AY reuses the same MAX_VOICES pool and voice_alloc as
-// VT_SID; a slot holds one or the other, never both, decided at note-on.
+// noise/shared-envelope-across-3-channels topology. VT_AY reuses the same
+// MAX_VOICES pool and voice_alloc as VT_SID; a slot holds one or the
+// other, never both, decided at note-on.
 static AyTone     ay_tone[MAX_VOICES];
 static AyNoise    ay_noise[MAX_VOICES];
 static AyEnvelope ay_env[MAX_VOICES];
@@ -317,7 +303,7 @@ static uint32_t   ay_tick_phase = 0;  // shared across every AY voice -- same cl
                                         // same sample rate, so the tick-count sequence
                                         // for a given sample is identical for all of them
 
-// Per-voice AY frame-VM state (chip.md §12.2, AY-P2), same role ChipVm
+// Per-voice AY frame-VM state (module_chip.md §12.3), same role ChipVm
 // plays for SID.
 struct AyVm {
     uint8_t  tone_pos, volume_pos;
@@ -394,22 +380,13 @@ static void ay_vm_frame_tick(uint32_t v, const AyInstrument &ins, uint16_t base_
         period = (uint32_t)(((uint64_t)period << 16) / semitone_ratio_q16[off + 24]);
     }
     // Vibrato: proportional to the *current* period, not a fixed offset on
-    // it -- Carl heard why the first version was wrong on real hardware:
-    // "the arpeggio deteriorates after a couple of laps [vibrato_delay's
-    // own 30-frame onset, ~3-4 laps of AY_INS_ARP's 8-row table], more
-    // pronounced ... the higher the base pitch." A fixed absolute delta
-    // subtracted from period is a *tiny* relative pitch shift at a large
-    // (low-pitch) period and a *huge* one at a small (high-pitch) period,
-    // since period is inversely related to pitch -- traced on host
-    // (base_hz=880) before touching this code again: period went
-    // 84 -> 38 -> 26 across three frames the instant vibrato armed, a
-    // ~1319 Hz -> ~4263 Hz swing, not a wobble. Scaling the delta by
-    // `period` itself keeps the *fractional* deviation constant across the
-    // whole pitch range instead, the same fix arpeggio's own divide-by-
-    // ratio already gets right above -- still an uncalibrated "raw wobble
-    // scale, not cents" depth constant (SID's own vibrato_depth has the
-    // identical caveat, chip.md §14d.5 finding 2), just proportional now
-    // instead of structurally broken at one end of the keyboard.
+    // it -- period is inversely related to pitch, so a fixed absolute
+    // delta would be a tiny relative pitch shift at a large (low-pitch)
+    // period and a huge one at a small (high-pitch) period. Scaling the
+    // delta by `period` itself keeps the fractional deviation constant
+    // across the whole pitch range instead, same as arpeggio's own
+    // divide-by-ratio above. Still an uncalibrated raw wobble scale, not
+    // cents.
     if (ins.vibrato_depth > 0 && s.frames_since_trigger >= ins.vibrato_delay) {
         s.vib_phase = (uint16_t)(s.vib_phase + ins.vibrato_speed * 64u);
         int32_t tri = (s.vib_phase < 32768)
@@ -450,7 +427,7 @@ static void vm_reset(uint32_t v, const Instrument &ins) {
     voice[v].osc.pw = (uint16_t)s.pulse_cur;
 }
 
-// One frame boundary's worth of table stepping for one voice (chip.md §6).
+// One frame boundary's worth of table stepping for one voice (module_chip.md §6).
 static void vm_frame_tick(uint32_t v, const Instrument &ins, uint32_t base_freq) {
     ChipVm &s = vm[v];
     s.frames_since_trigger++;
@@ -496,18 +473,12 @@ static void vm_frame_tick(uint32_t v, const Instrument &ins, uint32_t base_freq)
     }
 
     // Arpeggio (wave-table note offset) and vibrato both apply as ratios on
-    // the base register rather than recomputing from a note number, so they
-    // compose for free with whatever pitch bend Core 0 already baked into
-    // base_freq. Vibrato is a frame-stepped triangle LFO, not smoothed --
-    // §6's "the quantisation is the sound" applies here too, same as every
-    // other table. vibrato_depth is a raw register-wobble scale, not
-    // calibrated to cents -- >>12 (not the original >>8, off by ~4 bits)
-    // puts depth 15/40 at roughly 1.3%/3.6% deviation on a mid-range note,
-    // vs. the original's 22%/58% -- a siren, not vibrato, and the likely
-    // dominant cause of an early "rough/grainy" by-ear report on instruments
-    // with no arpeggio at all to blame instead. Still a by-ear tuning item,
-    // not a claim of correctness -- this is a better first guess, not a
-    // calibrated one.
+    // the base register rather than recomputing from a note number, so
+    // they compose for free with whatever pitch bend Core 0 already baked
+    // into base_freq. Vibrato is a frame-stepped triangle LFO, not
+    // smoothed. vibrato_depth is a raw register-wobble scale, not
+    // calibrated to cents/semitones -- a by-ear tuning item, not a claim
+    // of correctness.
     uint32_t freq = base_freq;
     if (s.wave_note_offset != 0) {
         int off = s.wave_note_offset;
@@ -541,9 +512,9 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
     acc_scale_g = sid_acc_scale_q8(SID_CLOCK_PAL, SAMPLE_RATE);
     rates = env_sid_make_rates(SID_CLOCK_PAL, SAMPLE_RATE);
     init_semitone_ratios();
-    res2p_init();   // chip.md §1 P5: speaker sim's peak stage (res2p.h's LUT, must run once before any res2p_set())
+    res2p_init();   // module_chip.md §1: speaker sim's peak stage (res2p.h's LUT, must run once before any res2p_set())
     for (uint32_t v = 0; v < MAX_VOICES; v++) {
-        voice[v].init(SID_MODEL_6581);   // §13 item 6: 6581 first, 8580 is P6
+        voice[v].init(SID_MODEL_6581);   // 6581 only -- 8580 not modelled yet
         last_trigger[v] = 0;
     }
     for (uint32_t b = 0; b < FILTER_BUS_COUNT; b++) {
@@ -573,23 +544,19 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
         // next sub-block, not a whole buffer later). Instrument-driven
         // waveform/pw/filter come from vm_reset()/vm_frame_tick() now, not
         // read from VoiceParams directly -- there is no raw waveform/pw/ad/
-        // sr in VoiceParams any more (§6 supersedes P1's fixed-patch fields).
+        // sr in VoiceParams (§6).
         uint32_t active_mask = 0;
         uint32_t render_mask = 0;
         for (uint32_t v = 0; v < MAX_VOICES; v++) {
             const VoiceParams &p = vp.voices[v];
 
             if (p.type == VT_AY) {
-                // AY-P2 (chip.md §12.2): apply the instrument once on a
-                // fresh trigger, raw base period immediately -- exactly
-                // SID's own P3 pattern (this file's SID trigger block,
-                // below), for exactly the same reason: ay_vm_frame_tick()
-                // is the ongoing authority on ay_tone[v]'s period from the
-                // next frame tick on, so setting it unconditionally every
-                // buffer here would stomp arpeggio/vibrato on every buffer
-                // that doesn't also contain a frame tick -- the precise
-                // buffer-rate-snap bug SID's own P3 by-ear pass found and
-                // fixed (chip.md §14d.5 finding 3).
+                // Apply the instrument once on a fresh trigger, raw base
+                // period immediately -- ay_vm_frame_tick() is the ongoing
+                // authority on ay_tone[v]'s period from the next frame
+                // tick on, so setting it unconditionally every buffer here
+                // would stomp arpeggio/vibrato on every buffer that
+                // doesn't also contain a frame tick.
                 uint8_t ins_idx = p.instrument < AY_INSTRUMENT_COUNT ? p.instrument : 0;
                 const AyInstrument &ins = AY_INSTRUMENTS[ins_idx];
 
@@ -614,9 +581,9 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
                 // would still see p.gate true and never re-arm renders.
                 bool renders = p.gate && !ay_vm[v].gate_off_fired;
                 if (renders) { active_mask |= (1u << v); render_mask |= (1u << v); }
-                // chip.md §12.3: AY voices now report real telemetry --
+                // AY voices report telemetry through the same field --
                 // tone_pos doubles as wave_pos (ChipVoiceUiState's own
-                // comment: "same field, same meaning either way").
+                // comment).
                 s_voice_ui[v] = renders ? ChipVoiceUiState{VT_AY, p.gate, ins_idx, ay_vm[v].tone_pos}
                                          : ChipVoiceUiState{VT_SILENT, false, 0, 0};
                 continue;
@@ -635,15 +602,9 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
                 // Raw base pitch, immediately -- vm_frame_tick() is the
                 // ongoing authority on osc.inc from here on (arpeggio/
                 // vibrato included). Reassigning it unconditionally every
-                // buffer here, as an earlier version did, stomped whatever
-                // vm_frame_tick() had just computed back to the unmodulated
-                // base on every buffer that *didn't* also contain a frame
-                // tick (roughly 2 of every 3, since a ~882-sample frame
-                // period spans ~3.4 256-sample buffers) -- a buffer-rate
-                // (172 Hz) snap between the true pitch and the root that
-                // read as "notes too close together" and "weird waveform"
-                // on ARP_LEAD, and was simply too small to notice on
-                // FILTER_PAD's much subtler vibrato.
+                // buffer here would stomp whatever vm_frame_tick() had
+                // just computed back to the unmodulated base on every
+                // buffer that doesn't also contain a frame tick.
                 voice[v].osc.inc = sid_freq_to_inc(p.freq, acc_scale_g);
                 vm_reset(v, ins);
             }
@@ -659,27 +620,27 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
             if (p.gate && !vm[v].gate_off_fired) voice[v].env.gate_on();
             else if (!p.gate)                    voice[v].env.gate_off();
 
-            // chip.md §8 P4: voice_alloc's three-tier steal policy needs this
-            // bit to mean "still audible" (counter > 0), not "this slot has
-            // a VT_SID note nominally assigned" -- the latter never clears,
+            // voice_alloc's three-tier steal policy (§8) needs this bit to
+            // mean "still audible" (counter > 0), not "this slot has a
+            // VT_SID note nominally assigned" -- the latter never clears,
             // so every voice would read as permanently active and priority
             // 1/2 (silent/released steals) would never fire, forcing every
             // allocation to fall through to stealing the oldest held note.
             if (voice[v].env.counter > 0) active_mask |= (1u << v);
 
-            // render_mask (P4 fix, chip.md §8): p.type is never reset to
+            // render_mask (module_chip.md §8): p.type is never reset to
             // VT_SILENT on note-off -- dynamic allocation only ever flips
             // p.gate, reusing the same slot on its next note. Without this,
-            // the `p.type != VT_SID` checks below stay true forever once a
-            // slot has been touched, so Core 1 keeps ticking every voice,
-            // bus feed and frame-VM table included, that was *ever* played
-            // this session -- CPU cost tracks the high-water mark of voice
-            // slots used, not currently audible voices, and never comes back
-            // down after release. `|| p.gate` (not just counter > 0, unlike
-            // active_mask above) matters here specifically for the sample
-            // right after a hard_restart: counter is reset to 0 there and
-            // only ramps up as tick() runs through the attack, so counter
-            // alone would skip a note's own opening samples.
+            // the `p.type != VT_SID` checks below would stay true forever
+            // once a slot has been touched, so Core 1 would keep ticking
+            // every voice, bus feed and frame-VM table included, that was
+            // ever played this session -- CPU cost would track the
+            // high-water mark of voice slots used, not currently audible
+            // voices. `|| p.gate` (not just counter > 0, unlike active_mask
+            // above) matters for the sample right after a hard_restart:
+            // counter is reset to 0 there and only ramps up as tick() runs
+            // through the attack, so counter alone would skip a note's own
+            // opening samples.
             bool renders = p.gate || voice[v].env.counter > 0;
             if (renders) render_mask |= (1u << v);
 
@@ -694,8 +655,8 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
             if (n > CHIP_SUBBLOCK) n = CHIP_SUBBLOCK;
 
             // Frame tick: sample-counted, not buffer-edge-quantised (§6.1),
-            // just riding CHIP_SUBBLOCK's granularity rather than a separate
-            // sample-exact cut (open question 1, resolved above).
+            // riding CHIP_SUBBLOCK's granularity rather than a separate
+            // sample-exact cut.
             frame_sample_pos += n;
             bool frame_tick = false;
             while (frame_sample_pos >= FRAME_PERIOD_SAMPLES) {
@@ -743,11 +704,12 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
                 if (bus_hits[b] == 0) { bus_was_active[b] = false; continue; }
                 if (!bus_was_active[b]) { bus_filter[b].init(); bus_was_active[b] = true; }
 
-                // Bus binding is 1:1 (chip.md §5.2's "share" only applies to
-                // one channel's own repeated notes, never two different
-                // channels), so the feeding voice's own instrument is
-                // unambiguously this bus's tonal source -- see the P3
-                // comment above on why FilterBusParams goes unused here.
+                // Bus binding is 1:1 (module_chip.md §5.2): sharing only
+                // applies to one channel's own repeated notes, never two
+                // different channels, so the feeding voice's own
+                // instrument is unambiguously this bus's tonal source --
+                // see the comment above on why FilterBusParams goes unused
+                // here.
                 const VoiceParams &fp = vp.voices[bus_feeder[b]];
                 uint8_t ins_idx = fp.instrument < INSTRUMENT_COUNT ? fp.instrument : 0;
                 const Instrument &ins = INSTRUMENTS[ins_idx];
@@ -757,7 +719,7 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
                     dry[base + i] += bus_filter[b].tick(bus_acc[b][i], f_half, q, ins.filter_mode_mask, /*saturate=*/true);
             }
 
-            // AY voices (chip.md §12.1, AY-P1): no filter bus, straight to
+            // AY voices (module_chip.md §12.1): no filter bus, straight to
             // dry[]. Tick-phase is shared across every AY voice -- same
             // clock, same sample rate, so the tick-count sequence for a
             // given sample is identical for all of them (ay_tick_scale_g,
@@ -807,20 +769,19 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
                         // ay_vm[v].volume_cur is the live level either way:
                         // seeded from initial_volume at trigger (ay_vm_reset)
                         // and, if the instrument has a volume table, stepped
-                        // by ay_vm_frame_tick() every frame -- the P1 static
+                        // by ay_vm_frame_tick() every frame -- the static
                         // case (no table) just never advances it past its
                         // starting value, so this one read covers both.
                         int8_t level = ins.use_envelope ? ay_env[v].level
                                                          : (int8_t)(ay_vm[v].volume_cur * 2 + 1);
-                        float amp = ay_dac_table(ins.model)[level];   // chip.md §12.3: per-instrument model
+                        float amp = ay_dac_table(ins.model)[level];   // module_chip.md §12.4: per-instrument model
                         float bipolar = gate ? 1.0f : -1.0f;
 
                         // Scale to roughly a SID voice's own raw dry[] peak
                         // magnitude (~2-3e5 typical, sid_voice.h's (w -
                         // wave_zero()) * amp) so AY and SID voices sum into
-                        // one mix without one silently dominating -- a first
-                        // guess, not a calibrated one, same status P3's
-                        // vibrato constants had before a by-ear pass.
+                        // one mix without one silently dominating -- a
+                        // first guess, not a calibrated one.
                         constexpr float AY_MIX_SCALE = 700000.0f;
                         dry[base + i] += (int32_t)(bipolar * amp * AY_MIX_SCALE);
                     }
@@ -830,7 +791,7 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
 
         // Post-mix effect (delay / reverb), selected by CC74 -- same shape as
         // every other engine's insert (engine_base.h's EffectParams). Chip's
-        // render is mono already (chip.md has no per-voice pan), so there is
+        // render is mono already (module_chip.md has no per-voice pan), so there is
         // no stereo downmix step before the send, unlike the stereo engines.
         bool has_fx = (vp.fx.type == FX_DELAY || vp.fx.type == FX_REVERB);
         if (vp.fx.type != s_last_fx_type) {
@@ -844,7 +805,7 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
             else                        fx_reverb.process(fx_buf, SAMPLES_PER_BUFFER, vp.fx);
         }
 
-        // chip.md §1 P5, §10: speaker sim sits downstream of the FX insert
+        // Speaker sim (module_chip.md §10) sits downstream of the FX insert
         // (delay/reverb), upstream of the final safety clamp below -- its
         // own soft clip is the cone-breakup character, not that clamp.
         // Preset is a single global choice (not per-voice), but the only
@@ -859,7 +820,7 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
         for (uint32_t i = 0; i < SAMPLES_PER_BUFFER; i++) {
             int32_t v = dry[i];
             if (has_fx) v += fx_buf[i];
-            // Mono, duplicated -- chip.md §10: the module is authentically
+            // Mono, duplicated -- module_chip.md §10: the module is authentically
             // mono (no VoiceParams.pan).
             v = (int32_t)speaker.tick((float)(v >> SID_MIX_SHIFT));
             int16_t s = (int16_t)__ssat(v, 16);
@@ -871,7 +832,7 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
         gpio_put(PROFILE_PIN, 0);
 
         // Consumed by voice_alloc.cpp's three-tier steal policy on Core 0
-        // (§8, P4) -- chip links voice_alloc.cpp now, unlike the tracker.
+        // (§8).
         multicore_fifo_push_timeout_us(active_mask, 0);
 
         uint32_t inst = busy_us * 100u / BUF_PERIOD_US;

@@ -1,10 +1,9 @@
-// Host-side proof of src/engines/tracker/mixer.h (#15): renders the stripped
-// 32-voice sample mixer to WAV and checks its behaviour objectively before
-// trusting the on-device render. Referenced directly by tracker.md
-// "Testing": "diff against device output (or against a host build of the
-// same mixer)" -- this is that host build. No pico-sdk, no ARM intrinsics;
-// mixer.h's __not_in_flash_func and __ssat both no-op/fall back to a plain
-// clamp when __arm__ is unset (see mixer.h).
+// Host-side proof of src/engines/tracker/mixer.h (#15): renders the
+// stripped 32-voice sample mixer to WAV and checks its behaviour
+// objectively before trusting the on-device render -- the host build
+// module_tracker.md's "Testing" section calls for. No pico-sdk, no ARM
+// intrinsics; mixer.h's __not_in_flash_func and __ssat both no-op/fall
+// back to a plain clamp when __arm__ is unset (see mixer.h).
 //
 // Run from the build directory (tools/host_render/build):
 //   cmake -S .. -B . && cmake --build . && ./render_tracker_mixer
@@ -23,7 +22,7 @@
 //
 // A constant-valued "sample" turns mix_voice's output into a pure readout of
 // the volume ramp: every non-zero output sample is target_L/R scaled by
-// whatever fraction of the ramp has elapsed. Verifies tracker.md's ramping
+// whatever fraction of the ramp has elapsed. Verifies module_tracker.md's ramping
 // rule (amplitude ramps per sub-block, increment is held fixed) exactly,
 // rather than by ear.
 static bool test_ramp_linearity() {
@@ -50,7 +49,7 @@ static bool test_ramp_linearity() {
     int32_t prev = 0;
     for (uint32_t i = 0; i < n; i++) {
         // mix_voice uses cur_vol *before* stepping it -- sample 0 is the
-        // pre-ramp value (0), matching tracker.md's pseudocode.
+        // pre-ramp value (0), matching module_tracker.md's pseudocode.
         int32_t expected = (smp * expect_vol) >> 15;
         if (acc[i * 2] != expected || acc[i * 2 + 1] != expected) {
             printf("  FAIL sample %u: got L=%d R=%d, want %d\n", i, acc[i * 2], acc[i * 2 + 1], expected);
@@ -130,8 +129,7 @@ static bool test_loop_wrap() {
 //
 // Same 8-sample buffer/[2,6) region as test_loop_wrap() but with an
 // increment (6 samples/step) larger than the loop region (loop_len=4
-// samples) -- tracker.md's own "deliberately tight ... loop" measurement
-// convention (#16) pushed to ping-pong's worst case, so wrap_ping_pong()'s
+// samples), pushed to ping-pong's worst case so wrap_ping_pong()'s
 // multi-reflection path (more than one bounce per call) actually gets
 // exercised, not just a single mirror.
 static bool test_pingpong_wrap() {

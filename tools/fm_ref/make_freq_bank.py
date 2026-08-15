@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """make_freq_bank -- synthetic DX7 banks that sweep operator frequency settings.
 
-Built for F5's frequency conformance test (fm2.md §4). F1 could diff every other
+Built for F5's frequency conformance test (history_fm.md §4). F1 could diff every other
 control-plane quantity as a table, but not this one: Dexed's `Dx7Note::osc_freq()`
 is a private method with no accessor, so the only way to compare coarse / fine /
 detune / fixed-frequency handling is to *render* a single operator and measure

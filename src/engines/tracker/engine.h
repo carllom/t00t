@@ -2,22 +2,22 @@
 
 #include <cstdint>
 
-// XM channel count is fixed in the module header, 2-32 (tracker.md "Format
+// XM channel count is fixed in the module header, 2-32 (module_tracker.md "Format
 // Decision"). voice_alloc is not used at all — channel N is voice N, fixed
 // assignment, no allocation, no stealing — so 32 is this engine's actual
 // voice count, not a headroom margin like the other two engines' MAX_VOICES.
 // The active-voice bitmap (one uint32_t, per engine_base.h) is exactly full.
 static constexpr uint32_t MAX_VOICES = 32;
-static constexpr uint32_t FILTER_BUS_COUNT = 0;   // chip module only (chip.md §5)
+static constexpr uint32_t FILTER_BUS_COUNT = 0;   // chip module only (module_chip.md §5)
 
 #include "engine_base.h"
 
-// Tracker engine skeleton (#13): proves the build seam, the MAX_VOICES=32
-// deviation, and the stereo output tail before any XM/mixer logic lands. No
-// pattern data, no sample playback, no tick handoff yet — VoiceParams here
-// only carries enough to drive a fixed test tone. tracker.md's ordered
-// TickBlock ring (replacing this ParamExchange's latest-wins semantics)
-// lands with the real mixer.
+// This engine's own VoiceParams payload, required by engine_base.h's shared
+// template shape (main.cpp instantiates a ParamExchange for every engine).
+// The tracker's real per-tick state travels through player.h's ordered
+// TickBlock ring instead -- audio_engine.cpp and midi_controller.cpp both
+// ignore their ParamExchange pointer, so nothing here is actually read or
+// written outside voice_params_default()'s initialization.
 struct VoiceParams {
     uint32_t phase_inc;  // fixed-point phase increment
     int16_t amplitude;   // 0-32767

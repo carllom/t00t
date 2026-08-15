@@ -335,7 +335,7 @@ void midi_controller_process(const uint8_t *data, uint32_t len, ParamExchange *p
             }
 
             case MIDI_PROGRAM_CHANGE:
-                // Kit / preset switching — to be added with the 909 kit.
+                // Kit / preset switching is not implemented; program change is ignored.
                 break;
 
             case MIDI_CLOCK:

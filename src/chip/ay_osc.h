@@ -4,23 +4,19 @@
 
 // AY-3-8910/YM2149 tone + noise primitives.
 //
-// TOPOLOGY-FREE (chip.md §4's rule, applied to the second chip in this
+// TOPOLOGY-FREE (module_chip.md §4's rule, applied to the second chip in this
 // module): these know nothing about channels, voices or which of them
 // share a noise generator. On real hardware all three tone channels share
-// one noise generator; chip.md §12's own framing ("additional VoiceTypes
-// in this module") means a future engine is free to give each
+// one noise generator; a future engine is free to give each
 // dynamically-allocated voice its own noise generator instead, trading the
 // real chip's shared-noise/shared-envelope character for full polyphonic
-// independence -- a deliberate deviation, not an oversight, and the same
-// kind of choice SID's engine already makes versus its own CHIP_STRICT
-// harness (chip.md §11.1).
+// independence -- a deliberate deviation, not an oversight.
 //
 // Ground truth is ayumi 1.0 (Peter Sovietov, MIT -- github.com/true-grue/
 // ayumi, verified via GitHub's own API, not recalled), read in full and
 // vendored unmodified at tools/ay_ref/ayumi/ for host-side validation
-// (tools/ay_ctl_diff.py). Unlike reSID (GPL-2, kept gitignored and never
-// shipped -- chip.md §14a.7), ayumi's MIT license permits vendoring
-// outright; its LICENSE file sits alongside it.
+// (tools/ay_ctl_diff.py). ayumi's MIT license permits vendoring outright;
+// its LICENSE file sits alongside it.
 //
 // ---------------------------------------------------------------------------
 // Internal tick rate
@@ -37,15 +33,13 @@
 // generator's own period register compared directly against its own
 // counter at that one rate.
 //
-// This was cross-checked, not assumed: at tick rate clock/8, a tone
-// channel toggling once every `period` ticks completes a full square-wave
-// cycle (two toggles) every 16*period/clock seconds -- exactly the
-// datasheet's clock/16/period formula, with no unaccounted factor. That
-// derivation is trustworthy; reconciling it against the datasheet's own
-// prose description of the *envelope* divider chain was not (see
-// ay_envelope.h) -- ayumi's own arithmetic is the reference this file
-// matches, and tools/ay_ctl_diff.py's per-tick CSV diff against ayumi_dump
-// is what actually proves it, not this comment.
+// At tick rate clock/8, a tone channel toggling once every `period` ticks
+// completes a full square-wave cycle (two toggles) every 16*period/clock
+// seconds -- the datasheet's clock/16/period formula. The envelope
+// generator's own divider chain does not reduce to this same derivation
+// (see ay_envelope.h). ayumi's own arithmetic is the reference this file
+// matches; tools/ay_ctl_diff.py's per-tick CSV diff against ayumi_dump
+// verifies it.
 // ---------------------------------------------------------------------------
 
 static constexpr double AY_CLOCK_ZX = 1773400.0;    // ZX Spectrum / most clones
@@ -63,8 +57,7 @@ constexpr uint32_t ay_tick_scale_q16(double clock_hz, double sample_rate) {
 // ---------------------------------------------------------------------------
 // Tone generator -- one 12-bit period counter per channel, toggling a
 // square-wave bit on overflow. period == 0 is silently clamped to 1
-// (ayumi_set_tone: `(period == 0) | period`) rather than treated as a stall,
-// same reasoning as SID's own "period 0 would hang a counter" cases.
+// (ayumi_set_tone: `(period == 0) | period`) rather than treated as a stall.
 // ---------------------------------------------------------------------------
 struct AyTone {
     uint16_t period;   // 12-bit, register units, clamped >= 1
@@ -80,8 +73,7 @@ struct AyTone {
 
     // Advance by `ticks` internal clock/8 ticks (see file header). Small
     // (typically low single digits per sample at ZX-clock/44.1kHz), so a
-    // bounded loop is the SID-oscillator precedent (sid_osc.h's noise-clock
-    // while-loop) rather than a closed-form skip-ahead.
+    // bounded loop suffices rather than a closed-form skip-ahead.
     inline void advance(uint32_t ticks) {
         counter = (uint16_t)(counter + ticks);
         while (counter >= period) {

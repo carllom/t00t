@@ -1,4 +1,4 @@
-// render_sid -- the t00t side of the F0 comparison (chip.md §11.1, CHIP_STRICT).
+// render_sid -- the t00t side of the SID comparison (module_chip.md §11.1, CHIP_STRICT).
 //
 // Consumes a register stream (see sidreg.h) and renders it through
 // src/chip/'s own primitives at 44.1 kHz, in the strict hardware topology:
@@ -6,7 +6,7 @@
 // source is voice (v+2)%3, i.e. V1<-V3, V2<-V1, V3<-V2 -- reSID's own
 // wiring). Free-routing mode (typed buses, per-voice sub-oscillator) cannot
 // consume this stream at all -- that is the whole reason CHIP_STRICT exists
-// as a second topology over the same validated primitives (chip.md §4, §11.1).
+// as a second topology over the same validated primitives (module_chip.md §4, §11.1).
 //
 //   ./render_sid --stream streams/saw_sweep.sidreg --out out/test.wav
 //
@@ -15,7 +15,7 @@
 //
 // Host-only tooling, never linked into the device firmware.
 
-#define CHIP_STRICT 1   // chip.md §11.1: velocity scaling must compile out here
+#define CHIP_STRICT 1   // module_chip.md §11.1: velocity scaling must compile out here
 #include "../sid_ref/sidreg.h"
 #include "wav32.h"
 
@@ -27,7 +27,7 @@
 #include <string>
 #include <vector>
 
-// The strict 3-voice / 1-filter topology (chip.md §11.1's "$D400-$D418").
+// The strict 3-voice / 1-filter topology (module_chip.md §11.1's "$D400-$D418").
 struct StrictSid {
     SidVoice   voice[3];
     SidFilter  filter;
@@ -81,8 +81,8 @@ struct StrictSid {
             voice[v].osc.waveform = (uint8_t)((control[v] >> 4) & 0x0f);
             voice[v].osc.test = (uint8_t)((control[v] >> 3) & 0x01);
             // Gate bit drives ATTACK/RELEASE directly, hardware-literal --
-            // NOT the instantaneous hard_restart() t00t's own P1 engine uses
-            // for MIDI retriggering (chip.md §4.3's deliberate divergence).
+            // NOT the instantaneous hard_restart() t00t's own engine uses
+            // for MIDI retriggering (module_chip.md §4.3's deliberate divergence).
             // CHIP_STRICT models the chip's actual register semantics, so a
             // gate rewrite while already gated must be a no-op here too.
             if (control[v] & 0x01) voice[v].env.gate_on();
@@ -141,7 +141,7 @@ struct StrictSid {
         int32_t filtered = filter.tick(filt_sum, f_half, q, mode_mask, /*saturate=*/true);
 
         int32_t mix = dry_sum + filtered;
-        // 4-bit master volume DAC, linear (chip.md does not model this DAC's
+        // 4-bit master volume DAC, linear (module_chip.md does not model this DAC's
         // nonlinearity anywhere -- level_gap_db is exactly the metric that
         // would catch it mattering).
         mix = (int32_t)(((int64_t)mix * (mode_vol & 0x0f)) / 15);

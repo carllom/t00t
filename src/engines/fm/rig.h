@@ -3,19 +3,19 @@
 #include <cmath>
 #include <cstdint>
 
-// FM P0 measurement rig (#42, fm.md §11 "P0 -- measure"): a stripped
+// FM P0 measurement rig (#42, module_fm.md §11 "P0 -- measure"): a stripped
 // operator mixer -- N voices x 6 operators, fixed phase increments, fixed
 // gains/gain-steps, no EG, no LFO, no patch logic, no MIDI. This produces a
 // build whose numbers the *next* slice reads; it does not decide anything
-// itself (fm.md's provisional MAX_VOICES=16, table size, BLOCK size, etc.
+// itself (module_fm.md's provisional MAX_VOICES=16, table size, BLOCK size, etc.
 // all stay exactly as #41 left them -- this file is a separate, self-
 // contained rig, not a modification of the real engine skeleton).
 //
-// Every fm.md §3.6 tuning lever is a compile-time switch (Makefile/CMake,
+// Every module_fm.md §3.6 tuning lever is a compile-time switch (Makefile/CMake,
 // same pattern as speech's SPEECH_PROFILE -- see the Makefile's FM_RIG_*
 // comments):
 //   FM_RIG_VOICES        -- voice count (default comfortably past the
-//                            predicted 12-21 ceiling, fm.md §3.4)
+//                            predicted 12-21 ceiling, module_fm.md §3.4)
 //   FM_RIG_BLOCK          -- sub-block length: 8 / 16 / 32
 //   FM_RIG_TABLE_BITS     -- table size: 10 (1024) or 12 (4096, default)
 //   FM_RIG_INTERLEAVE     -- 0/1: interleave the op0/op1 pair in one loop
@@ -39,11 +39,11 @@
 //                            correctness, not the real instruction
 //   FM_RIG_FB             -- 0/1 (default 1): op3 uses op_render_fb
 //                            (self-feedback) when 1, or plain op_render when
-//                            0 -- lets #43's bench session diff self-feedback
+//                            0 -- lets a bench session diff self-feedback
 //                            against a plain operator on an otherwise
-//                            identical topology (fm.md §3.3's 22-vs-17-cycle
-//                            budget), which the fixed topology alone can't
-//                            isolate since op3 was always op_render_fb.
+//                            identical topology (module_fm.md §3.3), which
+//                            the fixed topology alone can't isolate since
+//                            op3 was always op_render_fb.
 
 #ifndef FM_RIG_VOICES
 #define FM_RIG_VOICES 24
@@ -116,12 +116,11 @@ inline uint32_t fm_rig_phase_inc(float freq_hz, float sample_rate_hz) {
 #define __noinline
 #endif
 
-// #43 finding: plain __not_in_flash_func() has NO effect here, because
-// op_render() etc. are `inline` and fully inline into audio_engine_run() at
-// -O3 -- the attribute places an *out-of-line* function's code in SRAM, and
-// inlining erases the separate symbol before that ever applies (confirmed
-// via objdump: FM_RIG_NOT_IN_FLASH=0 and =1 produced byte-identical .text).
-// The pico-sdk documents this exact trap and ships the fix:
+// Plain __not_in_flash_func() has NO effect here, because op_render() etc.
+// are `inline` and fully inline into audio_engine_run() at -O3 -- the
+// attribute places an *out-of-line* function's code in SRAM, and inlining
+// erases the separate symbol before that ever applies. The pico-sdk
+// documents this exact trap and ships the fix:
 // __no_inline_not_in_flash_func() adds noinline so there's a real symbol for
 // the section-placement attribute to act on.
 //
@@ -142,7 +141,7 @@ inline uint32_t fm_rig_phase_inc(float freq_hz, float sample_rate_hz) {
 #define FM_RIG_HOT(func) func
 #endif
 
-// fm.md §5.2's FmOp, plus the self-feedback history pair (fb1/fb2) that a
+// module_fm.md §5.2's FmOp, plus the self-feedback history pair (fb1/fb2) that a
 // real per-operator kernel-selection scheme would only allocate for
 // operators actually using op_render_fb -- inlined into every operator here
 // since this rig has a single fixed topology, not a compiled routing table.
@@ -157,8 +156,7 @@ struct FmRigOp {
 };
 
 // Read-only all-zero bus, shared by every "no external modulation" operator
-// (fm.md §5.2: "points at a zero bus for pure carriers"). Sized to the
-// largest configured BLOCK; never written.
+// (module_fm.md §5.2). Sized to the largest configured BLOCK; never written.
 inline int32_t fm_rig_zero_bus[FM_RIG_BLOCK];
 
 // Multiply-by-gain-then-shift, shared by every kernel below. FM_RIG_SMULWB
@@ -187,7 +185,7 @@ inline int32_t fm_rig_mul_gain(int32_t sample, int32_t gain) {
 static constexpr int32_t FM_RIG_OUT_SHIFT = 14;
 #endif
 
-// Plain kernel: accumulates (+=) into `out` -- fm.md §3.2's 13-instruction
+// Plain kernel: accumulates (+=) into `out` -- module_fm.md §3.2's 13-instruction
 // listing is this loop body. Block-inner form: called once per operator per
 // sub-block, so phase/gain/in/out stay resident for the whole inner loop.
 inline void FM_RIG_HOT(op_render)(FmRigOp &op, uint32_t n) {
@@ -200,7 +198,7 @@ inline void FM_RIG_HOT(op_render)(FmRigOp &op, uint32_t n) {
     for (uint32_t i = 0; i < n; i++) {
         phase += inc;
         // Phase wrap is free: the shift alone produces exactly a
-        // FM_RIG_TABLE_BITS-wide index, no mask, no modulo (fm.md §3.2).
+        // FM_RIG_TABLE_BITS-wide index, no mask, no modulo (module_fm.md §3.2).
         uint32_t idx = (phase + (uint32_t)in[i]) >> FM_RIG_PHASE_SHIFT;
         int32_t sample = fm_rig_table[idx];
         out[i] += fm_rig_mul_gain(sample, gain) >> FM_RIG_OUT_SHIFT;
@@ -211,7 +209,7 @@ inline void FM_RIG_HOT(op_render)(FmRigOp &op, uint32_t n) {
 }
 
 // First-writer variant: stores instead of accumulating, eliminating the need
-// to clear its target bus before this operator runs (fm.md §4.3/§5.2).
+// to clear its target bus before this operator runs (module_fm.md §4.3/§5.2).
 inline void FM_RIG_HOT(op_render_first)(FmRigOp &op, uint32_t n) {
     uint32_t phase = op.phase;
     uint32_t inc = op.inc;
@@ -231,7 +229,7 @@ inline void FM_RIG_HOT(op_render_first)(FmRigOp &op, uint32_t n) {
 }
 
 // Self-feedback: DX7-style, the modulation input is this operator's own last
-// two raw table outputs averaged, instead of an external bus (fm.md §5.2's
+// two raw table outputs averaged, instead of an external bus (module_fm.md §5.2's
 // "Self-feedback (DX7 2-sample average)" kernel variant). Accumulates (+=),
 // same as op_render -- in this rig's fixed topology it's never the sole
 // writer of its target bus (see fm_rig_render_voice_block()'s topology
@@ -259,7 +257,7 @@ inline void FM_RIG_HOT(op_render_fb)(FmRigOp &op, uint32_t n) {
     op.fb2 = fb2;
 }
 
-// fm.md §3.6 lever 1: two independent operators' loop bodies interleaved
+// module_fm.md §3.6 lever 1: two independent operators' loop bodies interleaved
 // into one loop, instead of two sequential op_render_first() calls -- the
 // `lsrs` -> `ldrsh` -> `mul` chain in each is a serial load-use-dependent
 // chain, and interleaving two independent ones gives the pipeline something
@@ -291,11 +289,10 @@ inline void FM_RIG_HOT(op_render_pair)(FmRigOp &a, FmRigOp &b, uint32_t n) {
     b.phase = pb; b.gain = gb;
 }
 
-// One voice's shared bus scratch (fm.md §4.3: "6 modulation buses + 1 output
-// bus ... one shared scratch for the whole engine, not per-voice"). Callers
-// own these and reuse the same arrays across every voice, sequentially --
-// this struct just names the pointers so fm_rig_render_voice_block() doesn't
-// take seven separate arguments.
+// One voice's shared bus scratch (module_fm.md §4.3). Callers own these and
+// reuse the same arrays across every voice, sequentially -- this struct just
+// names the pointers so fm_rig_render_voice_block() doesn't take seven
+// separate arguments.
 struct FmRigBuses {
     int32_t *mod[6];
     int32_t *out;
@@ -352,8 +349,8 @@ inline void fm_rig_render_voice_block(FmRigOp ops[6], const FmRigBuses &bus, uin
     op_render_first(ops[5], n);
 }
 
-// Fixed increments/gains/gain-steps (fm.md P0: "fixed phase increments,
-// fixed gains" -- no EG, no patch data). Each operator in the chain gets a
+// Fixed increments/gains/gain-steps (module_fm.md P0 -- no EG, no patch
+// data). Each operator in the chain gets a
 // harmonic-multiple frequency purely so the rendered tone isn't a plain
 // sine (worth something for the host WAV's by-eye/by-ear sanity check);
 // gain is a flat mid-scale modulation depth for every operator except the
@@ -362,7 +359,7 @@ inline void fm_rig_render_voice_block(FmRigOp ops[6], const FmRigBuses &bus, uin
 // instruction still exist and still execute every sample (the actual cost
 // being measured), it just never moves -- avoids any overflow/clipping
 // bookkeeping a real EG ramp would need, which is explicitly out of scope
-// here (fm.md P2, not P0).
+// here (module_fm.md P2, not P0).
 inline void fm_rig_init_voice(FmRigOp voice_ops[6], float base_freq_hz, float sample_rate_hz) {
     // (sample * (gain >> 8)) >> 14 == sample (unity) when gain == 1<<22 --
     // gain >> 8 == 1<<14, cancelling the final >>14 exactly. Scaled down 1/64
@@ -387,7 +384,7 @@ inline void fm_rig_init_voice(FmRigOp voice_ops[6], float base_freq_hz, float sa
 }
 
 // Renders `frames` samples of `num_voices` (<= FM_RIG_VOICES) voices, mixed
-// equally into both channels (no pan -- fm.md P0 doesn't need a stereo
+// equally into both channels (no pan -- module_fm.md P0 doesn't need a stereo
 // image, just a real per-sample cost). `voices` is FM_RIG_VOICES worth of
 // persistent per-voice operator state (phase/gain/feedback history carried
 // across calls); `bus` is the shared scratch, reused across every voice and

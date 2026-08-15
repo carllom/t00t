@@ -85,8 +85,7 @@ struct Envelope {
     // Advance by `n` samples in one O(1) step, for sub-block-rate rendering:
     // the caller linearly ramps every intermediate sample between the level
     // before this call and the value returned, rather than calling advance()
-    // n times (see the subtractive engine's sub-block rendering, issue #12).
-    // Attack is linear so this is exact; decay/release need the caller to
+    // n times. Attack is linear so this is exact; decay/release need the caller to
     // pass the n-sample-ahead coefficient (coeff^n), precomputed once since
     // n is fixed — recomputing pow() here every call would defeat the point.
     // A state transition that would land mid-block (e.g. attack completing)

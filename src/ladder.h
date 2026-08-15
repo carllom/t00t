@@ -12,7 +12,7 @@
 // Coefficients are recomputed per sample (cheap multiplies) so the filter
 // envelope can sweep the cutoff continuously. The one costly term in the
 // original algorithm — a per-sample expf() for resonance compensation — is
-// replaced by a cubic Taylor approximation (<6% error over the used range).
+// replaced by a cubic Taylor approximation, accurate enough over the used range.
 struct LadderFilter {
     float y1, y2, y3, y4;
     float oldx, oldy1, oldy2, oldy3;

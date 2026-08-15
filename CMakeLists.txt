@@ -35,25 +35,18 @@ endif()
 # The VGA-board button controller (src/controller.cpp) is hardcoded to the
 # subtractive engine's specific preset shape (VoicePreset, WAVE_SAMPLE,
 # osc_sample_phase_inc) -- not a generic "any engine with a presets.h" demo,
-# so it only builds for that engine. Was gated on "does presets.h exist"
-# instead until #38 gave the speech engine its own presets.h (SpeechPreset,
-# a different shape) and broke that heuristic -- speech targets the
-# buttonless breadboard (HAS_BUTTONS 0) same as the groovebox, so it was
-# never meant to pull this in either.
+# so it only builds for that engine. speech and groovebox target the
+# buttonless breadboard (HAS_BUTTONS 0), so they were never meant to pull
+# this in either, despite each having its own presets.h.
 set(ENGINE_OPTIONAL_SOURCES "")
 if(T00T_ENGINE STREQUAL "subtractive")
     list(APPEND ENGINE_OPTIONAL_SOURCES src/controller.cpp)
 endif()
 
 # The tracker engine has no dynamic voice allocation — channel N is voice N,
-# fixed, per tracker.md's "Deviation From the Existing Layer Model" — so
+# fixed, per module_tracker.md's "Deviation From the Existing Layer Model" — so
 # voice_alloc.cpp is left out of that build entirely (#13). main.cpp's calls
 # into it are compiled out via HAS_VOICE_ALLOC below.
-# The chip module used to be the same case (P0's rig is self-cycling and
-# drives its voices directly, and P1-P3's MIDI controller used a static
-# channel->voice map), but chip.md §8 always reused voice_alloc.* unmodified
-# and only deferred going dynamic to P4 -- now built, so chip links it in
-# like every other engine.
 set(ENGINE_VOICE_ALLOC src/voice_alloc.cpp)
 if(T00T_ENGINE STREQUAL "tracker")
     set(ENGINE_VOICE_ALLOC "")
@@ -90,7 +83,7 @@ add_executable(t00t
 # (and its preset/kit headers) resolve to that engine's copy.
 target_include_directories(t00t PRIVATE src src/midi src/wslcd src/engines/${T00T_ENGINE})
 
-# Chip-module F0 rig levers (src/engines/chip/rig.h). Each is a separate build
+# Chip-module rig levers (src/engines/chip/rig.h). Each is a separate build
 # because the value being measured is cycles per frame and a runtime switch
 # would put a branch inside the loop under test. Passed through from the
 # Makefile every configure, so nothing gets stuck in the CMake cache.
@@ -111,23 +104,23 @@ foreach(_midi MIDI_USB MIDI_UART)
     endif()
 endforeach()
 
-# DMA/mixer buffer size override (#16: 256 vs 512 IRQ-overhead measurement).
-# Unset/"default" keeps audio_common.h's built-in 256.
+# DMA/mixer buffer size override (#16). Unset/"default" keeps
+# audio_common.h's built-in 256.
 if(DEFINED DMA_BUFFER_SIZE AND NOT DMA_BUFFER_SIZE STREQUAL "default")
     target_compile_definitions(t00t PRIVATE T00T_SAMPLES_PER_BUFFER=${DMA_BUFFER_SIZE})
 endif()
 
-# #31 P2 profiling rig override (speech engine only, see engine.h/audio_engine.cpp).
+# #31 profiling rig override (speech engine only, see engine.h/audio_engine.cpp).
 if(DEFINED SPEECH_PROFILE AND NOT SPEECH_PROFILE STREQUAL "0")
     target_compile_definitions(t00t PRIVATE T00T_SPEECH_PROFILE=1)
 endif()
 
-# #42 P0 rig override (FM engine only, see src/engines/fm/rig.h/audio_engine.cpp).
+# #42 rig override (FM engine only, see src/engines/fm/rig.h/audio_engine.cpp).
 if(DEFINED FM_PROFILE AND NOT FM_PROFILE STREQUAL "0")
     target_compile_definitions(t00t PRIVATE T00T_FM_PROFILE=1)
 endif()
 
-# fm.md §3.6 tuning levers on the #42 rig — each "default"/unset leaves
+# module_fm.md §3.6 tuning levers on the #42 rig — each "default"/unset leaves
 # rig.h's own #ifndef default in place, same convention as DMA_BUFFER_SIZE.
 foreach(_lever FM_RIG_VOICES FM_RIG_BLOCK FM_RIG_TABLE_BITS FM_RIG_INTERLEAVE FM_RIG_NOT_IN_FLASH FM_RIG_SMULWB FM_RIG_FB)
     if(DEFINED ${_lever} AND NOT ${_lever} STREQUAL "default")
@@ -143,17 +136,16 @@ if(DEFINED FM_BLOCK AND NOT FM_BLOCK STREQUAL "default")
     target_compile_definitions(t00t PRIVATE T00T_FM_BLOCK=${FM_BLOCK})
 endif()
 
-# #47 P3 patch bank (FM engine only): patches.h is generated locally by
-# tools/syx2patch.py from a real DX7 .syx dump and gitignored, same as xm/'s
-# handling of copyrighted .xm songs (engine.md's xm2t00t precedent) — a real
-# DX7 bank's patch data is Yamaha's commercial sound-design work, not
-# something to check into git history. Guarded here so the build still
-# succeeds (FM_TEST_PATCH only) when nobody has generated it locally yet.
+# #47 patch bank (FM engine only): patches.h is generated locally by
+# tools/syx2patch.py from a real DX7 .syx dump and gitignored -- a real DX7
+# bank's patch data is Yamaha's commercial sound-design work, not something
+# to check into git history. Guarded here so the build still succeeds
+# (FM_TEST_PATCH only) when nobody has generated it locally yet.
 if(EXISTS ${CMAKE_CURRENT_LIST_DIR}/src/engines/fm/patches.h)
     target_compile_definitions(t00t PRIVATE T00T_FM_HAS_PATCHES=1)
 endif()
 
-# Chip P0 rig override (chip engine only, see src/engines/chip/audio_engine.cpp).
+# Chip rig override (chip engine only, see src/engines/chip/audio_engine.cpp).
 if(DEFINED CHIP_PROFILE AND NOT CHIP_PROFILE STREQUAL "0")
     target_compile_definitions(t00t PRIVATE T00T_CHIP_PROFILE=1)
 endif()

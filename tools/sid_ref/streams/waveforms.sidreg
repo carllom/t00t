@@ -3,7 +3,7 @@
 # Every waveform selection in turn on one voice, 25 frames each.
 #
 # Includes the combined waveforms, which is the point: reSID uses tables
-# sampled from real chips and sid.md §13.5 defers t00t to a bitwise AND
+# sampled from real chips and module_chip.md §13 item 5 defers t00t to a bitwise AND
 # until P6. This stream is where that deferral gets a number instead of
 # an adjective.
 #

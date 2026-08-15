@@ -1,7 +1,6 @@
 """XM note -> playback frequency -> Q8.24 phase increment (#14).
 
-tracker.md build order step 3 asks for period -> increment tables
-"precomputed" at convert time (one 96-entry table per sample, see
+Precomputed at convert time (one 96-entry table per sample, see
 blob_format.SampleHeader.note_increments_offset) so the device never runs
 period math — it indexes an array.
 
@@ -13,12 +12,9 @@ long-documented formulas/constants:
   table (the same one reproduced in essentially every MOD/XM format
   writeup), octave-scaled by note and linearly interpolated for finetune.
 
-Caveat (see also engine.md and the plan for #14): sanity-checked against
-the well-known anchor (note C-4, finetune 0, relative_note 0 -> exactly
-8363 Hz, the XM sample-rate reference), not verified bit-exact against a
-real FT2/OpenMPT period table dump. That level of precision matters once
-something actually plays these increments back (the mixer issue); a v1
-loader only needs internally-consistent, correctly-ordered pitches.
+Sanity-checked against the well-known anchor (note C-4, finetune 0,
+relative_note 0 -> exactly 8363 Hz, the XM sample-rate reference); not
+verified bit-exact against a real FT2/OpenMPT period table dump.
 """
 
 from __future__ import annotations
@@ -84,7 +80,7 @@ def note_frequency(note: float, finetune: float, linear: bool) -> float:
 
 
 def q8_24_increment(frequency_hz: float) -> int:
-    """tracker.md 'Fixed-Point Formats': inc = f_note / f_mix, Q8.24."""
+    """module_tracker.md 'Fixed-Point Formats': inc = f_note / f_mix, Q8.24."""
     inc = round(frequency_hz / SAMPLE_RATE * (1 << 24))
     return max(0, min(inc, 0xFFFFFFFF))
 

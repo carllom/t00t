@@ -1,8 +1,6 @@
-// Host-side proof of src/res2p.h: renders it to WAV and checks its behaviour
-// objectively (pole stability, resonant frequency, decay) before it gets
-// wired into any real-time engine. See issue #5 phase 2 — "the right place
-// to prove res2p.h objectively, instead of rewriting working 808 sounds to
-// do it."
+// Host-side proof of src/res2p.h: renders it to WAV and checks its
+// behaviour objectively (pole stability, resonant frequency, decay) before
+// it gets wired into any real-time engine (#5).
 //
 // Run from the build directory (tools/host_render/build) so the WAVs land
 // next to the binary, in the git-ignored build/ tree:
@@ -17,15 +15,15 @@
 
 static constexpr float FS = 44100.0f;
 
-// #28: res2p_radius() moved from expf() to a LUT + linear interpolation.
-// Proves the LUT matches expf() to an inaudible margin across every (bw, fs)
-// this codebase uses before relying on it in the speech formant cascade.
+// Proves res2p_radius()'s LUT + linear interpolation approximation matches
+// expf() to an inaudible margin across every (bw, fs) this codebase uses
+// before relying on it in the speech formant cascade.
 static bool test_radius_lut_accuracy() {
     bool all_ok = true;
     float max_err = 0.0f;
     struct { float fs; float bw_lo, bw_hi; } ranges[] = {
         { 44100.0f,  20.0f, 400.0f },  // groovebox resonators (render_res2p sweep)
-        { 22050.0f,  50.0f, 400.0f },  // speech formants @ SPEECH_RATE (speech.md)
+        { 22050.0f,  50.0f, 400.0f },  // speech formants @ SPEECH_RATE (module_speech.md)
     };
     for (auto &r : ranges) {
         for (float bw = r.bw_lo; bw <= r.bw_hi; bw += 2.0f) {
@@ -46,7 +44,7 @@ static bool test_radius_lut_accuracy() {
 
 // Sweeps the (f, bw) ranges the groovebox backport and the speech formant
 // cascade actually use, and checks every pole lands strictly inside the
-// unit circle (a2 < 1.0f) — the same assertion speech.md prescribes as a
+// unit circle (a2 < 1.0f) — the same assertion module_speech.md prescribes as a
 // runtime debug check after every res2p_set().
 static bool test_stability_sweep() {
     bool all_ok = true;

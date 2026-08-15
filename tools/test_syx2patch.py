@@ -104,12 +104,11 @@ def test_coarse_ratio() -> None:
     assert abs(sp.op_ratio(op) - 0.5) < 1e-9
 
 
-# #49: DX7Voice grew required (no-default) pitch EG/LFO fields -- every
-# hand-built DX7Voice() in this file needs them. 50/50/50/50 for pitch_eg
-# level matches patch.h's own "50 = no deviation" convention (see
-# FmPitchEgParams' comment); the rest are 0 (also safe/no-effect, 0-depth
-# LFO), same as this file's other "doesn't matter for what this test checks"
-# fixture values.
+# Every hand-built DX7Voice() in this file needs these pitch EG/LFO fields
+# (no dataclass default). 50/50/50/50 for pitch_eg level matches patch.h's
+# own "50 = no deviation" convention (see FmPitchEgParams' comment); the
+# rest are 0 (also safe/no-effect, 0-depth LFO), same as this file's other
+# "doesn't matter for what this test checks" fixture values.
 _VOICE_LFO_PEG_DEFAULTS = dict(
     pitch_eg_rate=[50, 50, 50, 50], pitch_eg_level=[50, 50, 50, 50],
     lfo_speed=0, lfo_delay=0, lfo_pmd=0, lfo_amd=0,
@@ -140,7 +139,7 @@ def test_op_fixed_hz_formula() -> None:
 
 
 def test_op_detune_offset_passthrough() -> None:
-    # F5: the converter no longer bakes detune into cents. Real DX7 detune is
+    # The converter does not bake detune into cents. Real DX7 detune is
     # note-dependent in ratio mode and a separate sharpen-only rule in fixed
     # mode, neither of which a note-independent converter can resolve, so the
     # raw offset goes through and op.h applies both rules at note-on.
@@ -149,17 +148,15 @@ def test_op_detune_offset_passthrough() -> None:
     assert sp.op_detune_offset(_flat_op(detune=14)) == 7
     assert not hasattr(sp, "op_detune_cents")
 
-    # Fixed-frequency operators keep their detune too -- it used to be forced
-    # to zero, which silently dropped up to 6.7 cents (measured, F5).
+    # Fixed-frequency operators keep their detune too.
     fixed = _flat_op(osc_mode=1, freq_coarse=2, freq_fine=0, detune=14)
     assert sp.op_detune_offset(fixed) == 7
 
 
 def test_fixed_freq_converts_with_real_hz() -> None:
-    # #48: fixed-frequency operators used to be skipped outright (v1); now
-    # they convert with a real Hz value, and (F5) keep their raw detune offset
-    # rather than having it forced to zero -- fixed mode has its own
-    # sharpen-only detune rule, applied by op.h at note-on.
+    # Fixed-frequency operators convert with a real Hz value and keep their
+    # raw detune offset rather than having it forced to zero -- fixed mode
+    # has its own sharpen-only detune rule, applied by op.h at note-on.
     voice = sp.DX7Voice(ops=[_flat_op(osc_mode=1, freq_coarse=1, freq_fine=0)] + [_flat_op() for _ in range(5)],
                          algorithm=0, feedback_level=0, name="FIXEDTEST",
                          **_VOICE_LFO_PEG_DEFAULTS, osc_key_sync=0, transpose=24)
@@ -224,7 +221,7 @@ def test_lfo_and_pitch_eg_pass_through() -> None:
 
 
 def test_carrier_l4_is_preserved() -> None:
-    """A carrier's nonzero L4 survives conversion (F6, fm2.md §5.16).
+    """A carrier's nonzero L4 survives conversion (history_fm.md §5.16).
 
     This test used to assert the opposite -- that the converter forced it to 0
     so the voice could always reach EG_IDLE. voice_alloc.cpp reclaims a
@@ -276,13 +273,12 @@ def test_feedback_level_nonzero_passes_through() -> None:
 def test_every_op_field_is_emitted() -> None:
     """Every FmOpOut field must reach the generated C++ initialiser.
 
-    F5 found `am_sensitivity` had lived in FmOpParams and in the sysex parser
-    since #49 but was never carried into FmOpOut or emitted, so LFO amplitude
-    modulation was silently dead in every converted patch. A C++ aggregate
-    initialiser with one too few members just zero-fills the rest -- no
-    warning, no error, and the only symptom is a patch that does not wobble.
-    Counting emitted values against the dataclass is what makes the next
-    dropped field loud instead of silent.
+    A C++ aggregate initialiser with one too few members just zero-fills the
+    rest -- no warning, no error, and the only symptom is a silently dead
+    field (e.g. amp_mod_sens, parsed but never emitted, made LFO amplitude
+    modulation silently dead in every converted patch). Counting emitted
+    values against the dataclass is what makes the next dropped field loud
+    instead of silent.
     """
     import dataclasses
 
@@ -310,12 +306,11 @@ def test_every_op_field_is_emitted() -> None:
 
 
 def test_converter_emits_no_gain_constant() -> None:
-    # F2 (fm2.md §2): the converter has no opinion about absolute level. It
-    # used to emit an FmOpParams::level per operator from one of two hand-tuned
-    # references; op.h now owns the single engine-wide ceiling and this side is
-    # pure translation. Asserted structurally so a reintroduced level field, or
-    # a reintroduced module constant, fails here rather than quietly at the
-    # far end of a listening test.
+    # The converter has no opinion about absolute level (history_fm.md §2):
+    # op.h owns the single engine-wide ceiling and this side is pure
+    # translation. Asserted structurally so a reintroduced level field, or a
+    # reintroduced module constant, fails here rather than quietly at the far
+    # end of a listening test.
     assert not hasattr(sp.FmOpOut, "level")
     assert "level" not in getattr(sp.FmOpOut, "__annotations__", {})
     assert not hasattr(sp, "FM_CARRIER_LEVEL_REF")
@@ -323,12 +318,10 @@ def test_converter_emits_no_gain_constant() -> None:
 
 
 def test_multi_carrier_output_level_passes_through() -> None:
-    # Algorithm 32 (index 31): all six operators are carriers. Each used to be
-    # attenuated by 1/carrier_count to stop the sum overflowing. That division
-    # is gone -- real DX7 hardware does not apply it, so applying it made every
-    # multi-carrier algorithm quieter than its patch asked for. op.h's
-    # FM_CYCLE headroom is what makes the sum safe now (proved exhaustively by
-    # `render_fm_patch --check`).
+    # Algorithm 32 (index 31): all six operators are carriers. There is no
+    # 1/carrier_count attenuation -- real DX7 hardware does not apply it, and
+    # applying it would make every multi-carrier algorithm quieter than its
+    # patch asked for. op.h's FM_CYCLE headroom is what makes the sum safe.
     ops = [_flat_op() for _ in range(6)]
     voice = sp.DX7Voice(ops=ops, algorithm=31, feedback_level=0, name="ALLCARRIERS",
                          **_VOICE_LFO_PEG_DEFAULTS, osc_key_sync=0, transpose=24)
@@ -343,8 +336,8 @@ def test_multi_carrier_output_level_passes_through() -> None:
 
 def test_multi_modulator_output_level_passes_through() -> None:
     # Algorithm 12 (index 11): OP6/OP5/OP4 all target OP3 (3-way modulator
-    # fan-in). Same story as the carrier case above -- the 1/fan_in division is
-    # gone, and the routing itself is what this still needs to get right.
+    # fan-in), with no 1/fan_in attenuation applied. The routing itself is
+    # what this still needs to get right.
     decode = sp.decode_algorithm(sp.DX7_ALGORITHMS[11])
     fan_in_target = decode.routing[0].target  # OP6's target -- the shared bus
     assert decode.routing[1].target == fan_in_target  # OP5
@@ -495,12 +488,10 @@ def _voice_with_corrupt_byte(index: int, value: int) -> bytes:
 def test_out_of_range_byte_fails_loud() -> None:
     """Fail-loud still holds for fields the reference does not define past 99.
 
-    This used to use eg_rate1 = 127. F7 (fm2.md §5.18) widened the EG rate and
-    level checks to the full 7-bit byte range, because ROM3A voice 19 really
-    ships with L3 = 127 in a bank whose checksum validates, and both engines
-    consume it identically. So the probe moved to break_point, which is still
-    bounded -- the point of the test is that the policy exists, not which byte
-    carries it.
+    Probes break_point rather than an EG field, since EG rate/level are
+    widened to the full 7-bit byte range (real factory patches use values
+    above 99) -- the point of the test is that the fail-loud policy exists,
+    not which byte carries it.
     """
     try:
         sp.unpack_voice(_voice_with_corrupt_byte(8, 0x7F), 0)   # break_point = 127
@@ -510,12 +501,11 @@ def test_out_of_range_byte_fails_loud() -> None:
 
 
 def test_eg_bytes_above_panel_range_pass_through() -> None:
-    """The other half of the same F7 decision: 100-127 in an EG field is kept.
+    """100-127 in an EG field is kept, not clamped to 99.
 
-    Clamping it to 99 was measured, not assumed, to be wrong -- ROM3A #19
-    TIMPANI scores 1.5 dB harmonic MAE against Dexed with the byte passed
-    through and 3.4 dB with it clamped, and its spectral centroid drops to
-    0.75x, i.e. the clamp audibly darkens the patch.
+    Clamping darkens the patch audibly (measured against Dexed on ROM3A #19
+    TIMPANI) -- the byte is real data, not corruption, so passing it through
+    unmodified is the correct behaviour.
     """
     warnings: list = []
     voice = sp.unpack_voice(_voice_with_corrupt_byte(4, 127), 0, warnings)   # eg_level1 = 127

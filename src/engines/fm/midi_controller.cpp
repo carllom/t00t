@@ -9,23 +9,21 @@
 #include "patches.h"
 #endif
 
-// FM MIDI controller (#44, fm.md P1): note on/off + pitch bend + velocity,
+// FM MIDI controller (#44, module_fm.md P1): note on/off + pitch bend + velocity,
 // mirroring the shared src/midi/midi_controller.cpp's channel-bend/pan
-// pattern. Own controller (not the shared one) for the same reason the #41
-// skeleton stub gave: this engine's VoiceParams carries a patch pointer, not
-// a VoicePreset the shared controller's presets.h shape expects.
+// pattern. Own controller (not the shared one): this engine's VoiceParams
+// carries a patch pointer, not a VoicePreset the shared controller's
+// presets.h shape expects.
 //
-// Patch select (#47, fm.md P3): every note-on used FM_TEST_PATCH
-// unconditionally until tools/syx2patch.py gave this engine more than one
-// patch to choose from. patches.h is generated locally and gitignored (a
-// real DX7 bank's patch data, not something to check into git history --
-// see CMakeLists.txt's T00T_FM_HAS_PATCHES gate), so patch select itself is
-// conditionally compiled: Program Change and CC30 (data2, same range) both
-// pick `patches[value % FM_PATCH_COUNT]` -- CC30 exists because the
-// BeatStep Pro's encoders are absolute CC (16-31) and can't reliably send a
-// real Program Change, same reasoning #36 gave speech's phrase-bank CCs.
-// Without patches.h, every voice still plays FM_TEST_PATCH, exactly as
-// before #47.
+// Patch select (#47, module_fm.md P3): patches.h is generated locally and
+// gitignored (a real DX7 bank's patch data, not something to check into git
+// history -- see CMakeLists.txt's T00T_FM_HAS_PATCHES gate), so patch
+// select is conditionally compiled. When patches.h is present, Program
+// Change and CC30 (data2, same range) both pick
+// `patches[value % FM_PATCH_COUNT]` -- CC30 exists because the BeatStep
+// Pro's encoders are absolute CC (16-31) and can't reliably send a real
+// Program Change, same reasoning #36 gave speech's phrase-bank CCs. Without
+// patches.h, every voice plays FM_TEST_PATCH.
 
 static MidiParser midi_parser;
 static int8_t midi_note_voice[128];
@@ -121,7 +119,7 @@ void midi_controller_init() {
         channel_pan[ch] = 0;
         channel_patch[ch] = &FM_TEST_PATCH;
         channel_program[ch] = 0;
-        channel_mod_wheel[ch] = 0;  // #49: wheel at 0 = no LFO effect, matching real-world "push the wheel to add vibrato" patch convention (lfo.h's own header comment)
+        channel_mod_wheel[ch] = 0;  // resting position -- a patch's own configured LFO depth still plays at 0 (lfo.h's max() rule); the wheel only adds on top of it
     }
     ui_state.last_note = 0xFF;
     ui_state.last_velocity = 0;
@@ -177,7 +175,7 @@ void midi_controller_process(const uint8_t *data, uint32_t len, ParamExchange *p
             }
             case MIDI_CC: {
                 switch (ev.data1) {
-                    case 1:  // mod wheel (#49) — scales the patch's own LFO PMD/AMD depth, live
+                    case 1:  // mod wheel — a separate source competing with the patch's own LFO PMD/AMD depth (lfo.h's max() rule), live
                         channel_mod_wheel[ev.channel] = (int16_t)(ev.data2 * 258);
                         apply_channel_mod_wheel(shadow, ev.channel);
                         ui_state.mod = ev.data2;

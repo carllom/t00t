@@ -1,6 +1,5 @@
-# Host-only build for the chip module's reference rig (sid.md §11.1, F0).
-# Plain g++, no cmake -- the rig has no reason to need one, and this mirrors
-# tools/fm_ref/Makefile.
+# Host-only build for the chip module's reference rig (module_chip.md §11.1).
+# Plain g++, no cmake -- the rig has no reason to need one.
 #
 #   ./fetch_resid.sh     # once: pull reSID's core into resid/ (gitignored)
 #   make                 # -> ./resid_render ./resid_dump ./resid_probe

@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Signal-plane scorecard: t00t's CHIP_STRICT render against reSID's.
 
-The other half of F0's verification. tools/sid_ctl_diff.py compares everything
-that is a deterministic function -- envelope trajectories, the noise sequence,
-the waveform logic, the DAC tables -- exactly. What is left is the filter and
-the assembled sound, and those need spectra.
+tools/sid_ctl_diff.py compares everything that is a deterministic function --
+envelope trajectories, the noise sequence, the waveform logic, the DAC
+tables -- exactly. What is left is the filter and the assembled sound, and
+those need spectra.
 
     tools/sid_ref/.venv/bin/python tools/sid_compare.py --all --json out/scorecard.json
     tools/sid_ref/.venv/bin/python tools/sid_compare.py out/ref.wav out/test.wav
@@ -29,11 +29,10 @@ Metrics are chosen to name a defect rather than to produce a single number:
                    it means one side stopped early -- and it makes the band
                    numbers correspondingly less meaningful.
 
-That last split is the FM module's hardest-won lesson (fm2.md §3.1): scoring
-timbre wherever the *reference* sounds conflates timbre with envelope, because
-an engine whose envelope dies early then reads as spectrally wrong for every
-frame it is silent. Without the split, F0's baseline spectral numbers were pure
-envelope artefact.
+Timbre and envelope are scored on separate frame sets for the same reason:
+scoring timbre wherever the *reference* sounds conflates timbre with
+envelope, because an engine whose envelope dies early then reads as
+spectrally wrong for every frame it is silent.
 
 numpy only, no scipy.
 """

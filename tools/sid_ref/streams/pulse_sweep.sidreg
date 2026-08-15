@@ -2,7 +2,7 @@
 #
 # A pulse wave with its width swept once per frame, 5% to 95% and back.
 #
-# The iconic SID phasing sound, and the reason sid.md §6's pulse table is
+# The iconic SID phasing sound, and the reason module_chip.md §6's pulse table is
 # a per-frame (delta, duration) list rather than an LFO. Also the most
 # sensitive test of the pulse comparator's boundary condition: an
 # off-by-one in `top12 >= pw` shows up here as a hard click at the turn.

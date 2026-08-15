@@ -6,7 +6,7 @@
 // GENERATED FILE -- do not edit by hand.
 // Source: tools/chip_instruments.txt
 // Regenerate: tools/chipgen.py gen <source.txt> <this file>
-// (chip.md §6, §11.2 "hand-authored text -> generator script")
+// (module_chip.md §6, §11.2 "hand-authored text -> generator script")
 
 static const WaveRow ARP_LEAD_WAVE[] = {
     { 0x2, 0, 0 },

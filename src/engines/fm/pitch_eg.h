@@ -4,15 +4,14 @@
 #include "patch.h"
 #include <cstdint>
 
-// FmPitchEg -- the DX7 pitch envelope (#49, fm.md §5.4): one PER VOICE (not
+// FmPitchEg -- the DX7 pitch envelope (#49, module_fm.md §5.4): one PER VOICE (not
 // per operator, unlike EnvDX), same 4-stage (rate, level) shape and
 // block-rate-stepping convention as env_dx.h's EnvDX, but its per-block
 // result is consumed differently: instead of handing the kernel a
 // gain/gain_step pair, op.h's fm_voice_step_pitch_and_mod() converts it (plus
 // lfo.h's own pitch-mod output) into a ratio that scales every non-fixed-
-// frequency operator's `inc` once per control block -- fm.md's own "applied
-// by scaling all six operator increments at each block boundary ... zero
-// per-sample cost". Nothing here ever touches op_render/op_render_first/
+// frequency operator's `inc` once per control block, at zero per-sample cost
+// (module_fm.md §5.4). Nothing here ever touches op_render/op_render_first/
 // op_render_fb (op.h) or the kernel's `gain`/`gain_step` fields at all.
 //
 // Rate and level tables ported verbatim from Dexed's own PitchEnv
@@ -23,20 +22,17 @@
 // port, though -- Dexed's own PitchEnv works in a Q24-octave/N-sample-block
 // fixed-point domain tuned to Dexed's own internal block size and unit
 // scale, none of which this file needs to replicate to get the same real
-// numbers. Instead each table was cross-checked by porting-and-*running*
-// Dexed's actual formula in a standalone calibration harness (same method
-// #57's beta calibration and #58/#59's curve checks used) to pin down real
-// cents/octaves-per-second anchors, then re-expressed in this file's own
-// plain-float cents domain against those anchors:
+// numbers. Instead each table is re-expressed in this file's own plain-float
+// cents domain against real cents/octaves-per-second anchors:
 //   - level 0/50/99  -> -4800 / 0 / +4762.5 cents (DX7_PITCHENV_LEVEL's own
 //     +-128 raw span IS the real DX7's +-4-octave pitch EG range, so the
 //     conversion is a single multiply, no rescaling surprises).
 //   - rate 0/99 -> 0.047 / 11.97 octaves/sec -- a rate-99 pitch EG sweeps
 //     its full ~8-octave span in ~0.67s, a real, audible swoop, NOT instant
 //     like the amplitude EG's own rate 99 (env_dx.h). That is correct DX7
-//     character, not a bug: the "attack blip" / "brass scoop" this issue
-//     names is a fast RELATIVE move over a few tens or hundreds of cents
-//     (well under the 0.67s full-span figure), not a full-range sweep.
+//     character, not a bug: a fast attack transient is a RELATIVE move over
+//     a few tens or hundreds of cents (well under the 0.67s full-span
+//     figure), not a full-range sweep.
 
 // Dexed's `pitchenv_tab` (Source/msfa/pitchenv.cc, Apache-2.0), ported
 // verbatim -- 100 raw units (index 0-99) spanning the DX7's real pitch EG

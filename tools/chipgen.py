@@ -1,19 +1,16 @@
 #!/usr/bin/env python3
-"""chipgen.py -- chip instrument text format -> instruments.h (chip.md §6, §11.2).
+"""chipgen.py -- chip instrument text format -> instruments.h (module_chip.md §6, §11.2).
 
     chipgen.py gen <chip_instruments.txt> <instruments.h>
 
-Same host-side-authoring-and-validation split as tools/speechgen.py and
-tools/xm2t00t (speech.md "Host Tooling"): the device ships a generated table;
-a typo in the source text fails this script with a line number instead of
-turning into a wrong instrument discovered by ear, or silently reading
-garbage past the end of a table.
+The device ships a generated table; a typo in the source text fails this
+script with a line number instead of turning into a wrong instrument
+discovered by ear, or silently reading garbage past the end of a table.
 
 See tools/chip_instruments.txt's own header comment for the text format's
-grammar. This script is the authority on it, same relationship
-resid_dump.cpp has to its own domains -- change one without the other and
-the next `chipgen.py gen` run will produce a header that disagrees with the
-comment describing it.
+grammar. This script is the authority on it -- change one without the other
+and the next `chipgen.py gen` run will produce a header that disagrees with
+the comment describing it.
 """
 
 import argparse
@@ -214,7 +211,7 @@ def emit(instruments, out_path, src_path):
     lines.append("// GENERATED FILE -- do not edit by hand.")
     lines.append(f"// Source: tools/{src_path.split('/')[-1] if '/' in src_path else src_path}")
     lines.append("// Regenerate: tools/chipgen.py gen <source.txt> <this file>")
-    lines.append("// (chip.md §6, §11.2 \"hand-authored text -> generator script\")")
+    lines.append("// (module_chip.md §6, §11.2)")
     lines.append("")
 
     for ins in instruments:
