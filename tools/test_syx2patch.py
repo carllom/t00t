@@ -516,7 +516,7 @@ def test_eg_bytes_above_panel_range_pass_through() -> None:
 # --- Corpus-dependent checks (real .syx files, gitignored) ------------------
 
 def test_corpus_bank(path: str) -> None:
-    patches, warnings, skipped = sp._convert_all(path)
+    patches, warnings, skipped = sp._convert_all([path])
     assert len(patches) > 0
     assert len(patches) + skipped == 32
     # Every emitted patch must independently pass the exact same DAG
@@ -531,8 +531,12 @@ def test_corpus_bank(path: str) -> None:
             assert op.mod_target != i, (p.name, i)
             assert 0 <= op.output_level <= 99
             assert 0 <= op.vel_sensitivity <= 7
-            assert all(0 <= v <= 99 for v in op.eg_rate)
-            assert all(0 <= v <= 99 for v in op.eg_level)
+            # 0-127, not 0-99: eg_rate/eg_level are widened to the full 7-bit
+            # byte range (real factory patches, e.g. ROM3A TIMPANI, ship EG
+            # bytes above 99 -- see _range_check_byte()'s comment and
+            # test_eg_bytes_above_panel_range_pass_through() above).
+            assert all(0 <= v <= 127 for v in op.eg_rate)
+            assert all(0 <= v <= 127 for v in op.eg_level)
         assert all(0 <= v <= 99 for v in p.pitch_eg.rate)
         assert all(0 <= v <= 99 for v in p.pitch_eg.level)
         assert 0 <= p.lfo.rate <= 99 and 0 <= p.lfo.delay <= 99
