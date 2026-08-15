@@ -295,16 +295,6 @@ is where the DX7's nonlinearity lives:
 level/rate scaling and note-dependent detune all need the actual played
 note, which a bend-scaled `phase_inc` alone can't be inverted back into.
 
-### Voice Allocation by Operator Budget
-
-`voice_alloc` is reused with one addition: each voice carries an operator
-cost weight (its patch's active operator count, 1–6), and the allocator
-holds a total operator budget rather than a voice count. A bank of 2-op
-patches gives far more than `MAX_VOICES` voices (capped by the constant);
-a 6-op bank gives exactly `MAX_VOICES`. Steal priority is unchanged
-(silent → released → oldest active); the only change is that stealing
-continues until enough operators are free, not until one voice slot is.
-
 ### Per-Voice Multitimbrality
 
 `VoiceParams` carries one `const FmPatch *` — the whole timbre, one
@@ -339,8 +329,6 @@ By-Ear Pass, and the ORCH-CHIME RAM Fix".
 ### Future / TODO
 
 - **FM-specific display** — currently a stub; no status UI exists yet.
-- **Operator-budget readout on the LCD** — once the display itself exists,
-  extend it to show operator-budget utilisation alongside per-voice dots.
 - **Patch bank source** — currently a curated local conversion only; open
   question whether `.syx` loading should become a runtime feature over
   MIDI SysEx instead.
@@ -454,6 +442,18 @@ By-Ear Pass, and the ORCH-CHIME RAM Fix".
     doesn't reopen the kernel-placement question: that one was rejected for
     a code-only branch-range cost (linker veneers) that plain data never
     pays.
+19. **No operator-budget voice allocation.** Every real DX7 patch uses all
+    6 operator slots — none of this engine's factory or converted content
+    can produce a voice cheaper than 6 operators, so a cost-weighted
+    allocator would behave identically to the existing flat, per-slot
+    `voice_alloc` until patch content that isn't 6-op exists. A future
+    synthesis flavor with a genuinely different operator cost (a fixed
+    2-operator architecture, for instance) is expected to become its own
+    engine with its own flat `MAX_VOICES` pool, not a second patch shape
+    sharing this one's allocator — the render kernel, envelope, and
+    routing model here are DX7-specific, not generic across FM chip
+    families. Revisit only if a concrete need for a shared, cost-weighted
+    pool arises, with a fresh design pass at that point.
 
 ## Glossary
 
