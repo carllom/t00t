@@ -305,10 +305,14 @@ inline void speech_render_voice_seq(SpeechVoice &sv, uint32_t phase_inc, float f
 // jumps to the word's own final frame -- always the corpus decoder's
 // trailing silent STOP frame -- instead of cutting mid-glide; LOOP restarts
 // at frame 0 while still gated); `pitch_shift` is a raw Q8.8 multiplier on
-// top of each frame's own recorded pitch_hz.
+// top of each frame's own recorded pitch_hz. `chirp_exciter` selects the
+// voiced source: false keeps excitation.h's glottal_pulse() (shared with
+// the formant tract), true switches to lattice.h's lattice_chirp_pulse()
+// (the real TMS5220's own excitation table) -- see lattice.h's own header
+// comment for why that's a real, not cosmetic, difference in character.
 inline void speech_render_voice_lattice(SpeechVoice &sv, uint8_t trigger, int16_t amplitude, bool gate,
                                          const LatticeWord &word, SpeechMode mode, int16_t pitch_shift,
-                                         int16_t pan, float out_fs,
+                                         bool chirp_exciter, int16_t pan, float out_fs,
                                          int32_t *dry_l, int32_t *dry_r, uint32_t output_frames) {
     bool malformed = (word.length == 0 || word.frames == nullptr);
     float pitch_mult = (float)pitch_shift * (1.0f / 256.0f);
@@ -374,8 +378,16 @@ inline void speech_render_voice_lattice(SpeechVoice &sv, uint8_t trigger, int16_
             if (!sv.lat.word_done) {
                 float g = sv.lat.gain * sv.cur_amp * SPEECH_LATTICE_GAIN_BOOST;
                 if (sv.lat.voiced) {
-                    exc = glottal_pulse(sv.glottal_phase) * g;
+                    float pulse = chirp_exciter ? lattice_chirp_pulse(sv.lat.chirp_idx) : glottal_pulse(sv.glottal_phase);
+                    exc = pulse * g;
+                    uint32_t prev_phase = sv.glottal_phase;
                     sv.glottal_phase += sv.lat.phase_inc;
+                    // chirp_idx tracks native samples since the last pitch-period
+                    // wrap regardless of which exciter is selected (lattice.h's
+                    // own comment on why) -- detected the same way the formant
+                    // path detects a new glottal cycle for jitter/shimmer.
+                    if (sv.glottal_phase < prev_phase) sv.lat.chirp_idx = 0;
+                    else sv.lat.chirp_idx++;
                 } else {
                     float noise_f = (float)osc_noise(sv.noise_lfsr) * (1.0f / 32768.0f);
                     exc = noise_f * g;

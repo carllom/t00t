@@ -924,3 +924,102 @@ Verified by device compilation only (`make ENGINE=speech`) -- pure
 MIDI-CC-to-per-channel-state wiring, the same testing boundary every
 other CC handler in this file already has (no host-render coverage,
 hardware-verification pending).
+
+## Speech Engine — Switchable LPC Chirp Exciter (CC104)
+
+Carl's follow-up to the earlier hardware listen (recorded in the
+`KEY_PER_WORD`/preset entries above): the LPC corpus sounded "almost too
+smooth and intelligible" -- closer to clean synthesized speech than the
+real TMS5220's buzzier, more electronic character. Asked whether a
+different exciter could get closer to the real chip, switchable against
+the existing one.
+
+**Researched, not guessed.** `excitation.h`'s `glottal_pulse()` (a smooth
+bipolar triangle) is shared unchanged between the formant and lattice
+tracts, tuned for the former. Real TMS5220 hardware instead drives its
+lattice filter from a stored "chirp" ROM table -- fetched and
+cross-referenced against two independent MAME source trees rather than
+relying on memory: the current `mame/src/devices/sound/tms5110r.hxx`
+(`TI_LATER_CHIRP`, the table used by the TMS5110A/TMS5200/TMS5220 family,
+labeled "decap-verified") and the older historic-mame single
+`chirptable[]`. The two didn't match -- and shouldn't: the historic-mame
+value turned out to be `TI_0280_PATENT_CHIRP`, the *earlier* TMS5100/
+TMC0281's own table, used as an (inaccurate, by the modern source's own
+account) stand-in before MAME's TMS5220 emulation split chirp tables per
+chip variant. Confirming which table belongs to which chip, rather than
+taking the first match, is what made this usable: `TI_LATER_CHIRP` --
+`{0x00,0x03,0x0f,0x28,0x4c,0x6c,0x71,0x50,0x25,0x26,0x4c,0x44,0x1a,0x32,
+0x3b,0x13,0x37,0x1a,0x25,0x1f,0x1d,0,0,...}` (52 entries, 31 trailing
+zeros) -- is the one for this tract's actual target chip.
+
+Also fetched: exactly how the real chip uses the table, since a wrong
+mechanism would misrepresent the data even with the right values. Per
+the fetched source, `m_pitch_count` (reset on every pitch-period
+boundary) indexes the table directly each sample, held at its last
+(zero) entry once the period outlasts 51 samples -- a short burst at
+period start, silence for the rest. That's architecturally different
+from `glottal_pulse()`'s continuous phase-fraction lookup, so
+`lattice_chirp_pulse(sample_in_period)` takes a discrete per-sample
+index instead of a phase; `LatticeVoiceState::chirp_idx` tracks it,
+reset on the same glottal-phase-wraparound detection the excitation loop
+already used for jitter/shimmer draws. Normalized by the table's own
+peak (0x71 = 113), not an assumed full-scale 127, so the returned shape
+matches `glottal_pulse()`'s existing [-1,1] contract without rescaling
+downstream gain.
+
+**Switchable, not a replacement**: CC104 (live, unlike most LPC-specific
+CCs' next-note default -- see Decision Record for why live is safe here),
+`VoiceParams::lattice_chirp_exciter`, threaded through
+`speech_render_voice_lattice()`, `SpeechPreset`, and
+`midi_controller.cpp`'s per-channel state the same way CC103's pitch
+shift was. The formant tract's own `glottal_pulse()` usage is completely
+untouched.
+
+**Host-render regression lock, and three iterations to get the
+measurement right, not the DSP.** `run_lattice_chirp_exciter_check()`
+checks two things: pitch tracking (the chirp exciter should reproduce
+the same F0 as `glottal_pulse()` -- only the in-period shape should
+differ) and crest factor (the chirp exciter should be measurably
+peakier, the actual audible claim). Crest factor worked on the first
+try (2.84 vs. 6.22 -- confirmed, over 2x). Pitch tracking took three
+wrong measurements before landing on a correct one, each ruled out by
+reasoning rather than accepted at face value:
+- `local_peak_freq()`'s +-150 Hz spectral search read 260 Hz (2x F0) --
+  the chirp burst's harmonic-rich, DC-heavy spectrum genuinely carries
+  strong energy at 2xF0, which a narrow search around the target
+  legitimately finds first.
+- A zero-crossing count read 195 Hz (1.5x F0) -- the same harmonic
+  richness adds spurious crossings within one true period that survived
+  the debounce gap.
+- A first-pass autocorrelation read 65 Hz (0.5x F0, for *both* exciters,
+  including the already-known-correct `glottal_pulse()` case -- the
+  tell that this one was the test's bug, not the DSP's) -- an unbounded
+  [0.5x, 2x] lag search hit the classic autocorrelation octave error,
+  where correlation at 2x the true period can outscore the true period
+  for a clean, low-noise periodic signal; a second bug (comparing raw
+  sums with different term counts per lag) compounded it.
+
+Fixed by narrowing the autocorrelation search to +-15% around the
+already-known target period (this checks reproduction of a known pitch,
+not blind detection of an unknown one) and fixing the term-count bias.
+Final reading: `glottal_pulse` 129.7 Hz, chirp 124.9 Hz, both within 5%
+of the target 130 Hz.
+
+Full suite re-run after: all pre-existing checks still pass, including
+the full local corpus (1173/1173 words finite/unclipped/completed) --
+the new exciter doesn't push any real corpus word over the gain ceiling
+`SPEECH_LATTICE_GAIN_BOOST` was retuned against. Device firmware verified
+in three configurations (plain speech engine, `SPEECH_PROFILE=1`, and
+the default subtractive engine).
+
+**Not yet done at this point:** hardware verification that the chirp
+exciter actually sounds like the intended "closer to the real chip"
+character, and the unvoiced/fricative source's own real-chip LFSR
+(coarse two-level noise, specific tap polynomial) -- deliberately left
+out of this slice, see Decision Record.
+
+**Hardware-verified on real `breadboard_rp2350`:** Carl confirmed the
+chirp exciter (CC104 >= 64) sounds "age accurate" -- more robotic than
+the default triangle, with clearer pronunciation as a side effect. The
+decap-sourced table and the crest-factor-based character claim both hold
+up by ear, not just by measurement.

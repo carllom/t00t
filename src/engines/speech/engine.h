@@ -67,12 +67,16 @@ struct VoiceParams {
     // (lattice_words.h) has been generated locally.
     const LatticeWord *lattice_word;
     int16_t lattice_pitch_shift;  // Q8.8, 256 = 1.0x -- live override on the word's own pitch contour
+    // Voiced-excitation source, SPEECH_TRACT_LATTICE only (lattice.h's own
+    // header comment): false is excitation.h's glottal_pulse(), shared with
+    // the formant tract; true is the real TMS5220's own chirp table.
+    bool lattice_chirp_exciter;
 };
 
 template <>
 inline VoiceParams voice_params_default<VoiceParams>() {
     return { 0, 0, 0, false, 0, 0, 256, 256, SPEECH_NO_UTTERANCE, SPEECH_MODE_GATED, 16,
-             0, 0, 0.0f, 0.0f, SPEECH_TRACT_FORMANT, &LATTICE_TEST_WORD, 256 };
+             0, 0, 0.0f, 0.0f, SPEECH_TRACT_FORMANT, &LATTICE_TEST_WORD, 256, false };
 }
 
 using VoiceParamBlock = VoiceParamBlockT<VoiceParams>;

@@ -184,6 +184,7 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
             if (ph.tract == PROFILE_LATTICE) {
                 speech_render_voice_lattice(voices[v], trigger, PROFILE_AMPLITUDE, /*gate=*/true,
                                              LATTICE_TEST_WORD, SPEECH_MODE_LOOP, /*pitch_shift=*/256,
+                                             /*chirp_exciter=*/false,
                                              /*pan=*/0, (float)SAMPLE_RATE, dry_l, dry_r, SAMPLES_PER_BUFFER);
             } else if (ph.recompute_only) {
                 voices[v].fmt.formant_shift_tgt = (float)formant_shift * (1.0f / 256.0f);
@@ -275,7 +276,7 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
                 // SAMPLES_PER_BUFFER, not the halved native count below.
                 speech_render_voice_lattice(voices[v], p.trigger, p.amplitude, p.gate,
                                              *p.lattice_word, p.mode, p.lattice_pitch_shift,
-                                             p.pan, (float)SAMPLE_RATE,
+                                             p.lattice_chirp_exciter, p.pan, (float)SAMPLE_RATE,
                                              dry_l, dry_r, SAMPLES_PER_BUFFER);
                 if (voices[v].active) active_mask |= (1u << v);
                 // No display support for LPC state in this pass -- the

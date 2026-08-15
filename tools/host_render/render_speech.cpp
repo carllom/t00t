@@ -1073,6 +1073,7 @@ static bool run_lattice_word_check() {
     std::vector<int32_t> dry_l(total, 0), dry_r(total, 0);
     speech_render_voice_lattice(sv, /*trigger=*/1, /*amplitude=*/32767, /*gate=*/true,
                                  LATTICE_TEST_WORD, SPEECH_MODE_ONESHOT, /*pitch_shift=*/256,
+                                 /*chirp_exciter=*/false,
                                  /*pan=*/0, (float)SAMPLE_RATE,
                                  dry_l.data(), dry_r.data(), total);
 
@@ -1111,7 +1112,7 @@ static bool run_lattice_malformed_check() {
     uint32_t total = SAMPLE_RATE / 2;
     std::vector<int32_t> dry_l(total, 0), dry_r(total, 0);
     speech_render_voice_lattice(sv, /*trigger=*/1, /*amplitude=*/32767, /*gate=*/true,
-                                 bad, SPEECH_MODE_ONESHOT, /*pitch_shift=*/256,
+                                 bad, SPEECH_MODE_ONESHOT, /*pitch_shift=*/256, /*chirp_exciter=*/false,
                                  /*pan=*/0, (float)SAMPLE_RATE, dry_l.data(), dry_r.data(), total);
 
     bool silent = true;
@@ -1141,7 +1142,7 @@ static bool run_lattice_resample_stability_check() {
     uint32_t total = SAMPLE_RATE * 10;
     std::vector<int32_t> dry_l(total, 0), dry_r(total, 0);
     speech_render_voice_lattice(sv, /*trigger=*/1, /*amplitude=*/32767, /*gate=*/true,
-                                 word, SPEECH_MODE_ONESHOT, /*pitch_shift=*/256,
+                                 word, SPEECH_MODE_ONESHOT, /*pitch_shift=*/256, /*chirp_exciter=*/false,
                                  /*pan=*/0, (float)SAMPLE_RATE, dry_l.data(), dry_r.data(), total);
 
     bool finite = true;
@@ -1181,7 +1182,7 @@ struct LatticeRender {
 
 static LatticeRender render_lattice_native(const LatticeWord &word, SpeechMode mode,
                                             uint32_t hold_output_frames, uint32_t total_output_frames,
-                                            int16_t pitch_shift = 256) {
+                                            int16_t pitch_shift = 256, bool chirp_exciter = false) {
     SpeechVoice sv{};
     LatticeRender result;
     result.mono.assign(total_output_frames, 0.0f);
@@ -1198,7 +1199,7 @@ static LatticeRender render_lattice_native(const LatticeWord &word, SpeechMode m
         std::fill(dry_r.begin(), dry_r.begin() + n, 0);
         bool gate = done < hold_output_frames;
         speech_render_voice_lattice(sv, /*trigger=*/1, /*amplitude=*/32767, gate, word, mode, pitch_shift,
-                                     /*pan=*/0, (float)SAMPLE_RATE, dry_l.data(), dry_r.data(), n);
+                                     chirp_exciter, /*pan=*/0, (float)SAMPLE_RATE, dry_l.data(), dry_r.data(), n);
         for (uint32_t i = 0; i < n; i++) result.mono[done + i] = (float)dry_l[i];
         if (!sv.active && !recorded) { result.completed_at = done; recorded = true; }
         done += n;
@@ -1303,6 +1304,101 @@ static bool run_lattice_pitch_shift_check() {
                c.mult, c.q8_8, target, measured, ok ? "PASS" : "FAIL");
         all_ok = all_ok && ok;
     }
+    return all_ok;
+}
+
+// The chirp exciter (lattice.h's lattice_chirp_pulse(), the real TMS5220's
+// own excitation table): confirms it tracks pitch the same way
+// glottal_pulse() does (same period, same F0 -- only the in-period shape
+// differs), and that it's genuinely, measurably harsher/buzzier, not just
+// wired but indistinguishable. Crest factor (peak / RMS over one steady
+// second) is the proxy: a short burst concentrated at the start of each
+// pitch period has a much higher peak-to-average ratio than a triangle
+// spanning the whole period, which is exactly the audible difference this
+// exciter exists to make.
+static bool run_lattice_chirp_exciter_check() {
+    bool all_ok = true;
+    printf("\n== LPC lattice tract: chirp exciter (TMS5220 excitation table) ==\n");
+
+    static constexpr uint32_t HOLD_FRAMES = 40;  // 40 * 25 ms = 1 s
+    std::vector<LatticeFrame> frames(HOLD_FRAMES, LATTICE_TEST_I);
+    LatticeWord word{ frames.data(), (uint16_t)frames.size() };
+    uint32_t total = SAMPLE_RATE;
+
+    LatticeRender pulse = render_lattice_native(word, SPEECH_MODE_ONESHOT, total, total, /*pitch_shift=*/256, /*chirp_exciter=*/false);
+    LatticeRender chirp = render_lattice_native(word, SPEECH_MODE_ONESHOT, total, total, /*pitch_shift=*/256, /*chirp_exciter=*/true);
+
+    // Autocorrelation period, not local_peak_freq()'s spectral hill-climb
+    // or a zero-crossing count -- the chirp burst's harmonic-rich,
+    // DC-heavy spectrum (module_speech.md "LPC Lattice Tract") both
+    // carries strong energy at multiples of F0 (misleading a narrow
+    // spectral search) and rings enough to add spurious zero crossings
+    // within one true period (misleading a crossing count). Autocorrelation
+    // integrates the whole waveform shape against a lagged copy of itself,
+    // so it locks onto the true repetition period regardless of how that
+    // period's internal harmonic content is distributed.
+    size_t win = total / 4;
+    uint32_t expected_period = (uint32_t)((float)SAMPLE_RATE / LATTICE_TEST_I.pitch_hz + 0.5f);
+    auto autocorr_period_hz = [&](const std::vector<float> &mono) {
+        size_t start = win;
+        // A narrow +-15% window around the known expected period, not an
+        // open-ended pitch search -- the target pitch is already known
+        // exactly (this word's own fixed pitch_hz), so this only needs to
+        // confirm the render reproduces it, not blind-detect an unknown
+        // one. A wider range invites the classic autocorrelation octave
+        // error: correlation at 2x the true period is often just as
+        // strong, or stronger, than at the true period itself for a
+        // clean, low-noise periodic signal.
+        uint32_t min_lag = expected_period * 85 / 100, max_lag = expected_period * 115 / 100;
+        // A fixed term count across every tested lag -- comparing raw sums
+        // across lags with different term counts (e.g. `i + lag < end`)
+        // biases toward whichever lag happens to sum the most terms, not
+        // whichever lag correlates best.
+        size_t fixed_n = mono.size() - start - max_lag;
+        double best_corr = -1.0;
+        uint32_t best_lag = expected_period;
+        for (uint32_t lag = min_lag; lag <= max_lag; lag++) {
+            double sum = 0.0;
+            for (size_t i = 0; i < fixed_n; i++) sum += (double)mono[start + i] * (double)mono[start + i + lag];
+            if (sum > best_corr) { best_corr = sum; best_lag = lag; }
+        }
+        return (float)SAMPLE_RATE / (float)best_lag;
+    };
+    float f0_pulse = autocorr_period_hz(pulse.mono);
+    float f0_chirp = autocorr_period_hz(chirp.mono);
+    bool pitch_ok = std::fabs(f0_chirp - LATTICE_TEST_I.pitch_hz) / LATTICE_TEST_I.pitch_hz < 0.05f;
+    printf("  pitch tracking: glottal_pulse F0=%.1f  chirp F0=%.1f (target %.1f) -> %s\n",
+           f0_pulse, f0_chirp, LATTICE_TEST_I.pitch_hz, pitch_ok ? "PASS" : "FAIL");
+    all_ok = all_ok && pitch_ok;
+
+    auto crest_factor = [&](const std::vector<float> &mono) {
+        float peak = 0.0f;
+        double sum_sq = 0.0;
+        for (size_t i = win; i < mono.size(); i++) {
+            peak = std::max(peak, std::fabs(mono[i]));
+            sum_sq += (double)mono[i] * (double)mono[i];
+        }
+        float rms = (float)std::sqrt(sum_sq / (double)(mono.size() - win));
+        return rms > 0.0f ? peak / rms : 0.0f;
+    };
+    float cf_pulse = crest_factor(pulse.mono);
+    float cf_chirp = crest_factor(chirp.mono);
+    bool finite = std::all_of(pulse.mono.begin(), pulse.mono.end(), [](float s) { return std::isfinite(s); })
+        && std::all_of(chirp.mono.begin(), chirp.mono.end(), [](float s) { return std::isfinite(s); });
+    float peak_pulse = 0.0f, peak_chirp = 0.0f;
+    for (float s : pulse.mono) peak_pulse = std::max(peak_pulse, std::fabs(s));
+    for (float s : chirp.mono) peak_chirp = std::max(peak_chirp, std::fabs(s));
+    bool unclipped = peak_pulse < 32767.0f && peak_chirp < 32767.0f;
+    bool harsher = cf_chirp > cf_pulse * 1.2f;  // comfortably above measurement noise
+    bool ok = finite && unclipped && harsher;
+
+    printf("  crest factor: glottal_pulse=%.2f  chirp=%.2f (expect chirp measurably higher) -> %s\n",
+           cf_pulse, cf_chirp, ok ? "PASS" : "FAIL");
+    if (!finite) printf("  FAIL: non-finite sample\n");
+    if (!unclipped) printf("  FAIL: clipped (peak pulse=%.0f chirp=%.0f)\n", peak_pulse, peak_chirp);
+    if (!harsher) printf("  FAIL: chirp exciter isn't measurably harsher than glottal_pulse()\n");
+    all_ok = all_ok && ok;
+
     return all_ok;
 }
 
@@ -1416,6 +1512,7 @@ int main() {
     ok = run_lattice_resample_stability_check() && ok;
     ok = run_lattice_mode_checks() && ok;
     ok = run_lattice_pitch_shift_check() && ok;
+    ok = run_lattice_chirp_exciter_check() && ok;
 #ifdef T00T_SPEECH_HAS_LATTICE_WORDS
     ok = run_lattice_corpus_render() && ok;
     ok = test_lattice_corpus_stability() && ok;
