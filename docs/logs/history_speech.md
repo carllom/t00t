@@ -1148,3 +1148,95 @@ plus both speech variants (`make ENGINE=speech`, `SPEECH_PROFILE=1`).
 allophone-table import tool, MIDI/CC integration beyond the CC102
 bring-up hook, pitch contour, and per-voice cost measurement are separate,
 later slices of #69, not this skeleton.
+
+**Hardware-verified on real `breadboard_rp2350`:** Carl reached it via
+CC102 >= 85 plus CC20 sweeps through the fixture and confirmed hearing
+AA, IY, UW, and S -- "very melodic," a first impression worth revisiting
+once the reciter and pitch contour (still unbuilt at this point) land,
+since real S.A.M. is usually described as buzzy/robotic rather than
+musical.
+
+## Speech Engine — S.A.M. Allophone/Pitch-Table Import Tool (#71)
+
+#69's second slice: `tools/sam2allophones.py`, converting locally-supplied
+S.A.M. reference headers into the full 80-allophone `SamAllophoneTarget`
+table, following the Talkie/DX7 gitignored-converter precedent exactly.
+#70's renderer (`sam.h`, `render.h`'s `speech_render_voice_sam()`) stays
+untouched -- only the data source changes.
+
+**Fetched the real reference tables before writing a single line of the
+converter.** `s-macke/SAM`'s `SamTabs.h`/`RenderTabs.h` were pulled
+(GitHub contents API, not committed) to understand the actual data shape
+rather than guess at it -- and that changed the plan. `freq1data`/
+`freq2data`/`freq3data`, the tables that looked like the obvious "formant
+Hz" source, turned out to be phase-increment values for three independent
+oscillators (sine/sine/rectangle) that reset every glottal pulse -- the
+source's own comment says outright that this *isn't* filter-based formant
+synthesis the way every tract in this module (including #70's own SAM
+renderer) already is. Translating those bytes into Hz for a resonant
+filter would mean reverse-engineering a mismatched representation with no
+reference render to check the result against. Raised to Carl explicitly
+before writing the converter; his call: extend the same Peterson & Barney
+(1952) data `speech_phonemes.csv` already uses instead of attempting the
+oscillator-phase decode.
+
+**What's genuinely read from the reference data, once frequency was off
+the table**: `sampledConsonantFlags` (which of the 80 allophones are
+noise-driven -- a structural classification, not audio data) and the
+three per-formant amplitude tables (`ampl1data`/`ampl2data`/`ampl3data`,
+rescaled through the reference's own `amplitudeRescale` curve). Both are
+genuine S.A.M.-specific numeric data distinct from the frequency tables'
+problem, and both measurably shape the generated table -- 14 of 80
+allophones came back noise-driven, and vowel amplitude balance varies
+per-allophone instead of #70 fixture's own hand-guessed flat weights.
+
+**Finding: the reference data is 80 entries, not 81.** The disassembly
+comment block `SamTabs.h` ships (index/name documentation) lists a
+UL/UM/UN trio ending at index 80, but every actual data array
+(`sampledConsonantFlags`, `ampl1-3data`, `phonemeLengthTable`) is exactly
+80 long. Trusted the verified data over the transcribed comment: `UN`
+dropped, folded into the adjacent syllabic-nasal `UM`.
+
+**Parser searches every given file for each named array**, rather than
+assuming a fixed file-to-array mapping -- confirmed necessary once real
+data was in hand: `sampledConsonantFlags`/`ampl1-3data` live in
+`RenderTabs.h`, not `SamTabs.h`, in the fetched fork, and other forks
+split them differently.
+
+Test suite (`test_sam2allophones.py`): synthetic-fixture checks (array
+parsing including line-comment stripping, sampled-vs-formant
+classification, multi-file array search, missing/short-array errors,
+header shape) that always run, plus a reference-gated full-conversion
+check that skips cleanly with a clear message when `../sam/` is empty.
+Both fetched reference files were kept locally (gitignored) to exercise
+the real-data path end to end: 80/80 allophones converted, amplitude
+values in range, noise/formant split as expected. All 11 checks pass.
+
+**Runtime wiring**: `render.h` gained `sam_allophone_target()`, a small
+resolver picking the generated table (`T00T_SPEECH_HAS_SAM_DATA`, guarded
+in both `CMakeLists.txt`s the same way `T00T_SPEECH_HAS_LATTICE_WORDS`
+already is) over #70's fixture -- `speech_render_voice_sam()`'s only
+change is one line, calling the resolver instead of indexing
+`SAM_TEST_ALLOPHONES` directly.
+
+**Bug caught by the host harness, not by inspection**: with the generated
+table wired in, `run_sam_fixture_check()` (which renders fixture indices
+0-4 to confirm SIL/AA/IY/UW/S) started reporting every entry silent.
+Indices 0-4 of the *generated* table are S.A.M.'s own silence/punctuation-pause
+allophones, not the fixture's SIL/AA/IY/UW/S -- the fixture test was
+unintentionally exercising whichever table `sam_allophone_target()`'s
+build-time resolver happened to pick, not the fixture specifically. Fixed
+by rendering `SAM_TEST_ALLOPHONES` directly (`render_sam_target_native()`,
+bypassing the resolver entirely), the same relationship
+`render_target_native()` already has to the formant tract's own phoneme
+resolver -- confirmed by rebuilding both with and without
+`sam_allophones.h` present and checking each path's peaks independently.
+
+Device firmware builds clean in four configurations (with/without the
+generated table, x plain speech engine/`SPEECH_PROFILE=1`) plus a sanity
+pass on the default and `fm` engines.
+
+**Not yet done at this point:** hardware verification (peaks/classification
+checked on host only), the reciter and build-time phrase bank, MIDI/CC
+integration beyond the existing CC102/CC20 bring-up hooks, pitch contour,
+and per-voice cost measurement remain separate, later slices of #69.

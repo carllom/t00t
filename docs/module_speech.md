@@ -3,8 +3,9 @@
 A formant (Klatt-reduced) speech synthesis engine: a phoneme keyboard,
 utterance/phrase playback, a reserved-but-unimplemented singing mode, an
 LPC lattice sibling tract playing back real TMS5220 chip-speech words, and
-a S.A.M.-style sibling tract still at its hardcoded-fixture bring-up
-stage. See `engine.md` for the shared dual-core architecture; `architecture.md`
+a S.A.M.-style sibling tract with a converted allophone table but no
+reciter or MIDI addressing of its own yet. See `engine.md` for the shared
+dual-core architecture; `architecture.md`
 for the cross-engine `VoiceParams`/CMake pattern this module follows;
 `history_speech.md` for build-phase results and full performance
 measurements.
@@ -61,10 +62,12 @@ shimmer are all live MIDI controls) rather than just a talking clock.
   and summed independently (parallel, not cascaded), reusing the same
   glottal-pulse/LFSR-noise excitation, selected per voice by
   `VoiceParams::tract`. Renders at the same native rate and zero-order-hold
-  doubling as the formant tract. No reciter or generated allophone table
-  exists yet: every SAM voice plays one sustained allophone from a small
-  hardcoded fixture (`sam.h`'s `SAM_TEST_ALLOPHONES`), indexed the same way
-  the formant tract's phoneme keyboard is — see SAM Tract and MIDI Mapping.
+  doubling as the formant tract. No reciter or MIDI word-addressing scheme
+  exists yet: every SAM voice plays one sustained allophone, indexed the
+  same way the formant tract's phoneme keyboard is, from the generated
+  allophone table (`tools/sam2allophones.py`) once converted locally, or a
+  small hardcoded fixture (`sam.h`'s `SAM_TEST_ALLOPHONES`) otherwise — see
+  SAM Tract and MIDI Mapping.
 
 ### MIDI Mapping (Input Capabilities)
 
@@ -140,6 +143,7 @@ src/engines/speech/
   phoneme_def.h     PhonemeDef struct, phoneme_unpack()
   phonemes.h        GENERATED — phoneme target table
   phrases.h         GENERATED — utterance phoneme strings
+  sam_allophones.h  GENERATED, gitignored — SAM allophone target table
   utterance.h       two hand-picked fixtures (HELLO/CAT), used only by
                      host regression checks
   presets.h         SpeechPreset, voice_apply_preset(), preset table
@@ -194,6 +198,22 @@ Source vocab files (`talkie/`, gitignored) aren't supplied — populate it
 locally from Talkie's own `examples/` vocab sketches
 (https://github.com/going-digital/Talkie) to run `convert` or the corpus-
 gated half of `tools/test_talkie2lattice.py`.
+
+`tools/sam2allophones.py` — converts locally-supplied S.A.M. reference
+headers into the SAM tract's `SamAllophoneTarget` table, following the same
+gitignored-output precedent:
+
+```
+sam2allophones.py convert <in.h> [in2.h ...] <out.h>   # -> sam_allophones.h (gitignored)
+sam2allophones.py dump <in.h> [in2.h ...]               # per-allophone summary, writes nothing
+```
+
+Reference headers (`sam/`, gitignored) aren't supplied — populate it
+locally with `RenderTabs.h`/`SamTabs.h` from one of the commonly-circulated
+open S.A.M. reimplementations (e.g. https://github.com/s-macke/SAM) to run
+`convert` or the reference-gated half of `tools/test_sam2allophones.py`. See
+`sam2allophones.py`'s own module docstring for exactly what is and isn't
+read from that reference data.
 
 ## Architecture
 
@@ -495,13 +515,33 @@ native rate and zero-order-hold ×2 resample path -- there's no single
 native sample rate specific to this tract's own source material to
 target, unlike the LPC lattice tract's TMS5220-matched 8 kHz.
 
-**No word-addressing scheme yet**: no reciter or generated allophone
-table exists. Every SAM voice plays one sustained allophone, held under
-gate like the formant tract's own phoneme keyboard, from `sam.h`'s
-hardcoded `SAM_TEST_ALLOPHONES` fixture (silence, three vowels, one
-fricative). `VoiceParams::phoneme` -- the same field the formant tract's
-phoneme keyboard reads -- indexes it directly, wrapped
-`% SAM_ALLOPHONE_COUNT`.
+**No word-addressing scheme or reciter yet**: every SAM voice plays one
+sustained allophone, held under gate like the formant tract's own phoneme
+keyboard. `VoiceParams::phoneme` -- the same field the formant tract's
+phoneme keyboard reads -- indexes `render.h`'s `sam_allophone_target()`,
+which resolves to the full generated allophone table once one has been
+converted locally, or `sam.h`'s small hardcoded `SAM_TEST_ALLOPHONES`
+fixture (silence, three vowels, one fricative) otherwise -- a voice is
+always valid whichever data source is active.
+
+**Allophone table**: `tools/sam2allophones.py` converts locally-supplied
+S.A.M. reference headers (e.g. `RenderTabs.h`/`SamTabs.h` from one of the
+commonly-circulated open reimplementations) into `sam_allophones.h`
+(gitignored, `SAM_ALLOPHONES[]`/`SAM_ALLOPHONE_DATA_COUNT`) -- 80
+allophones, S.A.M.'s own published segmentation. Formant frequency (F1-F3)
+targets are not sourced from the reference data: S.A.M.'s own frequency
+tables are phase-increment values for a three-oscillator wavetable
+technique, not Hz values for a resonant filter, so the tool extends the
+same Peterson & Barney (1952) published acoustic data
+`tools/speech_phonemes.csv` already uses instead. What *is* read from the
+reference data is genuinely S.A.M.-specific: which allophones are
+noise-driven (`sampledConsonantFlags`, mapped to `af`/`amp`) and each
+formant's relative loudness (`ampl1data`/`ampl2data`/`ampl3data`, through
+the reference's own rescale curve, mapped to `amp`). Without a converted
+table present locally, every SAM voice plays the fixture; the reference
+source directory (`sam/`) and the generated header are both gitignored,
+only the converter is committed -- see `tools/sam2allophones.py`'s own
+module docstring for the full sourcing breakdown.
 
 ### Resonator and the Stability Rule
 
@@ -646,10 +686,9 @@ Full measurement breakdown: `history_speech.md`.
 
 ### Future / TODO
 
-- **SAM reciter and allophone-table import tool** — the SAM tract
-  currently plays one hardcoded fixture; a from-scratch English
-  letter-to-sound reciter and a generated allophone/pitch table are
-  separate, later slices.
+- **SAM reciter** — a from-scratch English letter-to-sound reciter and a
+  build-time phrase bank (the allophone/pitch-table import tool is done,
+  see `tools/sam2allophones.py`) are a separate, later slice.
 - **SAM pitch contour** — the stress-driven pitch overshoot/undershoot
   that gives S.A.M. its characteristic cadence is unbuilt; planned to be
   baked in by the reciter and rendered as a per-segment ramped target,
@@ -945,6 +984,38 @@ Full measurement breakdown: `history_speech.md`.
     real MIDI channel ahead of any SAM-specific addressing scheme, the
     same reasoning CC102 alone gave the LPC lattice tract's own hardcoded
     test word before `KEY_PER_WORD` existed.
+41. **The SAM allophone table's formant frequencies are not decoded from
+    S.A.M.'s own reference data**, unlike every other converter this
+    project has built — S.A.M.'s `freq1`/`freq2`/`freq3` tables are
+    phase-increment values driving three independent oscillators (its own
+    synthesis technique doesn't use resonant filters at all), not Hz
+    values a filter-based tract could use, and there's no way to verify a
+    translated guess without a reference render to compare against.
+    `tools/sam2allophones.py` extends the same published Peterson & Barney
+    acoustic data the formant tract's own phoneme table already uses
+    instead.
+42. **What *is* read from the reference data is the per-allophone
+    noise/formant classification and amplitude balance**
+    (`sampledConsonantFlags`, `ampl1data`/`ampl2data`/`ampl3data`), not
+    formant frequency — these are genuine structural/behavioral S.A.M.
+    data (which allophones are noise-driven, how loud each formant is
+    relative to the others), not audio waveform data, keeping the
+    reference-data dependency real without needing the frequency-encoding
+    translation #41 rejected.
+43. **The reference data's own per-allophone arrays are 80 entries, not
+    the 81 some published documentation implies** — every reference
+    implementation `tools/sam2allophones.py` has checked ships
+    `sampledConsonantFlags`/`ampl1-3data`/`phonemeLengthTable` at 80
+    entries; `SAM_ALLOPHONE_COUNT` and `SAM_ALLOPHONE_NAMES` match that
+    verified data shape (dropping a documentation-only "UN" 81st slot,
+    folded into the adjacent syllabic-nasal "UM") rather than a
+    transcribed comment believed without the data to back it.
+44. **`sam2allophones.py` searches every given input file for each named
+    array**, rather than requiring a fixed file-to-array mapping — the
+    reference implementations split these arrays across files
+    differently (`RenderTabs.h` vs `SamTabs.h`) depending on which fork
+    supplied them, so the converter shouldn't need to know or care which
+    file a given array lives in.
 
 ## Glossary
 

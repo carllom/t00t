@@ -10,6 +10,22 @@
 #include "tract.h"
 #include <cstdint>
 
+#ifdef T00T_SPEECH_HAS_SAM_DATA
+#include "sam_allophones.h"  // GENERATED (tools/sam2allophones.py) -- SAM_ALLOPHONES[], SAM_ALLOPHONE_DATA_COUNT
+#endif
+
+// Resolves a SAM tract allophone index to its target: the full generated
+// table (tools/sam2allophones.py, gitignored) once it exists locally,
+// sam.h's small hardcoded fixture otherwise -- so a voice is always valid
+// whether or not the reference data has been supplied and converted.
+inline const SamAllophoneTarget &sam_allophone_target(uint8_t index) {
+#ifdef T00T_SPEECH_HAS_SAM_DATA
+    return SAM_ALLOPHONES[index % SAM_ALLOPHONE_DATA_COUNT];
+#else
+    return SAM_TEST_ALLOPHONES[index % SAM_ALLOPHONE_COUNT];
+#endif
+}
+
 // Shared core of the speech engine's test-tone bring-up path: renders `native_frames`
 // samples of a fixed test tone at the engine's native rate and zero-order-
 // holds each one x2 into the (output-rate-sized) dry_l/dry_r buffers, i.e.
@@ -172,14 +188,13 @@ inline void speech_render_voice(SpeechVoice &sv, uint32_t phase_inc, float fs, u
     }
 }
 
-// SAM tract bring-up render: structurally identical to speech_render_voice()
-// above (one sustained allophone per note, no sequencer) but through sam.h's
-// three parallel resonators instead of tract.h's five-formant cascade. No
-// reciter or generated allophone table exists yet, so `phoneme` indexes
-// sam.h's hardcoded SAM_TEST_ALLOPHONES fixture directly -- the same field
-// the formant tract's phoneme keyboard reads, reused here rather than
-// duplicated since only one tract renders a given voice at a time. Shares
-// the formant tract's native rate and zero-order-hold x2 resample path
+// SAM tract render: structurally identical to speech_render_voice() above
+// (one sustained allophone per note, no sequencer/reciter yet) but through
+// sam.h's three parallel resonators instead of tract.h's five-formant
+// cascade. `phoneme` indexes sam_allophone_target()'s resolved allophone --
+// the same field the formant tract's phoneme keyboard reads, reused here
+// rather than duplicated since only one tract renders a given voice at a
+// time. Shares the formant tract's native rate and zero-order-hold x2 resample path
 // (`fs`/`native_frames` are native-rate, like speech_render_voice() above,
 // not output-rate the way speech_render_voice_lattice()'s `output_frames`
 // is) -- there's no single native sample rate distinct to this tract's own
@@ -193,7 +208,7 @@ inline void speech_render_voice_sam(SpeechVoice &sv, uint32_t phase_inc, float f
     if (retriggering && sv.tract != SPEECH_TRACT_SAM) new (&sv.sam) SamVoiceState();
     sv.tract = SPEECH_TRACT_SAM;
 
-    const SamAllophoneTarget &tgt = SAM_TEST_ALLOPHONES[phoneme % SAM_ALLOPHONE_COUNT];
+    const SamAllophoneTarget &tgt = sam_allophone_target(phoneme);
     if (retriggering) {
         sv.last_trigger = trigger;
         sv.last_phoneme = phoneme;
