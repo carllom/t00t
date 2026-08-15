@@ -1023,3 +1023,70 @@ chirp exciter (CC104 >= 64) sounds "age accurate" -- more robotic than
 the default triangle, with clearer pronunciation as a side effect. The
 decap-sourced table and the crest-factor-based character claim both hold
 up by ear, not just by measurement.
+
+## Speech Engine — TMS5220 Unvoiced Noise, Paired With the Chirp Exciter
+
+Carl's follow-up after confirming the chirp exciter by ear: also try the
+real chip's own unvoiced/fricative noise generator, paired with the
+chirp table under the same CC104 for now rather than a second CC --
+listen to both together first, decide afterward whether unvoiced needs
+its own separate toggle.
+
+**Same research discipline as the chirp table.** Fetched the exact
+generator from the same source already cross-checked for the chirp data:
+a 13-bit shift register (seeded `0x1FFF`, the chip's own reset value,
+never reseeded again except at power-on -- mapped here to this voice's
+own lattice-state construction), updated 20 times per native sample
+(oversampling-by-decimation, whitening what a slow-clocked 13-bit
+register alone would render as an audibly patterned buzz), taps at bits
+12/3/2/0 -- the same positions confirmed for the chirp table's own chip
+family. Only the register's low bit after those 20 updates is read, and
+only to pick between two *fixed* levels (+64/-64), not to produce a
+multi-bit noise value -- coarse by design, not merely reused wiring
+around a different scale. `lattice_chip_noise(uint16_t &rng)` reproduces
+this; `LatticeVoiceState::tms_rng` carries the register, reset alongside
+every other lattice-only field in `lattice_reset()`.
+
+**Normalization matched to the chip's own relative scale, not
+independently maxed.** The real chip runs chirp-table values and this
+fixed ±64 through the identical final left-shift before the lattice
+filter (the same `m_excitation_data` variable serves both paths in the
+fetched source), so dividing both by `LATTICE_CHIRP_PEAK` (113, the
+chirp table's own peak) rather than giving noise its own independent
+`±1.0` keeps their real relative loudness intact: the noise floor
+genuinely sits below the chirp burst's own peak by design, not by
+accident of two separately-normalized constants.
+
+**A new, targeted host check caught a real clipping regression before
+it shipped.** `run_lattice_chirp_exciter_check()`'s existing crest-factor
+number (glottal_pulse 2.84, chirp 6.22, over 2x) was itself the warning
+sign: `SPEECH_LATTICE_GAIN_BOOST` was calibrated against the *default*
+exciter's crest factor, and nothing yet confirmed the real corpus stayed
+safe under the *other* one. Re-running `run_lattice_corpus_render()`
+against all 1173 words with `chirp_exciter=true` (added as a
+WAV-free, peak-only variant of the same sweep rather than doubling the
+suite's runtime/disk cost permanently) found exactly that: two words
+("O", "OH") clipped at 33666, just over the 32767 ceiling. Fixed with a
+second, chirp-only multiplier (`SPEECH_LATTICE_CHIRP_GAIN_SCALE`, 0.86,
+tuned the same empirical rebuild-and-measure way as the original
+`GAIN_BOOST`) rather than lowering the shared constant and quieting the
+already-correctly-calibrated default exciter for a problem specific to
+the other one. Re-run confirms both exciters now land at comparable
+worst-case peaks (29960 default, 28952 chirp) with matching margin.
+
+**Regression lock**: `test_lattice_chip_noise_two_level()` calls
+`lattice_chip_noise()` directly 100,000 times and confirms every value
+is exactly one of the two expected levels (not a third, which would mean
+a tap or masking bug) and that both appear roughly evenly (not stuck on
+one, which would mean a frozen or non-toggling register) -- unit-level,
+independent of the lattice filter or resampler, the same shape as the
+chirp exciter's own pitch-tracking/crest-factor check but for a claim
+("exactly two values") that's exact rather than statistical.
+
+Full suite re-run clean after the gain fix (0 failures, both corpus
+sweeps passing). Device firmware verified in three configurations (plain
+speech engine, `SPEECH_PROFILE=1`, default subtractive engine).
+
+**Not yet done at this point:** Carl's own by-ear listen to decide
+whether the unvoiced noise should get its own independent CC rather than
+staying paired with the chirp table's own toggle.

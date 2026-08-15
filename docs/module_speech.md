@@ -85,7 +85,7 @@ encoder block.
 | 76 | Vibrato rate (GM) | LFO rate | live |
 | 102 | Tract select | Formant (<64) vs. LPC lattice (>=64) — see LPC lattice tract | next note |
 | 103 | LPC pitch-shift multiplier | Q8.8 override on a word's own recorded pitch contour, 0.5x–2x | live |
-| 104 | LPC voiced-excitation select | `glottal_pulse()` (<64, shared with the formant tract) vs. the TMS5220's own chirp table (≥64) | live |
+| 104 | LPC excitation select | Shared `glottal_pulse()`/noise (<64) vs. the TMS5220's own chirp table + LFSR, paired (≥64) | live |
 
 **Program Change** is tract-dependent: under the formant tract it selects
 an utterance (same value CC23 writes) — phoneme selection is CC20-only;
@@ -435,26 +435,32 @@ note-off rather than cutting mid-glide; ONESHOT ignores note-off for word
 progression; LOOP restarts at frame 0 while still gated and degrades to
 one-shot completion once gate drops.
 
-**Voiced-excitation source (CC104)**: the shared `excitation.h`
-`glottal_pulse()` (a smooth bipolar triangle spanning the whole pitch
-period, also used by the formant tract) is the default; switching to
-`lattice.h`'s `lattice_chirp_pulse()` selects the real TMS5220's own
-52-sample excitation table instead — decap-verified chip data, not a
-hand-tuned approximation. Unlike the smooth triangle, the chip's own
-table is a short, sharp, non-negative burst concentrated at the very
-start of each pitch period, followed by silence for the rest of it; that
-shape difference, not just a louder or brighter EQ, is what gives the
-real chip its buzzier, harsher character. `LatticeVoiceState::chirp_idx`
-(how many native samples into the current pitch period) is tracked
+**Excitation source (CC104)**: the shared `excitation.h`
+`glottal_pulse()`/`osc/noise.h` pair (a smooth bipolar triangle spanning
+the whole pitch period for voiced segments, a full-range LFSR for
+unvoiced ones, both also used by the formant tract) is the default;
+switching selects `lattice.h`'s own TMS5220-accurate pair instead --
+decap-verified chip data, not a hand-tuned approximation, for both:
+`lattice_chirp_pulse()` (a short, sharp, non-negative burst concentrated
+at the very start of each pitch period, from the chip's real 52-sample
+excitation table, followed by silence for the rest of it) for voiced
+segments, and `lattice_chip_noise()` (a 13-bit LFSR decimated 20:1, its
+lowest bit picking between two fixed levels rather than read out as
+multi-bit noise) for unvoiced ones. Both together, not just the voiced
+half, are what give the real chip its buzzier, harsher, more digital
+character. CC104 currently switches both at once (paired, not
+independently selectable -- see Decision Record for why and how that
+could split later). `LatticeVoiceState::chirp_idx`/`tms_rng` are tracked
 unconditionally regardless of which exciter is selected, so switching
 mid-note has correct state from its very first sample. Live, like the
-pitch-shift CC — both exciters drive the same downstream gain pipeline
-(frame `gain`, `cur_amp`, `SPEECH_LATTICE_GAIN_BOOST`) unchanged, so
-switching doesn't itself change loudness. The unvoiced/fricative source
-(LFSR noise, `osc/noise.h`) is shared by both exciter choices — the real
-chip's own noise generator (a specific-tap LFSR outputting a coarse
-two-level ±64 signal, not read out as multi-bit noise) is a possible
-future refinement, not built.
+pitch-shift CC.
+
+The chirp exciter's crest factor is measurably higher than
+`glottal_pulse()`'s own (over 2x) -- real corpus words that fit safely
+under `SPEECH_LATTICE_GAIN_BOOST`'s existing calibration clipped under
+the chirp exciter until `SPEECH_LATTICE_CHIRP_GAIN_SCALE` (0.86, tuned
+the same empirical way against the real corpus) brought its own
+worst-case peak back down to match.
 
 ### Resonator and the Stability Rule
 
@@ -822,12 +828,24 @@ Full measurement breakdown: `history_speech.md`.
     discontinuity to worry about (`LatticeVoiceState::chirp_idx` is
     tracked unconditionally either way), so there was no reason to make a
     live A/B comparison wait for the next note.
-32. **The real chip's own coarse two-level LFSR noise (unvoiced/fricative
-    source) isn't wired up alongside the chirp table** — CC104 only
-    switches the voiced source. The shared `osc/noise.h` LFSR stays the
-    unvoiced source for both exciter choices; scope was kept to the
-    complaint that motivated this (voiced speech sounding too smooth),
-    not a full authenticity pass on every excitation path.
+32. **The real chip's own coarse two-level LFSR noise (unvoiced source) is
+    paired with the chirp table under the same CC104, not independently
+    switchable** — a deliberate, temporary choice: hear both chip-accurate
+    sources together first, decide by ear whether unvoiced segments need
+    their own separate toggle, rather than pre-emptively adding a second
+    CC before knowing it's wanted. Splitting later is a small change
+    (`chirp_exciter` already reads as "voiced source" by name; a second
+    bool for the noise half doesn't disturb it), not a rework.
+33. **`SPEECH_LATTICE_CHIRP_GAIN_SCALE` (0.86) is a second, chirp-only
+    scale on top of `SPEECH_LATTICE_GAIN_BOOST`, not a lower shared
+    constant** — the chirp exciter's own crest factor is measurably
+    higher than `glottal_pulse()`'s (over 2x), so the same excitation
+    scale that keeps the corpus safe under the default exciter clipped
+    two of its loudest words (O/OH) under the chirp one. Lowering
+    `GAIN_BOOST` itself would have fixed that at the cost of quieting the
+    default exciter for a problem specific to the other one; a second,
+    chirp-only multiplier fixes it without touching the already-correct
+    default calibration.
 
 ## Glossary
 

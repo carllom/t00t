@@ -305,11 +305,14 @@ inline void speech_render_voice_seq(SpeechVoice &sv, uint32_t phase_inc, float f
 // jumps to the word's own final frame -- always the corpus decoder's
 // trailing silent STOP frame -- instead of cutting mid-glide; LOOP restarts
 // at frame 0 while still gated); `pitch_shift` is a raw Q8.8 multiplier on
-// top of each frame's own recorded pitch_hz. `chirp_exciter` selects the
-// voiced source: false keeps excitation.h's glottal_pulse() (shared with
-// the formant tract), true switches to lattice.h's lattice_chirp_pulse()
-// (the real TMS5220's own excitation table) -- see lattice.h's own header
-// comment for why that's a real, not cosmetic, difference in character.
+// top of each frame's own recorded pitch_hz. `chirp_exciter` selects both
+// the voiced and unvoiced source together (paired under one flag for now,
+// not independently switchable): false keeps excitation.h's
+// glottal_pulse()/osc_noise() (shared with the formant tract), true
+// switches to lattice.h's lattice_chirp_pulse()/lattice_chip_noise() (the
+// real TMS5220's own excitation table and noise generator) -- see
+// lattice.h's own header comments for why that's a real, not cosmetic,
+// difference in character.
 inline void speech_render_voice_lattice(SpeechVoice &sv, uint8_t trigger, int16_t amplitude, bool gate,
                                          const LatticeWord &word, SpeechMode mode, int16_t pitch_shift,
                                          bool chirp_exciter, int16_t pan, float out_fs,
@@ -377,6 +380,7 @@ inline void speech_render_voice_lattice(SpeechVoice &sv, uint8_t trigger, int16_
             float exc = 0.0f;
             if (!sv.lat.word_done) {
                 float g = sv.lat.gain * sv.cur_amp * SPEECH_LATTICE_GAIN_BOOST;
+                if (chirp_exciter) g *= SPEECH_LATTICE_CHIRP_GAIN_SCALE;
                 if (sv.lat.voiced) {
                     float pulse = chirp_exciter ? lattice_chirp_pulse(sv.lat.chirp_idx) : glottal_pulse(sv.glottal_phase);
                     exc = pulse * g;
@@ -389,7 +393,13 @@ inline void speech_render_voice_lattice(SpeechVoice &sv, uint8_t trigger, int16_
                     if (sv.glottal_phase < prev_phase) sv.lat.chirp_idx = 0;
                     else sv.lat.chirp_idx++;
                 } else {
-                    float noise_f = (float)osc_noise(sv.noise_lfsr) * (1.0f / 32768.0f);
+                    // Paired with the voiced source under the same
+                    // chirp_exciter flag for now (not independently
+                    // switchable yet) -- see lattice.h's own header
+                    // comment on lattice_chip_noise() for why it's a real
+                    // texture difference, not just a level change.
+                    float noise_f = chirp_exciter ? lattice_chip_noise(sv.lat.tms_rng)
+                                                   : (float)osc_noise(sv.noise_lfsr) * (1.0f / 32768.0f);
                     exc = noise_f * g;
                 }
             }

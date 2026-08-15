@@ -1402,6 +1402,35 @@ static bool run_lattice_chirp_exciter_check() {
     return all_ok;
 }
 
+// Unit-level regression lock on lattice_chip_noise() itself (lattice.h),
+// independent of the lattice filter or resampler: the real chip's noise
+// generator only ever emits one of two exact levels (+-64/113), unlike
+// osc/noise.h's osc_noise(), which returns a full-range value -- confirms
+// the generator actually reproduces that coarseness, and that it isn't
+// stuck always returning the same one of the two (a frozen or
+// non-toggling register would still pass a "two levels" check trivially).
+static bool test_lattice_chip_noise_two_level() {
+    uint16_t rng = LATTICE_CHIP_NOISE_SEED;
+    constexpr float POS = 64.0f / LATTICE_CHIRP_PEAK, NEG = -64.0f / LATTICE_CHIRP_PEAK;
+    uint32_t pos_count = 0, neg_count = 0, other_count = 0;
+    constexpr uint32_t TRIALS = 100000;
+    for (uint32_t i = 0; i < TRIALS; i++) {
+        float v = lattice_chip_noise(rng);
+        if (std::fabs(v - POS) < 1e-6f) pos_count++;
+        else if (std::fabs(v - NEG) < 1e-6f) neg_count++;
+        else other_count++;
+    }
+    bool two_level = other_count == 0;
+    bool toggles = pos_count > TRIALS / 4 && neg_count > TRIALS / 4;  // not stuck on one level
+    bool ok = two_level && toggles;
+    printf("\n== LPC lattice tract: chip noise generator is genuinely two-level ==\n");
+    printf("  %u trials: +%.4f x%u  %.4f x%u  other x%u -> %s\n",
+           TRIALS, POS, pos_count, NEG, neg_count, other_count, ok ? "PASS" : "FAIL");
+    if (!two_level) printf("  FAIL: emitted a value other than the two expected levels\n");
+    if (!toggles) printf("  FAIL: stuck on one level -- register isn't toggling\n");
+    return ok;
+}
+
 #ifdef T00T_SPEECH_HAS_LATTICE_WORDS
 // Renders every word in the converted corpus (LATTICE_WORDS[],
 // lattice_words.h, gitignored -- generated locally by tools/
@@ -1410,38 +1439,48 @@ static bool run_lattice_chirp_exciter_check() {
 // render loop calls for a lattice-tract voice, checking each is finite and
 // unclipped -- module_speech.md's "renders every word" acceptance
 // criterion, extending run_full_table_render()'s per-phoneme coverage to
-// the LPC corpus. Writes each word to lpc_words/*.wav for a by-ear spot
-// check; only clipping and non-finite output are bugs here.
-static bool run_lattice_corpus_render() {
+// the LPC corpus. `chirp_exciter`/`write_wav` let the same sweep re-run
+// as a cheap, WAV-free safety check for the chirp exciter (below) --
+// SPEECH_LATTICE_GAIN_BOOST was calibrated against glottal_pulse()'s own
+// crest factor, and the chirp exciter's measurably higher one
+// (run_lattice_chirp_exciter_check() above) is exactly the kind of change
+// that already caused a real clipping regression once (#65's history),
+// so this needs re-checking against the whole corpus, not assumed safe.
+static bool run_lattice_corpus_render(bool chirp_exciter = false, bool write_wav = true) {
     bool all_ok = true;
-    printf("\n== LPC lattice tract: full corpus render (%u words) ==\n", (unsigned)LATTICE_WORD_COUNT);
+    printf("\n== LPC lattice tract: full corpus render (%u words, chirp_exciter=%s) ==\n",
+           (unsigned)LATTICE_WORD_COUNT, chirp_exciter ? "true" : "false");
 
-    mkdir("lpc_words", 0755);  // ignore EEXIST -- fine if it's already there
+    if (write_wav) mkdir("lpc_words", 0755);  // ignore EEXIST -- fine if it's already there
 
+    float worst_peak = 0.0f;
     for (uint32_t w = 0; w < LATTICE_WORD_COUNT; w++) {
         const LatticeWord &word = LATTICE_WORDS[w];
         // Cap generously above the word's own natural length rather than
         // a fixed budget -- corpus words vary from a fraction of a second
         // to several seconds.
         uint32_t total = (uint32_t)(LATTICE_FRAME_OUTPUT_SAMPLES * (float)(word.length + 4));
-        LatticeRender r = render_lattice_native(word, SPEECH_MODE_ONESHOT, total, total);
+        LatticeRender r = render_lattice_native(word, SPEECH_MODE_ONESHOT, total, total, /*pitch_shift=*/256, chirp_exciter);
 
         float peak = 0.0f;
         bool finite = true;
         for (float s : r.mono) { peak = std::max(peak, std::fabs(s)); finite = finite && std::isfinite(s); }
+        worst_peak = std::max(worst_peak, peak);
         bool clipped = peak >= 32767.0f;
         bool finished = r.completed_at < total;
         bool ok = finite && !clipped && finished;
 
-        size_t wav_len = std::min(r.mono.size(), (size_t)r.completed_at + SAMPLE_RATE / 4);
-        std::vector<int16_t> out(wav_len * 2);
-        for (size_t i = 0; i < wav_len; i++) {
-            int16_t s = (int16_t)std::max(-32768.0f, std::min(32767.0f, r.mono[i]));
-            out[i * 2 + 0] = s; out[i * 2 + 1] = s;
+        if (write_wav) {
+            size_t wav_len = std::min(r.mono.size(), (size_t)r.completed_at + SAMPLE_RATE / 4);
+            std::vector<int16_t> out(wav_len * 2);
+            for (size_t i = 0; i < wav_len; i++) {
+                int16_t s = (int16_t)std::max(-32768.0f, std::min(32767.0f, r.mono[i]));
+                out[i * 2 + 0] = s; out[i * 2 + 1] = s;
+            }
+            char path[64];
+            snprintf(path, sizeof(path), "lpc_words/%03u_%s.wav", w, LATTICE_WORD_NAMES[w]);
+            write_wav_pcm16(path, out, SAMPLE_RATE, 2);
         }
-        char path[64];
-        snprintf(path, sizeof(path), "lpc_words/%03u_%s.wav", w, LATTICE_WORD_NAMES[w]);
-        write_wav_pcm16(path, out, SAMPLE_RATE, 2);
 
         if (!ok) {
             printf("  FAIL %-24s peak=%.0f finite=%s finished=%s\n",
@@ -1449,8 +1488,9 @@ static bool run_lattice_corpus_render() {
         }
         all_ok = all_ok && ok;
     }
-    printf("  %u words rendered to lpc_words/*.wav, all finite/unclipped/completed: %s\n",
-           (unsigned)LATTICE_WORD_COUNT, all_ok ? "PASS" : "FAIL");
+    printf("  %u words%s, worst-case peak=%.0f, all finite/unclipped/completed: %s\n",
+           (unsigned)LATTICE_WORD_COUNT, write_wav ? " rendered to lpc_words/*.wav" : "", worst_peak,
+           all_ok ? "PASS" : "FAIL");
     return all_ok;
 }
 
@@ -1513,8 +1553,10 @@ int main() {
     ok = run_lattice_mode_checks() && ok;
     ok = run_lattice_pitch_shift_check() && ok;
     ok = run_lattice_chirp_exciter_check() && ok;
+    ok = test_lattice_chip_noise_two_level() && ok;
 #ifdef T00T_SPEECH_HAS_LATTICE_WORDS
     ok = run_lattice_corpus_render() && ok;
+    ok = run_lattice_corpus_render(/*chirp_exciter=*/true, /*write_wav=*/false) && ok;
     ok = test_lattice_corpus_stability() && ok;
 #endif
 

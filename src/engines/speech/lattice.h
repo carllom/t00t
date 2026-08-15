@@ -31,6 +31,17 @@ inline constexpr uint32_t SPEECH_LATTICE_RATE = 8000;
 // the corpus leaves the test word quiet by comparison.
 inline constexpr float SPEECH_LATTICE_GAIN_BOOST = 2.5f;
 
+// The chirp exciter's own crest factor is measurably higher than
+// glottal_pulse()'s (over 2x, run_lattice_chirp_exciter_check()) --
+// GAIN_BOOST above was calibrated against the corpus under the lower-crest-
+// factor default, so the chirp exciter needs its own, smaller scale on top
+// of it to keep the same worst-case corpus word from clipping, rather than
+// lowering GAIN_BOOST itself and quieting the default exciter for a
+// problem that's specific to the other one. Tuned empirically the same
+// way, against the real corpus's worst case under the chirp exciter, not
+// a guess.
+inline constexpr float SPEECH_LATTICE_CHIRP_GAIN_SCALE = 0.86f;
+
 // Live pitch-shift multiplier range (module_speech.md "MIDI Mapping"), a
 // live CC override on top of a word's own recorded per-frame pitch
 // contour -- one octave down to one octave up.
@@ -83,6 +94,35 @@ inline float lattice_chirp_pulse(uint32_t sample_in_period) {
     uint32_t idx = sample_in_period < LATTICE_CHIRP_LENGTH ? sample_in_period : LATTICE_CHIRP_LENGTH - 1;
     return (float)LATTICE_CHIRP_TABLE[idx] * (1.0f / LATTICE_CHIRP_PEAK);
 }
+
+// TMS5220 unvoiced-excitation generator, decap-verified and cross-checked
+// the same way lattice_chirp_pulse()'s table was. A 13-bit shift register
+// (only bits 0-12 are ever read; a wider storage type reproduces the same
+// sequence bit-for-bit since the untouched high bits are never fed back
+// into a tap), seeded 0x1FFF -- the real chip's own reset value, never
+// reseeded again except at chip power-on, mapped here to this voice's own
+// lattice state construction. Runs 20 update steps per native sample
+// (oversampling-by-decimation, whitening what a 13-bit register clocked
+// at the native rate alone would render as an audibly patterned buzz, not
+// broadband noise), then reads only the register's low bit to pick
+// between two fixed levels -- coarse, not full-range, unlike osc/noise.h's
+// osc_noise() (shared by the formant tract's fricative branch and the
+// groovebox). That coarseness, not just a different spectral tilt, is
+// what the real chip's unvoiced sound is actually made of.
+inline float lattice_chip_noise(uint16_t &rng) {
+    for (uint32_t i = 0; i < 20; i++) {
+        uint16_t bit = (uint16_t)(((rng >> 12) ^ (rng >> 3) ^ (rng >> 2) ^ rng) & 1u);
+        rng = (uint16_t)((rng << 1) | bit);
+    }
+    // The real chip feeds this and lattice_chirp_pulse()'s table through
+    // the same final scale before the lattice filter, so normalizing both
+    // by LATTICE_CHIRP_PEAK (not an independent +-1.0 for each) keeps
+    // their real relative loudness intact: fixed +-64, genuinely quieter
+    // than the chirp table's own peak of 113, not just quieter by
+    // whatever frame gain happens to apply.
+    return (rng & 1u) ? (-64.0f / LATTICE_CHIRP_PEAK) : (64.0f / LATTICE_CHIRP_PEAK);
+}
+inline constexpr uint16_t LATTICE_CHIP_NOISE_SEED = 0x1FFF;
 
 // One 25 ms coefficient frame -- the TMS5220's own frame period, at the
 // lattice's 8 kHz native rate that's exactly 200 samples. `pitch_hz == 0`
@@ -142,6 +182,7 @@ struct LatticeVoiceState {
     float    resample_frac = 0.0f;
     float    y_prev = 0.0f, y_cur = 0.0f;
     uint32_t chirp_idx = 0;
+    uint16_t tms_rng = LATTICE_CHIP_NOISE_SEED;  // lattice_chip_noise()'s own state
 };
 
 inline void lattice_reset(LatticeVoiceState &ls) {
@@ -158,6 +199,7 @@ inline void lattice_reset(LatticeVoiceState &ls) {
     ls.resample_frac = 0.0f;
     ls.y_prev = ls.y_cur = 0.0f;
     ls.chirp_idx = 0;
+    ls.tms_rng = LATTICE_CHIP_NOISE_SEED;
 }
 
 // Loads frame `idx` of `w` into `ls`: `retrigger` snaps straight to the
