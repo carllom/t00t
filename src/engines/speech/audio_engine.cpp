@@ -64,30 +64,42 @@ static uint8_t  s_last_fx_type = 0xFF;
 // no display, no stdio. Drives `voices[]` directly with synthetic content
 // instead of going through ParamExchange, so each phase isolates exactly
 // one cost: voice count (1/2/4/8), held vowel vs. voiced fricative,
-// coefficient-recompute vs. per-sample cost, and static vs. actively-swept
-// formant_shift/bandwidth_scale. MAX_VOICES is 8 in this build (engine.h),
-// so the 8-voice phase has a real 8th slot.
+// coefficient-recompute vs. per-sample cost, static vs. actively-swept
+// formant_shift/bandwidth_scale, and (#67) the LPC lattice tract's own
+// voice-count sweep. MAX_VOICES is 8 in this build (engine.h), so the
+// 8-voice phases have a real 8th slot.
+enum ProfileTract : uint8_t { PROFILE_FORMANT, PROFILE_LATTICE };
+
 struct ProfilePhase {
     uint32_t voice_count;     // voices 0..voice_count-1 render; rest stay idle
-    uint8_t  phoneme;         // PH_A (vowel) or PH_Z (voiced fricative)
-    bool     recompute_only;  // true: call tract_advance_subblock() only --
+    uint8_t  phoneme;         // formant tract only: PH_A (vowel) or PH_Z (voiced fricative)
+    bool     recompute_only;  // formant tract only, true: call tract_advance_subblock() only --
                                // skips the per-sample tract_process_mixed()
                                // loop, isolating coefficient-recompute cost
                                // from per-sample cost
-    bool     sweep_tract;     // true: sweep formant_shift/bandwidth_scale
+    bool     sweep_tract;     // formant tract only, true: sweep formant_shift/bandwidth_scale
                                // across their full CC range every buffer
                                // instead of holding them at 1.0x
+    ProfileTract tract;       // which render path this phase measures
 };
 
 static constexpr ProfilePhase PROFILE_PHASES[] = {
-    { 0, PH_A, false, false },  // idle: isolates fixed per-buffer overhead
-    { 1, PH_A, false, false },
-    { 2, PH_A, false, false },
-    { 4, PH_A, false, false },
-    { 8, PH_A, false, false },
-    { 4, PH_Z, false, false },  // vs. the 4v phase above: voiced-fricative branch cost
-    { 4, PH_A, true,  false },  // vs. the 4v phase above: coefficient-recompute-only cost
-    { 4, PH_A, false, true  },  // vs. the 4v phase above: static vs. swept tract params
+    { 0, PH_A, false, false, PROFILE_FORMANT },  // idle: isolates fixed per-buffer overhead
+    { 1, PH_A, false, false, PROFILE_FORMANT },
+    { 2, PH_A, false, false, PROFILE_FORMANT },
+    { 4, PH_A, false, false, PROFILE_FORMANT },
+    { 8, PH_A, false, false, PROFILE_FORMANT },
+    { 4, PH_Z, false, false, PROFILE_FORMANT },  // vs. the 4v phase above: voiced-fricative branch cost
+    { 4, PH_A, true,  false, PROFILE_FORMANT },  // vs. the 4v phase above: coefficient-recompute-only cost
+    { 4, PH_A, false, true,  PROFILE_FORMANT },  // vs. the 4v phase above: static vs. swept tract params
+    // LPC lattice tract (#67): the same voice-count shape as the formant
+    // phases above (idle/1/2/4/8), directly comparable phase-for-phase.
+    // phoneme/recompute_only/sweep_tract are formant-only and ignored here.
+    { 0, PH_A, false, false, PROFILE_LATTICE },
+    { 1, PH_A, false, false, PROFILE_LATTICE },
+    { 2, PH_A, false, false, PROFILE_LATTICE },
+    { 4, PH_A, false, false, PROFILE_LATTICE },
+    { 8, PH_A, false, false, PROFILE_LATTICE },
 };
 static constexpr uint32_t PROFILE_PHASE_COUNT = sizeof(PROFILE_PHASES) / sizeof(PROFILE_PHASES[0]);
 
@@ -119,15 +131,35 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
 
         if (phase_buf_count == 0) {
             // New phase: retrigger every voice this phase uses straight onto
-            // its target, matching what a real note-on does (tract_retrigger())
-            // -- and mark it so speech_render_voice() below doesn't redo the
-            // same work on every buffer of the phase.
+            // its target, matching what a real note-on does (tract_retrigger()/
+            // lattice_load_frame()) -- and mark it so the render calls below
+            // don't redo the same work on every buffer of the phase.
             trigger++;
-            FormantTarget t = phoneme_unpack(PHONEME_TARGETS[ph.phoneme % PHONEME_COUNT]);
-            for (uint32_t v = 0; v < ph.voice_count; v++) {
-                tract_retrigger(voices[v], t);
-                voices[v].last_trigger = trigger;
-                voices[v].last_phoneme = ph.phoneme;
+            if (ph.tract == PROFILE_LATTICE) {
+                // LOOP mode + a permanently held gate keeps every voice
+                // cycling through LATTICE_TEST_WORD's frames for the whole
+                // phase -- without it, the word (325 ms) would finish well
+                // inside the ~4 s hold and spend most of the phase in its
+                // post-completion, cheaper ring-down state (no further
+                // lattice_advance()/lattice_advance_subblock() calls),
+                // understating the steady-state cost this phase exists to
+                // measure.
+                for (uint32_t v = 0; v < ph.voice_count; v++) {
+                    new (&voices[v].lat) LatticeVoiceState();
+                    voices[v].tract = SPEECH_TRACT_LATTICE;
+                    voices[v].glottal_phase = 0;
+                    voices[v].cur_amp = 0.0f;
+                    voices[v].gate_prev = true;
+                    lattice_load_frame(voices[v].lat, LATTICE_TEST_WORD, 0, /*retrigger=*/true, /*pitch_mult=*/1.0f);
+                    voices[v].last_trigger = trigger;
+                }
+            } else {
+                FormantTarget t = phoneme_unpack(PHONEME_TARGETS[ph.phoneme % PHONEME_COUNT]);
+                for (uint32_t v = 0; v < ph.voice_count; v++) {
+                    tract_retrigger(voices[v].fmt, t);
+                    voices[v].last_trigger = trigger;
+                    voices[v].last_phoneme = ph.phoneme;
+                }
             }
             sweep_step = 0;
         }
@@ -149,14 +181,19 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
         uint32_t t_start = time_us_32();
 
         for (uint32_t v = 0; v < ph.voice_count; v++) {
-            if (ph.recompute_only) {
-                voices[v].formant_shift_tgt = (float)formant_shift * (1.0f / 256.0f);
-                voices[v].bandwidth_scale_tgt = (float)bandwidth_scale * (1.0f / 256.0f);
+            if (ph.tract == PROFILE_LATTICE) {
+                speech_render_voice_lattice(voices[v], trigger, PROFILE_AMPLITUDE, /*gate=*/true,
+                                             LATTICE_TEST_WORD, SPEECH_MODE_LOOP, /*pitch_shift=*/256,
+                                             /*chirp_exciter=*/false,
+                                             /*pan=*/0, (float)SAMPLE_RATE, dry_l, dry_r, SAMPLES_PER_BUFFER);
+            } else if (ph.recompute_only) {
+                voices[v].fmt.formant_shift_tgt = (float)formant_shift * (1.0f / 256.0f);
+                voices[v].fmt.bandwidth_scale_tgt = (float)bandwidth_scale * (1.0f / 256.0f);
                 uint32_t n = 0;
                 while (n < NATIVE_SAMPLES_PER_BUFFER) {
                     uint32_t k = NATIVE_SAMPLES_PER_BUFFER - n;
                     if (k > SPEECH_SUBBLOCK) k = SPEECH_SUBBLOCK;
-                    tract_advance_subblock(voices[v], (float)SPEECH_RATE);
+                    tract_advance_subblock(voices[v].fmt, (float)SPEECH_RATE);
                     n += k;
                 }
             } else {
@@ -228,7 +265,24 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
         uint32_t active_mask = 0;
         for (uint32_t v = 0; v < MAX_VOICES; v++) {
             const VoiceParams &p = vp.voices[v];
-            if (p.utterance == SPEECH_NO_UTTERANCE) {
+            if (p.tract == SPEECH_TRACT_LATTICE) {
+                // LPC lattice tract (module_speech.md "LPC Lattice Tract"):
+                // p.lattice_word is resolved by midi_controller.cpp's
+                // KEY_PER_WORD addressing (note + Program-Change page) --
+                // pitch comes from the word's own frames, scaled by the
+                // live pitch-shift CC, not the note. Renders straight to
+                // output rate (no ZOH-x2 step; see speech_render_voice_
+                // lattice()'s own header comment), so it gets the whole
+                // SAMPLES_PER_BUFFER, not the halved native count below.
+                speech_render_voice_lattice(voices[v], p.trigger, p.amplitude, p.gate,
+                                             *p.lattice_word, p.mode, p.lattice_pitch_shift,
+                                             p.lattice_chirp_exciter, p.pan, (float)SAMPLE_RATE,
+                                             dry_l, dry_r, SAMPLES_PER_BUFFER);
+                if (voices[v].active) active_mask |= (1u << v);
+                // No display support for LPC state in this pass -- the
+                // per-voice phoneme grid/F1-F2 plot are formant-specific.
+                s_voice_ui[v] = { 0, 0, PHONEME_COUNT, voices[v].active };
+            } else if (p.utterance == SPEECH_NO_UTTERANCE) {
                 // Phoneme keyboard: one sustained phoneme, no sequencer --
                 // active mirrors gate directly, since there's no utterance
                 // to outlast it.
@@ -238,7 +292,7 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
                                      p.jitter, p.shimmer, p.lfo_rate, p.lfo_depth,
                                      dry_l, dry_r, NATIVE_SAMPLES_PER_BUFFER);
                 if (p.gate) active_mask |= (1u << v);
-                s_voice_ui[v] = { (uint16_t)voices[v].F[0], (uint16_t)voices[v].F[1], p.phoneme, p.gate };
+                s_voice_ui[v] = { (uint16_t)voices[v].fmt.F[0], (uint16_t)voices[v].fmt.F[1], p.phoneme, p.gate };
             } else {
                 // Segment sequencer: active stays set until the
                 // utterance itself completes (sv.active, sequencer.h/
@@ -262,7 +316,7 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
                 // into `utt`, not a phoneme id directly -- resolve it here,
                 // same lookup speech_seg_load() itself does.
                 uint8_t cur_phoneme = (voices[v].seg_index < utt.length) ? utt.phonemes[voices[v].seg_index] : PH_SIL;
-                s_voice_ui[v] = { (uint16_t)voices[v].F[0], (uint16_t)voices[v].F[1], cur_phoneme, voices[v].active };
+                s_voice_ui[v] = { (uint16_t)voices[v].fmt.F[0], (uint16_t)voices[v].fmt.F[1], cur_phoneme, voices[v].active };
             }
         }
 

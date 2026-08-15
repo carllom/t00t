@@ -93,12 +93,15 @@ inline void speech_seg_load(SpeechVoice &sv, const SpeechUtterance &utt, uint16_
     FormantTarget t = phoneme_unpack(def);
     if (def.flags & PHONEME_FLAG_STOP_CLOSURE) { t.av = 0.0f; t.af = 0.0f; }
 
+    // sv.fmt, not sv: SpeechVoice's tract-specific state is a union
+    // (tract.h) since the LPC lattice tract was added as a sibling; the
+    // segment sequencer itself is otherwise unchanged.
     if (retrigger) {
-        tract_retrigger(sv, t);
+        tract_retrigger(sv.fmt, t);
     } else if (def.flags & PHONEME_FLAG_TRANSITION_FAST) {
-        tract_snap_target(sv, t);
+        tract_snap_target(sv.fmt, t);
     } else {
-        tract_set_target(sv, t);
+        tract_set_target(sv.fmt, t);
     }
     sv.seg_index = idx;
     sv.seg_remaining = speech_seg_duration_samples(phoneme, rate_q4_4, fs);

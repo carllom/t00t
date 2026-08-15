@@ -1,8 +1,9 @@
 # T00T — Speech Synthesis Module
 
 A formant (Klatt-reduced) speech synthesis engine: a phoneme keyboard,
-utterance/phrase playback, and a reserved-but-unimplemented singing mode.
-See `engine.md` for the shared dual-core architecture; `architecture.md`
+utterance/phrase playback, a reserved-but-unimplemented singing mode, and
+a sibling LPC lattice tract still at its hardcoded-test-word bring-up
+stage. See `engine.md` for the shared dual-core architecture; `architecture.md`
 for the cross-engine `VoiceParams`/CMake pattern this module follows;
 `history_speech.md` for build-phase results and full performance
 measurements.
@@ -35,27 +36,42 @@ shimmer are all live MIDI controls) rather than just a talking clock.
   a 6-phrase demo bank (`phrases.h`, generated from plain text via a
   letter-to-sound engine); two hand-picked fixtures (`utterance.h`) used
   only by host regression tests
-- **Presets**: 9 factory presets (`presets.h`) — phoneme keyboard,
+- **Presets**: 10 factory presets (`presets.h`) — phoneme keyboard,
   one-shot/gated/looped phrase examples, robotic and breathy timbres,
-  tract-length shift up/down, and a robot-chorus preset spreading up to 8
-  simultaneously-held voices across the stereo field with per-voice detune
+  tract-length shift up/down, a robot-chorus preset spreading up to 8
+  simultaneously-held voices across the stereo field with per-voice detune,
+  and one LPC lattice preset selecting the corpus's `KEY_PER_WORD` page 0
 - **Effects**: shared post-mix insert (delay or reverb) — no overdrive (see
   Future/TODO)
-- No LPC sibling engine yet (optional future work — the excitation,
-  sequencer, and control plane are designed to be reused by one)
+- **LPC lattice tract**: a second, sibling tract — a 10th-order all-pole
+  lattice filter reusing the same glottal-pulse/LFSR-noise excitation,
+  selected per voice by `VoiceParams::tract`. Renders natively at 8 kHz
+  (the TMS5220's real frame rate) and reaches the shared 44.1 kHz output
+  through its own fractional-ratio linear-interpolation resampler, unlike
+  the formant tract's exact-integer zero-order-hold doubling.
+  `KEY_PER_WORD` addressing (note selects a word, Program Change selects a
+  128-word page) reaches the full converted Talkie corpus once
+  `tools/talkie2lattice.py` has been run locally; without a generated
+  corpus, every lattice voice plays the one hardcoded fixture
+  (`lattice.h`'s `LATTICE_TEST_WORD`). `SpeechMode` (GATED/ONESHOT/LOOP)
+  and a live pitch-shift override apply to lattice voices the same as
+  formant voices — see LPC Lattice Tract and MIDI Mapping.
 
 ### MIDI Mapping (Input Capabilities)
 
 Notes trigger voices through the standard allocator; pitch sets glottal
-frequency. CC assignments follow the Arturia BeatStep Pro's fixed
+frequency, velocity sets amplitude (CC15 can disable this per channel, see
+below). CC assignments follow the Arturia BeatStep Pro's fixed
 absolute-mode 16-encoder block (CC16–31); CC1 and CC76 are the real
 GM-standard "mod wheel" and "vibrato rate" assignments, matching the
-subtractive engine's own CC1/CC10 precedent.
+subtractive engine's own CC1/CC10 precedent. CC15 sits just outside that
+encoder block.
 
 | CC | Name | Field | Live? |
 |---|---|---|---|
 | 1 | Mod wheel (GM) | Vibrato depth | live |
 | 10 | Pan (GM) | Pan | next note |
+| 15 | Velocity toggle | 0-63 = every note at max velocity, 64-127 = use received velocity (default) | next note |
 | 16 | Preset select | Loads a `presets[]` entry (bulk-writes the CCs below) | next note |
 | 20 | Phoneme select | Phoneme keyboard index | next note |
 | 21 | Formant shift | Tract length / "gender" | live |
@@ -67,11 +83,19 @@ subtractive engine's own CC1/CC10 precedent.
 | 27 | Mode select | `SpeechMode` (3 live bands: ONESHOT/GATED/LOOP) | live |
 | 28 | Phrase-bank toggle | Note number selects the phrase directly, instead of Program Change/CC23 | next note |
 | 76 | Vibrato rate (GM) | LFO rate | live |
+| 102 | Tract select | Formant (<64) vs. LPC lattice (>=64) — see LPC lattice tract | next note |
+| 103 | LPC pitch-shift multiplier | Q8.8 override on a word's own recorded pitch contour, 0.5x–2x | live |
+| 104 | LPC excitation select | Shared `glottal_pulse()`/noise (<64) vs. the TMS5220's own chirp table + LFSR, paired (≥64) | live |
 
-**Program Change** selects an utterance (same value CC23 writes) —
-phoneme selection is CC20-only. "Live" CCs push directly into every
-currently-held voice on the channel, not just the per-channel default for
-future notes.
+**Program Change** is tract-dependent: under the formant tract it selects
+an utterance (same value CC23 writes) — phoneme selection is CC20-only;
+under the LPC lattice tract (CC102 ≥ 64) it selects the `KEY_PER_WORD`
+page instead (see LPC Lattice Tract). The two meanings never collide,
+since only one tract is active per channel at a time. "Live" CCs push
+directly into every currently-held voice on the channel, not just the
+per-channel default for future notes. CC102 and CC103 are the first two
+of a reserved CC102–119 block for LPC-specific controls, disjoint from the
+formant tract's CC16–28.
 
 ### Display (Presentation Capabilities)
 
@@ -90,10 +114,14 @@ src/engines/speech/
   engine.h          VoiceParams, MAX_VOICES, engine constants
   audio_engine.h    audio_engine_run()/audio_engine_load() declarations
   audio_engine.cpp  render pass entry point, effects mix, profiling rig
-  render.h          per-voice render core (phoneme-keyboard + sequenced
-                     paths) — no pico-sdk dependency, shared with host tooling
-  tract.h           formant resonator cascade + coefficient computation,
-                     SpeechVoice state
+  render.h          per-voice render core (phoneme-keyboard + sequenced +
+                     LPC-lattice paths) — no pico-sdk dependency, shared
+                     with host tooling
+  tract.h           formant resonator cascade + coefficient computation;
+                     SpeechVoice state (shared fields + the FormantVoiceState/
+                     LatticeVoiceState union)
+  lattice.h         LPC lattice tract: reflection-coefficient filter,
+                     per-voice state, hardcoded test word
   excitation.h      glottal pulse train, jitter/shimmer/vibrato
   sequencer.h       per-voice segment advance, SpeechMode
   phoneme_def.h     PhonemeDef struct, phoneme_unpack()
@@ -138,6 +166,21 @@ links into the device build — only the generated phoneme-byte arrays do.
 phoneme and every phrase to a WAV in one command, and cross-checks vowel
 F1/F2 against `tools/host_render/vowel_reference.h` (an independently
 sourced published-values table).
+
+`tools/talkie2lattice.py` — decodes the TI-99/4A "Talkie" TMS5220 wordset's
+own bitstream format into the LPC lattice tract's `LatticeFrame` format
+(reflection coefficients, gain, pitch), following the DX7 `.syx` converter's
+gitignored-output precedent:
+
+```
+talkie2lattice.py convert <in.ino> [in2.ino ...] <out.h>   # -> lattice_words.h (gitignored)
+talkie2lattice.py dump <in.ino> [in2.ino ...]               # per-word summary, writes nothing
+```
+
+Source vocab files (`talkie/`, gitignored) aren't supplied — populate it
+locally from Talkie's own `examples/` vocab sketches
+(https://github.com/going-digital/Talkie) to run `convert` or the corpus-
+gated half of `tools/test_talkie2lattice.py`.
 
 ## Architecture
 
@@ -225,6 +268,7 @@ struct VoiceParams {
     uint8_t    rate;                // Q4.4 segment-duration scale, 16 = 1.0x
     uint8_t    jitter, shimmer;     // 0-255, 0 = perfectly periodic
     float      lfo_rate, lfo_depth; // vibrato on glottal pitch
+    SpeechTract tract;               // formant vs. LPC lattice (tract.h)
 };
 ```
 
@@ -233,8 +277,35 @@ voices, gate on/off runs through `render.h`'s own exponential `cur_amp`
 smoothing, a simpler declick filter rather than the shared ADSR model.
 
 ```cpp
-// tract.h — per-voice render state, Core 1 only, never crosses ParamExchange
+// tract.h — per-voice render state, Core 1 only, never crosses ParamExchange.
+// Fields above `tract` are shared by both tracts; `fmt`/`lat` are a union
+// (mutually exclusive, selected by `tract`) so 8 voices' worth of tract
+// state costs the larger of the two variants, not their sum.
 struct SpeechVoice {
+    uint32_t glottal_phase;
+    uint16_t noise_lfsr;
+    float    cur_amp;              // smoothed toward gate target, declicks on/off
+    uint8_t  last_trigger, last_phoneme;  // force a retrigger/target-load on first render
+    float    lfo_phase;            // vibrato LFO phase, 0..1
+    uint32_t glot_cycle_inc;       // this glottal cycle's jittered phase increment
+    float    glot_cycle_amp;       // this glottal cycle's shimmer amplitude multiplier
+    uint16_t jitter_lfsr;          // separate seed from noise_lfsr
+    uint16_t seg_index;            // position within the current utterance (formant tract)
+    uint32_t seg_remaining;        // native samples left in the current segment (formant tract)
+    bool     seq_done;             // utterance complete; voice still allocated but silent
+    bool     gate_prev;            // previous call's gate, to find the note-off edge
+    bool     active;               // still sounding
+
+    SpeechTract tract;
+
+    union {
+        FormantVoiceState fmt;
+        LatticeVoiceState lat;
+    };
+};
+
+// tract.h — formant tract's own state, one of SpeechVoice's two union members
+struct FormantVoiceState {
     Res2p    formant[SPEECH_FORMANTS];
     Res2p    fric, nasal;
     float    F[SPEECH_FORMANTS], B[SPEECH_FORMANTS];         // current, ramped
@@ -244,19 +315,19 @@ struct SpeechVoice {
     float    av, af, an, av_tgt, af_tgt, an_tgt;              // branch amplitudes
     float    formant_shift, formant_shift_tgt;
     float    bandwidth_scale, bandwidth_scale_tgt;
-    uint32_t glottal_phase;
-    uint16_t noise_lfsr;
-    float    cur_amp;              // smoothed toward gate target, declicks on/off
-    uint8_t  last_trigger, last_phoneme;  // force a retrigger/target-load on first render
-    float    lfo_phase;            // vibrato LFO phase, 0..1
-    uint32_t glot_cycle_inc;       // this glottal cycle's jittered phase increment
-    float    glot_cycle_amp;       // this glottal cycle's shimmer amplitude multiplier
-    uint16_t jitter_lfsr;          // separate seed from noise_lfsr
-    uint16_t seg_index;            // position within the current utterance
-    uint32_t seg_remaining;        // native samples left in the current segment
-    bool     seq_done;             // utterance complete; voice still allocated but silent
-    bool     gate_prev;            // previous call's gate, to find the note-off edge
-    bool     active;               // still sounding
+};
+
+// lattice.h — LPC lattice tract's own state, SpeechVoice's other union member
+struct LatticeVoiceState {
+    float    k[SPEECH_LATTICE_ORDER], k_step[SPEECH_LATTICE_ORDER];  // reflection coeffs, linear ramp
+    float    gain, gain_step;
+    float    b[SPEECH_LATTICE_ORDER];   // backward-residual delay line (the filter's only memory)
+    uint16_t frame_index;
+    uint32_t frame_remaining;
+    uint32_t phase_inc;                 // this frame's glottal phase increment, at SPEECH_LATTICE_RATE
+    bool     voiced;                    // this frame's excitation: glottal pulse vs. LFSR noise
+    bool     word_done;
+    float    resample_frac, y_prev, y_cur;  // fractional-ratio upsampler state
 };
 ```
 
@@ -265,7 +336,8 @@ struct SpeechVoice {
 see Resonator and the Stability Rule for why coefficients are never
 interpolated directly. Vibrato/jitter/shimmer state resets on retrigger,
 not on a plain segment/phoneme change — it tracks the *note*, the same
-lifetime as `glottal_phase`.
+lifetime as `glottal_phase`. `LatticeVoiceState`'s `k`/`gain` are the
+lattice-only exception to that rule — see LPC Lattice Tract below.
 
 ```cpp
 // phoneme_def.h — generated data, 26 bytes/phoneme, no padding
@@ -293,7 +365,102 @@ uncomfortably tight. 22.05 kHz is exactly `SAMPLE_RATE / 2`, which makes
 the resampler a bare integer doubling — no fractional accumulator, no
 phase drift, and the zero-order-hold imaging is a genuine part of the
 lo-fi character rather than a defect. Halving the render rate also halves
-per-voice cost.
+per-voice cost. This applies to the formant tract only — the LPC lattice
+tract (below) uses a different native rate and resampler entirely.
+
+### LPC Lattice Tract
+
+A 10th-order all-pole lattice filter, the sibling tract `VoiceParams::tract`
+selects per voice. Reuses the formant tract's glottal-pulse/LFSR-noise
+excitation and the sequencer's sub-block-driven render loop shape
+unchanged — only the tract filter itself (`lattice.h`) and its frame data
+are new.
+
+**Native rate**: 8 kHz, the TMS5220's real frame rate — half the formant
+tract's own 22.05 kHz, since an all-pole model of a full vocal tract in one
+filter doesn't need formant-cascade headroom. `SAMPLE_RATE / 8000` has no
+integer shortcut (44100/8000 = 5.5125), so `speech_render_voice_lattice()`
+pulls native samples through a linear-interpolation upsampler on demand,
+one native sample at a time whenever its fractional accumulator
+(`LatticeVoiceState::resample_frac`) crosses 1.0 — carried across render
+calls, not reset per buffer, so a buffer boundary can't introduce phase
+drift.
+
+**Coefficient frames**: 25 ms each (200 samples at 8 kHz) — the TMS5220's
+own frame period — interpolated 8 times per frame (every
+`SPEECH_LATTICE_SUBBLOCK` = 25 native samples), matching the real chip's
+own interpolation cadence. Unlike the formant cascade's `F`/`B`
+(Resonator and the Stability Rule below), lattice reflection coefficients
+`k[i]` are ramped and used directly as filter coefficients, with no
+recompute step in between: this is safe because a stable, order-10
+all-pole lattice only requires every `|k[i]| < 1`, and that interval is
+convex, so linearly interpolating between two in-range coefficients can
+never leave it. Debug builds assert this after every interpolation step.
+
+**Word data**: `tools/talkie2lattice.py` decodes a real Talkie TMS5220
+vocab source into `lattice_words.h` (`LATTICE_WORDS[]`, gitignored, ~1,163
+words once generated locally). Without a generated corpus, every lattice
+voice plays one hardcoded fixture, `lattice.h`'s `LATTICE_TEST_WORD` —
+reflection coefficients from a real order-10 Levinson-Durbin analysis of
+this module's own `/i/`/`/a/`/`/u/` formant-cascade impulse responses
+(`phonemes.h`), not hand-guessed or corpus-derived. `SPEECH_LATTICE_GAIN_BOOST`
+(`lattice.h`) scales every lattice voice's excitation regardless of word
+source; it's tuned against the real corpus's worst-case resonance (its
+chip-recorded reflection coefficients sit much closer to the unit circle
+than the test word's own smoother, synthetic ones), which leaves
+`LATTICE_TEST_WORD` quieter than before.
+
+**`KEY_PER_WORD` addressing**: the only word-addressing mode built so far,
+of three the design leaves room for (see Decision Record). MIDI note
+number (0–127) selects a word within the channel's current 128-word page;
+Program Change selects which page is current (tract-dependent — see MIDI
+Mapping). `midi_controller.cpp`'s `speech_lattice_word_for_key()` resolves
+note+page to a `LATTICE_WORDS[]` entry, wrapping with `%` past the last,
+partially-populated page the same way every other table lookup in this
+module wraps out-of-range input. `VoiceParams::lattice_word` carries the
+resolved word as a pointer, set at note-on and read straight through by
+`audio_engine.cpp` — always valid, defaulting to `&LATTICE_TEST_WORD`,
+whether or not a corpus has been generated. A word plays at its own
+recorded per-frame pitch contour by default; CC103's Q8.8 multiplier
+(`VoiceParams::lattice_pitch_shift`) overrides it live, re-applied at
+every frame boundary so a CC change reaches a word already in progress
+within one 25 ms frame period.
+
+**Note-off modes on the lattice tract**: `SpeechMode` applies the same
+GATED/ONESHOT/LOOP contract lattice voices get from
+`speech_render_voice_seq()`'s formant path, adapted to a frame array
+instead of a phoneme string — GATED jumps straight to the word's own
+final frame (always the decoder's trailing silent STOP frame) on
+note-off rather than cutting mid-glide; ONESHOT ignores note-off for word
+progression; LOOP restarts at frame 0 while still gated and degrades to
+one-shot completion once gate drops.
+
+**Excitation source (CC104)**: the shared `excitation.h`
+`glottal_pulse()`/`osc/noise.h` pair (a smooth bipolar triangle spanning
+the whole pitch period for voiced segments, a full-range LFSR for
+unvoiced ones, both also used by the formant tract) is the default;
+switching selects `lattice.h`'s own TMS5220-accurate pair instead --
+decap-verified chip data, not a hand-tuned approximation, for both:
+`lattice_chirp_pulse()` (a short, sharp, non-negative burst concentrated
+at the very start of each pitch period, from the chip's real 52-sample
+excitation table, followed by silence for the rest of it) for voiced
+segments, and `lattice_chip_noise()` (a 13-bit LFSR decimated 20:1, its
+lowest bit picking between two fixed levels rather than read out as
+multi-bit noise) for unvoiced ones. Both together, not just the voiced
+half, are what give the real chip its buzzier, harsher, more digital
+character. CC104 currently switches both at once (paired, not
+independently selectable -- see Decision Record for why and how that
+could split later). `LatticeVoiceState::chirp_idx`/`tms_rng` are tracked
+unconditionally regardless of which exciter is selected, so switching
+mid-note has correct state from its very first sample. Live, like the
+pitch-shift CC.
+
+The chirp exciter's crest factor is measurably higher than
+`glottal_pulse()`'s own (over 2x) -- real corpus words that fit safely
+under `SPEECH_LATTICE_GAIN_BOOST`'s existing calibration clipped under
+the chirp exciter until `SPEECH_LATTICE_CHIRP_GAIN_SCALE` (0.86, tuned
+the same empirical way against the real corpus) brought its own
+worst-case peak back down to match.
 
 ### Resonator and the Stability Rule
 
@@ -414,18 +581,31 @@ yet — see Future/TODO.
 
 ### Performance
 
-~93.5 cycles/frame/voice (2.75%), flat from 1 to 8 voices, on real
-`breadboard_rp2350` hardware — the fricative/nasal branches and a live
-formant-shift/bandwidth-scale sweep cost nothing extra over that flat
-number (both already run unconditionally). 8 voices alone: 22% of Core 1;
-with reverb (mutually exclusive with delay): ~30%. Full measurement
-breakdown: `history_speech.md`.
+Formant tract: ~93.5 cycles/frame/voice (2.75%), flat from 1 to 8 voices,
+on real `breadboard_rp2350` hardware — the fricative/nasal branches and a
+live formant-shift/bandwidth-scale sweep cost nothing extra over that
+flat number (both already run unconditionally). 8 voices alone: 22% of
+Core 1; with reverb (mutually exclusive with delay): ~30%.
+
+LPC lattice tract: ~77.5 cycles/frame/voice, also flat from 1 to 8
+voices, cheaper than the formant tract despite the extra resampler step —
+the lower 8 kHz native rate more than pays back the order-10 lattice
+recursion's own per-sample cost once normalized per output frame. 8
+voices alone: 18.1% of Core 1. `MAX_VOICES = 8` is shared between both
+tracts (one voice pool, tract selected per voice — see Decision Record);
+since the lattice tract is cheaper, not more expensive, than the formant
+tract, the shared pool's worst case stays bounded by the formant
+numbers above regardless of which tract's voices fill it.
+
+Full measurement breakdown: `history_speech.md`.
 
 ### Future / TODO
 
-- **LPC sibling engine** (optional) — a lattice-filter tract replacing the
-  resonator cascade, sharing excitation/sequencer/control-plane unchanged.
-  Native rate would drop to 8 kHz, introducing a fractional resampler.
+- **Further LPC addressing modes** — `KEY_PER_WORD` is the only
+  word-addressing mode built; a "musical" mode spreading one word across
+  the keyboard via standard MIDI Bank Select + Program Change, and a
+  two-CC pseudo-program-select for controllers that can't reliably send
+  Program Change, are both left room for but unbuilt.
 - **Singing mode** — the `SUSTAINABLE` flag is reserved (see Architecture)
   but nothing reads it yet; holding a vowel segment open under gate
   instead of advancing at its nominal duration is unbuilt.
@@ -446,10 +626,11 @@ breakdown: `history_speech.md`.
   for a speech-only change.
 - **Hardware verification pending** on several already-built features: the
   preset table by ear (particularly `PRESET_ROBOT_CHORUS`'s stereo
-  spread), CC16 preset-select's glitch-free-switching claim, MIDI-layer
-  correctness (Program Change/CC parsing, phrase-bank note mapping — only
-  compile-verified so far), and the profiling-pin measurement of
-  effects-on cost.
+  spread and glitch-free switching between two ordinary formant presets —
+  `KEY_PER_WORD`'s own preset switch is confirmed, see Decision Record),
+  MIDI-layer correctness (Program Change/CC parsing, phrase-bank note
+  mapping — only compile-verified so far), and the profiling-pin
+  measurement of effects-on cost.
 
 ## Decision Record
 
@@ -510,6 +691,161 @@ breakdown: `history_speech.md`.
     preset/sample types, so gating on presets.h's mere existence
     incorrectly pulled it into the speech build once speech got its own
     preset table.
+13. **`SpeechVoice`'s tract-specific state is a union
+    (`FormantVoiceState`/`LatticeVoiceState`), not two flat members** —
+    only one tract renders per voice at a time, so a union bounds 8
+    voices' cost by the larger variant instead of both combined. The
+    union switch always lands on a note-on retrigger, which
+    placement-constructs the newly-selected member before writing into
+    it, so a voice that changes tract between notes never reads the
+    other tract's stale state.
+14. **Lattice reflection coefficients are ramped and used directly as
+    filter coefficients**, unlike the formant cascade's `F`/`B` (which are
+    ramped and then recomputed into biquad coefficients every sub-block)
+    — a documented, lattice-only exception to the Resonator and the
+    Stability Rule, safe specifically because the all-pole lattice stays
+    stable for any `|k[i]| < 1`, and that range is convex.
+15. **The LPC test word's coefficients come from a real Levinson-Durbin
+    analysis of this module's own formant-cascade impulse responses**,
+    not hand-guessed numbers or Talkie-corpus data — the corpus converter
+    doesn't exist yet (see Future/TODO), and the module's existing
+    `/i/`/`/a/`/`/u/` targets already had published-value cross-checks
+    (`vowel_reference.h`) backing their own correctness.
+16. **CC102 (tract select) is the only LPC-specific CC wired so far**,
+    ahead of any real word-selection mode — cheap, forward-compatible
+    (inside the CC102–119 range already reserved for LPC controls), and
+    it's what lets the hardcoded test word actually be reached from a
+    MIDI channel instead of only from host-render tooling.
+17. **`talkie2lattice.py`'s TMS5220 decode tables are re-expressed as this
+    project's own data, not copied from the Talkie library's source
+    file** — the bitstream *format* (which bits mean what) is the chip's
+    own hardware behavior, the same reasoning that already applies to the
+    DX7 sysex byte layout ported from Dexed, but Talkie itself is GPLv2 (a
+    stricter, copyleft license than Dexed's Apache-2.0), so the specific
+    table values are transcribed independently and attributed by comment
+    rather than copied wholesale.
+18. **A word whose bitstream fails to decode is skipped with a warning,
+    not an abort of the whole run** — a deliberate deviation from
+    `syx2patch.py`'s stricter "any bad voice aborts the whole bank"
+    policy, since the Talkie corpus (~1,163 words across several
+    independently-sourced files) is roughly an order of magnitude larger
+    than a 32-voice DX7 bank, and one corrupted or unusually-shaped word
+    blocking every other word's conversion is a worse failure mode at
+    that scale. Every skip is still reported, not silent.
+19. **The TMS5220's raw energy value is normalized to `LatticeFrame.gain`
+    by dividing by 255**, a different unit and calibration than #63's
+    `LATTICE_TEST_WORD` (whose gain values came from an unrelated
+    Levinson-Durbin analysis, then re-scaled again by render.h's
+    `SPEECH_LATTICE_GAIN_BOOST`) — real corpus playback may need its own
+    loudness retuning once heard on hardware; this converter's job is a
+    faithful decode of the chip's own value, not a loudness match to
+    LATTICE_TEST_WORD's bring-up-only calibration.
+20. **`KEY_PER_WORD` is the first of three addressing modes the design
+    reserves room for, and the only one built** — key+Program-Change-page
+    is directly what a real MIDI keyboard already offers, where the
+    "musical" (Bank Select + Program Change spreading one word across the
+    keyboard) and two-CC pseudo-program-select modes both need either
+    standard Bank Select support or a controller workaround this slice
+    doesn't need yet.
+21. **Program Change's meaning is tract-dependent** (utterance under the
+    formant tract, `KEY_PER_WORD` page under the LPC tract) rather than a
+    new dedicated CC for page-select — reuses the meaning Program Change
+    already has ("what a note-on plays"), and the two tracts are mutually
+    exclusive per channel, so there's no message that could mean both at
+    once.
+22. **`VoiceParams::lattice_word` carries a pointer, not an index** —
+    mirrors the FM engine's own `const FmPatch *patch` field. A voice is
+    always valid (defaults to `&LATTICE_TEST_WORD`) whether or not
+    `lattice_words.h` has been generated locally, the same
+    gitignored-generated-data contract `T00T_FM_HAS_PATCHES` already
+    established, without needing `LATTICE_WORD_COUNT` visible to every
+    consumer of `VoiceParams`.
+23. **A lattice word's `SPEECH_MODE_GATED` release point is always its own
+    final frame**, not a separately authored marker (unlike the formant
+    tract's `SpeechUtterance::release_index`) — the Talkie bitstream
+    format has no release marker of its own, and `talkie2lattice.py`'s
+    decoder already guarantees every word ends in a genuine silent STOP
+    frame, so this needs no new field on `LatticeWord`/`LatticeFrame`.
+24. **`SPEECH_LATTICE_GAIN_BOOST` is retuned against the real corpus's
+    worst-case resonance, not `LATTICE_TEST_WORD`** — real chip-recorded
+    reflection coefficients sit much closer to the unit circle than the
+    test word's own smoother, synthetic ones, so the single constant that
+    keeps the whole corpus unclipped leaves the test word quieter than it
+    was before. A per-word calibration was rejected: this tract already
+    has one intentional global excitation-scale constant
+    (`SPEECH_EXCITATION_HEADROOM`'s own precedent on the formant side),
+    and per-word gain data would mean extending `LatticeFrame`'s format
+    and `talkie2lattice.py`'s emission for a problem one shared constant
+    already solves.
+25. **The pitch-shift multiplier gets a new CC (103) rather than reusing
+    an existing live slot** — it has no formant-tract equivalent to share
+    with, and the CC102–119 range was already reserved for exactly this
+    kind of LPC-specific addition.
+26. **`SpeechPreset` gained `tract`/`lattice_page`/`lattice_pitch_shift`,
+    and every existing preset row sets `tract` explicitly** (all
+    `SPEECH_TRACT_FORMANT`) rather than leaving it to an implicit
+    zero-value default — a preset table is exactly the kind of place a
+    silently-defaulted field goes unnoticed for a long time, and the cost
+    of writing it out on nine already-existing rows is one column.
+    `lattice_page` isn't a `VoiceParams` field (it's per-channel
+    addressing state, not a per-voice render parameter), so
+    `speech_load_preset()` reads it straight from the preset row rather
+    than through `voice_apply_preset()`, the same way it already reads
+    `chorus`.
+27. **`MAX_VOICES = 8` stays shared between both tracts, not split into a
+    separate per-tract budget** — real hardware measurement put the LPC
+    lattice tract at ~77.5 cycles/frame/voice, flat from 1 to 8 voices,
+    cheaper than the formant tract's own ~93.5, so the shared pool's
+    worst-case Core 1 cost is already bounded by the formant numbers
+    (Performance above) regardless of which tract fills it. A separate,
+    larger budget for the cheaper tract would be a real architecture
+    change (per-tract voice pools instead of one shared pool with a
+    per-voice tract selector) that nothing in the measurement justifies.
+28. **The velocity toggle (CC15) is next-note, not live, and defaults
+    on** — velocity only ever feeds `amplitude` at the moment a voice is
+    struck (there's no separate live-amplitude CC it would need to keep
+    in sync with), so "live" has no meaning for it the way it does for
+    formant_shift or rate; defaulting on keeps a fresh channel's dynamics
+    behaving exactly as they did before this CC existed.
+29. **The TMS5220 chirp table's exact values are decap-verified data,
+    cross-checked against two independent MAME source trees** (the
+    current `tms5110r.hxx`'s `TI_LATER_CHIRP`, used by the
+    TMS5110A/TMS5200/TMS5220 family this tract targets, and the older
+    historic-mame single `chirptable[]` as an independent check on the
+    fetch itself, not as a source — it's a different, earlier chip's
+    table and correctly differs) rather than trusted from memory or
+    written by ear, the same rigor `tools/talkie2lattice.py`'s own K
+    tables already established for exactly this kind of chip-behavior
+    data.
+30. **`lattice_chirp_pulse()` is a lattice-tract-only alternative, not a
+    replacement for `excitation.h`'s `glottal_pulse()`** — the formant
+    tract's own excitation is already tuned and hardware-verified against
+    published vowel formant data, so it stays untouched; CC104 exists
+    specifically so both can be A/B'd live rather than picking a winner
+    outright.
+31. **CC104 is live, not next-note** — unlike a lattice word's frame
+    coefficients, switching excitation source has no filter-state
+    discontinuity to worry about (`LatticeVoiceState::chirp_idx` is
+    tracked unconditionally either way), so there was no reason to make a
+    live A/B comparison wait for the next note.
+32. **The real chip's own coarse two-level LFSR noise (unvoiced source) is
+    paired with the chirp table under the same CC104, not independently
+    switchable** — a deliberate, temporary choice: hear both chip-accurate
+    sources together first, decide by ear whether unvoiced segments need
+    their own separate toggle, rather than pre-emptively adding a second
+    CC before knowing it's wanted. Splitting later is a small change
+    (`chirp_exciter` already reads as "voiced source" by name; a second
+    bool for the noise half doesn't disturb it), not a rework.
+33. **`SPEECH_LATTICE_CHIRP_GAIN_SCALE` (0.86) is a second, chirp-only
+    scale on top of `SPEECH_LATTICE_GAIN_BOOST`, not a lower shared
+    constant** — the chirp exciter's own crest factor is measurably
+    higher than `glottal_pulse()`'s (over 2x), so the same excitation
+    scale that keeps the corpus safe under the default exciter clipped
+    two of its loudest words (O/OH) under the chirp one. Lowering
+    `GAIN_BOOST` itself would have fixed that at the cost of quieting the
+    default exciter for a problem specific to the other one; a second,
+    chirp-only multiplier fixes it without touching the already-correct
+    default calibration.
 
 ## Glossary
 
@@ -533,3 +869,9 @@ breakdown: `history_speech.md`.
 - **Coarticulation**: how a phoneme's realized sound is influenced by
   its neighbours; this engine currently only ramps linearly between
   adjacent targets (see Future/TODO).
+- **Lattice filter**: an all-pole IIR filter structured as a chain of
+  stages, each parameterised by one reflection coefficient, rather than
+  the direct-form biquad coefficients the formant cascade uses.
+- **Reflection coefficient**: a lattice filter's per-stage parameter
+  (`k[i]`, `|k[i]| < 1` for stability); the LPC lattice tract's analogue
+  of the formant cascade's per-formant F/B pair.

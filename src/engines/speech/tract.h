@@ -1,7 +1,9 @@
 #pragma once
 
+#include "lattice.h"
 #include "res2p.h"
 #include <cstdint>
+#include <new>
 
 // Formant cascade + parallel fricative/nasal branches (module_speech.md
 // "Cascade vs parallel"): F1->F2->F3->F4->F5
@@ -45,11 +47,13 @@ inline int16_t tract_cc_to_q8_8(uint8_t cc, float lo, float hi) {
     return (int16_t)(v * 256.0f + (v >= 0.0f ? 0.5f : -0.5f));
 }
 
-// Per-voice tract + excitation render state (Core 1 only, never crosses
-// ParamExchange). formant[] is the cascade; fric/nasal are the two parallel
-// branches. formant_shift/bandwidth_scale are ramped the same way as
-// F/B -- never applied directly, so a CC sweep can't zipper.
-struct SpeechVoice {
+// Per-voice formant-tract render state: the resonator cascade plus the two
+// parallel branches and their ramp targets. formant[] is the cascade;
+// fric/nasal are the two parallel branches. formant_shift/bandwidth_scale
+// are ramped the same way as F/B -- never applied directly, so a CC sweep
+// can't zipper. One of two mutually-exclusive tract variants held by
+// SpeechVoice's union (below) -- LatticeVoiceState (lattice.h) is the other.
+struct FormantVoiceState {
     Res2p    formant[SPEECH_FORMANTS];
     Res2p    fric, nasal;
     float    F[SPEECH_FORMANTS] = {0}, B[SPEECH_FORMANTS] = {0};
@@ -59,35 +63,17 @@ struct SpeechVoice {
     float    av = 0, af = 0, an = 0, av_tgt = 0, af_tgt = 0, an_tgt = 0;
     float    formant_shift = 1.0f, formant_shift_tgt = 1.0f;
     float    bandwidth_scale = 1.0f, bandwidth_scale_tgt = 1.0f;
-    uint32_t glottal_phase = 0;
-    uint16_t noise_lfsr = 0xACE1u;     // groovebox's LFSR seed (osc/noise.h) -- must be nonzero
-    float    cur_amp = 0.0f;          // smoothed toward gate target, declicks on/off
-    uint8_t  last_trigger = 0xFF;     // forces tract_retrigger() on first render
-    uint8_t  last_phoneme = 0xFF;     // forces a target load on first render
-    // Vibrato/jitter/shimmer state (module_speech.md, excitation.h). Reset
-    // on retrigger, not on a plain segment/phoneme target change -- these
-    // track the *note*, the same lifetime as glottal_phase above, not the
-    // phoneme currently sounding.
-    float    lfo_phase = 0.0f;         // vibrato LFO phase, 0..1 (excitation.h)
-    uint32_t glot_cycle_inc = 0;       // this glottal cycle's jittered phase increment
-    float    glot_cycle_amp = 1.0f;    // this glottal cycle's shimmer amplitude multiplier
-    uint16_t jitter_lfsr = 0xF00Du;    // separate seed from noise_lfsr -- must be nonzero
-    // Segment sequencer state (module_speech.md "Segment sequencer"). Unused by
-    // speech_render_voice() (the SPEECH_HOLD phoneme keyboard has no segments to sequence); only
-    // speech_render_voice_seq() (render.h) touches these.
-    uint16_t seg_index = 0;      // position within the current utterance (sequencer.h)
-    uint32_t seg_remaining = 0;  // native samples left in the current segment
-    bool     seq_done = false;   // utterance complete (note-off handling) -- voice still allocated but silent
-    bool     gate_prev = false;  // previous call's gate, to find the note-off edge once per buffer
-    bool     active = false;     // still sounding -- audio_engine.cpp's active_mask reads this for sequenced voices
 };
 
 // New note: snap F/B/fric/nasal/av/af/an and the live formant_shift/
 // bandwidth_scale (already updated to their current CC target by the
 // caller) straight to their targets -- no glide from whatever the previous
-// note left behind -- and clear filter/phase state so the new note starts
-// clean.
-inline void tract_retrigger(SpeechVoice &sv, const FormantTarget &t) {
+// note left behind -- and clear filter memory so the new note starts clean.
+// Excitation/lifetime state shared with the lattice tract (glottal phase,
+// amplitude declick, vibrato/jitter/shimmer -- SpeechVoice's fields below
+// this struct) is the caller's responsibility (render.h), not this
+// function's -- FormantVoiceState only holds tract-specific state.
+inline void tract_retrigger(FormantVoiceState &sv, const FormantTarget &t) {
     for (uint32_t i = 0; i < SPEECH_FORMANTS; i++) {
         sv.F[i] = sv.F_tgt[i] = t.F[i];
         sv.B[i] = sv.B_tgt[i] = t.B[i];
@@ -104,20 +90,12 @@ inline void tract_retrigger(SpeechVoice &sv, const FormantTarget &t) {
     res2p_reset(sv.nasal);
     sv.formant_shift = sv.formant_shift_tgt;
     sv.bandwidth_scale = sv.bandwidth_scale_tgt;
-    sv.glottal_phase = 0;
-    sv.cur_amp = 0.0f;
-    // Vibrato restarts at phase 0 (sine == 0, no pitch jump on trigger);
-    // shimmer's multiplier resets to unity. glot_cycle_inc is deliberately
-    // left to the caller (render.h sets it from the note's actual phase_inc
-    // on the same trigger edge) -- tract.h has no phase_inc to seed it with.
-    sv.lfo_phase = 0.0f;
-    sv.glot_cycle_amp = 1.0f;
 }
 
 // Phoneme changed while the voice is already sounding: just move the
 // targets: tract_advance_subblock() ramps everything toward them,
 // coefficients follow.
-inline void tract_set_target(SpeechVoice &sv, const FormantTarget &t) {
+inline void tract_set_target(FormantVoiceState &sv, const FormantTarget &t) {
     for (uint32_t i = 0; i < SPEECH_FORMANTS; i++) {
         sv.F_tgt[i] = t.F[i];
         sv.B_tgt[i] = t.B[i];
@@ -140,7 +118,7 @@ inline void tract_set_target(SpeechVoice &sv, const FormantTarget &t) {
 // order as TRACT_RAMP_COEFF's own settle time, so a normal glide would
 // barely start before the segment ends -- the transition needs to already be
 // complete on the burst's first sample, not partway there.
-inline void tract_snap_target(SpeechVoice &sv, const FormantTarget &t) {
+inline void tract_snap_target(FormantVoiceState &sv, const FormantTarget &t) {
     for (uint32_t i = 0; i < SPEECH_FORMANTS; i++) {
         sv.F[i] = sv.F_tgt[i] = t.F[i];
         sv.B[i] = sv.B_tgt[i] = t.B[i];
@@ -185,7 +163,7 @@ inline void tract_apply_coeffs(Res2p &r, float f_raw, float b_raw, float shift, 
 // sub-block toward its target, and recompute every resonator's coefficients
 // from the ramped values -- never from the target directly, and never by
 // interpolating a1/a2/b0 (module_speech.md "Resonator and the stability rule").
-inline void tract_advance_subblock(SpeechVoice &sv, float fs) {
+inline void tract_advance_subblock(FormantVoiceState &sv, float fs) {
     sv.formant_shift += (sv.formant_shift_tgt - sv.formant_shift) * TRACT_RAMP_COEFF;
     sv.bandwidth_scale += (sv.bandwidth_scale_tgt - sv.bandwidth_scale) * TRACT_RAMP_COEFF;
 
@@ -212,7 +190,7 @@ inline void tract_advance_subblock(SpeechVoice &sv, float fs) {
 // tract_process_mixed() below so the host harness can measure the cascade's
 // transfer function in isolation (tools/host_render/render_speech.cpp's
 // impulse-response check).
-inline float tract_process(SpeechVoice &sv, float voiced_src) {
+inline float tract_process(FormantVoiceState &sv, float voiced_src) {
     float y = voiced_src;
     for (uint32_t i = 0; i < SPEECH_FORMANTS; i++) y = res2p_tick(sv.formant[i], y);
     return y;
@@ -224,9 +202,60 @@ inline float tract_process(SpeechVoice &sv, float voiced_src) {
 // the same glottal source -- the nasal pole; `noise_src` (LFSR noise * af)
 // drives the fricative resonator. See FormantTarget's comment for why av/af
 // land here rather than as a post-branch mix gain.
-inline float tract_process_mixed(SpeechVoice &sv, float voiced_src, float noise_src) {
+inline float tract_process_mixed(FormantVoiceState &sv, float voiced_src, float noise_src) {
     float cascade_out = tract_process(sv, voiced_src);
     float fric_out = res2p_tick(sv.fric, noise_src);
     float nasal_out = res2p_tick(sv.nasal, voiced_src * sv.an);
     return cascade_out + fric_out + nasal_out;
 }
+
+// Selects which of SpeechVoice's two union members is valid (module_speech.md
+// "LPC sibling engine"). SPEECH_TRACT_FORMANT is the default -- every voice
+// behaves exactly as before this field existed unless something explicitly
+// switches it.
+enum SpeechTract : uint8_t { SPEECH_TRACT_FORMANT, SPEECH_TRACT_LATTICE };
+
+// Per-voice render state (Core 1 only, never crosses ParamExchange). The
+// fields above `tract` are shared by both tracts: excitation phase/LFSR
+// state, the amplitude declick smoother, and the segment/frame sequencer
+// bookkeeping both render.h's formant and lattice render loops use the same
+// way. `fmt`/`lat` below are mutually exclusive -- only the member `tract`
+// selects is valid, so 8 voices' worth of tract state costs the larger of
+// the two variants, not their sum. A voice that switches tract is always
+// mid-retrigger when it does (a new note-on, `trigger` changed) -- render.h's
+// three render functions each placement-construct their own union member
+// fresh on that edge before writing into it, so a stale read of the other
+// tract's last values across a switch never happens.
+struct SpeechVoice {
+    uint32_t glottal_phase = 0;
+    uint16_t noise_lfsr = 0xACE1u;     // groovebox's LFSR seed (osc/noise.h) -- must be nonzero
+    float    cur_amp = 0.0f;           // smoothed toward gate target, declicks on/off
+    uint8_t  last_trigger = 0xFF;      // forces a retrigger on first render
+    uint8_t  last_phoneme = 0xFF;      // formant tract only: forces a target load on first render
+    // Vibrato/jitter/shimmer state (module_speech.md, excitation.h). Reset
+    // on retrigger, not on a plain segment/phoneme/frame target change --
+    // these track the *note*, the same lifetime as glottal_phase above.
+    float    lfo_phase = 0.0f;         // vibrato LFO phase, 0..1 (excitation.h)
+    uint32_t glot_cycle_inc = 0;       // this glottal cycle's jittered phase increment
+    float    glot_cycle_amp = 1.0f;    // this glottal cycle's shimmer amplitude multiplier
+    uint16_t jitter_lfsr = 0xF00Du;    // separate seed from noise_lfsr -- must be nonzero
+    // Formant-tract segment sequencer state (module_speech.md "Segment
+    // sequencer"). Unused by speech_render_voice() (the SPEECH_HOLD phoneme
+    // keyboard has no segments) or by speech_render_voice_lattice() (its own
+    // frame position lives in LatticeVoiceState instead); only
+    // speech_render_voice_seq() (render.h) touches these.
+    uint16_t seg_index = 0;      // position within the current utterance (sequencer.h)
+    uint32_t seg_remaining = 0;  // native samples left in the current segment
+    bool     seq_done = false;   // utterance complete (note-off handling) -- voice still allocated but silent
+    bool     gate_prev = false;  // previous call's gate, to find the note-off edge once per buffer
+    bool     active = false;     // still sounding -- audio_engine.cpp's active_mask reads this
+
+    SpeechTract tract = SPEECH_TRACT_FORMANT;
+
+    union {
+        FormantVoiceState fmt;
+        LatticeVoiceState lat;
+    };
+
+    SpeechVoice() : fmt() {}
+};

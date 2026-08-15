@@ -115,6 +115,16 @@ if(DEFINED SPEECH_PROFILE AND NOT SPEECH_PROFILE STREQUAL "0")
     target_compile_definitions(t00t PRIVATE T00T_SPEECH_PROFILE=1)
 endif()
 
+# #65 LPC corpus (speech engine only): lattice_words.h is generated locally
+# by tools/talkie2lattice.py from real Talkie TMS5220 vocab source files and
+# gitignored -- the corpus data has no clear redistribution license, same
+# reasoning as #47's patches.h gate above. Guarded here so the build still
+# succeeds (lattice.h's LATTICE_TEST_WORD only) when nobody has generated it
+# locally yet.
+if(EXISTS ${CMAKE_CURRENT_LIST_DIR}/src/engines/speech/lattice_words.h)
+    target_compile_definitions(t00t PRIVATE T00T_SPEECH_HAS_LATTICE_WORDS=1)
+endif()
+
 # #42 rig override (FM engine only, see src/engines/fm/rig.h/audio_engine.cpp).
 if(DEFINED FM_PROFILE AND NOT FM_PROFILE STREQUAL "0")
     target_compile_definitions(t00t PRIVATE T00T_FM_PROFILE=1)
