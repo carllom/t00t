@@ -4,7 +4,7 @@ UF2 = $(BUILD_DIR)/t00t.uf2
 # Board selection: breadboard_rp2350 (default) or vgaboard_rp2350
 BOARD ?= breadboard_rp2350
 
-# Synthesis engine: subtractive (default), groovebox, tracker, speech or chip
+# Synthesis engine: subtractive (default), groovebox, tracker, speech, chip, fm or opl
 ENGINE ?= subtractive
 
 # MIDI transport overrides: 0, 1, or "default" (use the board header's default).
