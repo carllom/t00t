@@ -176,7 +176,19 @@ FORMANT_REFERENCE: Dict[str, Tuple[int, int, int, int, int]] = {
 }
 assert set(FORMANT_REFERENCE.keys()) == set(SAM_ALLOPHONE_NAMES)
 
-REQUIRED_ARRAYS = ("sampledConsonantFlags", "amplitudeRescale", "ampl1data", "ampl2data", "ampl3data")
+REQUIRED_ARRAYS = ("sampledConsonantFlags", "amplitudeRescale", "ampl1data", "ampl2data", "ampl3data",
+                    "phonemeLengthTable")
+
+# phonemeLengthTable's raw units aren't documented as a fixed ms value in
+# any reference source this tool has checked; #72 needs *a* duration to
+# drive the SAM sequencer, so this is a simple linear scale landing typical
+# entries in the same 20-200ms range this project's own phoneme table
+# (speech_phonemes.csv) already uses, clamped so the two syllabic-consonant
+# outliers (UL/UM, meant to be held rather than literally ~1200ms/2500ms)
+# don't produce an implausibly long segment.
+DURATION_SCALE_MS_PER_TICK = 6
+DURATION_MIN_MS = 20
+DURATION_MAX_MS = 200
 
 
 class SamConverterError(Exception):
@@ -212,7 +224,7 @@ def _find_array(sources: Dict[str, str], name: str) -> Tuple[List[int], str]:
 
 class AllophoneOut:
     def __init__(self, name: str, F: Tuple[int, int, int], amp: Tuple[float, float, float],
-                 fric_F: int, fric_B: int, af: float, sampled: bool):
+                 fric_F: int, fric_B: int, af: float, sampled: bool, duration_ms: int):
         self.name = name
         self.F = F
         self.amp = amp
@@ -220,6 +232,7 @@ class AllophoneOut:
         self.fric_B = fric_B
         self.af = af
         self.sampled = sampled
+        self.duration_ms = duration_ms
 
 
 def convert_all(paths: List[str]) -> List[AllophoneOut]:
@@ -237,7 +250,7 @@ def convert_all(paths: List[str]) -> List[AllophoneOut]:
     if len(rescale) < 16:
         raise SamConverterError(f"amplitudeRescale has {len(rescale)} entries, need at least 16")
 
-    for name in ("sampledConsonantFlags", "ampl1data", "ampl2data", "ampl3data"):
+    for name in ("sampledConsonantFlags", "ampl1data", "ampl2data", "ampl3data", "phonemeLengthTable"):
         if len(arrays[name]) < SAM_ALLOPHONE_COUNT:
             raise SamConverterError(
                 f"{name} has {len(arrays[name])} entries, need at least {SAM_ALLOPHONE_COUNT}"
@@ -258,7 +271,9 @@ def convert_all(paths: List[str]) -> List[AllophoneOut]:
             raw = (arrays["ampl1data"][idx], arrays["ampl2data"][idx], arrays["ampl3data"][idx])
             amp = tuple(rescale[v & 0x0F] / 15.0 for v in raw)
             af = 0.0
-        rows.append(AllophoneOut(name, (F1, F2, F3), amp, fric_F, fric_B, af, sampled))
+        raw_duration = arrays["phonemeLengthTable"][idx]
+        duration_ms = max(DURATION_MIN_MS, min(DURATION_MAX_MS, raw_duration * DURATION_SCALE_MS_PER_TICK))
+        rows.append(AllophoneOut(name, (F1, F2, F3), amp, fric_F, fric_B, af, sampled, duration_ms))
     return rows
 
 
@@ -280,7 +295,8 @@ def _format_row(r: AllophoneOut) -> str:
     Fs = ", ".join(f"{v}.0f" for v in r.F)
     Bs = ", ".join(f"{v}.0f" for v in _bandwidth_for_f1(r.F[0]))
     amps = ", ".join(f"{v:.4f}f" for v in r.amp)
-    return f"{{ {{ {Fs} }}, {{ {Bs} }}, {{ {amps} }}, {r.fric_F}.0f, {r.fric_B}.0f, {r.af:.1f}f }}"
+    return (f"{{ {{ {Fs} }}, {{ {Bs} }}, {{ {amps} }}, {r.fric_F}.0f, {r.fric_B}.0f, "
+            f"{r.af:.1f}f, {r.duration_ms} }}")
 
 
 def render_header(rows: List[AllophoneOut], source_paths: List[str]) -> str:
@@ -342,7 +358,7 @@ def cmd_dump(args: argparse.Namespace) -> None:
     for r in rows:
         kind = "noise " if r.sampled else "formant"
         amps = ", ".join(f"{v:.2f}" for v in r.amp)
-        print(f"  {r.name:14s} {kind}  F={r.F}  amp=({amps})  af={r.af:.1f}")
+        print(f"  {r.name:14s} {kind}  F={r.F}  amp=({amps})  af={r.af:.1f}  dur={r.duration_ms}ms")
     sampled_count = sum(1 for r in rows if r.sampled)
     print(f"{len(rows)} allophones ({sampled_count} noise-driven, {len(rows) - sampled_count} formant-driven)")
 

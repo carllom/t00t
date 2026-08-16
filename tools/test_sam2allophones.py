@@ -94,6 +94,7 @@ def _write_synthetic_reference(path: str, s_af: int = 0xF1, iy_amp: int = 0x0F) 
     ampl1[iy_idx] = iy_amp
     ampl2 = [0] * n
     ampl3 = [0] * n
+    durations = [8] * n  # 8 * DURATION_SCALE_MS_PER_TICK(6) = 48ms for every entry
 
     def emit(name: str, values: List[int]) -> str:
         body = " , ".join(f"0x{v:02X}" for v in values)
@@ -105,6 +106,7 @@ def _write_synthetic_reference(path: str, s_af: int = 0xF1, iy_amp: int = 0x0F) 
         f.write(emit("ampl1data", ampl1))
         f.write(emit("ampl2data", ampl2))
         f.write(emit("ampl3data", ampl3))
+        f.write(emit("phonemeLengthTable", durations))
 
 
 def test_convert_all_synthetic_classifies_sampled_vs_formant() -> None:
@@ -132,6 +134,27 @@ def test_convert_all_synthetic_classifies_sampled_vs_formant() -> None:
         sil_row = by_name["SIL"]
         assert sil_row.sampled is False
         assert sil_row.amp == (0.0, 0.0, 0.0)
+
+        # 8 ticks * DURATION_SCALE_MS_PER_TICK(6) = 48ms, within [MIN, MAX].
+        assert s_row.duration_ms == 48
+
+
+def test_duration_clamps_to_min_and_max() -> None:
+    n = sa.SAM_ALLOPHONE_COUNT
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "durations.h")
+        durations = [0] * n  # raw 0 -> below DURATION_MIN_MS
+        durations[5] = 200   # raw 200 * 6 = 1200 -> above DURATION_MAX_MS
+        with open(path, "w") as f:
+            f.write(f"const unsigned char sampledConsonantFlags[] = {{ {', '.join('0' for _ in range(n))} }};\n")
+            f.write("const unsigned char amplitudeRescale[] = { 0,1,2,2,2,3,3,4,4,5,6,8,9,0xB,0xD,0xF };\n")
+            f.write(f"const unsigned char ampl1data[] = {{ {', '.join('0' for _ in range(n))} }};\n")
+            f.write(f"const unsigned char ampl2data[] = {{ {', '.join('0' for _ in range(n))} }};\n")
+            f.write(f"const unsigned char ampl3data[] = {{ {', '.join('0' for _ in range(n))} }};\n")
+            f.write(f"const unsigned char phonemeLengthTable[] = {{ {', '.join(str(v) for v in durations)} }};\n")
+        rows = sa.convert_all([path])
+        assert rows[0].duration_ms == sa.DURATION_MIN_MS
+        assert rows[5].duration_ms == sa.DURATION_MAX_MS
 
 
 def test_convert_all_searches_across_multiple_files() -> None:
@@ -178,6 +201,7 @@ def test_convert_all_short_array_raises_clear_error() -> None:
             f.write("const unsigned char ampl1data[] = { 0, 0, 0 };\n")
             f.write("const unsigned char ampl2data[] = { 0, 0, 0 };\n")
             f.write("const unsigned char ampl3data[] = { 0, 0, 0 };\n")
+            f.write("const unsigned char phonemeLengthTable[] = { 0, 0, 0 };\n")
         try:
             sa.convert_all([path])
             assert False, "expected SamConverterError"
@@ -238,6 +262,7 @@ def main() -> None:
     run("FORMANT_REFERENCE covers every SAM_ALLOPHONE_NAMES entry, no duplicates", test_formant_reference_covers_every_allophone_name)
     run("_bandwidth_for_f1: bandwidth widens with F1", test_bandwidth_for_f1_widens_with_f1)
     run("convert_all: synthetic data classifies sampled vs. formant allophones", test_convert_all_synthetic_classifies_sampled_vs_formant)
+    run("convert_all: duration_ms clamps to [MIN, MAX]", test_duration_clamps_to_min_and_max)
     run("convert_all: finds each array regardless of which given file has it", test_convert_all_searches_across_multiple_files)
     run("convert_all: missing required array fails loud, names the array", test_convert_all_missing_array_raises_clear_error)
     run("convert_all: under-length required array fails loud", test_convert_all_short_array_raises_clear_error)
