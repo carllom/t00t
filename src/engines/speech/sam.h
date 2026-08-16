@@ -11,6 +11,33 @@
 // the device engine (audio_engine.cpp) and tools/host_render/render_speech.cpp.
 inline constexpr uint32_t SAM_FORMANTS = 3;
 
+// Live throat/mouth CC range (module_speech.md "MIDI Mapping"): same Q8.8
+// encoding and tract_cc_to_q8_8() mapping tract.h's formant_shift/
+// bandwidth_scale use, own range constants since this tract has no
+// dependency on tract.h (avoids the circular include tract.h's own
+// `#include "sam.h"` would create). `throat` scales formant frequencies
+// (tract length / "gender", the same role formant_shift plays); `mouth`
+// scales formant bandwidths (resonance / brightness, the same role
+// bandwidth_scale plays).
+inline constexpr float SAM_THROAT_MIN = 0.7f, SAM_THROAT_MAX = 1.6f;
+inline constexpr float SAM_MOUTH_MIN = 0.4f, SAM_MOUTH_MAX = 3.0f;
+
+// Safety floor/ceiling on every resonator's final (post throat/mouth) f/bw,
+// same reasoning and same numeric values as tract.h's own
+// TRACT_MIN_BANDWIDTH_HZ/TRACT_MAX_FREQ_FRACTION -- duplicated rather than
+// shared for the same circular-include reason as the CC range above.
+inline constexpr float SAM_MIN_BANDWIDTH_HZ = 20.0f;
+inline constexpr float SAM_MAX_FREQ_FRACTION = 0.45f;
+
+inline void sam_apply_coeffs(Res2p &r, float f_raw, float b_raw, float throat, float mouth, float fs) {
+    float f = f_raw * throat;
+    float fmax = fs * SAM_MAX_FREQ_FRACTION;
+    if (f > fmax) f = fmax;
+    float bw = b_raw * mouth;
+    if (bw < SAM_MIN_BANDWIDTH_HZ) bw = SAM_MIN_BANDWIDTH_HZ;
+    res2p_set(r, f, bw, fs);
+}
+
 // Target state for one allophone: three independent formant resonances
 // (frequency, bandwidth, amplitude weight) plus one frication-branch target
 // that approximates an unvoiced consonant through the shared noise
@@ -45,6 +72,12 @@ struct SamVoiceState {
     float fric_F = 0, fric_B = 0, fric_F_tgt = 0, fric_B_tgt = 0;
     float af = 0, af_tgt = 0;
     float pitch_offset = 0.0f, pitch_offset_tgt = 0.0f;
+    // Live throat/mouth (see SAM_THROAT_MIN/MAX above), set by the caller
+    // (render.h) before sam_retrigger()/sam_advance_subblock() every call,
+    // same "already updated, just needs ramping/snapping" contract
+    // tract.h's formant_shift/bandwidth_scale have.
+    float throat = 1.0f, throat_tgt = 1.0f;
+    float mouth = 1.0f, mouth_tgt = 1.0f;
 };
 
 // New note: snap straight to the target -- no glide from whatever the
@@ -61,6 +94,8 @@ inline void sam_retrigger(SamVoiceState &sv, const SamAllophoneTarget &t) {
     sv.fric_B = sv.fric_B_tgt = t.fric_B;
     sv.af = sv.af_tgt = t.af;
     res2p_reset(sv.fric);
+    sv.throat = sv.throat_tgt;
+    sv.mouth = sv.mouth_tgt;
 }
 
 // Allophone changed while the voice is already sounding: move the targets
@@ -76,26 +111,30 @@ inline void sam_set_target(SamVoiceState &sv, const SamAllophoneTarget &t) {
     sv.af_tgt = t.af;
 }
 
-// Sub-block ramp coefficient for F/B/amp/fric/pitch targets -- short enough
-// to settle well within a note, long enough that a mid-note target change
-// doesn't click.
+// Sub-block ramp coefficient for F/B/amp/fric/pitch/throat/mouth targets --
+// short enough to settle well within a note, long enough that a mid-note
+// target change doesn't click.
 inline constexpr float SAM_RAMP_COEFF = 0.25f;
 
-// Ramp every F/B/amp/fric/pitch target one sub-block and recompute each
-// resonator's coefficients from the ramped values -- never interpolate a
+// Ramp every target one sub-block and recompute each resonator's
+// coefficients from the ramped values (via sam_apply_coeffs(), which folds
+// in throat/mouth and the safety floor/ceiling) -- never interpolate a
 // resonator's own a1/a2/b0 directly, since walking between two coefficient
 // sets can push a pole outside the unit circle.
 inline void sam_advance_subblock(SamVoiceState &sv, float fs) {
+    sv.throat += (sv.throat_tgt - sv.throat) * SAM_RAMP_COEFF;
+    sv.mouth += (sv.mouth_tgt - sv.mouth) * SAM_RAMP_COEFF;
+
     for (uint32_t i = 0; i < SAM_FORMANTS; i++) {
         sv.F[i] += (sv.F_tgt[i] - sv.F[i]) * SAM_RAMP_COEFF;
         sv.B[i] += (sv.B_tgt[i] - sv.B[i]) * SAM_RAMP_COEFF;
         sv.amp[i] += (sv.amp_tgt[i] - sv.amp[i]) * SAM_RAMP_COEFF;
-        res2p_set(sv.formant[i], sv.F[i], sv.B[i], fs);
+        sam_apply_coeffs(sv.formant[i], sv.F[i], sv.B[i], sv.throat, sv.mouth, fs);
     }
     sv.fric_F += (sv.fric_F_tgt - sv.fric_F) * SAM_RAMP_COEFF;
     sv.fric_B += (sv.fric_B_tgt - sv.fric_B) * SAM_RAMP_COEFF;
     sv.af += (sv.af_tgt - sv.af) * SAM_RAMP_COEFF;
-    res2p_set(sv.fric, sv.fric_F, sv.fric_B, fs);
+    sam_apply_coeffs(sv.fric, sv.fric_F, sv.fric_B, sv.throat, sv.mouth, fs);
     sv.pitch_offset += (sv.pitch_offset_tgt - sv.pitch_offset) * SAM_RAMP_COEFF;
 }
 

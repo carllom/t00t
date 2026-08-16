@@ -94,7 +94,7 @@ def _write_synthetic_reference(path: str, s_af: int = 0xF1, iy_amp: int = 0x0F) 
     ampl1[iy_idx] = iy_amp
     ampl2 = [0] * n
     ampl3 = [0] * n
-    durations = [8] * n  # 8 * DURATION_SCALE_MS_PER_TICK(6) = 48ms for every entry
+    durations = [8] * n  # 8 ticks -> 8 * DURATION_SCALE_MS_PER_TICK ms for every entry
 
     def emit(name: str, values: List[int]) -> str:
         body = " , ".join(f"0x{v:02X}" for v in values)
@@ -135,8 +135,8 @@ def test_convert_all_synthetic_classifies_sampled_vs_formant() -> None:
         assert sil_row.sampled is False
         assert sil_row.amp == (0.0, 0.0, 0.0)
 
-        # 8 ticks * DURATION_SCALE_MS_PER_TICK(6) = 48ms, within [MIN, MAX].
-        assert s_row.duration_ms == 48
+        expected_duration = max(sa.DURATION_MIN_MS, min(sa.DURATION_MAX_MS, 8 * sa.DURATION_SCALE_MS_PER_TICK))
+        assert s_row.duration_ms == expected_duration
 
 
 def test_duration_clamps_to_min_and_max() -> None:

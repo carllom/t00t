@@ -9,17 +9,17 @@
 #include "sam.h"
 
 static constexpr uint8_t SAM_PHRASE_HELLO_WORLD_ALLOPHONES[] = { 36, 7, 24, 52, 0, 25, 15, 24, 57, 0 };  // "hello world"
-static constexpr int8_t SAM_PHRASE_HELLO_WORLD_PITCH[] = { 0, 0, 0, 3, 0, 0, 3, 0, -2, 0 };
+static constexpr int8_t SAM_PHRASE_HELLO_WORLD_PITCH[] = { 0, 0, 0, 2, 0, 0, 2, 0, -1, 0 };
 static constexpr uint8_t SAM_PHRASE_GOOD_MORNING_ALLOPHONES[] = { 60, 12, 57, 0, 27, 11, 23, 28, 6, 29, 0 };  // "good morning"
-static constexpr int8_t SAM_PHRASE_GOOD_MORNING_PITCH[] = { 0, 3, 0, 0, 0, 3, 0, 0, 0, -2, 0 };
+static constexpr int8_t SAM_PHRASE_GOOD_MORNING_PITCH[] = { 0, 2, 0, 0, 0, 2, 0, 0, 0, -1, 0 };
 static constexpr uint8_t SAM_PHRASE_NOW_PLAYING_ALLOPHONES[] = { 28, 51, 0, 66, 24, 48, 6, 29, 0 };  // "now playing"
-static constexpr int8_t SAM_PHRASE_NOW_PLAYING_PITCH[] = { 0, 3, 0, 0, 0, 3, 0, -2, 0 };
+static constexpr int8_t SAM_PHRASE_NOW_PLAYING_PITCH[] = { 0, 2, 0, 0, 0, 2, 0, -1, 0 };
 static constexpr uint8_t SAM_PHRASE_TRACK_SAVED_ALLOPHONES[] = { 69, 23, 8, 72, 0, 32, 48, 40, 57, 0 };  // "track saved"
-static constexpr int8_t SAM_PHRASE_TRACK_SAVED_PITCH[] = { 0, 0, 3, 0, 0, 0, 3, 0, -2, 0 };
+static constexpr int8_t SAM_PHRASE_TRACK_SAVED_PITCH[] = { 0, 0, 2, 0, 0, 0, 2, 0, -1, 0 };
 static constexpr uint8_t SAM_PHRASE_VOICE_TEST_ALLOPHONES[] = { 40, 50, 32, 0, 69, 7, 32, 69, 0 };  // "voice test"
-static constexpr int8_t SAM_PHRASE_VOICE_TEST_PITCH[] = { 0, 3, 0, 0, 0, 3, 0, -2, 0 };
+static constexpr int8_t SAM_PHRASE_VOICE_TEST_PITCH[] = { 0, 2, 0, 0, 0, 2, 0, -1, 0 };
 static constexpr uint8_t SAM_PHRASE_DRUM_MACHINE_ALLOPHONES[] = { 41, 13, 0, 57, 23, 10, 27, 0, 27, 13, 33, 5, 28, 0 };  // "the drum machine"
-static constexpr int8_t SAM_PHRASE_DRUM_MACHINE_PITCH[] = { 0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 3, -2, 0 };
+static constexpr int8_t SAM_PHRASE_DRUM_MACHINE_PITCH[] = { 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 2, -1, 0 };
 
 enum SamPhraseId : uint8_t {
     SAM_PHRASE_HELLO_WORLD,

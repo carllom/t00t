@@ -71,12 +71,18 @@ struct VoiceParams {
     // header comment): false is excitation.h's glottal_pulse(), shared with
     // the formant tract; true is the real TMS5220's own chirp table.
     bool lattice_chirp_exciter;
+    // Live throat/mouth timbre pair, SPEECH_TRACT_SAM only (sam.h) -- Q8.8,
+    // 256 = 1.0x, the same encoding and live push-to-held-voices treatment
+    // as formant_shift/bandwidth_scale above. Set from CC105/CC106
+    // (midi_controller.cpp).
+    int16_t sam_throat;
+    int16_t sam_mouth;
 };
 
 template <>
 inline VoiceParams voice_params_default<VoiceParams>() {
     return { 0, 0, 0, false, 0, 0, 256, 256, SPEECH_NO_UTTERANCE, SPEECH_MODE_GATED, 16,
-             0, 0, 0.0f, 0.0f, SPEECH_TRACT_FORMANT, &LATTICE_TEST_WORD, 256, false };
+             0, 0, 0.0f, 0.0f, SPEECH_TRACT_FORMANT, &LATTICE_TEST_WORD, 256, false, 256, 256 };
 }
 
 using VoiceParamBlock = VoiceParamBlockT<VoiceParams>;
@@ -88,14 +94,17 @@ using ParamExchange = ParamExchangeT<VoiceParams>;
 // phoneme's static target, so a plotted dot moves continuously as the
 // segment sequencer (or a mid-note phoneme change) glides between
 // targets. `phoneme` is PHONEME_COUNT when the voice has never sounded (no
-// valid index yet). Same "diagnostic, no locking" contract audio_engine.h
-// documents for audio_engine_load(): Core 1 writes these once per buffer,
-// Core 0's ~10 Hz display_task reads them without synchronization -- a
-// torn read for one frame is invisible at that redraw rate.
+// valid index yet). `tract` lets display.cpp show a tract-appropriate
+// indicator (SAM has no phoneme-label table to look `phoneme` up in). Same
+// "diagnostic, no locking" contract audio_engine.h documents for
+// audio_engine_load(): Core 1 writes these once per buffer, Core 0's
+// ~10 Hz display_task reads them without synchronization -- a torn read
+// for one frame is invisible at that redraw rate.
 struct SpeechVoiceUiState {
     uint16_t f1_hz, f2_hz;
     uint8_t  phoneme;
     bool     active;
+    SpeechTract tract;
 };
 
 void speech_voice_ui_state(uint32_t voice, SpeechVoiceUiState *out);

@@ -4,9 +4,9 @@ A formant (Klatt-reduced) speech synthesis engine: a phoneme keyboard,
 utterance/phrase playback, a reserved-but-unimplemented singing mode, an
 LPC lattice sibling tract playing back real TMS5220 chip-speech words, and
 a S.A.M.-style sibling tract with its own from-scratch reciter, phrase
-bank, and pitch contour, still reachable only through the CC102/CC20
-bring-up hooks (no preset-table entry or display support of its own yet).
-See `engine.md` for the shared
+bank, pitch contour, live throat/mouth timbre controls, preset entry, and
+display support — a fully playable MIDI instrument alongside the other
+two tracts. See `engine.md` for the shared
 dual-core architecture; `architecture.md`
 for the cross-engine `VoiceParams`/CMake pattern this module follows;
 `history_speech.md` for build-phase results and full performance
@@ -40,11 +40,12 @@ shimmer are all live MIDI controls) rather than just a talking clock.
   a 6-phrase demo bank (`phrases.h`, generated from plain text via a
   letter-to-sound engine); two hand-picked fixtures (`utterance.h`) used
   only by host regression tests
-- **Presets**: 10 factory presets (`presets.h`) — phoneme keyboard,
+- **Presets**: 11 factory presets (`presets.h`) — phoneme keyboard,
   one-shot/gated/looped phrase examples, robotic and breathy timbres,
   tract-length shift up/down, a robot-chorus preset spreading up to 8
   simultaneously-held voices across the stereo field with per-voice detune,
-  and one LPC lattice preset selecting the corpus's `KEY_PER_WORD` page 0
+  one LPC lattice preset selecting the corpus's `KEY_PER_WORD` page 0, and
+  one SAM preset selecting its own generated phrase bank's first entry
 - **Effects**: shared post-mix insert (delay or reverb) — no overdrive (see
   Future/TODO)
 - **LPC lattice tract**: a second, sibling tract — a 10th-order all-pole
@@ -73,7 +74,9 @@ shimmer are all live MIDI controls) rather than just a talking clock.
   generated table (`tools/sam2allophones.py`) once converted locally, or a
   small hardcoded fixture (`sam.h`'s `SAM_TEST_ALLOPHONES`) otherwise. A
   per-segment pitch-contour target gives phrases S.A.M.'s characteristic
-  stress overshoot — see SAM Tract and MIDI Mapping.
+  stress overshoot. Live throat/mouth timbre controls, a preset-table
+  entry, and a per-voice display indicator complete it as a fully playable
+  MIDI instrument — see SAM Tract and MIDI Mapping.
 
 ### MIDI Mapping (Input Capabilities)
 
@@ -104,6 +107,8 @@ encoder block.
 | 102 | Tract select | Formant / LPC lattice / SAM, 3 bands — see LPC lattice tract and SAM Tract | next note |
 | 103 | LPC pitch-shift multiplier | Q8.8 override on a word's own recorded pitch contour, 0.5x–2x | live |
 | 104 | LPC excitation select | Shared `glottal_pulse()`/noise (<64) vs. the TMS5220's own chirp table + LFSR, paired (≥64) | live |
+| 105 | SAM throat | Tract length / "gender" — SAM tract only | live |
+| 106 | SAM mouth | Resonance / brightness — SAM tract only | live |
 
 **Program Change** is tract-dependent: under the formant and SAM tracts it
 selects a phrase (same value CC23 writes — SAM's own `SAM_PHRASES`, not
@@ -598,6 +603,22 @@ multiplier on the glottal phase increment (`exp2f(pitch_offset/12)`, the
 same musical semitone-to-multiplier mapping vibrato already uses) --
 S.A.M.'s characteristic overshoot/undershoot on stressed syllables.
 
+**Throat/mouth**: a live timbre pair (CC105/CC106) playing the same role
+formant_shift/bandwidth_scale play on the formant tract -- `throat` scales
+every formant's target frequency (tract length / "gender"), `mouth`
+scales every formant's target bandwidth (resonance / brightness), applied
+via `sam_apply_coeffs()` (`sam.h`, its own floor/ceiling safety clamp,
+duplicated from tract.h's `tract_apply_coeffs()` rather than shared, to
+avoid a circular include -- `tract.h` includes `sam.h`, not the other way
+around). Ramped the same sub-block-at-a-time way as every other SAM
+target.
+
+**Display**: the shared per-voice phoneme grid shows `"SAM <allophone
+index>"` for an active SAM voice instead of a phoneme-label lookup (SAM
+has no name table of its own in this pass) -- `SpeechVoiceUiState` gained
+a `tract` field so `display.cpp` knows which interpretation applies. The
+F1/F2 formant-space plot stays formant-tract-only, as before.
+
 ### Resonator and the Stability Rule
 
 Never interpolate biquad coefficients directly — walking between two
@@ -741,9 +762,9 @@ Full measurement breakdown: `history_speech.md`.
 
 ### Future / TODO
 
-- **SAM MIDI/CC integration** — beyond the CC102/CC20 bring-up hooks, the
-  SAM tract has no live controls, preset-table entry, or display support
-  of its own yet.
+- **SAM per-voice cost measurement** — the shared `MAX_VOICES = 8` pool's
+  worst case hasn't been confirmed to still hold with the SAM tract
+  included; a separate, later slice.
 - **Further LPC addressing modes** — `KEY_PER_WORD` is the only
   word-addressing mode built; a "musical" mode spreading one word across
   the keyboard via standard MIDI Bank Select + Program Change, and a
@@ -1105,6 +1126,25 @@ Full measurement breakdown: `history_speech.md`.
     phrase generation on the reference data's presence, the same
     fallback-safety contract #71 already established for the phoneme
     keyboard.
+51. **SAM's throat/mouth safety-floor logic (`sam_apply_coeffs()`) is
+    duplicated from tract.h's `tract_apply_coeffs()`, not shared** — the
+    same circular-include reason `SAM_THROAT_MIN`/`MAX` etc. were already
+    defined independently in `sam.h` rather than reusing tract.h's own CC
+    range constants: `tract.h` includes `sam.h`, so `sam.h` can't call
+    back into anything `tract.h` defines.
+52. **`SpeechVoiceUiState` gained a `tract` field rather than a SAM-specific
+    sentinel value squeezed into the existing `phoneme` field** — the LPC
+    lattice tract already reuses `phoneme == PHONEME_COUNT` to mean "no
+    display support," and a second, differently-scoped special value in
+    the same field would make the field's own meaning depend on which
+    tract wrote it. A field costs one byte per voice; a display-only
+    ambiguity would cost more to reason about later.
+53. **The SAM preset (`PRESET_SAM_WORDS`) selects the first generated
+    phrase (`SAM_PHRASE_HELLO_WORLD`), not the phoneme keyboard** — unlike
+    `PRESET_LPC_WORDS` (which has no phrase mechanism to select, only
+    `KEY_PER_WORD`'s per-key addressing), the SAM tract's whole point as
+    of this preset is demonstrating the reciter and pitch contour; a
+    phoneme-keyboard default would hide both behind one extra CC23 step.
 
 ## Glossary
 

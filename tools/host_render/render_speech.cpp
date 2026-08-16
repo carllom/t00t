@@ -1525,7 +1525,8 @@ static bool run_sam_index_wrap_check() {
     constexpr uint8_t OUT_OF_RANGE = 254;
     static_assert(OUT_OF_RANGE % SAM_ALLOPHONE_COUNT == SAM_AL_S, "test constant no longer wraps to a non-silent fixture allophone");
     speech_render_voice_sam(sv, phase_inc, (float)SPEECH_RATE, /*trigger=*/1, /*amplitude=*/32767,
-                             /*gate=*/true, /*phoneme=*/OUT_OF_RANGE, /*pan=*/0, dry_l.data(), dry_r.data(), total);
+                             /*gate=*/true, /*phoneme=*/OUT_OF_RANGE, /*pan=*/0, /*throat=*/256, /*mouth=*/256,
+                             dry_l.data(), dry_r.data(), total);
 
     float peak = 0.0f;
     bool finite = true;
@@ -1559,7 +1560,8 @@ static UtteranceRender render_sam_phrase_native(const SamUtterance &utt, SpeechM
         std::fill(dry_r.begin(), dry_r.begin() + n * 2, 0);
         bool gate = done < hold_native_frames;
         speech_render_voice_sam_seq(sv, phase_inc, (float)SPEECH_RATE, /*trigger=*/1, /*amplitude=*/32767,
-                                     gate, utt, mode, rate, /*pan=*/0, dry_l.data(), dry_r.data(), n);
+                                     gate, utt, mode, rate, /*pan=*/0, /*throat=*/256, /*mouth=*/256,
+                                     dry_l.data(), dry_r.data(), n);
         for (uint32_t i = 0; i < n; i++) result.mono[done + i] = (float)dry_l[i * 2];
         if (!sv.active && !recorded) { result.completed_at = done; recorded = true; }
         done += n;
@@ -1697,6 +1699,92 @@ static bool run_sam_gated_release_check() {
     return all_ok;
 }
 
+// GATED/ONESHOT/LOOP on the SAM tract (#73's acceptance criterion: behaves
+// identically to the other two tracts): a synthetic 8-segment utterance
+// (four of one allophone, four of another -- indices 1/2 are always valid
+// and non-SIL-adjacent regardless of which table is active, the same
+// table-agnostic reasoning run_sam_index_wrap_check() already uses),
+// mirrors run_lattice_mode_checks()'s own structure exactly.
+static bool run_sam_mode_checks() {
+    bool all_ok = true;
+    printf("\n== SAM tract: GATED/ONESHOT/LOOP note-off contract ==\n");
+
+    static constexpr uint8_t A = 1, B = 2;
+    static const uint8_t ALLOPHONES[8] = { A, A, A, A, B, B, B, B };
+    static const int8_t PITCH[8] = { 0, 0, 0, 0, 0, 0, 0, 0 };
+    static const SamUtterance UTT{ ALLOPHONES, PITCH, 8, 7 };
+
+    uint32_t seg_samples = sam_seg_duration_samples(A, 16, (float)SPEECH_RATE);
+    uint32_t hold = (uint32_t)((float)seg_samples * 1.5f);  // release mid-segment-1
+    uint32_t total = seg_samples * 8 * 2;
+
+    UtteranceRender gated = render_sam_phrase_native(UTT, SPEECH_MODE_GATED, /*rate=*/16, 150.0f, hold, total);
+    UtteranceRender oneshot = render_sam_phrase_native(UTT, SPEECH_MODE_ONESHOT, /*rate=*/16, 150.0f, hold, total);
+
+    bool gated_finished = gated.completed_at < total;
+    uint32_t gated_overhang = gated_finished ? gated.completed_at - hold : 0xFFFFFFFFu;
+    bool gated_ok = gated_finished && gated_overhang < seg_samples * 3;
+    printf("  GATED:   note-off at %u, completed at %u (overhang=%u) -> %s\n",
+           hold, gated.completed_at, gated_overhang, gated_ok ? "PASS" : "FAIL");
+    all_ok = all_ok && gated_ok;
+
+    bool oneshot_finished = oneshot.completed_at < total;
+    bool oneshot_ok = oneshot_finished && oneshot.completed_at > seg_samples * 6;
+    printf("  ONESHOT: note-off at %u (ignored), completed at %u (expect > %u) -> %s\n",
+           hold, oneshot.completed_at, seg_samples * 6, oneshot_ok ? "PASS" : "FAIL");
+    all_ok = all_ok && oneshot_ok;
+
+    uint32_t loop_total = seg_samples * 8 * 3;
+    UtteranceRender held_loop = render_sam_phrase_native(UTT, SPEECH_MODE_LOOP, /*rate=*/16, 150.0f, loop_total, loop_total);
+    bool still_looping = held_loop.completed_at == loop_total;
+    printf("  LOOP:    held for 3 passes, still active throughout -> %s\n", still_looping ? "PASS" : "FAIL");
+    all_ok = all_ok && still_looping;
+
+    uint32_t loop_hold = seg_samples * 8 + seg_samples * 4;  // release mid-2nd pass
+    UtteranceRender released_loop = render_sam_phrase_native(UTT, SPEECH_MODE_LOOP, /*rate=*/16, 150.0f, loop_hold, loop_total);
+    bool degrades_ok = released_loop.completed_at < loop_total && released_loop.completed_at < loop_hold + seg_samples * 8;
+    printf("  LOOP:    note-off at %u mid-pass, completed at %u (expect within one more pass) -> %s\n",
+           loop_hold, released_loop.completed_at, degrades_ok ? "PASS" : "FAIL");
+    all_ok = all_ok && degrades_ok;
+
+    return all_ok;
+}
+
+// Extends test_cc_sweep_stability()'s pole-stability pattern to the SAM
+// tract's own live throat/mouth range (sam.h's sam_apply_coeffs() floor/
+// ceiling): every formant resonator plus the frication branch, at every
+// fixture allophone, across the full throat/mouth CC range.
+static bool test_sam_cc_sweep_stability() {
+    bool all_ok = true;
+    uint32_t checked = 0;
+    auto bad_pole = [](const Res2p &r) { return !(r.a2 >= 0.0f && r.a2 < 1.0f); };
+
+    for (uint32_t a = 0; a < SAM_ALLOPHONE_COUNT; a++) {
+        for (uint32_t cc_throat = 0; cc_throat <= 127; cc_throat++) {
+            for (uint32_t cc_mouth = 0; cc_mouth <= 127; cc_mouth += 4) {
+                SamVoiceState sv{};
+                sam_retrigger(sv, SAM_TEST_ALLOPHONES[a]);
+                sv.throat_tgt = (float)tract_cc_to_q8_8((uint8_t)cc_throat, SAM_THROAT_MIN, SAM_THROAT_MAX) * (1.0f / 256.0f);
+                sv.mouth_tgt = (float)tract_cc_to_q8_8((uint8_t)cc_mouth, SAM_MOUTH_MIN, SAM_MOUTH_MAX) * (1.0f / 256.0f);
+                sv.throat = sv.throat_tgt;
+                sv.mouth = sv.mouth_tgt;
+                sam_advance_subblock(sv, (float)SPEECH_RATE);
+                checked++;
+
+                bool fail = false;
+                for (uint32_t i = 0; i < SAM_FORMANTS; i++) fail = fail || bad_pole(sv.formant[i]);
+                fail = fail || bad_pole(sv.fric);
+                if (fail) {
+                    printf("  FAIL allophone=%u cc_throat=%u cc_mouth=%u -> pole outside unit circle\n", a, cc_throat, cc_mouth);
+                    all_ok = false;
+                }
+            }
+        }
+    }
+    printf("  %u (allophone, throat CC, mouth CC) combinations checked\n", checked);
+    return all_ok;
+}
+
 #ifdef T00T_SPEECH_HAS_SAM_DATA
 // Renders every allophone in the generated table (SAM_ALLOPHONES[],
 // sam_allophones.h, gitignored -- generated locally by tools/
@@ -1727,7 +1815,7 @@ static bool run_sam_generated_table_render() {
             std::fill(dry_r.begin(), dry_r.begin() + n * 2, 0);
             speech_render_voice_sam(sv, phase_inc, (float)SPEECH_RATE, /*trigger=*/1,
                                      /*amplitude=*/32767, /*gate=*/true, (uint8_t)a, /*pan=*/0,
-                                     dry_l.data(), dry_r.data(), n);
+                                     /*throat=*/256, /*mouth=*/256, dry_l.data(), dry_r.data(), n);
             for (uint32_t i = 0; i < n; i++) mono[done + i] = (float)dry_l[i * 2];
             done += n;
         }
@@ -1881,6 +1969,10 @@ int main() {
     ok = run_sam_phrase_renders() && ok;
     ok = run_sam_pitch_contour_check() && ok;
     ok = run_sam_gated_release_check() && ok;
+    ok = run_sam_mode_checks() && ok;
+
+    printf("\n== CC sweep: SAM throat x mouth stability ==\n");
+    ok = test_sam_cc_sweep_stability() && ok;
 #ifdef T00T_SPEECH_HAS_LATTICE_WORDS
     ok = run_lattice_corpus_render() && ok;
     ok = run_lattice_corpus_render(/*chirp_exciter=*/true, /*write_wav=*/false) && ok;

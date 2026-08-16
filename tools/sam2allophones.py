@@ -185,9 +185,13 @@ REQUIRED_ARRAYS = ("sampledConsonantFlags", "amplitudeRescale", "ampl1data", "am
 # entries in the same 20-200ms range this project's own phoneme table
 # (speech_phonemes.csv) already uses, clamped so the two syllabic-consonant
 # outliers (UL/UM, meant to be held rather than literally ~1200ms/2500ms)
-# don't produce an implausibly long segment.
-DURATION_SCALE_MS_PER_TICK = 6
-DURATION_MIN_MS = 20
+# don't produce an implausibly long segment. DURATION_MIN_MS in particular
+# is raised well above sam.h's own SAM_RAMP_COEFF settle time (~12-15ms) --
+# a segment shorter than that never actually reaches its target before the
+# next one starts pulling it elsewhere, heard on real hardware as mud
+# rather than distinct sounds (#73 hardware feedback).
+DURATION_SCALE_MS_PER_TICK = 7
+DURATION_MIN_MS = 40
 DURATION_MAX_MS = 200
 
 
