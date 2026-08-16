@@ -154,3 +154,14 @@ target_include_directories(t00t_ay_dump PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}
     ${CMAKE_CURRENT_LIST_DIR}/../../src
 )
+
+# Control-plane counterpart to render_opl: exact CSV dumps of
+# src/engines/opl/patch.h / env_opl.h, diffed against
+# tools/opl_ref/nuked_dump.cpp's reference dumps by a future control-plane
+# diff script. Header-only, no patches.h presence-gate needed since OPL's
+# patches.h is checked in, not gitignored/generated.
+add_executable(t00t_opl_ctl_dump t00t_opl_ctl_dump.cpp)
+target_include_directories(t00t_opl_ctl_dump PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}
+    ${CMAKE_CURRENT_LIST_DIR}/../../src
+)

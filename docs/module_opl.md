@@ -104,9 +104,18 @@ Build with `make ENGINE=opl`.
 `tools/host_render/render_opl.cpp` — renders every patch in `patches.h`
 through the exact device code path to a WAV file and confirms note-off
 actually releases the voice within a bounded tail; the practical sanity
-check available without hardware. There is no Nuked-OPL3 reference build
-or control-plane/spectral regression harness yet (unlike the DX7 module's
-`fm_ctl_diff.py`/`fm_regress.py`) — see Future/TODO.
+check available without hardware.
+
+`tools/opl_ref/` — builds [Nuked-OPL3](https://github.com/nukeykt/Nuked-OPL3)
+(fetched at a pinned SHA, never vendored — see the DX7 module's own
+`tools/fm_ref/` for the same pattern) into `nuked_render`/`nuked_dump`, the
+ground-truth reference for this module. `nuked_dump`/
+`tools/host_render/t00t_opl_ctl_dump.cpp` dump comparable control-plane CSVs
+(the frequency-multiplier and KSL tables, the TL scale, one operator's live
+envelope trajectory) from each side. There is no diff script yet — comparing
+these two dumps and correcting `env_opl.h`'s curves against Nuked-OPL3 is
+separate, later work (see Future/TODO); this pass only builds the
+infrastructure that comparison needs.
 
 ## Architecture
 
@@ -190,12 +199,14 @@ around ahead of time.
 ### Future / TODO
 
 - **Nuked-OPL3 conformance** — `EnvOpl`'s rate/level/KSL/TL curves are a
-  plausible best-effort shape, not a verified match to real OPL2 hardware;
-  a future ticket bringing in a Nuked-OPL3 reference build and a
-  control-plane/spectral regression harness (mirroring the DX7 module's
-  `fm_ctl_diff.py`/`fm_regress.py`) is the way to close that gap, the same
-  way the DX7 module's own envelope curves were verified well after its
-  first hardcoded patch shipped.
+  plausible best-effort shape, not a verified match to real OPL2 hardware.
+  `tools/opl_ref/` and `tools/host_render/t00t_opl_ctl_dump.cpp` now exist
+  and dump comparable control-plane CSVs from both sides, but there is no
+  diff script yet and `env_opl.h`'s curves haven't been corrected against
+  Nuked-OPL3's numbers — a future ticket doing both (mirroring the DX7
+  module's `fm_ctl_diff.py`/`fm_regress.py`) is the way to close that gap,
+  the same way the DX7 module's own envelope curves were verified well
+  after its first hardcoded patch shipped.
 - **Non-linear attack curve** — real OPL2 attack is a curved
   (fast-then-slower) shape; this module's attack is currently a linear
   ramp, a deliberate simplification pending the conformance work above.

@@ -148,3 +148,63 @@ Confirmed on real breadboard_rp2350 hardware: all five patches audible with
 their own distinct sonic character, `OPL LEAD`/`OPL ORGAN` at a real
 sustained volume, `OPL BELL`/`OPL PERC` each with an audible decay/release
 tail rather than a click.
+
+### Nuked-OPL3 Reference Build + Dump Tooling (#79)
+
+Infrastructure for the fidelity work #78 explicitly deferred: an independent
+reference emulator plus dump tooling, not the actual curve correction itself
+(split out as separate, later tickets once this landed).
+
+`tools/opl_ref/` fetches [Nuked-OPL3](https://github.com/nukeykt/Nuked-OPL3)
+(`nukeykt/Nuked-OPL3`, pinned at `cfedb09efc03f1d7b5fc1f04dd449d77d8c49d50`)
+at build time rather than vendoring it — it's LGPL-2.1, not the permissive
+MIT license the chip module's vendored `tools/ay_ref/ayumi` carries, so it
+follows the same fetch-not-vendor pattern the DX7 module's `tools/fm_ref/`
+(Dexed) already established. Confirmed directly against the fetched source
+(`opl3.c`'s `OPL3_SlotWrite*`/`ad_slot[]` functions) that Nuked-OPL3's
+register bit-layout matches `src/engines/opl/patch.h`'s `OplOpParams` field
+for field, and that its own frequency-multiplier table (`mt[16]`, doubled
+integers) is byte-identical to `opl_mult_table[16]` once doubled — a
+confirmation that #78's own patch design, chosen for register-shaped
+clarity rather than DX7-style abstraction, was already correct against real
+hardware on at least that one table, entirely independent of this ticket's
+own work.
+
+`nuked_render.cpp`/`nuked_dump.cpp` drive Nuked-OPL3 through its real
+`OPL3_WriteReg()` interface — genuinely programming a (emulated) chip, not
+calling into an abstraction layer. Velocity has no real OPL2 register at
+all, so it's folded onto the TL register using the exact formula
+`env_opl.h`'s own `env_opl_init()` uses, documented inline as a t00t-side
+convention rather than something the reference chip does natively — this is
+what makes "same patch, note, velocity" comparable between the two sides at
+all.
+
+`tools/host_render/t00t_opl_ctl_dump.cpp` is the OPL module's first
+addition to the shared `tools/host_render/CMakeLists.txt` build (`make
+host`) rather than a separate hand-written Makefile like the DX7 module's
+`t00t_ctl_dump` needs — that separation exists there specifically because
+`patches.h` is gitignored/generated and needs a presence gate; OPL's
+`patches.h` is checked in, so there's no reason to keep it out of the
+shared build, matching how the chip module's `t00t_ay_dump`/`t00t_chip_dump`
+are already wired in.
+
+Both dump tools share four domains (`mult`/`ksl`/`tl`/`eg`) and the same
+`# domain=X cols=...` self-describing CSV header the chip module's dump
+tools already use (judged a better fit than the DX7 module's older
+`--what`-flag convention, since OPL's complexity sits between the chip
+module's plain counters and the DX7 module's piecewise curves). `mult` and
+`tl` matched exactly between the two sides on the first real run, as
+expected (`mult` is the table-identity check above; `tl` is linear by
+hardware definition on both sides). `ksl` and `eg` are only shape-comparable
+right now, not numerically reconciled -- expected, since correcting
+`env_opl.h`'s curves against these numbers is explicitly separate, later
+work.
+
+Verified: `tools/opl_ref/fetch_nuked_opl3.sh && make` builds `nuked_render`/
+`nuked_dump` cleanly; both produce real, bounded, non-silent/non-degenerate
+output (`nuked_render` a real WAV, `nuked_dump --domain eg` a real
+attack/decay trajectory). `make host` (top-level) builds
+`t00t_opl_ctl_dump` as part of the existing shared host build; its four
+domains' output is shape-comparable to `nuked_dump`'s for the same domains.
+`make ENGINE=opl` and `make ENGINE=fm` both still build clean -- this was
+host-tooling-only work, nothing device-side changed.
