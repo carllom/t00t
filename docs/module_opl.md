@@ -29,8 +29,10 @@ or DAG concept, unlike the six-operator DX7 module.
 - **Envelope**: `EnvOpl`, one 4-stage log-domain instance per operator (2
   per voice), OPL-native rate/level/KSL/TL fields, sharing `EnvDX`'s own
   gain-conversion domain so no new conversion code was needed. Every stage
-  is currently a linear ramp in that log domain — see Future/TODO for the
-  one known curve-shape gap against real hardware
+  is a linear ramp in that log domain, at a rate law verified against
+  Nuked-OPL3 (`tools/opl_ctl_diff.py`); KSL and TL are exact matches to real
+  hardware's own tables — see Future/TODO for the one remaining curve-shape
+  gap (attack)
 - **Waveform select**: 4 waveforms per operator (sine, half-sine,
   full-wave-rectified, a quarter-cycle pulse), a per-operator table pointer
   reused from FM's own per-operator table field
@@ -112,10 +114,9 @@ check available without hardware.
 ground-truth reference for this module. `nuked_dump`/
 `tools/host_render/t00t_opl_ctl_dump.cpp` dump comparable control-plane CSVs
 (the frequency-multiplier and KSL tables, the TL scale, one operator's live
-envelope trajectory) from each side. There is no diff script yet — comparing
-these two dumps and correcting `env_opl.h`'s curves against Nuked-OPL3 is
-separate, later work (see Future/TODO); this pass only builds the
-infrastructure that comparison needs.
+envelope trajectory) from each side; `tools/opl_ctl_diff.py` diffs them
+(mirroring the DX7 module's own `fm_ctl_diff.py`) — exact for the register
+tables, tolerance-based for the envelope trajectories (see Decision Record).
 
 ## Architecture
 
@@ -165,9 +166,14 @@ the curve leading up to that shared domain is OPL-native.
   OPL-native dB units converted to this shared octave domain instead of DX7
   microsteps. Real OPL2 hardware has no velocity input at all; folding MIDI
   velocity onto TL attenuation here is a t00t-side addition for MIDI
-  playability, not something the chip itself does.
-- Every stage is currently a straight linear ramp in the log domain — see
-  Future/TODO for the one known gap against real hardware's curved attack.
+  playability, not something the chip itself does. KSL uses real hardware's
+  own ROM tables (`OPL_KSL_ROM`/`OPL_KSL_SHIFT`), read against a block/
+  f-number re-derived from the MIDI note the same way real firmware would
+  have programmed those registers, not a flat per-octave slope.
+- Every stage is a straight linear ramp in the log domain, at a rate
+  (register rate combined with real hardware's own key-scale value, per
+  `opl_combined_rate()`) verified against Nuked-OPL3 — see Future/TODO for
+  the one known shape gap against real hardware's curved attack.
 
 ### Voice Glue and Vibrato
 
@@ -198,18 +204,15 @@ around ahead of time.
 
 ### Future / TODO
 
-- **Nuked-OPL3 conformance** — `EnvOpl`'s rate/level/KSL/TL curves are a
-  plausible best-effort shape, not a verified match to real OPL2 hardware.
-  `tools/opl_ref/` and `tools/host_render/t00t_opl_ctl_dump.cpp` now exist
-  and dump comparable control-plane CSVs from both sides, but there is no
-  diff script yet and `env_opl.h`'s curves haven't been corrected against
-  Nuked-OPL3's numbers — a future ticket doing both (mirroring the DX7
-  module's `fm_ctl_diff.py`/`fm_regress.py`) is the way to close that gap,
-  the same way the DX7 module's own envelope curves were verified well
-  after its first hardcoded patch shipped.
 - **Non-linear attack curve** — real OPL2 attack is a curved
-  (fast-then-slower) shape; this module's attack is currently a linear
-  ramp, a deliberate simplification pending the conformance work above.
+  (fast-then-slower) shape; this module's attack is a linear ramp
+  calibrated to the same real total duration (`tools/opl_ctl_diff.py`'s
+  `eg/attack-*` cases, at a deliberately wide tolerance), not the shape
+  itself. Closing this would need the ramp itself to become non-linear, not
+  just another round of rate-table tuning.
+- **`fm_regress.py`-equivalent spectral/perceptual regression** — the DX7
+  module's own conformance work has both a control-plane diff
+  (`fm_ctl_diff.py`) and a signal-plane one; OPL only has the former so far.
 - **Patch bank converter** — hand-authored patches only for now; no
   `.op2`/GENMIDI-class converter exists yet.
 - **OPL1 (sine-only subset) and OPL3 (4-operator)** — not started. The
@@ -256,10 +259,19 @@ around ahead of time.
    something audible; folding it onto the same output-level attenuation
    TL/KSL already use was the smallest addition that didn't need a new
    composition point in the envelope.
-6. **Attack is a linear ramp, not real hardware's curved shape**, for this
-   pass — a working, testable, monotonic attack now, with the curve-shape
-   gap explicitly tracked rather than either blocking on exact conformance
-   or silently claiming accuracy the implementation doesn't have yet.
+6. **Attack is a linear ramp, not real hardware's curved shape**, even after
+   `tools/opl_ctl_diff.py`'s conformance pass — a working, testable,
+   monotonic attack calibrated to the real total duration, with the
+   curve-shape gap explicitly tracked (Future/TODO) rather than either
+   rewriting the stage machinery to support a non-linear ramp or silently
+   claiming accuracy the implementation doesn't have.
+7. **`opl_ctl_diff.py`'s envelope trajectory tolerance is deliberately
+   asymmetric** — tight (0.5 dB mean/5 dB max, matching the DX7 module's own
+   `fm_ctl_diff.py`) for decay/release/percussive, since those are honestly
+   linear on real hardware too; wide (10 dB mean/45 dB max) for attack,
+   since no tolerance can make a linear ramp both pass a real exponential
+   curve's shape and still catch an actual rate regression — the tolerance
+   is sized to do the latter, not to hide the former.
 
 ## Glossary
 

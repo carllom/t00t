@@ -25,14 +25,9 @@ static void dump_mult() {
 }
 
 static void dump_ksl() {
-    // t00t has no kslrom[]/kslshift[] equivalent -- KSL is a flat dB/octave
-    // step table (env_opl.h's OPL_KSL_STEP_DB), not a chip-register-derived
-    // ROM curve. Dumped under the same "table=shift" row shape nuked_dump
-    // uses for its own per-setting values, so both sides are at least
-    // shaped the same even though the underlying representations differ --
-    // reconciling that representation gap is the future diff script's job.
     printf("# domain=ksl cols=table,index,value\n");
-    for (int i = 0; i < 4; i++) printf("shift,%d,%.4f\n", i, (double)OPL_KSL_STEP_DB[i]);
+    for (int i = 0; i < 16; i++) printf("rom,%d,%u\n", i, OPL_KSL_ROM[i]);
+    for (int i = 0; i < 4; i++) printf("shift,%d,%u\n", i, OPL_KSL_SHIFT[i]);
 }
 
 static void dump_tl() {

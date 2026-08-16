@@ -2,6 +2,7 @@
 
 #include "../fm/env_dx.h"  // eg_to_gain()/EG_LEVEL_MAX/EG_LEVEL_ONE_OCTAVE -- reused unchanged
 #include "patch.h"
+#include <cmath>
 #include <cstdint>
 
 // EnvOpl -- OPL2's 4-stage (attack/decay/sustain-hold/release) envelope.
@@ -14,7 +15,8 @@
 // simplification for a first working implementation, not a claim of chip
 // accuracy. Decay/release ramping linearly in the log domain is a real,
 // intentional envelope shape rather than a simplification, so attack is the
-// one known curve-shape gap.
+// one known curve-shape gap; the rate each stage ramps at is ported from
+// Nuked-OPL3 below (see opl_ctl_diff.py).
 //
 // OPL2 hardware has no velocity input at all -- MIDI velocity is folded onto
 // the same output-level attenuation TL/KSL use below, a t00t-side addition
@@ -25,14 +27,6 @@
 // true silence.
 static constexpr float OPL_SL15_DB = 93.0f;
 
-// dB per octave of attenuation for each of the 4 KSL settings.
-static constexpr float OPL_KSL_STEP_DB[4] = {0.0f, 1.5f, 3.0f, 6.0f};
-
-// MIDI note above which KSL attenuation starts to apply. Not derived from
-// the real chip's block/F-number encoding -- a plausible flat reference
-// point for this pass.
-static constexpr uint8_t OPL_KSL_BREAKPOINT_NOTE = 48;
-
 static constexpr float OPL_DB_PER_OCTAVE = 6.0206f;  // 20*log10(2)
 
 inline int32_t opl_db_to_level(float db) {
@@ -42,54 +36,112 @@ inline int32_t opl_db_to_level(float db) {
     return level;
 }
 
-// Time (seconds) to cross the full 15-octave level range at each of the 16
-// rate register values. Geometric, roughly halving per step -- a plausible
-// spread from slow (attack/decay/release all audibly gradual) to
-// near-instant, not a port of the real chip's own rate table. Index 0 is
-// unused by the time lookup (rate 0 always means "never move," handled as a
-// special case) but kept for a flat 16-entry array.
-static constexpr float OPL_RATE_TIME_S[16] = {
-    0.0f, 4.0f, 2.0f, 1.0f, 0.5f, 0.25f, 0.125f, 0.0625f,
-    0.03125f, 0.015625f, 0.0078125f, 0.00390625f, 0.001953125f,
-    0.0009765625f, 0.00048828125f, 0.000244140625f,
-};
+// Real hardware's own envelope unit: one step of the chip's internal
+// attenuation register, which TL, KSL, and the envelope generator below all
+// share (Nuked-OPL3's eg_out = eg_rout + (tl<<2) + (ksl>>shift) + tremolo).
+// Composing in this domain and converting to the shared Q24-octave domain
+// only once is what keeps TL/KSL exact matches to Nuked-OPL3's own numbers.
+static constexpr float OPL_UNIT_DB = 0.1875f;
 
-// Key scale rate: higher notes get a faster effective rate, matching the
-// general "higher notes decay quicker" behavior real OPL2's KSR bit
-// describes. Rate 0 stays 0 regardless (it means "never," not "very slow").
-inline uint8_t opl_effective_rate(uint8_t rate, bool ksr, uint8_t midinote) {
-    if (rate == 0) return 0;
-    int boost = ksr ? (midinote >> 4) : (midinote >> 5);
-    int r = (int)rate + boost;
-    return (uint8_t)(r > 15 ? 15 : r);
+// Real hardware's key-scale-level ROM, an exact copy of Nuked-OPL3's
+// kslrom[]/kslshift[] -- indexed by the top 4 bits of the note's own
+// f-number (ROM) and by the KSL register 0-3 (shift).
+static constexpr uint8_t OPL_KSL_ROM[16] = {
+    0, 32, 40, 45, 48, 51, 53, 55, 56, 58, 59, 60, 61, 62, 63, 64
+};
+static constexpr uint8_t OPL_KSL_SHIFT[4] = { 8, 1, 2, 0 };
+
+// Real chip PG clock divisor (chip clock / 72), used below to re-derive the
+// block/f-number a real OPL2 would have been programmed with for a given
+// note -- t00t itself never encodes pitch this way (its phase increment
+// comes from a plain float frequency), but KSL and key-scale-rate both read
+// this encoding off the chip's own registers, not the note directly.
+static constexpr float OPL_CLOCK_OVER_72 = 49716.0f;
+
+inline void opl_note_to_fnum_block(uint8_t midinote, uint16_t &fnum, uint8_t &block) {
+    float freq = 440.0f * exp2f(((float)midinote - 69.0f) / 12.0f);
+    for (uint8_t b = 0; b <= 7; b++) {
+        float f = freq * (float)(1u << (20 - b)) / OPL_CLOCK_OVER_72;
+        if (f <= 1023.0f) { block = b; fnum = (uint16_t)(f + 0.5f); return; }
+    }
+    block = 7;
+    fnum = 1023;
 }
 
-// Q24-octaves-per-sample magnitude for a given (already key-scaled) rate.
-// Rate 0 returns 0 -- the stage never reaches its target.
-inline int32_t opl_rate_inc(uint8_t eff_rate) {
-    if (eff_rate == 0) return 0;
-    float t = OPL_RATE_TIME_S[eff_rate];
-    return (int32_t)((float)EG_LEVEL_MAX / (t * (float)SAMPLE_RATE));
+// Real hardware's own KSL formula (Nuked-OPL3's OPL3_EnvelopeUpdateKSL): a
+// ROM lookup on the note's f-number, scaled down per octave below block 7,
+// floored at 0.
+inline float opl_ksl_db(uint8_t ksl_reg, uint16_t fnum, uint8_t block) {
+    int32_t ksl = ((int32_t)OPL_KSL_ROM[fnum >> 6] << 2) - ((8 - (int32_t)block) << 5);
+    if (ksl < 0) ksl = 0;
+    return (float)(ksl >> OPL_KSL_SHIFT[ksl_reg & 3]) * OPL_UNIT_DB;
+}
+
+// Real hardware's key-scale value: block and the top bit of f-number, packed
+// the same way the chip's own B0 register write derives it.
+inline uint8_t opl_ksv(uint16_t fnum, uint8_t block) {
+    return (uint8_t)((block << 1) | ((fnum >> 9) & 1));
+}
+
+// The combined 0..63 rate real hardware's envelope generator actually runs
+// at: the 4-bit register rate plus a key-scale contribution (ksv, halved
+// twice when KSR is off) -- Nuked-OPL3's `rate`/`ks` in OPL3_EnvelopeCalc.
+// Register rate 0 stays "never" regardless of ksv, matching real hardware
+// (ksv alone never restarts a stopped stage).
+inline uint8_t opl_combined_rate(uint8_t reg_rate, bool ksr, uint8_t ksv) {
+    if (reg_rate == 0) return 0;
+    uint8_t ks = ksr ? ksv : (uint8_t)(ksv >> 2);
+    uint16_t rate = (uint16_t)ks + ((uint16_t)reg_rate << 2);
+    return (uint8_t)(rate > 63 ? 63 : rate);
+}
+
+// Real hardware doubles its envelope speed every 4 steps of the combined
+// rate above (Nuked-OPL3's rate_hi/eg_add bit-trick clock divider) --
+// confirmed by measuring nuked_dump's own eg trajectories across the full
+// rate range. `ref_time_s` is the real, measured time (seconds) for the
+// stage to cross the full 511-unit register range at combined rate 32.
+static constexpr uint8_t OPL_EG_REF_RATE = 32;
+// Decay/release (DR/RR register 8, no key scale) measured against
+// Nuked-OPL3.
+static constexpr float OPL_EG_DECAY_REF_TIME_S = 0.3287912f;
+// Attack (AR register 8, no key scale) measured against Nuked-OPL3. Real
+// attack is a curved, fast-then-slower approach to the ceiling (the
+// documented shape gap above); this reference time at least lands the
+// linear ramp's total duration on the real hardware number instead of a
+// guess.
+static constexpr float OPL_EG_ATTACK_REF_TIME_S = 0.02229f;
+
+// Q24-octaves-per-sample magnitude for a given combined rate. Rate 0 (or a
+// rate whose register value was 0, folded in by opl_combined_rate above)
+// returns 0 -- the stage never reaches its target.
+inline int32_t opl_rate_inc(uint8_t combined_rate, float ref_time_s) {
+    if (combined_rate == 0) return 0;
+    float units_per_s = (511.0f / ref_time_s) *
+        exp2f(((float)combined_rate - (float)OPL_EG_REF_RATE) / 4.0f);
+    float octaves_per_s = units_per_s * (OPL_UNIT_DB / OPL_DB_PER_OCTAVE);
+    return (int32_t)(octaves_per_s * (float)EG_LEVEL_ONE_OCTAVE / (float)SAMPLE_RATE);
 }
 
 struct EnvOpl {
     uint8_t ar, dr, sl_reg, rr;  // raw 4-bit register values
     bool    egt;
     bool    ksr;
-    uint8_t midinote;
+    uint8_t ksv;  // real hardware's key-scale value, resolved at note-on from the note's block/f-number
 
     int32_t ceiling;       // Q24 octaves -- attack's target, resolved at note-on from TL/KSL/velocity
-    int32_t sustain_level;  // Q24 octaves -- decay's target when egt == sustain
+    int32_t sustain_level;  // Q24 octaves -- decay's target (stage 1), sustain or percussive alike
 
     int32_t level;       // Q24 octaves, current
     int32_t targetlevel;  // Q24 octaves, current stage's target
     int32_t inc;          // Q24-octaves-per-sample magnitude for the current stage
     bool    rising;
-    uint8_t ix;    // 0=attack, 1=decay, 2=sustain-hold, 3=release, 4=idle
+    uint8_t ix;    // 0=attack, 1=decay, 2=sustain (hold if egt, else continues to silence at the release rate), 3=release, 4=idle
     bool    down;  // note held
 
     bool active() const { return ix < 4; }
 };
+
+inline uint8_t env_opl_next_ix(const EnvOpl &eg);
 
 // Recomputes the stage target/rate/direction. Called on init, on note-off,
 // and whenever a stage completes.
@@ -98,26 +150,48 @@ inline void env_opl_advance(EnvOpl &eg, int newix) {
     if (eg.ix >= 4) return;
 
     uint8_t rate;
+    float ref_time_s = OPL_EG_DECAY_REF_TIME_S;
     switch (eg.ix) {
-        case 0:  eg.targetlevel = eg.ceiling;        rate = eg.ar; break;
-        // Percussive mode has no separate hold stage: decay runs straight
-        // through the sustain level to silence, so its target is 0 rather
-        // than sustain_level.
-        case 1:  eg.targetlevel = eg.egt ? eg.sustain_level : 0; rate = eg.dr; break;
-        case 2:  eg.targetlevel = eg.sustain_level;   rate = 0;    break;  // hold -- inc forced to 0 below
-        default: eg.targetlevel = 0;                  rate = eg.rr; break;  // release
+        case 0: eg.targetlevel = eg.ceiling;      rate = eg.ar; ref_time_s = OPL_EG_ATTACK_REF_TIME_S; break;
+        // Decay always targets the sustain level, sustain mode or
+        // percussive alike -- real hardware's own decay stage has no idea
+        // yet whether stage 2 below will hold there or keep going.
+        case 1: eg.targetlevel = eg.sustain_level; rate = eg.dr; break;
+        // Sustain mode holds here (rate 0, forced by the reg_rate==0 check
+        // inside opl_combined_rate below). Percussive mode does not hold at
+        // all: real hardware keeps moving past the sustain level toward
+        // silence, at the RELEASE rate, not decay's -- Nuked-OPL3's
+        // envelope_gen_num_sustain case falls through to reg_rr whenever
+        // reg_type (EGT) is 0.
+        case 2: if (eg.egt) { eg.targetlevel = eg.sustain_level; rate = 0; }
+                else        { eg.targetlevel = 0;                rate = eg.rr; }
+                break;
+        default: eg.targetlevel = 0;               rate = eg.rr; break;  // release
     }
     eg.rising = eg.targetlevel > eg.level;
-    eg.inc = (eg.ix == 2) ? 0 : opl_rate_inc(opl_effective_rate(rate, eg.ksr, eg.midinote));
+
+    uint8_t combined = opl_combined_rate(rate, eg.ksr, eg.ksv);
+    // Real hardware's attack has one more quirk beyond the doubling law
+    // above: at the very top of its rate range it jumps to the ceiling in a
+    // single step rather than ramping (Nuked-OPL3's "instant attack" case,
+    // rate_hi==15 on a fresh attack) -- reproduced directly here rather than
+    // folded into the smooth curve, since it is a genuine discontinuity, not
+    // a fast-but-continuous rate.
+    if (eg.ix == 0 && combined >= 60) {
+        eg.level = eg.targetlevel;
+        env_opl_advance(eg, env_opl_next_ix(eg));
+        return;
+    }
+    eg.inc = opl_rate_inc(combined, ref_time_s);
 }
 
-// The stage index to advance into once the current one completes. Decay
-// (stage 1) skips straight to idle in percussive mode -- it already ramped
-// to silence itself, so there is no hold stage left to enter, and leaving a
-// finished percussive envelope sitting at stage 2 would keep it (and the
-// voice it belongs to) permanently reporting itself active.
+// The stage index to advance into once the current one completes.
+// Percussive mode's stage 2 (see above) already reached silence under its
+// own power once it gets here -- there is no release left to run when
+// note-off eventually arrives, so it goes straight to idle instead of a
+// release stage that would just restate the same silent target.
 inline uint8_t env_opl_next_ix(const EnvOpl &eg) {
-    if (eg.ix == 1 && !eg.egt) return 4;
+    if (eg.ix == 2 && !eg.egt) return 4;
     return (uint8_t)(eg.ix + 1);
 }
 
@@ -129,13 +203,15 @@ inline uint8_t env_opl_next_ix(const EnvOpl &eg) {
 // microsteps.
 inline void env_opl_init(EnvOpl &eg, const OplOpParams &p, uint8_t midinote, int16_t amplitude) {
     eg.ar = p.ar; eg.dr = p.dr; eg.sl_reg = p.sl; eg.rr = p.rr;
-    eg.egt = p.egt; eg.ksr = p.ksr; eg.midinote = midinote;
+    eg.egt = p.egt; eg.ksr = p.ksr;
+
+    uint16_t fnum; uint8_t block;
+    opl_note_to_fnum_block(midinote, fnum, block);
+    eg.ksv = opl_ksv(fnum, block);
 
     int velocity = ((int)amplitude * 127 + 16383) / 32767;
     float tl_db = (float)p.tl * 0.75f;
-    float octaves_above = midinote > OPL_KSL_BREAKPOINT_NOTE
-        ? (float)(midinote - OPL_KSL_BREAKPOINT_NOTE) / 12.0f : 0.0f;
-    float ksl_db = OPL_KSL_STEP_DB[p.ksl & 3] * octaves_above;
+    float ksl_db = opl_ksl_db(p.ksl, fnum, block);
     float vel_db = (float)(127 - velocity) * 0.375f;
 
     eg.ceiling = EG_LEVEL_MAX - opl_db_to_level(tl_db + ksl_db + vel_db);
@@ -161,9 +237,11 @@ inline void env_opl_release(EnvOpl &eg) {
 // Advances `n` samples, returns the level at the end of the block.
 inline int32_t env_opl_step_block(EnvOpl &eg, uint32_t n) {
     if (eg.ix >= 4) return eg.level;
-    if (eg.ix == 2) return eg.level;  // sustain hold: level does not move
 
-    if (eg.inc == 0) return eg.level;  // rate 0: this stage never completes on its own
+    // Covers both sustain mode's real hold (stage 2, rate forced to 0 by
+    // opl_combined_rate) and a register rate of 0 on any other stage (real
+    // hardware's own "never" case).
+    if (eg.inc == 0) return eg.level;
 
     int32_t delta = eg.inc * (int32_t)n;
     if (eg.rising) {
