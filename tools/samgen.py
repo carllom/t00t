@@ -38,8 +38,12 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import sam2allophones as sa
 from sam_reciter import ReciterError, assign_stress, word_to_allophones
 
-STRESSED_SEMITONES = 3     # pitch overshoot on a stressed allophone
-DECLINATION_SEMITONES = -2  # phrase-final falling intonation
+# Whole semitones only -- sam_phrases.h's pitch array is int8_t, plain
+# semitones, no fractional encoding. 3/-2 (this constant's original value)
+# read as noticeably melodic/"singing" on real hardware, more than natural
+# speech stress; halved to a subtler overshoot (#73 hardware feedback).
+STRESSED_SEMITONES = 2      # pitch overshoot on a stressed allophone
+DECLINATION_SEMITONES = -1  # phrase-final falling intonation
 
 
 class SamGenError(Exception):

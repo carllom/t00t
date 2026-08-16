@@ -246,13 +246,20 @@ inline void speech_render_voice(SpeechVoice &sv, uint32_t phase_inc, float fs, u
 // is) -- there's no single native sample rate distinct to this tract's own
 // source, since it ran at whatever rate each ported platform's own DAC
 // used. No jitter/shimmer/vibrato yet; the glottal phase advances by the
-// raw `phase_inc` every sample.
+// raw `phase_inc` every sample. `throat`/`mouth` (Q8.8, sam.h) are live --
+// updated every call regardless of trigger/allophone, so a CC sweep
+// reaches a held note, the same contract formant_shift/bandwidth_scale
+// have on the formant tract.
 inline void speech_render_voice_sam(SpeechVoice &sv, uint32_t phase_inc, float fs, uint8_t trigger,
                                      int16_t amplitude, bool gate, uint8_t phoneme, int16_t pan,
+                                     int16_t throat, int16_t mouth,
                                      int32_t *dry_l, int32_t *dry_r, uint32_t native_frames) {
     bool retriggering = (trigger != sv.last_trigger);
     if (retriggering && sv.tract != SPEECH_TRACT_SAM) new (&sv.sam) SamVoiceState();
     sv.tract = SPEECH_TRACT_SAM;
+
+    sv.sam.throat_tgt = (float)throat * (1.0f / 256.0f);
+    sv.sam.mouth_tgt = (float)mouth * (1.0f / 256.0f);
 
     const SamAllophoneTarget &tgt = sam_allophone_target(phoneme);
     if (retriggering) {
@@ -309,16 +316,20 @@ inline void speech_render_voice_sam(SpeechVoice &sv, uint32_t phase_inc, float f
 // segment's ramped pitch_offset (semitones -> multiplier, same musical
 // mapping every other pitched control in this engine uses) before
 // advancing -- the audible pitch overshoot/undershoot the reciter's stress
-// assignment bakes into `utt.pitch_offset`.
+// assignment bakes into `utt.pitch_offset`. `throat`/`mouth` are live, same
+// contract as speech_render_voice_sam()'s own pair above.
 inline void speech_render_voice_sam_seq(SpeechVoice &sv, uint32_t phase_inc, float fs, uint8_t trigger,
                                          int16_t amplitude, bool gate, const SamUtterance &utt, SpeechMode mode,
-                                         uint8_t rate, int16_t pan, int32_t *dry_l, int32_t *dry_r,
-                                         uint32_t native_frames) {
+                                         uint8_t rate, int16_t pan, int16_t throat, int16_t mouth,
+                                         int32_t *dry_l, int32_t *dry_r, uint32_t native_frames) {
     bool malformed = (utt.length == 0 || utt.allophones == nullptr || utt.pitch_offset == nullptr);
 
     bool retriggering = (trigger != sv.last_trigger);
     if (retriggering && sv.tract != SPEECH_TRACT_SAM) new (&sv.sam) SamVoiceState();
     sv.tract = SPEECH_TRACT_SAM;
+
+    sv.sam.throat_tgt = (float)throat * (1.0f / 256.0f);
+    sv.sam.mouth_tgt = (float)mouth * (1.0f / 256.0f);
 
     if (retriggering) {
         sv.last_trigger = trigger;

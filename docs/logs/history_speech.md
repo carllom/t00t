@@ -1338,3 +1338,80 @@ engines.
 beyond the existing CC102/CC20 bring-up hooks (no preset-table entry,
 throat/mouth-style live controls, or display support), and per-voice cost
 measurement remain separate, later slices of #69.
+
+## Speech Engine — S.A.M. MIDI/CC Integration (#73)
+
+#69's fourth slice: throat/mouth live CCs, a preset-table entry, a
+per-voice display indicator, and confirmation that GATED/ONESHOT/LOOP and
+the shared delay/reverb effect already work correctly for SAM voices.
+CC102's three-way tract split turned out already done, as part of #70's
+own bring-up hook -- nothing left to change there.
+
+**Throat/mouth needed their own floor/ceiling helper, not a shared one.**
+`tract.h`'s `tract_apply_coeffs()` (the formant tract's own
+frequency/bandwidth safety clamp) can't be called from `sam.h`, because
+`tract.h` is the file that `#include`s `sam.h`, not the other way around
+-- calling back would be circular. `sam_apply_coeffs()` duplicates the
+same floor/ceiling logic (and `SAM_THROAT_MIN`/`MAX`/`SAM_MOUTH_MIN`/`MAX`
+duplicate tract.h's own CC-range constants) rather than restructuring the
+include graph to share it -- a handful of duplicated lines, weighed
+against every other tract needing to worry about a new dependency
+direction.
+
+**No CC number collisions, confirmed by construction, not just by
+inspection.** CC105 (throat) and CC106 (mouth) are the first two free
+slots after CC103/104 (LPC-specific) in the CC102-119 block #69's spec
+already reserved -- checked directly against the existing
+`midi_controller.cpp` switch statement before picking them, not assumed
+free from the block's own upper bound alone.
+
+**Program Change/CC23 needed zero code changes** to start selecting SAM
+phrases -- #72 already noted this for the render-time resolution side;
+this slice confirms the MIDI-input side was equally already correct,
+since `channel_tract[]`-gated dispatch (formant and SAM share one branch,
+LPC has its own) was written generically enough in #63 to not need a SAM
+carve-out.
+
+**Display**: `SpeechVoiceUiState` gained a `tract` field (one byte) so
+`display.cpp` can tell a SAM voice from a formant one sharing the same
+`phoneme`-grid mechanism -- reusing the existing `phoneme == PHONEME_COUNT`
+sentinel for a second, SAM-specific meaning was considered and rejected;
+a field is cheaper to reason about than an overloaded one. Renders
+`"SAM <allophone index>"`; the F1/F2 plot stays formant-only, as #70/#71
+already left it.
+
+**Preset row** (`PRESET_SAM_WORDS`) selects `SAM_PHRASE_HELLO_WORLD`
+(the reciter's own first generated phrase) rather than the phoneme
+keyboard -- a note-on immediately demonstrates the reciter and pitch
+contour together, the actual point of this tract, rather than hiding both
+behind an extra CC23 step. Every existing preset row (all 10) gained
+explicit `speech_q8_8(1.0f)` throat/mouth values, matching the project's
+own "no implicit defaults in a preset table" convention.
+
+Host-render harness: new GATED/ONESHOT/LOOP mode checks for the SAM
+sequencer (mirroring the LPC lattice tract's own `run_lattice_mode_checks()`
+exactly) and a throat x mouth pole-stability sweep (20,480
+allophone/CC/CC combinations, mirroring `test_cc_sweep_stability()`) both
+pass, in both fixture and generated-table configurations. Device firmware
+builds clean in the same four configurations #70-72 already checked, plus
+a sanity pass on the default engine.
+
+**Not yet done at this point:** hardware verification (played entirely
+via MIDI, not just host-render) and per-voice cost measurement remain
+#69's final, separate slice.
+
+**Hardware-verified on real `breadboard_rp2350`:** Carl confirmed CC16=127
+loads "SAM WORDS" and CC24 (rate, live) slows phrase playback as
+documented. Two qualitative notes from that first listen: the voice read
+as "muddier" than #70's own bring-up fixture, and "a fair bit more
+singing" than natural speech stress. Both traced to constants picked
+without being able to listen at the time: `sam2allophones.py`'s
+`DURATION_MIN_MS` (20ms) sat below `sam.h`'s own pitch/formant ramp settle
+time (~12-15ms), leaving some segments too short to actually reach their
+target before the next one started pulling it elsewhere -- raised to
+40ms, and the tick-to-ms scale from 6 to 7. `samgen.py`'s
+`STRESSED_SEMITONES`/`DECLINATION_SEMITONES` (+3/-2, a fairly large,
+sustained pitch step) halved to +2/-1. Both `sam_allophones.h` and
+`sam_phrases.h` regenerated; host suite re-run clean (12/12 + 10/10
+Python tests, full host-render harness). Re-flash and a second listen
+pending.
