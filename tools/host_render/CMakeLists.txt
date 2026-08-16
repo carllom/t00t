@@ -62,6 +62,14 @@ if(EXISTS ${CMAKE_CURRENT_LIST_DIR}/../../src/engines/speech/lattice_words.h)
     target_compile_definitions(render_speech PRIVATE T00T_SPEECH_HAS_LATTICE_WORDS=1)
 endif()
 
+# #71 SAM allophone table: sam_allophones.h is generated locally by
+# tools/sam2allophones.py and gitignored (see the top-level CMakeLists.txt's
+# matching gate) -- render_speech.cpp's full-allophone-table render only
+# compiles in when it's present.
+if(EXISTS ${CMAKE_CURRENT_LIST_DIR}/../../src/engines/speech/sam_allophones.h)
+    target_compile_definitions(render_speech PRIVATE T00T_SPEECH_HAS_SAM_DATA=1)
+endif()
+
 # Host build of src/engines/fm/render.h (#41): the FM engine skeleton's
 # shared device/host test-tone renderer, proving the FM-specific 4096-entry
 # sine table (sine_tab.h, phase >> 20, no interpolation) before any operator

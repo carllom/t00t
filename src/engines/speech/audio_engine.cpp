@@ -1,6 +1,7 @@
 #include "audio_engine.h"
 #include "render.h"
 #include "phrases.h"
+#include "sam_phrases.h"
 #include "fx/delay.h"
 #include "fx/reverb.h"
 #include "hardware/gpio.h"
@@ -49,7 +50,7 @@ static SpeechVoice voices[MAX_VOICES];
 static SpeechVoiceUiState s_voice_ui[MAX_VOICES];
 
 void speech_voice_ui_state(uint32_t voice, SpeechVoiceUiState *out) {
-    *out = (voice < MAX_VOICES) ? s_voice_ui[voice] : SpeechVoiceUiState{0, 0, PHONEME_COUNT, false};
+    *out = (voice < MAX_VOICES) ? s_voice_ui[voice] : SpeechVoiceUiState{0, 0, PHONEME_COUNT, false, SPEECH_TRACT_FORMANT};
 }
 
 // Post-mix effects (Core 1 only), linked unconditionally.
@@ -65,10 +66,18 @@ static uint8_t  s_last_fx_type = 0xFF;
 // instead of going through ParamExchange, so each phase isolates exactly
 // one cost: voice count (1/2/4/8), held vowel vs. voiced fricative,
 // coefficient-recompute vs. per-sample cost, static vs. actively-swept
-// formant_shift/bandwidth_scale, and (#67) the LPC lattice tract's own
-// voice-count sweep. MAX_VOICES is 8 in this build (engine.h), so the
-// 8-voice phases have a real 8th slot.
-enum ProfileTract : uint8_t { PROFILE_FORMANT, PROFILE_LATTICE };
+// formant_shift/bandwidth_scale, (#67) the LPC lattice tract's own
+// voice-count sweep, and (#74) the SAM tract's. MAX_VOICES is 8 in this
+// build (engine.h), so the 8-voice phases have a real 8th slot.
+enum ProfileTract : uint8_t { PROFILE_FORMANT, PROFILE_LATTICE, PROFILE_SAM };
+
+// Table-agnostic allophone index for the SAM profiling phases below (valid
+// regardless of whether T00T_SPEECH_HAS_SAM_DATA is defined -- the same
+// reasoning tools/host_render/render_speech.cpp's own SAM mode/wrap checks
+// already use): render cost per voice doesn't depend on which specific
+// allophone is held, so any in-range index measures the same steady-state
+// per-voice cost.
+static constexpr uint8_t PROFILE_SAM_ALLOPHONE = 1;
 
 struct ProfilePhase {
     uint32_t voice_count;     // voices 0..voice_count-1 render; rest stay idle
@@ -100,6 +109,14 @@ static constexpr ProfilePhase PROFILE_PHASES[] = {
     { 2, PH_A, false, false, PROFILE_LATTICE },
     { 4, PH_A, false, false, PROFILE_LATTICE },
     { 8, PH_A, false, false, PROFILE_LATTICE },
+    // SAM tract (#74): the same voice-count shape as the formant/LPC
+    // phases above, directly comparable phase-for-phase. phoneme/
+    // recompute_only/sweep_tract are formant-only and ignored here.
+    { 0, PH_A, false, false, PROFILE_SAM },
+    { 1, PH_A, false, false, PROFILE_SAM },
+    { 2, PH_A, false, false, PROFILE_SAM },
+    { 4, PH_A, false, false, PROFILE_SAM },
+    { 8, PH_A, false, false, PROFILE_SAM },
 };
 static constexpr uint32_t PROFILE_PHASE_COUNT = sizeof(PROFILE_PHASES) / sizeof(PROFILE_PHASES[0]);
 
@@ -153,6 +170,18 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
                     lattice_load_frame(voices[v].lat, LATTICE_TEST_WORD, 0, /*retrigger=*/true, /*pitch_mult=*/1.0f);
                     voices[v].last_trigger = trigger;
                 }
+            } else if (ph.tract == PROFILE_SAM) {
+                for (uint32_t v = 0; v < ph.voice_count; v++) {
+                    new (&voices[v].sam) SamVoiceState();
+                    voices[v].tract = SPEECH_TRACT_SAM;
+                    voices[v].sam.throat_tgt = voices[v].sam.throat = 1.0f;
+                    voices[v].sam.mouth_tgt = voices[v].sam.mouth = 1.0f;
+                    sam_retrigger(voices[v].sam, sam_allophone_target(PROFILE_SAM_ALLOPHONE));
+                    voices[v].glottal_phase = 0;
+                    voices[v].cur_amp = 0.0f;
+                    voices[v].last_trigger = trigger;
+                    voices[v].last_phoneme = PROFILE_SAM_ALLOPHONE;
+                }
             } else {
                 FormantTarget t = phoneme_unpack(PHONEME_TARGETS[ph.phoneme % PHONEME_COUNT]);
                 for (uint32_t v = 0; v < ph.voice_count; v++) {
@@ -186,6 +215,11 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
                                              LATTICE_TEST_WORD, SPEECH_MODE_LOOP, /*pitch_shift=*/256,
                                              /*chirp_exciter=*/false,
                                              /*pan=*/0, (float)SAMPLE_RATE, dry_l, dry_r, SAMPLES_PER_BUFFER);
+            } else if (ph.tract == PROFILE_SAM) {
+                speech_render_voice_sam(voices[v], PROFILE_PHASE_INC, (float)SPEECH_RATE, trigger,
+                                         PROFILE_AMPLITUDE, true, PROFILE_SAM_ALLOPHONE, 0,
+                                         /*throat=*/256, /*mouth=*/256,
+                                         dry_l, dry_r, NATIVE_SAMPLES_PER_BUFFER);
             } else if (ph.recompute_only) {
                 voices[v].fmt.formant_shift_tgt = (float)formant_shift * (1.0f / 256.0f);
                 voices[v].fmt.bandwidth_scale_tgt = (float)bandwidth_scale * (1.0f / 256.0f);
@@ -242,7 +276,7 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
                        // output despite correct DSP upstream.
     for (uint32_t v = 0; v < MAX_VOICES; v++) {
         voices[v] = SpeechVoice{};
-        s_voice_ui[v] = { 0, 0, PHONEME_COUNT, false };
+        s_voice_ui[v] = { 0, 0, PHONEME_COUNT, false, SPEECH_TRACT_FORMANT };
     }
     fx_delay.init();
     fx_reverb.init();
@@ -281,7 +315,30 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
                 if (voices[v].active) active_mask |= (1u << v);
                 // No display support for LPC state in this pass -- the
                 // per-voice phoneme grid/F1-F2 plot are formant-specific.
-                s_voice_ui[v] = { 0, 0, PHONEME_COUNT, voices[v].active };
+                s_voice_ui[v] = { 0, 0, PHONEME_COUNT, voices[v].active, SPEECH_TRACT_LATTICE };
+            } else if (p.tract == SPEECH_TRACT_SAM && p.utterance == SPEECH_NO_UTTERANCE) {
+                // SAM phoneme keyboard: one sustained allophone per note, no
+                // sequencer -- same shape as the formant tract's own HOLD
+                // path just below.
+                speech_render_voice_sam(voices[v], p.phase_inc, (float)SPEECH_RATE, p.trigger,
+                                         p.amplitude, p.gate, p.phoneme, p.pan, p.sam_throat, p.sam_mouth,
+                                         dry_l, dry_r, NATIVE_SAMPLES_PER_BUFFER);
+                if (p.gate) active_mask |= (1u << v);
+                s_voice_ui[v] = { 0, 0, p.phoneme, p.gate, SPEECH_TRACT_SAM };
+            } else if (p.tract == SPEECH_TRACT_SAM) {
+                // SAM phrase sequencer (tools/samgen.py's generated
+                // SAM_PHRASES, indexed by p.utterance the same way the
+                // formant tract's own SPEECH_PHRASES already is).
+                const SamUtterance &utt = SAM_PHRASES[p.utterance % SAM_PHRASE_COUNT];
+                speech_render_voice_sam_seq(voices[v], p.phase_inc, (float)SPEECH_RATE, p.trigger,
+                                             p.amplitude, p.gate, utt, p.mode, p.rate, p.pan,
+                                             p.sam_throat, p.sam_mouth,
+                                             dry_l, dry_r, NATIVE_SAMPLES_PER_BUFFER);
+                if (voices[v].active) active_mask |= (1u << v);
+                // seg_index into `utt.allophones` -- same lookup shape the
+                // formant sequencer branch below uses for cur_phoneme.
+                uint8_t cur_allophone = (voices[v].seg_index < utt.length) ? utt.allophones[voices[v].seg_index] : SAM_AL_SIL;
+                s_voice_ui[v] = { 0, 0, cur_allophone, voices[v].active, SPEECH_TRACT_SAM };
             } else if (p.utterance == SPEECH_NO_UTTERANCE) {
                 // Phoneme keyboard: one sustained phoneme, no sequencer --
                 // active mirrors gate directly, since there's no utterance
@@ -292,7 +349,7 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
                                      p.jitter, p.shimmer, p.lfo_rate, p.lfo_depth,
                                      dry_l, dry_r, NATIVE_SAMPLES_PER_BUFFER);
                 if (p.gate) active_mask |= (1u << v);
-                s_voice_ui[v] = { (uint16_t)voices[v].fmt.F[0], (uint16_t)voices[v].fmt.F[1], p.phoneme, p.gate };
+                s_voice_ui[v] = { (uint16_t)voices[v].fmt.F[0], (uint16_t)voices[v].fmt.F[1], p.phoneme, p.gate, SPEECH_TRACT_FORMANT };
             } else {
                 // Segment sequencer: active stays set until the
                 // utterance itself completes (sv.active, sequencer.h/
@@ -316,7 +373,7 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
                 // into `utt`, not a phoneme id directly -- resolve it here,
                 // same lookup speech_seg_load() itself does.
                 uint8_t cur_phoneme = (voices[v].seg_index < utt.length) ? utt.phonemes[voices[v].seg_index] : PH_SIL;
-                s_voice_ui[v] = { (uint16_t)voices[v].fmt.F[0], (uint16_t)voices[v].fmt.F[1], cur_phoneme, voices[v].active };
+                s_voice_ui[v] = { (uint16_t)voices[v].fmt.F[0], (uint16_t)voices[v].fmt.F[1], cur_phoneme, voices[v].active, SPEECH_TRACT_FORMANT };
             }
         }
 

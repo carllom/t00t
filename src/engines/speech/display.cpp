@@ -128,6 +128,7 @@ void display_task() {
     static MidiUiState last_midi = { 0xFE, 0, 0xFF, 0, 0, 0, 0xFF, 0xFF, 0xFF, 0xFF };
     static uint8_t  last_ph[MAX_VOICES];
     static bool     last_active[MAX_VOICES] = {};
+    static SpeechTract last_tract[MAX_VOICES] = {};
     if (first) for (uint32_t v = 0; v < MAX_VOICES; v++) last_ph[v] = PHONEME_COUNT;
 
     uint32_t snd  = voice_alloc_active_mask();   // sounding (Core 1 gate bitmap)
@@ -180,9 +181,21 @@ void display_task() {
     for (uint32_t v = 0; v < MAX_VOICES; v++) speech_voice_ui_state(v, &ui[v]);
 
     for (uint32_t v = 0; v < MAX_VOICES; v++) {
-        if (first || ui[v].phoneme != last_ph[v] || ui[v].active != last_active[v]) {
+        if (first || ui[v].phoneme != last_ph[v] || ui[v].active != last_active[v] || ui[v].tract != last_tract[v]) {
             if (ui[v].active) {
-                const char *label = ui[v].phoneme < PHONEME_COUNT ? PHONEME_LABELS[ui[v].phoneme] : "?";
+                // SAM has no PHONEME_LABELS-style name table of its own in
+                // this pass (module_speech.md "Display") -- the allophone
+                // index itself is still a real, changing indicator that a
+                // SAM voice is sounding and which allophone it's on,
+                // distinguishing it from the formant/LPC tracts sharing
+                // this same grid.
+                char b[PHON_CH + 1];
+                const char *label = b;
+                if (ui[v].tract == SPEECH_TRACT_SAM) {
+                    snprintf(b, sizeof(b), "SAM %u", ui[v].phoneme);
+                } else {
+                    label = ui[v].phoneme < PHONEME_COUNT ? PHONEME_LABELS[ui[v].phoneme] : "?";
+                }
                 snprintf(buf, sizeof(buf), "V%u %s", v, label);
                 draw_phon_cell(v, buf, VOICE_COLORS[v]);
             } else {
@@ -190,6 +203,7 @@ void display_task() {
             }
             last_ph[v] = ui[v].phoneme;
             last_active[v] = ui[v].active;
+            last_tract[v] = ui[v].tract;
         }
     }
 

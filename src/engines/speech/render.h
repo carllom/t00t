@@ -10,6 +10,68 @@
 #include "tract.h"
 #include <cstdint>
 
+#ifdef T00T_SPEECH_HAS_SAM_DATA
+#include "sam_allophones.h"  // GENERATED (tools/sam2allophones.py) -- SAM_ALLOPHONES[], SAM_ALLOPHONE_DATA_COUNT
+#endif
+
+// Resolves a SAM tract allophone index to its target: the full generated
+// table (tools/sam2allophones.py, gitignored) once it exists locally,
+// sam.h's small hardcoded fixture otherwise -- so a voice is always valid
+// whether or not the reference data has been supplied and converted.
+inline const SamAllophoneTarget &sam_allophone_target(uint8_t index) {
+#ifdef T00T_SPEECH_HAS_SAM_DATA
+    return SAM_ALLOPHONES[index % SAM_ALLOPHONE_DATA_COUNT];
+#else
+    return SAM_TEST_ALLOPHONES[index % SAM_ALLOPHONE_COUNT];
+#endif
+}
+
+// SAM tract segment sequencer -- sequencer.h's speech_seg_duration_samples()/
+// speech_seg_load()/speech_sequencer_advance(), adapted to sam_allophone_
+// target()'s resolved allophone (instead of a PhonemeDef lookup) and to also
+// carry a per-segment pitch-contour target (sam.h's pitch_offset, absent
+// from the formant tract's sequencer entirely). No plosive-style
+// closure/burst snap exists for this tract yet, so every segment change
+// glides (sam_set_target()), never snaps.
+inline uint32_t sam_seg_duration_samples(uint8_t allophone_idx, uint8_t rate_q4_4, float fs) {
+    float scale = (float)rate_q4_4 * (1.0f / 16.0f);
+    float samples = (float)sam_allophone_target(allophone_idx).duration_ms * 0.001f * fs * scale;
+    if (samples < 1.0f) samples = 1.0f;
+    return (uint32_t)samples;
+}
+
+inline void sam_seg_load(SpeechVoice &sv, const SamUtterance &utt, uint16_t idx,
+                          uint8_t rate_q4_4, float fs, bool retrigger) {
+    uint8_t allophone_idx = utt.allophones[idx];
+    const SamAllophoneTarget &t = sam_allophone_target(allophone_idx);
+    float pitch = (float)utt.pitch_offset[idx];
+
+    if (retrigger) {
+        sam_retrigger(sv.sam, t);
+        sam_snap_pitch(sv.sam, pitch);
+    } else {
+        sam_set_target(sv.sam, t);
+        sam_set_pitch_target(sv.sam, pitch);
+    }
+    sv.seg_index = idx;
+    sv.seg_remaining = sam_seg_duration_samples(allophone_idx, rate_q4_4, fs);
+}
+
+inline void sam_sequencer_advance(SpeechVoice &sv, const SamUtterance &utt, SpeechMode mode,
+                                   bool gate, uint8_t rate_q4_4, float fs) {
+    uint16_t next = (uint16_t)(sv.seg_index + 1);
+    if (next >= utt.length) {
+        if (mode == SPEECH_MODE_LOOP && gate) {
+            next = 0;
+        } else {
+            sv.seq_done = true;
+            sv.seg_remaining = 0xFFFFFFFFu;  // see speech_sequencer_advance()'s matching comment
+            return;
+        }
+    }
+    sam_seg_load(sv, utt, next, rate_q4_4, fs, /*retrigger=*/false);
+}
+
 // Shared core of the speech engine's test-tone bring-up path: renders `native_frames`
 // samples of a fixed test tone at the engine's native rate and zero-order-
 // holds each one x2 into the (output-rate-sized) dry_l/dry_r buffers, i.e.
@@ -58,6 +120,14 @@ static constexpr uint32_t SPEECH_SUBBLOCK = 64;
 // full scale for all twelve, run_fricative_checks()/run_voiced_fricative_
 // checks()/run_nasal_checks()'s clip checks).
 static constexpr float SPEECH_EXCITATION_HEADROOM = 1.0f / 12.0f;
+
+// Headroom for the SAM tract's three parallel resonators plus its frication
+// branch (sam.h), tuned empirically in tools/host_render/render_speech.cpp
+// against every entry in SAM_TEST_ALLOPHONES -- same value as the formant
+// cascade's own headroom above, which already proves safe at the same
+// frication-branch target values (SAM_AL_S reuses the formant tract's own
+// /s/ row).
+static constexpr float SAM_EXCITATION_HEADROOM = SPEECH_EXCITATION_HEADROOM;
 
 // Renders `native_frames` samples of one voice's full tract output (cascade
 // plus parallel fricative/nasal branches, mixed excitation) at the
@@ -161,6 +231,162 @@ inline void speech_render_voice(SpeechVoice &sv, uint32_t phase_inc, float fs, u
             dry_r[o] += r; dry_r[o + 1] += r;
         }
         n += k;
+    }
+}
+
+// SAM tract render: structurally identical to speech_render_voice() above
+// (one sustained allophone per note, no sequencer/reciter yet) but through
+// sam.h's three parallel resonators instead of tract.h's five-formant
+// cascade. `phoneme` indexes sam_allophone_target()'s resolved allophone --
+// the same field the formant tract's phoneme keyboard reads, reused here
+// rather than duplicated since only one tract renders a given voice at a
+// time. Shares the formant tract's native rate and zero-order-hold x2 resample path
+// (`fs`/`native_frames` are native-rate, like speech_render_voice() above,
+// not output-rate the way speech_render_voice_lattice()'s `output_frames`
+// is) -- there's no single native sample rate distinct to this tract's own
+// source, since it ran at whatever rate each ported platform's own DAC
+// used. No jitter/shimmer/vibrato yet; the glottal phase advances by the
+// raw `phase_inc` every sample. `throat`/`mouth` (Q8.8, sam.h) are live --
+// updated every call regardless of trigger/allophone, so a CC sweep
+// reaches a held note, the same contract formant_shift/bandwidth_scale
+// have on the formant tract.
+inline void speech_render_voice_sam(SpeechVoice &sv, uint32_t phase_inc, float fs, uint8_t trigger,
+                                     int16_t amplitude, bool gate, uint8_t phoneme, int16_t pan,
+                                     int16_t throat, int16_t mouth,
+                                     int32_t *dry_l, int32_t *dry_r, uint32_t native_frames) {
+    bool retriggering = (trigger != sv.last_trigger);
+    if (retriggering && sv.tract != SPEECH_TRACT_SAM) new (&sv.sam) SamVoiceState();
+    sv.tract = SPEECH_TRACT_SAM;
+
+    sv.sam.throat_tgt = (float)throat * (1.0f / 256.0f);
+    sv.sam.mouth_tgt = (float)mouth * (1.0f / 256.0f);
+
+    const SamAllophoneTarget &tgt = sam_allophone_target(phoneme);
+    if (retriggering) {
+        sv.last_trigger = trigger;
+        sv.last_phoneme = phoneme;
+        sam_retrigger(sv.sam, tgt);
+        sv.glottal_phase = 0;
+        sv.cur_amp = 0.0f;
+    } else if (phoneme != sv.last_phoneme) {
+        sv.last_phoneme = phoneme;
+        sam_set_target(sv.sam, tgt);
+    }
+
+    int32_t gain_l, gain_r;
+    pan_gains_q15(pan, gain_l, gain_r);
+
+    // Same declick time constant as speech_render_voice() above -- fast
+    // enough that gate on/off doesn't thump, slow enough to stay under this
+    // tract's own target-ramp settle time.
+    constexpr float AMP_SMOOTH_COEFF = 0.01f;
+
+    uint32_t n = 0;
+    while (n < native_frames) {
+        uint32_t k = native_frames - n;
+        if (k > SPEECH_SUBBLOCK) k = SPEECH_SUBBLOCK;
+
+        sam_advance_subblock(sv.sam, fs);
+        float amp_tgt = (gate ? (float)amplitude : 0.0f) * SAM_EXCITATION_HEADROOM;
+
+        for (uint32_t i = 0; i < k; i++) {
+            sv.cur_amp += (amp_tgt - sv.cur_amp) * AMP_SMOOTH_COEFF;
+
+            float voiced_src = glottal_pulse(sv.glottal_phase) * sv.cur_amp;
+            float noise_f = (float)osc_noise(sv.noise_lfsr) * (1.0f / 32768.0f);
+            float noise_src = noise_f * sv.cur_amp;
+            sv.glottal_phase += phase_inc;
+
+            int32_t sample = (int32_t)sam_process_mixed(sv.sam, voiced_src, noise_src);
+            int32_t l = (sample * gain_l) >> 15;
+            int32_t r = (sample * gain_r) >> 15;
+            uint32_t o = (n + i) * 2;
+            dry_l[o] += l; dry_l[o + 1] += l;
+            dry_r[o] += r; dry_r[o + 1] += r;
+        }
+        n += k;
+    }
+}
+
+// SAM tract sequenced render: steps a voice through a SamUtterance's
+// allophone string one segment at a time, the same sub-block-cut-inside-
+// the-loop shape as speech_render_voice_seq() below (a segment boundary can
+// fall anywhere inside a sub-block or buffer, unlike the HOLD path's fixed
+// SPEECH_SUBBLOCK cut). The glottal phase increment is scaled by this
+// segment's ramped pitch_offset (semitones -> multiplier, same musical
+// mapping every other pitched control in this engine uses) before
+// advancing -- the audible pitch overshoot/undershoot the reciter's stress
+// assignment bakes into `utt.pitch_offset`. `throat`/`mouth` are live, same
+// contract as speech_render_voice_sam()'s own pair above.
+inline void speech_render_voice_sam_seq(SpeechVoice &sv, uint32_t phase_inc, float fs, uint8_t trigger,
+                                         int16_t amplitude, bool gate, const SamUtterance &utt, SpeechMode mode,
+                                         uint8_t rate, int16_t pan, int16_t throat, int16_t mouth,
+                                         int32_t *dry_l, int32_t *dry_r, uint32_t native_frames) {
+    bool malformed = (utt.length == 0 || utt.allophones == nullptr || utt.pitch_offset == nullptr);
+
+    bool retriggering = (trigger != sv.last_trigger);
+    if (retriggering && sv.tract != SPEECH_TRACT_SAM) new (&sv.sam) SamVoiceState();
+    sv.tract = SPEECH_TRACT_SAM;
+
+    sv.sam.throat_tgt = (float)throat * (1.0f / 256.0f);
+    sv.sam.mouth_tgt = (float)mouth * (1.0f / 256.0f);
+
+    if (retriggering) {
+        sv.last_trigger = trigger;
+        sv.gate_prev = gate;
+        sv.seq_done = malformed;
+        sv.glottal_phase = 0;
+        sv.cur_amp = 0.0f;
+        if (!malformed) {
+            sam_seg_load(sv, utt, 0, rate, fs, /*retrigger=*/true);
+        } else {
+            sam_retrigger(sv.sam, sam_allophone_target(SAM_AL_SIL));
+            sam_snap_pitch(sv.sam, 0.0f);
+            sv.seg_remaining = 0xFFFFFFFFu;
+        }
+    } else if (!malformed && !sv.seq_done) {
+        if (sv.gate_prev && !gate && mode == SPEECH_MODE_GATED && sv.seg_index < utt.release_index) {
+            sam_seg_load(sv, utt, utt.release_index, rate, fs, /*retrigger=*/false);
+        }
+        sv.gate_prev = gate;
+    }
+    sv.active = !sv.seq_done;
+
+    int32_t gain_l, gain_r;
+    pan_gains_q15(pan, gain_l, gain_r);
+    constexpr float AMP_SMOOTH_COEFF = 0.01f;
+
+    uint32_t n = 0;
+    while (n < native_frames) {
+        if (!malformed && !sv.seq_done && sv.seg_remaining == 0) {
+            sam_sequencer_advance(sv, utt, mode, gate, rate, fs);
+            sv.active = !sv.seq_done;
+        }
+        uint32_t k = native_frames - n;
+        if (k > sv.seg_remaining) k = sv.seg_remaining;
+        if (k > SPEECH_SUBBLOCK) k = SPEECH_SUBBLOCK;
+
+        sam_advance_subblock(sv.sam, fs);
+        float amp_tgt = (gate && !sv.seq_done ? (float)amplitude : 0.0f) * SAM_EXCITATION_HEADROOM;
+        uint32_t pitched_inc = (uint32_t)((float)phase_inc * exp2f(sv.sam.pitch_offset * (1.0f / 12.0f)));
+
+        for (uint32_t i = 0; i < k; i++) {
+            sv.cur_amp += (amp_tgt - sv.cur_amp) * AMP_SMOOTH_COEFF;
+
+            float voiced_src = glottal_pulse(sv.glottal_phase) * sv.cur_amp;
+            float noise_f = (float)osc_noise(sv.noise_lfsr) * (1.0f / 32768.0f);
+            float noise_src = noise_f * sv.cur_amp;
+            sv.glottal_phase += pitched_inc;
+
+            int32_t sample = (int32_t)sam_process_mixed(sv.sam, voiced_src, noise_src);
+            int32_t l = (sample * gain_l) >> 15;
+            int32_t r = (sample * gain_r) >> 15;
+            uint32_t o = (n + i) * 2;
+            dry_l[o] += l; dry_l[o + 1] += l;
+            dry_r[o] += r; dry_r[o + 1] += r;
+        }
+        n += k;
+        if (!sv.seq_done) sv.seg_remaining -= k;
     }
 }
 

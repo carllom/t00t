@@ -1090,3 +1090,379 @@ speech engine, `SPEECH_PROFILE=1`, default subtractive engine).
 **Not yet done at this point:** Carl's own by-ear listen to decide
 whether the unvoiced noise should get its own independent CC rather than
 staying paired with the chirp table's own toggle.
+
+## Speech Engine — S.A.M. Tract Skeleton (#70)
+
+#69's first slice: three independently-driven formant resonators, summed
+in parallel rather than chained, as a third sibling to the formant
+cascade and LPC lattice tract -- proven audible end-to-end before any
+reciter or allophone-table import tool exists, the same skeleton-first
+order #63 already used for the LPC lattice tract.
+
+**Union grew a third member, not a fourth flat field.** `SpeechVoice`'s
+tract-state union already held `fmt`/`lat`; `sam` (`SamVoiceState`,
+`sam.h`) joins them as a third mutually-exclusive variant, sized like the
+others so 8 voices' worth of tract state still costs the largest single
+variant, not the sum of three. `speech_render_voice_sam()` follows the
+same placement-construct-on-tract-switch rule the other two render
+functions already established.
+
+**Parallel, not cascaded.** Each of the three resonators is driven
+directly by the glottal/noise source and summed independently
+(`sam_process_mixed()`), rather than one resonator's output feeding the
+next the way the formant cascade's five stages do. A dedicated frication
+resonator (mirroring the formant tract's own fricative branch) shapes the
+shared LFSR noise excitation for unvoiced consonants, rather than
+importing the original's short sampled PCM bursts -- #69's own scope
+decision, avoiding a second class of imported proprietary audio data.
+
+**No reciter or generated allophone table yet.** `sam.h`'s
+`SAM_TEST_ALLOPHONES` is a small, hand-authored fixture -- silence,
+three vowels, one fricative -- reusing the formant tract's own Peterson &
+Barney (1952) F1-F3 reference values rather than guessed numbers. The
+voice's existing `phoneme` field indexes it directly (wrapped
+`% SAM_ALLOPHONE_COUNT`), the same field the formant tract's phoneme
+keyboard already reads -- reused rather than duplicated, since only one
+tract renders a given voice at a time.
+
+**Headroom**: an initial `1/6` guess left `/s/` (`af=1.0`, the same
+frication-branch target values as the formant tract's own `/s/` row)
+peaking at 30767 of 32767 -- uncomfortably close to clipping at full
+velocity. Reusing the formant cascade's own `1/12` headroom instead
+(`SAM_EXCITATION_HEADROOM = SPEECH_EXCITATION_HEADROOM`) brought every
+fixture entry comfortably under the ceiling (vowels ~4000-4500,
+`/s/` 15383) without a separate constant to maintain.
+
+**CC102** (tract select) changed from a two-way to a three-way band,
+matching CC27's mode-select shape -- band 0 formant, band 1 LPC lattice,
+band 2 SAM. The cheapest way to reach the new tract from a real MIDI
+channel, short of any SAM-specific CC work #69 defers to a later slice.
+
+Host-render harness (`render_speech.cpp`): renders every fixture entry to
+WAV (finite, unclipped), and confirms an out-of-range allophone index
+wraps rather than reading past the fixture table. All pre-existing checks
+in the same harness still pass unchanged. Builds clean on all engines
+plus both speech variants (`make ENGINE=speech`, `SPEECH_PROFILE=1`).
+
+**Not yet done at this point:** hardware verification, the reciter and
+allophone-table import tool, MIDI/CC integration beyond the CC102
+bring-up hook, pitch contour, and per-voice cost measurement are separate,
+later slices of #69, not this skeleton.
+
+**Hardware-verified on real `breadboard_rp2350`:** Carl reached it via
+CC102 >= 85 plus CC20 sweeps through the fixture and confirmed hearing
+AA, IY, UW, and S -- "very melodic," a first impression worth revisiting
+once the reciter and pitch contour (still unbuilt at this point) land,
+since real S.A.M. is usually described as buzzy/robotic rather than
+musical.
+
+## Speech Engine — S.A.M. Allophone/Pitch-Table Import Tool (#71)
+
+#69's second slice: `tools/sam2allophones.py`, converting locally-supplied
+S.A.M. reference headers into the full 80-allophone `SamAllophoneTarget`
+table, following the Talkie/DX7 gitignored-converter precedent exactly.
+#70's renderer (`sam.h`, `render.h`'s `speech_render_voice_sam()`) stays
+untouched -- only the data source changes.
+
+**Fetched the real reference tables before writing a single line of the
+converter.** `s-macke/SAM`'s `SamTabs.h`/`RenderTabs.h` were pulled
+(GitHub contents API, not committed) to understand the actual data shape
+rather than guess at it -- and that changed the plan. `freq1data`/
+`freq2data`/`freq3data`, the tables that looked like the obvious "formant
+Hz" source, turned out to be phase-increment values for three independent
+oscillators (sine/sine/rectangle) that reset every glottal pulse -- the
+source's own comment says outright that this *isn't* filter-based formant
+synthesis the way every tract in this module (including #70's own SAM
+renderer) already is. Translating those bytes into Hz for a resonant
+filter would mean reverse-engineering a mismatched representation with no
+reference render to check the result against. Raised to Carl explicitly
+before writing the converter; his call: extend the same Peterson & Barney
+(1952) data `speech_phonemes.csv` already uses instead of attempting the
+oscillator-phase decode.
+
+**What's genuinely read from the reference data, once frequency was off
+the table**: `sampledConsonantFlags` (which of the 80 allophones are
+noise-driven -- a structural classification, not audio data) and the
+three per-formant amplitude tables (`ampl1data`/`ampl2data`/`ampl3data`,
+rescaled through the reference's own `amplitudeRescale` curve). Both are
+genuine S.A.M.-specific numeric data distinct from the frequency tables'
+problem, and both measurably shape the generated table -- 14 of 80
+allophones came back noise-driven, and vowel amplitude balance varies
+per-allophone instead of #70 fixture's own hand-guessed flat weights.
+
+**Finding: the reference data is 80 entries, not 81.** The disassembly
+comment block `SamTabs.h` ships (index/name documentation) lists a
+UL/UM/UN trio ending at index 80, but every actual data array
+(`sampledConsonantFlags`, `ampl1-3data`, `phonemeLengthTable`) is exactly
+80 long. Trusted the verified data over the transcribed comment: `UN`
+dropped, folded into the adjacent syllabic-nasal `UM`.
+
+**Parser searches every given file for each named array**, rather than
+assuming a fixed file-to-array mapping -- confirmed necessary once real
+data was in hand: `sampledConsonantFlags`/`ampl1-3data` live in
+`RenderTabs.h`, not `SamTabs.h`, in the fetched fork, and other forks
+split them differently.
+
+Test suite (`test_sam2allophones.py`): synthetic-fixture checks (array
+parsing including line-comment stripping, sampled-vs-formant
+classification, multi-file array search, missing/short-array errors,
+header shape) that always run, plus a reference-gated full-conversion
+check that skips cleanly with a clear message when `../sam/` is empty.
+Both fetched reference files were kept locally (gitignored) to exercise
+the real-data path end to end: 80/80 allophones converted, amplitude
+values in range, noise/formant split as expected. All 11 checks pass.
+
+**Runtime wiring**: `render.h` gained `sam_allophone_target()`, a small
+resolver picking the generated table (`T00T_SPEECH_HAS_SAM_DATA`, guarded
+in both `CMakeLists.txt`s the same way `T00T_SPEECH_HAS_LATTICE_WORDS`
+already is) over #70's fixture -- `speech_render_voice_sam()`'s only
+change is one line, calling the resolver instead of indexing
+`SAM_TEST_ALLOPHONES` directly.
+
+**Bug caught by the host harness, not by inspection**: with the generated
+table wired in, `run_sam_fixture_check()` (which renders fixture indices
+0-4 to confirm SIL/AA/IY/UW/S) started reporting every entry silent.
+Indices 0-4 of the *generated* table are S.A.M.'s own silence/punctuation-pause
+allophones, not the fixture's SIL/AA/IY/UW/S -- the fixture test was
+unintentionally exercising whichever table `sam_allophone_target()`'s
+build-time resolver happened to pick, not the fixture specifically. Fixed
+by rendering `SAM_TEST_ALLOPHONES` directly (`render_sam_target_native()`,
+bypassing the resolver entirely), the same relationship
+`render_target_native()` already has to the formant tract's own phoneme
+resolver -- confirmed by rebuilding both with and without
+`sam_allophones.h` present and checking each path's peaks independently.
+
+Device firmware builds clean in four configurations (with/without the
+generated table, x plain speech engine/`SPEECH_PROFILE=1`) plus a sanity
+pass on the default and `fm` engines.
+
+**Not yet done at this point:** hardware verification (peaks/classification
+checked on host only), the reciter and build-time phrase bank, MIDI/CC
+integration beyond the existing CC102/CC20 bring-up hooks, pitch contour,
+and per-voice cost measurement remain separate, later slices of #69.
+
+## Speech Engine — S.A.M. Reciter, Phrase Bank, and Pitch Contour (#72)
+
+#69's third slice: a from-scratch English letter-to-sound + stress engine
+(`tools/sam_reciter.py`), a phrase-bank generator (`tools/samgen.py`,
+mirroring `speechgen.py`'s role), a new sequenced render path
+(`speech_render_voice_sam_seq()`), and per-segment pitch-contour targets.
+
+**Own reciter, not a re-skinned `nrl_rules.py`.** Reimplements the same
+public NRL-technique context-template matching independently (own file, own
+`Rule`/regex machinery, not imported) targeting SAM's own allophone
+segmentation -- notably, single allophones for stops (`P`/`B`/`T`/`D`/`K`/`G`)
+rather than the formant tract's closure+burst pairs, since `sam.h` has no
+plosive-segment mechanism. Ordinary NRL-style rule-authoring bugs turned
+up immediately once real words were tested: several `WORD_EXCEPTIONS`
+stress indices pointed at a consonant instead of the intended vowel
+("good" stressed on `G`, "track" on `T`, "drum" on `D`, "playing" on `L`,
+"machine" on the final `N`) -- caught by `test_sam_reciter.py` asserting
+exactly one stressed allophone per curated word and printing the mismatch,
+not by inspection.
+
+**Stress is a heuristic, not a lookup**: a content word's first
+non-schwa vowel is primary-stressed; a small set of function words (the
+kind #35's own `WORD_EXCEPTIONS` list already names) get none at all.
+Genuinely predicting English stress needs a pronouncing dictionary this
+project doesn't have -- the same "curated set plus inline override" bar
+`nrl_rules.py` already sets for pronunciation itself, extended to stress.
+
+**Pitch contour is two independent pieces, at two different levels.**
+`sam_reciter.py`'s `assign_stress()` marks *which* allophone in a word is
+stressed; `samgen.py` turns that into a signed semitone offset per
+segment (+3 stressed, 0 otherwise) and adds one phrase-level rule of its
+own -- a small negative "terminal declination" on the last voiced segment
+before a phrase's trailing pause, falling end-of-utterance intonation
+being a property of phrase position, not of a word in isolation. `sam.h`
+gained `pitch_offset`/`pitch_offset_tgt` (ramped by `sam_advance_subblock()`
+exactly like F/B/amp) and `sam_snap_pitch()`/`sam_set_pitch_target()`; the
+sequenced render path applies the ramped value as `exp2f(pitch_offset/12)`
+on the glottal phase increment, the same semitone-to-multiplier mapping
+vibrato already uses.
+
+**Sequencer added a `duration_ms` field #71 had deliberately left out** --
+nothing consumed a per-allophone duration until this slice's sequencer
+needed one to know how long to hold each segment. Extended
+`SamAllophoneTarget` and re-ran `sam2allophones.py` against the real,
+already-fetched reference data: `phonemeLengthTable`'s raw tick values
+(no documented ms conversion in any checked source) get a simple linear
+scale (`ticks * 6`, clamped to [20, 200] ms) landing typical entries in
+the same range `speech_phonemes.csv`'s own durations already occupy.
+
+**Bug caught by rebuilding without the generated table, not by
+inspection**: the pitch-contour host check initially hardcoded the
+generated table's own index for "AA" (9) -- correct only when
+`T00T_SPEECH_HAS_SAM_DATA` happens to be defined; without it,
+`sam_allophone_target()`'s resolver wraps that same index onto the
+5-entry fixture's `/s/` (index 4), a fricative with no voiced formant
+content at all, and the "does pitch rise" measurement came back negative
+noise. Fixed by testing the pitch-ramp primitives directly
+(`sam_retrigger()`/`sam_set_pitch_target()`/`sam_advance_subblock()`), the
+same resolver-bypassing shape `render_sam_target_native()` already uses
+for the fixture check -- a test of the mechanism itself shouldn't depend
+on which table happens to be linked in. A second bug in the same
+function (`done == half`, an equality check against a value `done` -- which
+steps by `SPEECH_SUBBLOCK` -- never actually lands on) was caught by the
+same rebuild-without-data run, fixed with a "has this threshold been
+crossed yet" flag instead.
+
+**`sam_phrases.h` is committed, not gitignored** -- unlike
+`sam_allophones.h`, its inputs (the reciter's own rules, a generic English
+phrase list) carry no proprietary reference data, so it follows
+`phrases.h`'s own precedent instead. It encodes allophones as plain
+integers rather than `SAM_ID_*` names specifically so it has no hard
+compile-time dependency on the optional, gitignored `sam_allophones.h`
+existing -- meaningful pronunciation needs the generated table converted
+locally; without one, phrases still build and play, just through the
+5-entry fixture's wrap.
+
+**No `midi_controller.cpp` changes were needed at all** -- CC23/Program
+Change/CC28 already write the same `channel_utterance` field regardless
+of tract; only the render-time resolution (which phrase table
+`p.utterance` indexes into) needed to become tract-dependent, exactly the
+pattern Program Change's LPC-vs-formant meaning already established.
+
+Host-render harness: every `SAM_PHRASES[]` entry renders to WAV (finite,
+unclipped, reaches completion) in both configurations (with and without
+the generated allophone table); the pitch-ramp check and a
+`SPEECH_MODE_GATED` release-bound check (mirroring the formant sequencer's
+own) both pass. `test_sam_reciter.py`: 10 checks, including a regression
+lock that every word `tools/sam_phrases.txt`'s demo phrases use still
+recites without raising. Device firmware builds clean in four
+configurations (with/without the generated table, x plain speech
+engine/`SPEECH_PROFILE=1`) plus a sanity pass on the default and `fm`
+engines.
+
+**Not yet done at this point:** hardware verification, MIDI/CC integration
+beyond the existing CC102/CC20 bring-up hooks (no preset-table entry,
+throat/mouth-style live controls, or display support), and per-voice cost
+measurement remain separate, later slices of #69.
+
+## Speech Engine — S.A.M. MIDI/CC Integration (#73)
+
+#69's fourth slice: throat/mouth live CCs, a preset-table entry, a
+per-voice display indicator, and confirmation that GATED/ONESHOT/LOOP and
+the shared delay/reverb effect already work correctly for SAM voices.
+CC102's three-way tract split turned out already done, as part of #70's
+own bring-up hook -- nothing left to change there.
+
+**Throat/mouth needed their own floor/ceiling helper, not a shared one.**
+`tract.h`'s `tract_apply_coeffs()` (the formant tract's own
+frequency/bandwidth safety clamp) can't be called from `sam.h`, because
+`tract.h` is the file that `#include`s `sam.h`, not the other way around
+-- calling back would be circular. `sam_apply_coeffs()` duplicates the
+same floor/ceiling logic (and `SAM_THROAT_MIN`/`MAX`/`SAM_MOUTH_MIN`/`MAX`
+duplicate tract.h's own CC-range constants) rather than restructuring the
+include graph to share it -- a handful of duplicated lines, weighed
+against every other tract needing to worry about a new dependency
+direction.
+
+**No CC number collisions, confirmed by construction, not just by
+inspection.** CC105 (throat) and CC106 (mouth) are the first two free
+slots after CC103/104 (LPC-specific) in the CC102-119 block #69's spec
+already reserved -- checked directly against the existing
+`midi_controller.cpp` switch statement before picking them, not assumed
+free from the block's own upper bound alone.
+
+**Program Change/CC23 needed zero code changes** to start selecting SAM
+phrases -- #72 already noted this for the render-time resolution side;
+this slice confirms the MIDI-input side was equally already correct,
+since `channel_tract[]`-gated dispatch (formant and SAM share one branch,
+LPC has its own) was written generically enough in #63 to not need a SAM
+carve-out.
+
+**Display**: `SpeechVoiceUiState` gained a `tract` field (one byte) so
+`display.cpp` can tell a SAM voice from a formant one sharing the same
+`phoneme`-grid mechanism -- reusing the existing `phoneme == PHONEME_COUNT`
+sentinel for a second, SAM-specific meaning was considered and rejected;
+a field is cheaper to reason about than an overloaded one. Renders
+`"SAM <allophone index>"`; the F1/F2 plot stays formant-only, as #70/#71
+already left it.
+
+**Preset row** (`PRESET_SAM_WORDS`) selects `SAM_PHRASE_HELLO_WORLD`
+(the reciter's own first generated phrase) rather than the phoneme
+keyboard -- a note-on immediately demonstrates the reciter and pitch
+contour together, the actual point of this tract, rather than hiding both
+behind an extra CC23 step. Every existing preset row (all 10) gained
+explicit `speech_q8_8(1.0f)` throat/mouth values, matching the project's
+own "no implicit defaults in a preset table" convention.
+
+Host-render harness: new GATED/ONESHOT/LOOP mode checks for the SAM
+sequencer (mirroring the LPC lattice tract's own `run_lattice_mode_checks()`
+exactly) and a throat x mouth pole-stability sweep (20,480
+allophone/CC/CC combinations, mirroring `test_cc_sweep_stability()`) both
+pass, in both fixture and generated-table configurations. Device firmware
+builds clean in the same four configurations #70-72 already checked, plus
+a sanity pass on the default engine.
+
+**Not yet done at this point:** hardware verification (played entirely
+via MIDI, not just host-render) and per-voice cost measurement remain
+#69's final, separate slice.
+
+**Hardware-verified on real `breadboard_rp2350`:** Carl confirmed CC16=127
+loads "SAM WORDS" and CC24 (rate, live) slows phrase playback as
+documented. Two qualitative notes from that first listen: the voice read
+as "muddier" than #70's own bring-up fixture, and "a fair bit more
+singing" than natural speech stress. Both traced to constants picked
+without being able to listen at the time: `sam2allophones.py`'s
+`DURATION_MIN_MS` (20ms) sat below `sam.h`'s own pitch/formant ramp settle
+time (~12-15ms), leaving some segments too short to actually reach their
+target before the next one started pulling it elsewhere -- raised to
+40ms, and the tick-to-ms scale from 6 to 7. `samgen.py`'s
+`STRESSED_SEMITONES`/`DECLINATION_SEMITONES` (+3/-2, a fairly large,
+sustained pitch step) halved to +2/-1. Both `sam_allophones.h` and
+`sam_phrases.h` regenerated; host suite re-run clean (12/12 + 10/10
+Python tests, full host-render harness). Re-flash and a second listen
+pending.
+
+## Speech Engine — S.A.M. Profiling Rig Phases (#74, code prep)
+
+#69's final slice needs a real profiling-pin reading, which needs Carl at
+the bench -- not something this session can do. What's ready in the
+meantime: `PROFILE_SAM` phases added to `audio_engine.cpp`'s
+`T00T_SPEECH_PROFILE` rig, the same idle/1/2/4/8-voice shape #67 already
+established for the LPC lattice tract, directly comparable phase-for-phase
+against the formant tract's own ~93.5 c/f/voice and LPC's ~77.5. Each
+phase retriggers straight into `SamVoiceState` (mirroring the LPC phases'
+own `LatticeVoiceState` placement-construct) and holds a single,
+table-agnostic allophone index (1 -- valid whether or not
+`T00T_SPEECH_HAS_SAM_DATA` is defined, same reasoning the host harness's
+own mode/wrap checks already use, since render cost doesn't depend on
+which specific allophone is held). Builds clean in both
+`SPEECH_PROFILE=1` and the plain speech build.
+
+**Not yet done:** the actual measurement. `make ENGINE=speech
+SPEECH_PROFILE=1`, flash, read the profiling pin (GPIO 22) across the five
+new SAM phases the same way the formant/LPC phases were already read.
+
+**Measured on real `breadboard_rp2350`.** Carl read the five SAM phases'
+Core 1 duty cycle directly: 0.0/2.0/4.0/8.0/16.0% at idle/1/2/4/8 voices --
+"extremely even," his own words, and indeed exactly linear (2.0% per
+voice at every voice count, no rounding needed). Converted with the same
+formula #67's LPC measurement already established (`duty% * BUF_PERIOD_US
+* 150 MHz / (256 output frames * voice count)`):
+
+| phase | reading | c/f/voice |
+|---|---|---|
+| SAM 1/2/4/8v | 2.0/4.0/8.0/16.0% | 68.03, flat |
+
+**Cheaper than both other tracts** (68.0 vs. formant's 93.5 and LPC's
+77.5) -- plausible on its own terms: three parallel resonators plus one
+frication branch (`sam.h`) is less per-sample work than the formant
+cascade's five plus two, at the same 22.05 kHz native rate.
+
+**Decision: `MAX_VOICES` stays 8, shared across all three tracts,
+unchanged.** Since SAM measured cheaper than the formant tract (the
+existing worst case), the shared pool's cost is already bounded by
+numbers already on record -- no fresh reverb-combined reading was needed,
+the same reasoning #67's own LPC decision already established: a tract
+that measures cheaper than an already-characterized worst case doesn't
+change what that worst case is. Carl confirmed this reading and the
+decision.
+
+Acceptance criteria all met: cost measured across the full 1-8 voice
+range, compared explicitly against both other tracts' figures,
+`MAX_VOICES` confirmed with no follow-up needed, measurement recorded in
+both `module_speech.md` and here. This closes #69's epic -- every child
+issue (#70-74) is now implemented and hardware-verified.
