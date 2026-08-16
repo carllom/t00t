@@ -748,23 +748,26 @@ LPC lattice tract: ~77.5 cycles/frame/voice, also flat from 1 to 8
 voices, cheaper than the formant tract despite the extra resampler step —
 the lower 8 kHz native rate more than pays back the order-10 lattice
 recursion's own per-sample cost once normalized per output frame. 8
-voices alone: 18.1% of Core 1. `MAX_VOICES = 8` is shared between both
-tracts (one voice pool, tract selected per voice — see Decision Record);
-since the lattice tract is cheaper, not more expensive, than the formant
-tract, the shared pool's worst case stays bounded by the formant
-numbers above regardless of which tract's voices fill it.
+voices alone: 18.1% of Core 1.
 
-SAM tract: not yet measured on hardware — its own per-voice cost, and
-whether the shared `MAX_VOICES = 8` pool still holds once it's included,
-are a later slice.
+SAM tract: ~68.0 cycles/frame/voice, also flat from 1 to 8 voices (0/2.0/
+4.0/8.0/16.0% Core 1 at idle/1/2/4/8 voices — an exactly linear reading),
+cheaper than both other tracts despite sharing the formant tract's own
+22.05 kHz native rate: three parallel resonators plus one frication
+branch is simply less per-sample work than the formant cascade's five
+plus two. 8 voices alone: 16.0% of Core 1.
+
+`MAX_VOICES = 8` is shared between all three tracts (one voice pool,
+tract selected per voice — see Decision Record); since neither the LPC
+lattice nor the SAM tract is more expensive than the formant tract, the
+shared pool's worst case stays bounded by the formant numbers above (22%
+at 8 voices, ~30% with reverb, mutually exclusive with delay) regardless
+of which tract's voices fill it.
 
 Full measurement breakdown: `history_speech.md`.
 
 ### Future / TODO
 
-- **SAM per-voice cost measurement** — the shared `MAX_VOICES = 8` pool's
-  worst case hasn't been confirmed to still hold with the SAM tract
-  included; a separate, later slice.
 - **Further LPC addressing modes** — `KEY_PER_WORD` is the only
   word-addressing mode built; a "musical" mode spreading one word across
   the keyboard via standard MIDI Bank Select + Program Change, and a
@@ -1145,6 +1148,17 @@ Full measurement breakdown: `history_speech.md`.
     `KEY_PER_WORD`'s per-key addressing), the SAM tract's whole point as
     of this preset is demonstrating the reciter and pitch contour; a
     phoneme-keyboard default would hide both behind one extra CC23 step.
+54. **`MAX_VOICES = 8` stays shared across all three tracts, not given the
+    SAM tract its own separate budget** — measured at ~68.0
+    cycles/frame/voice on real hardware (0/2.0/4.0/8.0/16.0% Core 1 at
+    idle/1/2/4/8 voices, exactly linear), cheaper than both the formant
+    tract (93.5) and the LPC lattice tract (77.5), so the shared pool's
+    worst case stays bounded by the formant tract's own already-measured
+    figures regardless of which tract fills it — the same reasoning
+    decision 27 already reached for the LPC lattice tract, extended here
+    without needing a fresh SAM+reverb reading: a tract that measures
+    cheaper than an already-characterized worst case doesn't change what
+    that worst case is.
 
 ## Glossary
 

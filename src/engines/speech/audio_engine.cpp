@@ -66,10 +66,18 @@ static uint8_t  s_last_fx_type = 0xFF;
 // instead of going through ParamExchange, so each phase isolates exactly
 // one cost: voice count (1/2/4/8), held vowel vs. voiced fricative,
 // coefficient-recompute vs. per-sample cost, static vs. actively-swept
-// formant_shift/bandwidth_scale, and (#67) the LPC lattice tract's own
-// voice-count sweep. MAX_VOICES is 8 in this build (engine.h), so the
-// 8-voice phases have a real 8th slot.
-enum ProfileTract : uint8_t { PROFILE_FORMANT, PROFILE_LATTICE };
+// formant_shift/bandwidth_scale, (#67) the LPC lattice tract's own
+// voice-count sweep, and (#74) the SAM tract's. MAX_VOICES is 8 in this
+// build (engine.h), so the 8-voice phases have a real 8th slot.
+enum ProfileTract : uint8_t { PROFILE_FORMANT, PROFILE_LATTICE, PROFILE_SAM };
+
+// Table-agnostic allophone index for the SAM profiling phases below (valid
+// regardless of whether T00T_SPEECH_HAS_SAM_DATA is defined -- the same
+// reasoning tools/host_render/render_speech.cpp's own SAM mode/wrap checks
+// already use): render cost per voice doesn't depend on which specific
+// allophone is held, so any in-range index measures the same steady-state
+// per-voice cost.
+static constexpr uint8_t PROFILE_SAM_ALLOPHONE = 1;
 
 struct ProfilePhase {
     uint32_t voice_count;     // voices 0..voice_count-1 render; rest stay idle
@@ -101,6 +109,14 @@ static constexpr ProfilePhase PROFILE_PHASES[] = {
     { 2, PH_A, false, false, PROFILE_LATTICE },
     { 4, PH_A, false, false, PROFILE_LATTICE },
     { 8, PH_A, false, false, PROFILE_LATTICE },
+    // SAM tract (#74): the same voice-count shape as the formant/LPC
+    // phases above, directly comparable phase-for-phase. phoneme/
+    // recompute_only/sweep_tract are formant-only and ignored here.
+    { 0, PH_A, false, false, PROFILE_SAM },
+    { 1, PH_A, false, false, PROFILE_SAM },
+    { 2, PH_A, false, false, PROFILE_SAM },
+    { 4, PH_A, false, false, PROFILE_SAM },
+    { 8, PH_A, false, false, PROFILE_SAM },
 };
 static constexpr uint32_t PROFILE_PHASE_COUNT = sizeof(PROFILE_PHASES) / sizeof(PROFILE_PHASES[0]);
 
@@ -154,6 +170,18 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
                     lattice_load_frame(voices[v].lat, LATTICE_TEST_WORD, 0, /*retrigger=*/true, /*pitch_mult=*/1.0f);
                     voices[v].last_trigger = trigger;
                 }
+            } else if (ph.tract == PROFILE_SAM) {
+                for (uint32_t v = 0; v < ph.voice_count; v++) {
+                    new (&voices[v].sam) SamVoiceState();
+                    voices[v].tract = SPEECH_TRACT_SAM;
+                    voices[v].sam.throat_tgt = voices[v].sam.throat = 1.0f;
+                    voices[v].sam.mouth_tgt = voices[v].sam.mouth = 1.0f;
+                    sam_retrigger(voices[v].sam, sam_allophone_target(PROFILE_SAM_ALLOPHONE));
+                    voices[v].glottal_phase = 0;
+                    voices[v].cur_amp = 0.0f;
+                    voices[v].last_trigger = trigger;
+                    voices[v].last_phoneme = PROFILE_SAM_ALLOPHONE;
+                }
             } else {
                 FormantTarget t = phoneme_unpack(PHONEME_TARGETS[ph.phoneme % PHONEME_COUNT]);
                 for (uint32_t v = 0; v < ph.voice_count; v++) {
@@ -187,6 +215,11 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
                                              LATTICE_TEST_WORD, SPEECH_MODE_LOOP, /*pitch_shift=*/256,
                                              /*chirp_exciter=*/false,
                                              /*pan=*/0, (float)SAMPLE_RATE, dry_l, dry_r, SAMPLES_PER_BUFFER);
+            } else if (ph.tract == PROFILE_SAM) {
+                speech_render_voice_sam(voices[v], PROFILE_PHASE_INC, (float)SPEECH_RATE, trigger,
+                                         PROFILE_AMPLITUDE, true, PROFILE_SAM_ALLOPHONE, 0,
+                                         /*throat=*/256, /*mouth=*/256,
+                                         dry_l, dry_r, NATIVE_SAMPLES_PER_BUFFER);
             } else if (ph.recompute_only) {
                 voices[v].fmt.formant_shift_tgt = (float)formant_shift * (1.0f / 256.0f);
                 voices[v].fmt.bandwidth_scale_tgt = (float)bandwidth_scale * (1.0f / 256.0f);
