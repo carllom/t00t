@@ -30,21 +30,28 @@
 // per-channel default for future notes. rate/jitter/shimmer/mode (CC24-27)
 // and vibrato depth/rate (CC1/CC76) are live the same way.
 //
-// Program Change and CC23 both select an utterance (phrases.h's
-// SPEECH_PHRASES) under the formant tract; CC20 stays phoneme-only, since a
-// single PC message can't mean both. CC28 (phrase-bank mode, next-note)
-// makes each note-on's own note number pick the phrase instead of PC/CC23's
-// selection -- "playing the words themselves" rather than "playing a line"
-// -- while pitch still comes from the note as always.
+// Program Change and CC23 both select an utterance -- phrases.h's
+// SPEECH_PHRASES under the formant tract, sam_phrases.h's SAM_PHRASES under
+// the SAM tract (same channel_utterance field either way, resolved
+// per-tract at render time, audio_engine.cpp); CC20 stays phoneme/allophone-
+// only, since a single PC message can't mean both. CC28 (phrase-bank mode,
+// next-note) makes each note-on's own note number pick the phrase instead
+// of PC/CC23's selection -- "playing the words themselves" rather than
+// "playing a line" -- while pitch still comes from the note as always.
 //
-// Under the LPC lattice tract (CC102 >= 64), Program Change means something
-// else entirely: KEY_PER_WORD addressing (module_speech.md "LPC Lattice
-// Tract") maps the note number straight to a word within a 128-word page of
-// the converted corpus, and Program Change picks which page is current --
-// speech_lattice_word_for_key() below resolves note+page to a
-// LATTICE_WORDS[] entry. CC23 keeps its formant-only meaning; there's no
-// LPC equivalent of "off" the way band 0 gives CC23 for the formant tract,
-// since every note always addresses some word.
+// CC102 selects among all three tracts, banded like CC27's mode select
+// (band 0 formant, band 1 LPC lattice, band 2 SAM). Under the LPC lattice
+// tract, Program Change means something else entirely: KEY_PER_WORD
+// addressing (module_speech.md "LPC Lattice Tract") maps the note number
+// straight to a word within a 128-word page of the converted corpus, and
+// Program Change picks which page is current -- speech_lattice_word_for_key()
+// below resolves note+page to a LATTICE_WORDS[] entry. CC23 keeps its
+// formant/SAM meaning; there's no LPC equivalent of "off" the way band 0
+// gives CC23 for the formant/SAM tracts, since every note always addresses
+// some word. CC20's existing phoneme-select band also reaches the SAM
+// tract, wrapped onto whichever allophone table (generated or fixture) is
+// active. CC105/106 (SAM throat/mouth, live, sam.h) round out the
+// CC102-119 block alongside CC103/104 (LPC-specific).
 //
 // CC15 (velocity toggle, next-note, default on) sits just outside the
 // BSP's CC16-31 encoder block: 0-63 makes every note sound at max velocity
@@ -88,6 +95,8 @@ static SpeechTract channel_tract[NUM_CHANNELS];        // CC102, next-note: form
 static uint8_t channel_lattice_page[NUM_CHANNELS];      // Program Change under the LPC tract: KEY_PER_WORD page
 static int16_t channel_lattice_pitch_shift[NUM_CHANNELS]; // CC103, Q8.8 (live)
 static bool    channel_lattice_chirp_exciter[NUM_CHANNELS]; // CC104, live: glottal_pulse() vs. TMS5220 chirp table
+static int16_t channel_sam_throat[NUM_CHANNELS];        // CC105, Q8.8 (live)
+static int16_t channel_sam_mouth[NUM_CHANNELS];         // CC106, Q8.8 (live)
 static uint8_t channel_preset[NUM_CHANNELS];           // CC16: last preset loaded, for UI only --
                                                          // individual field CCs above can drift it out of
                                                          // sync with presets[channel_preset[ch]], same as
@@ -129,6 +138,8 @@ static void speech_load_preset(uint8_t channel, uint8_t preset_id) {
     channel_lattice_page[channel] = pr.lattice_page;
     channel_lattice_pitch_shift[channel] = tmp.lattice_pitch_shift;
     channel_lattice_chirp_exciter[channel] = tmp.lattice_chirp_exciter;
+    channel_sam_throat[channel] = tmp.sam_throat;
+    channel_sam_mouth[channel] = tmp.sam_mouth;
 }
 
 // KEY_PER_WORD addressing (module_speech.md "LPC Lattice Tract"): note
@@ -170,6 +181,8 @@ static void midi_voice_on(VoiceParamBlock &shadow, int v, uint8_t note, uint8_t 
     vp.lattice_word = speech_lattice_word_for_key(channel, note);
     vp.lattice_pitch_shift = channel_lattice_pitch_shift[channel];
     vp.lattice_chirp_exciter = channel_lattice_chirp_exciter[channel];
+    vp.sam_throat = channel_sam_throat[channel];
+    vp.sam_mouth = channel_sam_mouth[channel];
     vp.pan = channel_pan[channel];
     vp.formant_shift = channel_formant_shift[channel];
     vp.bandwidth_scale = channel_bandwidth_scale[channel];
@@ -398,10 +411,13 @@ void midi_controller_process(const uint8_t *data, uint32_t len, ParamExchange *p
                         ui_state.fx_p2 = ev.data2;
                         changed = true;
                         break;
-                    case 102:  // tract select, next-note only -- formant vs. LPC lattice
-                        channel_tract[ev.channel] = ev.data2 >= 64 ? SPEECH_TRACT_LATTICE : SPEECH_TRACT_FORMANT;
+                    case 102: {  // tract select, next-note only -- formant / LPC lattice / SAM
+                        uint8_t band = (uint8_t)((uint32_t)ev.data2 * 3u / 128u);
+                        channel_tract[ev.channel] =
+                            band == 0 ? SPEECH_TRACT_FORMANT : (band == 1 ? SPEECH_TRACT_LATTICE : SPEECH_TRACT_SAM);
                         ui_state.last_channel = ev.channel;
                         break;
+                    }
                     case 103:  // LPC pitch-shift multiplier, live -- see header comment
                         channel_lattice_pitch_shift[ev.channel] =
                             tract_cc_to_q8_8(ev.data2, SPEECH_LATTICE_PITCH_SHIFT_MIN, SPEECH_LATTICE_PITCH_SHIFT_MAX);
@@ -419,6 +435,24 @@ void midi_controller_process(const uint8_t *data, uint32_t len, ParamExchange *p
                         for (uint32_t v = 0; v < MAX_VOICES; v++) {
                             if (voice_held[v] && voice_channel[v] == ev.channel)
                                 shadow.voices[v].lattice_chirp_exciter = channel_lattice_chirp_exciter[ev.channel];
+                        }
+                        ui_state.last_channel = ev.channel;
+                        changed = true;
+                        break;
+                    case 105:  // SAM throat, live -- tract length / "gender" (sam.h)
+                        channel_sam_throat[ev.channel] = tract_cc_to_q8_8(ev.data2, SAM_THROAT_MIN, SAM_THROAT_MAX);
+                        for (uint32_t v = 0; v < MAX_VOICES; v++) {
+                            if (voice_held[v] && voice_channel[v] == ev.channel)
+                                shadow.voices[v].sam_throat = channel_sam_throat[ev.channel];
+                        }
+                        ui_state.last_channel = ev.channel;
+                        changed = true;
+                        break;
+                    case 106:  // SAM mouth, live -- resonance / brightness (sam.h)
+                        channel_sam_mouth[ev.channel] = tract_cc_to_q8_8(ev.data2, SAM_MOUTH_MIN, SAM_MOUTH_MAX);
+                        for (uint32_t v = 0; v < MAX_VOICES; v++) {
+                            if (voice_held[v] && voice_channel[v] == ev.channel)
+                                shadow.voices[v].sam_mouth = channel_sam_mouth[ev.channel];
                         }
                         ui_state.last_channel = ev.channel;
                         changed = true;

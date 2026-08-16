@@ -3,6 +3,7 @@
 #include "engine.h"
 #include "phrases.h"
 #include "phonemes.h"
+#include "sam_phrases.h"
 #include <cmath>
 
 // Preset table (module_speech.md "Preset table"): a SpeechPreset is what a
@@ -42,6 +43,8 @@ struct SpeechPreset {
     uint8_t    lattice_page;      // KEY_PER_WORD starting page, LPC tract only
     int16_t    lattice_pitch_shift; // Q8.8, 256 = 1.0x, LPC tract only
     bool       lattice_chirp_exciter; // voiced-excitation source, LPC tract only (lattice.h)
+    int16_t    sam_throat;        // Q8.8, 256 = 1.0x, SAM tract only (sam.h)
+    int16_t    sam_mouth;         // Q8.8, 256 = 1.0x, SAM tract only (sam.h)
 };
 
 // Q8.8 fixed-point from a float multiplier, matching tract_cc_to_q8_8()'s
@@ -87,6 +90,8 @@ inline void voice_apply_preset(VoiceParams &vp, const SpeechPreset &pr, uint32_t
     vp.tract = pr.tract;
     vp.lattice_pitch_shift = pr.lattice_pitch_shift;
     vp.lattice_chirp_exciter = pr.lattice_chirp_exciter;
+    vp.sam_throat = pr.sam_throat;
+    vp.sam_mouth = pr.sam_mouth;
 
     if (pr.chorus) speech_chorus_apply(vp, voice_index);
     else            vp.pan = 0;
@@ -111,23 +116,24 @@ enum SpeechPresetId : uint8_t {
     PRESET_TRACT_SHIFT_DOWN,  // 7: long tract, formant_shift near min
     PRESET_ROBOT_CHORUS,      // 8: robotic + per-voice pan/detune spread across MAX_VOICES
     PRESET_LPC_WORDS,         // 9: SPEECH_TRACT_LATTICE -- KEY_PER_WORD corpus playback, page 0
+    PRESET_SAM_WORDS,         // 10: SPEECH_TRACT_SAM -- first generated SAM phrase, GATED
     SPEECH_PRESET_COUNT
 };
 
 static constexpr SpeechPreset presets[SPEECH_PRESET_COUNT] = {
-    // name                utterance             phoneme  mode                rate  fmt_shift          bw_scale                    jit  shim lfo_rate lfo_depth chorus  tract                  page  pitch_shift        chirp_exciter
+    // name                utterance             phoneme  mode                rate  fmt_shift          bw_scale                    jit  shim lfo_rate lfo_depth chorus  tract                  page  pitch_shift        chirp_exciter  throat             mouth
     // PH_I / formant_shift 1.0x / bandwidth_scale 1.0x matches
     // midi_controller.cpp's original power-on default exactly, so this
     // preset being channel 0's initial load is not a behaviour change.
-    { "PHON KEYS",   SPEECH_NO_UTTERANCE, PH_I,   SPEECH_MODE_GATED,   16, speech_q8_8(1.0f), speech_q8_8(1.0f),           0,   0,  0.0f, 0.0f, false, SPEECH_TRACT_FORMANT, 0, speech_q8_8(1.0f), false },
-    { "ANNOUNCE",    PHRASE_VOICE_TEST,   PH_SIL, SPEECH_MODE_ONESHOT, 16, speech_q8_8(1.0f), speech_q8_8(1.0f),           0,   0,  0.0f, 0.0f, false, SPEECH_TRACT_FORMANT, 0, speech_q8_8(1.0f), false },
-    { "GATED SAY",   PHRASE_NOW_PLAYING,  PH_SIL, SPEECH_MODE_GATED,   16, speech_q8_8(1.0f), speech_q8_8(1.0f),           0,   0,  0.0f, 0.0f, false, SPEECH_TRACT_FORMANT, 0, speech_q8_8(1.0f), false },
-    { "LOOP CHANT",  PHRASE_HELLO_WORLD,  PH_SIL, SPEECH_MODE_LOOP,    20, speech_q8_8(1.0f), speech_q8_8(1.0f),           0,   0,  0.0f, 0.0f, false, SPEECH_TRACT_FORMANT, 0, speech_q8_8(1.0f), false },
-    { "ROBOTIC",     PHRASE_GOOD_MORNING, PH_SIL, SPEECH_MODE_GATED,   16, speech_q8_8(1.0f), speech_q8_8(0.5f),           0,   0,  0.0f, 0.0f, false, SPEECH_TRACT_FORMANT, 0, speech_q8_8(1.0f), false },
-    { "BREATHY",     PHRASE_TRACK_SAVED,  PH_SIL, SPEECH_MODE_GATED,   16, speech_q8_8(1.0f), speech_q8_8(2.4f),          40,  30,  5.0f, 0.15f, false, SPEECH_TRACT_FORMANT, 0, speech_q8_8(1.0f), false },
-    { "TRACT UP",    SPEECH_NO_UTTERANCE, PH_I,   SPEECH_MODE_GATED,   16, speech_q8_8(1.55f), speech_q8_8(1.0f),          0,   0,  0.0f, 0.0f, false, SPEECH_TRACT_FORMANT, 0, speech_q8_8(1.0f), false },
-    { "TRACT DOWN",  SPEECH_NO_UTTERANCE, PH_U,   SPEECH_MODE_GATED,   16, speech_q8_8(0.75f), speech_q8_8(1.0f),          0,   0,  0.0f, 0.0f, false, SPEECH_TRACT_FORMANT, 0, speech_q8_8(1.0f), false },
-    { "BOT CHORUS",  PHRASE_DRUM_MACHINE, PH_SIL, SPEECH_MODE_ONESHOT, 16, speech_q8_8(1.0f), speech_q8_8(0.5f),           0,   0,  0.0f, 0.0f, true,  SPEECH_TRACT_FORMANT, 0, speech_q8_8(1.0f), false },
+    { "PHON KEYS",   SPEECH_NO_UTTERANCE, PH_I,   SPEECH_MODE_GATED,   16, speech_q8_8(1.0f), speech_q8_8(1.0f),           0,   0,  0.0f, 0.0f, false, SPEECH_TRACT_FORMANT, 0, speech_q8_8(1.0f), false, speech_q8_8(1.0f), speech_q8_8(1.0f) },
+    { "ANNOUNCE",    PHRASE_VOICE_TEST,   PH_SIL, SPEECH_MODE_ONESHOT, 16, speech_q8_8(1.0f), speech_q8_8(1.0f),           0,   0,  0.0f, 0.0f, false, SPEECH_TRACT_FORMANT, 0, speech_q8_8(1.0f), false, speech_q8_8(1.0f), speech_q8_8(1.0f) },
+    { "GATED SAY",   PHRASE_NOW_PLAYING,  PH_SIL, SPEECH_MODE_GATED,   16, speech_q8_8(1.0f), speech_q8_8(1.0f),           0,   0,  0.0f, 0.0f, false, SPEECH_TRACT_FORMANT, 0, speech_q8_8(1.0f), false, speech_q8_8(1.0f), speech_q8_8(1.0f) },
+    { "LOOP CHANT",  PHRASE_HELLO_WORLD,  PH_SIL, SPEECH_MODE_LOOP,    20, speech_q8_8(1.0f), speech_q8_8(1.0f),           0,   0,  0.0f, 0.0f, false, SPEECH_TRACT_FORMANT, 0, speech_q8_8(1.0f), false, speech_q8_8(1.0f), speech_q8_8(1.0f) },
+    { "ROBOTIC",     PHRASE_GOOD_MORNING, PH_SIL, SPEECH_MODE_GATED,   16, speech_q8_8(1.0f), speech_q8_8(0.5f),           0,   0,  0.0f, 0.0f, false, SPEECH_TRACT_FORMANT, 0, speech_q8_8(1.0f), false, speech_q8_8(1.0f), speech_q8_8(1.0f) },
+    { "BREATHY",     PHRASE_TRACK_SAVED,  PH_SIL, SPEECH_MODE_GATED,   16, speech_q8_8(1.0f), speech_q8_8(2.4f),          40,  30,  5.0f, 0.15f, false, SPEECH_TRACT_FORMANT, 0, speech_q8_8(1.0f), false, speech_q8_8(1.0f), speech_q8_8(1.0f) },
+    { "TRACT UP",    SPEECH_NO_UTTERANCE, PH_I,   SPEECH_MODE_GATED,   16, speech_q8_8(1.55f), speech_q8_8(1.0f),          0,   0,  0.0f, 0.0f, false, SPEECH_TRACT_FORMANT, 0, speech_q8_8(1.0f), false, speech_q8_8(1.0f), speech_q8_8(1.0f) },
+    { "TRACT DOWN",  SPEECH_NO_UTTERANCE, PH_U,   SPEECH_MODE_GATED,   16, speech_q8_8(0.75f), speech_q8_8(1.0f),          0,   0,  0.0f, 0.0f, false, SPEECH_TRACT_FORMANT, 0, speech_q8_8(1.0f), false, speech_q8_8(1.0f), speech_q8_8(1.0f) },
+    { "BOT CHORUS",  PHRASE_DRUM_MACHINE, PH_SIL, SPEECH_MODE_ONESHOT, 16, speech_q8_8(1.0f), speech_q8_8(0.5f),           0,   0,  0.0f, 0.0f, true,  SPEECH_TRACT_FORMANT, 0, speech_q8_8(1.0f), false, speech_q8_8(1.0f), speech_q8_8(1.0f) },
     // LPC lattice tract: utterance/phoneme/formant_shift/bandwidth_scale/
     // jitter/shimmer/lfo are formant-only fields, unread by the lattice
     // render path -- left at the same neutral values PHON KEYS uses so a
@@ -136,5 +142,14 @@ static constexpr SpeechPreset presets[SPEECH_PRESET_COUNT] = {
     // page 0, the same starting page a channel already has at power-on.
     // chirp_exciter false -- CC104 (midi_controller.cpp) switches it live,
     // this preset doesn't pick a side.
-    { "LPC WORDS",   SPEECH_NO_UTTERANCE, PH_I,   SPEECH_MODE_GATED,   16, speech_q8_8(1.0f), speech_q8_8(1.0f),           0,   0,  0.0f, 0.0f, false, SPEECH_TRACT_LATTICE, 0, speech_q8_8(1.0f), false },
+    { "LPC WORDS",   SPEECH_NO_UTTERANCE, PH_I,   SPEECH_MODE_GATED,   16, speech_q8_8(1.0f), speech_q8_8(1.0f),           0,   0,  0.0f, 0.0f, false, SPEECH_TRACT_LATTICE, 0, speech_q8_8(1.0f), false, speech_q8_8(1.0f), speech_q8_8(1.0f) },
+    // SAM tract: phoneme/formant_shift/bandwidth_scale/jitter/shimmer/lfo/
+    // lattice_page/lattice_pitch_shift/lattice_chirp_exciter are unread by
+    // the SAM render paths -- same neutral-values convention as LPC WORDS
+    // above. utterance selects SAM_PHRASE_HELLO_WORLD (index 0 of the
+    // generated phrase bank, tools/samgen.py) so a note-on immediately
+    // demonstrates the reciter and pitch contour, GATED (the engine's own
+    // default mode). throat/mouth neutral -- CC105/106 (midi_controller.cpp)
+    // shape them live, this preset doesn't pick a side.
+    { "SAM WORDS",   SAM_PHRASE_HELLO_WORLD, PH_SIL, SPEECH_MODE_GATED, 16, speech_q8_8(1.0f), speech_q8_8(1.0f),          0,   0,  0.0f, 0.0f, false, SPEECH_TRACT_SAM,     0, speech_q8_8(1.0f), false, speech_q8_8(1.0f), speech_q8_8(1.0f) },
 };

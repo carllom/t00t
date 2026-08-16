@@ -125,6 +125,15 @@ if(EXISTS ${CMAKE_CURRENT_LIST_DIR}/src/engines/speech/lattice_words.h)
     target_compile_definitions(t00t PRIVATE T00T_SPEECH_HAS_LATTICE_WORDS=1)
 endif()
 
+# #71 SAM allophone table (speech engine only): sam_allophones.h is generated
+# locally by tools/sam2allophones.py from locally-supplied S.A.M. reference
+# headers and gitignored, same reasoning as the LPC corpus gate above.
+# Guarded here so the build still succeeds (sam.h's SAM_TEST_ALLOPHONES
+# fixture only) when nobody has generated it locally yet.
+if(EXISTS ${CMAKE_CURRENT_LIST_DIR}/src/engines/speech/sam_allophones.h)
+    target_compile_definitions(t00t PRIVATE T00T_SPEECH_HAS_SAM_DATA=1)
+endif()
+
 # #42 rig override (FM engine only, see src/engines/fm/rig.h/audio_engine.cpp).
 if(DEFINED FM_PROFILE AND NOT FM_PROFILE STREQUAL "0")
     target_compile_definitions(t00t PRIVATE T00T_FM_PROFILE=1)
