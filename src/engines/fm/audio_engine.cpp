@@ -173,8 +173,8 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
             if (p.trigger != voice_last_trigger[v]) {
                 voice_routing_valid[v] = fm_resolve_routing(*p.patch, voice_routing[v]);
                 if (voice_routing_valid[v]) {
-                    fm_voice_note_on(voice_ops[v], *p.patch, p.phase_inc, p.amplitude, p.note,
-                                      &voice_peg[v], &voice_lfo[v]);
+                    fm_voice_note_on<DxEnvGlue>(voice_ops[v], *p.patch, p.phase_inc, p.amplitude, p.note,
+                                                 &voice_peg[v], &voice_lfo[v]);
                 }
                 voice_last_trigger[v] = p.trigger;
                 voice_gated[v] = p.gate;
@@ -182,7 +182,7 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
                 // Gate-off edge: release through the EG (#45) instead of
                 // #44's hard cutoff -- mirrors the subtractive engine's
                 // "Detect gate-off edge" (Trigger/Gate Signaling, engine.md).
-                if (voice_routing_valid[v]) fm_voice_note_off(voice_ops[v], &voice_peg[v]);
+                if (voice_routing_valid[v]) fm_voice_note_off<DxEnvGlue>(voice_ops[v], &voice_peg[v]);
                 voice_gated[v] = false;
             } else {
                 voice_gated[v] = p.gate;
@@ -199,8 +199,9 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
 
             // Pitch bend, pitch EG, and LFO increment recompute all happen
             // inside fm_render_voice(), once per control block.
-            fm_render_voice(voice_ops[v], *p.patch, voice_routing[v], bus, p.pan, dry_l, dry_r, SAMPLES_PER_BUFFER,
-                             &voice_peg[v], &voice_lfo[v], p.phase_inc, p.mod_wheel);
+            fm_render_voice<FM_TABLE_BITS, DxEnvGlue>(voice_ops[v], *p.patch, voice_routing[v], bus, p.pan,
+                                                       dry_l, dry_r, SAMPLES_PER_BUFFER,
+                                                       &voice_peg[v], &voice_lfo[v], p.phase_inc, p.mod_wheel);
             active_mask |= (1u << v);
         }
 

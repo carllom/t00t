@@ -166,14 +166,14 @@ static void render_patch_note(const FmPatch &patch, float note_hz, const FmRouti
     // here would have to also track alongside note_hz.
     int note_round = (int)lroundf(69.0f + 12.0f * log2f(note_hz / 440.0f));
     uint8_t midinote = (uint8_t)std::clamp(note_round, 0, 127);
-    fm_voice_note_on(ops, patch, inc, /*amplitude=*/32767, midinote, &peg, &lfo);
+    fm_voice_note_on<DxEnvGlue>(ops, patch, inc, /*amplitude=*/32767, midinote, &peg, &lfo);
 
     std::vector<int32_t> dl(total, 0), dr(total, 0);
     uint32_t done = 0;
     while (done < total) {
         uint32_t n = std::min(NATIVE_BUFFER, total - done);
-        fm_render_voice(ops, patch, routing, bus, /*pan=*/0, dl.data() + done, dr.data() + done, n,
-                         &peg, &lfo, inc, mod_wheel);
+        fm_render_voice<FM_TABLE_BITS, DxEnvGlue>(ops, patch, routing, bus, /*pan=*/0, dl.data() + done, dr.data() + done, n,
+                                                   &peg, &lfo, inc, mod_wheel);
         done += n;
     }
 
@@ -288,7 +288,7 @@ static bool run_eg_shape_check() {
 
     FmOp ops[FM_NUM_OPS];
     uint32_t inc = fm_phase_inc(220.0f);
-    fm_voice_note_on(ops, FM_TEST_PATCH, inc, /*amplitude=*/32767, /*midinote=*/57);  // A3, matches 220Hz
+    fm_voice_note_on<DxEnvGlue>(ops, FM_TEST_PATCH, inc, /*amplitude=*/32767, /*midinote=*/57);  // A3, matches 220Hz
 
     // Step in FM_BLOCK-sized increments (same granularity the device
     // uses), recording each operator's gain at 25ms and 1000ms:
@@ -301,7 +301,7 @@ static bool run_eg_shape_check() {
     auto step_to = [&](uint32_t target_sample, int32_t out_gain[FM_NUM_OPS]) {
         while (done < target_sample) {
             uint32_t n = std::min(FM_BLOCK, target_sample - done);
-            fm_voice_step_envelopes(ops, FM_TEST_PATCH, n);
+            fm_voice_step_envelopes<DxEnvGlue>(ops, FM_TEST_PATCH, n);
             done += n;
         }
         for (uint8_t i = 0; i < FM_NUM_OPS; i++) out_gain[i] = ops[i].gain;
@@ -371,7 +371,7 @@ static bool run_release_check() {
 
     FmOp ops[FM_NUM_OPS];
     uint32_t inc = fm_phase_inc(220.0f);
-    fm_voice_note_on(ops, FM_TEST_PATCH, inc, /*amplitude=*/32767, /*midinote=*/57);  // A3, matches 220Hz
+    fm_voice_note_on<DxEnvGlue>(ops, FM_TEST_PATCH, inc, /*amplitude=*/32767, /*midinote=*/57);  // A3, matches 220Hz
 
     // Let the note settle into its held (stage-3) shape before releasing --
     // 300ms is comfortably past every operator's stage-1/2 transition at
@@ -379,12 +379,12 @@ static bool run_release_check() {
     uint32_t done = 0;
     while (done < (uint32_t)(0.3f * SAMPLE_RATE)) {
         uint32_t n = std::min(FM_BLOCK, (uint32_t)(0.3f * SAMPLE_RATE) - done);
-        fm_voice_step_envelopes(ops, FM_TEST_PATCH, n);
+        fm_voice_step_envelopes<DxEnvGlue>(ops, FM_TEST_PATCH, n);
         done += n;
     }
     bool active_before_release = fm_voice_active(ops, routing);
 
-    fm_voice_note_off(ops);
+    fm_voice_note_off<DxEnvGlue>(ops);
     bool active_immediately_after = fm_voice_active(ops, routing);  // release just started -- must still be true
 
     // Step forward up to 5 seconds (comfortably past even a rate-40-ish
@@ -394,7 +394,7 @@ static bool run_release_check() {
     const uint32_t max_samples = (uint32_t)(5.0f * SAMPLE_RATE);
     while (release_samples < max_samples) {
         uint32_t n = std::min(FM_BLOCK, max_samples - release_samples);
-        fm_voice_step_envelopes(ops, FM_TEST_PATCH, n);
+        fm_voice_step_envelopes<DxEnvGlue>(ops, FM_TEST_PATCH, n);
         release_samples += n;
         if (!fm_voice_active(ops, routing)) { became_idle = true; break; }
     }
@@ -474,7 +474,7 @@ static bool run_pitch_eg_check() {
     FmPitchEg peg2;
     FmLfo lfo2;
     uint32_t note_inc = fm_phase_inc(220.0f);
-    fm_voice_note_on(ops, patch, note_inc, 32767, /*midinote=*/57, &peg2, &lfo2);
+    fm_voice_note_on<DxEnvGlue>(ops, patch, note_inc, 32767, /*midinote=*/57, &peg2, &lfo2);
     // The operator's neutral-pitch increment is resolved at note-on into
     // FmOp::base_inc, so read it from there rather than recomputing -- which
     // also checks that note-on actually stored it.
@@ -629,8 +629,8 @@ static bool run_lfo_check() {
     patch.op[4].am_sensitivity = 0;  // modulator: no AMS -- must be unaffected
     FmOp ops_a[FM_NUM_OPS], ops_b[FM_NUM_OPS];
     uint32_t inc = fm_phase_inc(220.0f);
-    fm_voice_note_on(ops_a, patch, inc, 32767, 57);
-    fm_voice_note_on(ops_b, patch, inc, 32767, 57);
+    fm_voice_note_on<DxEnvGlue>(ops_a, patch, inc, 32767, 57);
+    fm_voice_note_on<DxEnvGlue>(ops_b, patch, inc, 32767, 57);
     // Run both to a real, settled nonzero gain first (rate-99's attack is
     // fast but not literally one FM_BLOCK=16-sample/0.36ms step, per
     // run_eg_shape_check()'s own 25ms checkpoint) before comparing --
@@ -638,12 +638,12 @@ static bool run_lfo_check() {
     // fail without AM being the reason.
     uint32_t settle = 0;
     while (settle < (uint32_t)(0.05f * SAMPLE_RATE)) {
-        fm_voice_step_envelopes(ops_a, patch, FM_BLOCK, 0.0f);
-        fm_voice_step_envelopes(ops_b, patch, FM_BLOCK, 0.0f);
+        fm_voice_step_envelopes<DxEnvGlue>(ops_a, patch, FM_BLOCK, 0.0f);
+        fm_voice_step_envelopes<DxEnvGlue>(ops_b, patch, FM_BLOCK, 0.0f);
         settle += FM_BLOCK;
     }
-    fm_voice_step_envelopes(ops_a, patch, FM_BLOCK, /*amp_atten=*/0.0f);
-    fm_voice_step_envelopes(ops_b, patch, FM_BLOCK, /*amp_atten=*/0.8f);
+    fm_voice_step_envelopes<DxEnvGlue>(ops_a, patch, FM_BLOCK, /*amp_atten=*/0.0f);
+    fm_voice_step_envelopes<DxEnvGlue>(ops_b, patch, FM_BLOCK, /*amp_atten=*/0.8f);
     bool am_reduces_ok = ops_b[5].gain < ops_a[5].gain;
     bool am_unaffected_ok = ops_b[4].gain == ops_a[4].gain;
 

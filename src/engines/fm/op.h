@@ -14,18 +14,24 @@
 #include <arm_acle.h>
 #endif
 
-// FM operator kernel (#44, module_fm.md §5.2): FmOp + the three per-sample
-// variants, plus the note-on/block/voice glue that turns a resolved
-// FmRouting (patch.h) into real audio. Per-sample bodies use the same table
-// (sine_tab.h's real 4096-entry table, not rig.h's standalone bench copy),
-// the same fm_mul_gain convention, and the same phase-wrap-is-free indexing
-// as rig.h's op_render/op_render_first/op_render_fb. See "The fixed-point
-// contract" below (fm_scale.h) for the single anchor everything derives
-// from. module_fm.md §3.6 covers the tuning-lever decisions baked in here
-// (SMULWB, flash placement, no op-pair interleaving). No pico-sdk dependency
-// beyond the conditional arm_acle.h include (device only), so this header
-// is shared by the device engine and the host render/test harness, exactly
-// like render.h/rig.h.
+// FM operator kernel: FmOp + the three per-sample variants, plus the
+// note-on/block/voice glue that turns a resolved FmRouting (patch.h) into
+// real audio. Per-sample bodies read each operator's own `table` pointer
+// (not a single global table -- see FmOp below) using the same
+// fm_mul_gain convention and the same phase-wrap-is-free indexing as
+// rig.h's op_render/op_render_first/op_render_fb. `op_render`/
+// `op_render_first`/`op_render_fb` and `fm_voice_render_block` are
+// templated on the table's bit width so a different-sized waveform table
+// costs nothing extra per sample -- the shift is a compile-time constant
+// either way. `fm_voice_note_on`/`fm_voice_step_envelopes`/
+// `fm_voice_note_off` are templated on an envelope-glue policy type
+// (env_dx.h's `DxEnvGlue`, the only one that exists today) instead of
+// calling `env_dx_*`/`dx7_*` functions directly, so a build variant with a
+// different envelope family can plug in without editing this file. See
+// "The fixed-point contract" below (fm_scale.h) for the single anchor
+// everything derives from. No pico-sdk dependency beyond the conditional
+// arm_acle.h include (device only), so this header is shared by the device
+// engine and the host render/test harness, exactly like render.h/rig.h.
 
 // BLOCK size (module_fm.md §3.6, closed by #45). Overridable at compile time
 // (`-DT00T_FM_BLOCK=8/32`, wired through CMakeLists.txt/Makefile the same
@@ -50,6 +56,13 @@ struct FmOp {
     int32_t *out;           // modulation bus, or the shared voice output bus
     int32_t  fb1, fb2;      // op_render_fb only: last two post-gain outputs (see op_render_fb's own comment)
     EnvDX    eg;            // this operator's own 4-stage envelope
+    // Per-operator waveform table, indexed by the kernel's top TABLE_BITS
+    // phase bits -- a struct field rather than a link-time constant so a
+    // future build variant's operators can each point at a differently
+    // sized table (or different waveforms per operator) without the
+    // per-sample kernel changing at all. Set at note-on; FM always points
+    // it at sine_tab.h's fm_sine_table.
+    const int16_t *table;
     // There is no separate `static_log2`/`rate_scale_qrate` field: output
     // level, key level scaling and velocity compose into the envelope's own
     // `outlevel` (env_dx.h's dx7_note_outlevel), and key rate scaling into
@@ -77,23 +90,26 @@ inline int32_t fm_mul_gain(int32_t sample, int32_t gain) {
 }
 
 
-// Plain kernel: accumulates (+=) into `out`. F2 removed the per-call
-// `out_shift` parameter -- there is one output scale now, not a carrier one
-// and a modulator one -- and left the shape otherwise unchanged
-// (module_fm.md §3.2).
+// Plain kernel: accumulates (+=) into `out`. There is one output scale
+// (fm_scale.h's fixed-point contract) -- not a carrier one and a modulator
+// one. `TABLE_BITS` is a compile-time constant, so the phase shift below
+// costs nothing extra per sample regardless of the operator's table size.
+template <uint32_t TABLE_BITS>
 inline void op_render(FmOp &op, uint32_t n) {
+    constexpr uint32_t PHASE_SHIFT = 32 - TABLE_BITS;
     uint32_t phase = op.phase;
     uint32_t inc = op.inc;
     int32_t gain = op.gain;
     int32_t gain_step = op.gain_step;
     const int32_t *in = op.in;
     int32_t *out = op.out;
+    const int16_t *table = op.table;
     for (uint32_t i = 0; i < n; i++) {
         phase += inc;
         // Phase wrap is free: the shift alone produces exactly a
-        // FM_TABLE_BITS-wide index, no mask, no modulo (module_fm.md §3.2).
-        uint32_t idx = (phase + ((uint32_t)in[i] << FM_MOD_SHIFT)) >> FM_PHASE_SHIFT;
-        int32_t sample = fm_sine_table[idx];
+        // TABLE_BITS-wide index, no mask, no modulo.
+        uint32_t idx = (phase + ((uint32_t)in[i] << FM_MOD_SHIFT)) >> PHASE_SHIFT;
+        int32_t sample = table[idx];
         out[i] += fm_mul_gain(sample, gain);
         gain += gain_step;
     }
@@ -102,18 +118,21 @@ inline void op_render(FmOp &op, uint32_t n) {
 }
 
 // First-writer variant: stores instead of accumulating, so its target bus
-// never needs clearing (module_fm.md §4.3/§5.2).
+// never needs clearing.
+template <uint32_t TABLE_BITS>
 inline void op_render_first(FmOp &op, uint32_t n) {
+    constexpr uint32_t PHASE_SHIFT = 32 - TABLE_BITS;
     uint32_t phase = op.phase;
     uint32_t inc = op.inc;
     int32_t gain = op.gain;
     int32_t gain_step = op.gain_step;
     const int32_t *in = op.in;
     int32_t *out = op.out;
+    const int16_t *table = op.table;
     for (uint32_t i = 0; i < n; i++) {
         phase += inc;
-        uint32_t idx = (phase + ((uint32_t)in[i] << FM_MOD_SHIFT)) >> FM_PHASE_SHIFT;
-        int32_t sample = fm_sine_table[idx];
+        uint32_t idx = (phase + ((uint32_t)in[i] << FM_MOD_SHIFT)) >> PHASE_SHIFT;
+        int32_t sample = table[idx];
         out[i] = fm_mul_gain(sample, gain);
         gain += gain_step;
     }
@@ -139,18 +158,21 @@ inline void op_render_first(FmOp &op, uint32_t n) {
 // safe by either scheduling a non-feedback first-writer ahead of it on a
 // shared bus, or (clear_bus_mask) pre-zeroing a bus whose only writer is
 // this op.
+template <uint32_t TABLE_BITS>
 inline void op_render_fb(FmOp &op, uint32_t n, int32_t fb_shift) {
+    constexpr uint32_t PHASE_SHIFT = 32 - TABLE_BITS;
     uint32_t phase = op.phase;
     uint32_t inc = op.inc;
     int32_t gain = op.gain;
     int32_t gain_step = op.gain_step;
     int32_t *out = op.out;
+    const int16_t *table = op.table;
     int32_t fb1 = op.fb1, fb2 = op.fb2;
     for (uint32_t i = 0; i < n; i++) {
         int32_t fb_mod = (fb1 + fb2) >> (fb_shift + 1);
         phase += inc;
-        uint32_t idx = (phase + ((uint32_t)fb_mod << FM_MOD_SHIFT)) >> FM_PHASE_SHIFT;
-        int32_t sample = fm_sine_table[idx];
+        uint32_t idx = (phase + ((uint32_t)fb_mod << FM_MOD_SHIFT)) >> PHASE_SHIFT;
+        int32_t sample = table[idx];
         int32_t scaled = fm_mul_gain(sample, gain);
         out[i] += scaled;
         fb2 = fb1;
@@ -173,11 +195,14 @@ struct FmVoiceBuses {
 // Renders one sub-block (<= FM_BLOCK samples) of all six operators,
 // following the routing resolved once at note-on (patch.h's FmRouting) --
 // nothing here depends on note/velocity/bend, only on `r` and each op's
-// already-set phase/inc/gain. This is module_fm.md §4.1's claim in code: `r.order`
-// plus `r.in_bus`/`r.out_bus`/`r.kernel` (bus *pointers* and a processing
-// *position*, both resolved at note-on) are the entire routing
-// implementation -- nothing about which patch is playing appears inside
-// op_render/op_render_first/op_render_fb themselves.
+// already-set phase/inc/gain/table. `r.order` plus `r.in_bus`/`r.out_bus`/
+// `r.kernel` (bus *pointers* and a processing *position*, both resolved at
+// note-on) are the entire routing implementation -- nothing about which
+// patch is playing appears inside op_render/op_render_first/op_render_fb
+// themselves. `TABLE_BITS` selects the table-width instantiation of the
+// three kernels; every operator on a given voice shares it (a mixed-width
+// voice would need per-operator dispatch, which no build variant needs).
+template <uint32_t TABLE_BITS>
 inline void fm_voice_render_block(FmOp ops[FM_NUM_OPS], const FmRouting &r,
                                    const FmVoiceBuses &bus, uint32_t n) {
     for (uint8_t b = 0; b < FM_NUM_OPS; b++) {
@@ -193,16 +218,16 @@ inline void fm_voice_render_block(FmOp ops[FM_NUM_OPS], const FmRouting &r,
         uint8_t i = r.order[k];
         FmOp &op = ops[i];
         // Carrier vs modulator decides only which *bus* this operator writes
-        // to, never how loudly it writes -- F2's contract (see FM_CYCLE): the
-        // number is phase deviation either way, and the output bus is simply
-        // read as audio instead of as phase.
+        // to, never how loudly it writes -- the number is phase deviation
+        // either way, and the output bus is simply read as audio instead of
+        // as phase.
         bool is_carrier = (r.out_bus[i] == FM_TARGET_OUT);
         op.in = (r.in_bus[i] == FM_BUS_ZERO) ? fm_zero_bus : bus.mod[r.in_bus[i]];
         op.out = is_carrier ? bus.out : bus.mod[r.out_bus[i]];
         switch (r.kernel[i]) {
-            case FM_KERNEL_FIRST:    op_render_first(op, n); break;
-            case FM_KERNEL_FEEDBACK: op_render_fb(op, n, r.fb_shift[i]); break;
-            default:                 op_render(op, n);       break;
+            case FM_KERNEL_FIRST:    op_render_first<TABLE_BITS>(op, n); break;
+            case FM_KERNEL_FEEDBACK: op_render_fb<TABLE_BITS>(op, n, r.fb_shift[i]); break;
+            default:                 op_render<TABLE_BITS>(op, n);       break;
         }
     }
 }
@@ -255,17 +280,20 @@ inline uint32_t fm_op_base_inc(const FmOpParams &p, uint32_t note_inc,
 }
 
 // Note-on: resolves every operator's phase/inc from the patch and the
-// note's base increment (already pitch-bent by Core 0), triggers its EG
-// (env_dx.h's env_dx_init() -- stage 0 from silence), which also folds in
-// output level, key level scaling, velocity and key rate scaling -- the
-// note-on-time-only pieces of #45/#48's level/rate chain (module_fm.md §5.6: all
-// of it is "resolved once per note-on and never touched again"). `midinote`
-// (raw MIDI 0-127) is the one piece those two DX7 features need that
+// note's base increment (already pitch-bent by Core 0), and triggers its
+// envelope through `EnvGlue` -- a policy type exposing the same `init`/
+// `release`/`step_block` shape as env_dx.h's `DxEnvGlue` (the only
+// implementation today; FM's own call sites select it explicitly), so this
+// function doesn't hardcode which envelope family or note-on-time scaling
+// (output level, key/rate scaling, velocity) an operator uses. `midinote`
+// (raw MIDI 0-127) is the one piece those DX7 features need that
 // `note_inc` alone can't give back -- see engine.h's VoiceParams::note.
 // `gain`/`gain_step` are deliberately NOT set here -- fm_voice_step_envelopes()
 // sets them every block, starting from silence on the very
 // first block of this note, so there is no separate "initial gain" to get
-// right here.
+// right here. `table` always points at sine_tab.h's fm_sine_table -- FM has
+// only ever had the one table.
+template <typename EnvGlue>
 inline void fm_voice_note_on(FmOp ops[FM_NUM_OPS], const FmPatch &patch,
                               uint32_t note_inc, int16_t amplitude, uint8_t midinote,
                               FmPitchEg *peg = nullptr, FmLfo *lfo = nullptr) {
@@ -282,39 +310,27 @@ inline void fm_voice_note_on(FmOp ops[FM_NUM_OPS], const FmPatch &patch,
         op.fb2 = 0;
         op.in = fm_zero_bus;
         op.out = nullptr;  // assigned per sub-block by fm_voice_render_block()
-        // F3: one call, Dexed's own composition order. `outlevel` folds
-        // output level, key level scaling and velocity together (env_dx.h's
-        // dx7_note_outlevel), and the envelope itself folds THAT into each
-        // stage's target -- rather than the engine carrying a separate static
-        // offset and adding it afterwards.
-        //
-        // `amplitude` is VoiceParams' Q15 velocity; Dexed's ScaleVelocity
-        // wants the raw MIDI 0-127 it was derived from, so it is recovered
-        // here. The round trip is exact for every velocity, since Core 0
-        // built it as velocity/127 * 32767 (midi_controller.cpp).
-        int velocity = ((int)amplitude * 127 + 16383) / 32767;
-        env_dx_init(op.eg, p.eg_rate, p.eg_level,
-                    dx7_note_outlevel(p, midinote, velocity),
-                    dx7_scale_rate(midinote, p.rate_scaling));
+        op.table = fm_sine_table;
+        EnvGlue::init(op.eg, p, midinote, amplitude);
     }
-    // #49: pitch EG/LFO are per-VOICE (not per-operator), so their state
-    // lives in the caller's own arrays (audio_engine.cpp), not FmOp --
-    // optional pointers so callers that don't care about #49's feature set
+    // Pitch EG/LFO are per-VOICE (not per-operator), so their state lives in
+    // the caller's own arrays (audio_engine.cpp), not FmOp -- optional
+    // pointers so callers that don't care about that feature set
     // (older/simpler host tests) can still call this unchanged.
     if (peg) fm_pitch_eg_trigger(*peg, patch.pitch_eg);
     if (lfo) fm_lfo_trigger(*lfo, patch.lfo.key_sync);
 }
 
-// Note-off: releases every operator's EG (env_dx.h's env_dx_release() --
-// jump to stage 4 from wherever it currently is). Every operator releases,
+// Note-off: releases every operator's EG through `EnvGlue` (jump to the
+// release stage from wherever it currently is). Every operator releases,
 // not just carriers -- a modulator's own decay shapes the carrier's timbre
-// for as long as the carrier is still sounding (module_fm.md's EP patch: op4's
-// fast decay is what makes the carrier's tone dim after the attack).
+// for as long as the carrier is still sounding.
+template <typename EnvGlue>
 inline void fm_voice_note_off(FmOp ops[FM_NUM_OPS], FmPitchEg *peg = nullptr) {
     for (uint8_t i = 0; i < FM_NUM_OPS; i++) {
-        env_dx_release(ops[i].eg);
+        EnvGlue::release(ops[i].eg);
     }
-    if (peg) fm_pitch_eg_release(*peg);  // #49: jump to the pitch EG's own release stage from wherever it is, same convention as the amplitude EGs above
+    if (peg) fm_pitch_eg_release(*peg);  // jump to the pitch EG's own release stage from wherever it is, same convention as the amplitude EGs above
 }
 
 // A voice may be reported free only once every operator that actually
@@ -370,13 +386,13 @@ inline float fm_voice_step_pitch_and_mod(FmOp ops[FM_NUM_OPS], const FmPatch &pa
     return lfo_amp_atten;
 }
 
-// Steps every operator's EG by one control block (env_dx.h's
-// env_dx_step_block()) and sets `gain`/`gain_step` from the result
-// (module_fm.md §5.3). Everything here runs once per block, not once
-// per sample: this is the only place outside note-on that touches `gain`,
-// and op_render/op_render_first/op_render_fb never see any of env_dx.h --
-// from the kernel's point of view this could be a fixed gain, a hand-set
-// ramp, or an EG, and it wouldn't know the difference (module_fm.md §4.1).
+// Steps every operator's EG by one control block through `EnvGlue` (see
+// fm_voice_note_on()) and sets `gain`/`gain_step` from the result.
+// Everything here runs once per block, not once per sample: this is the
+// only place outside note-on that touches `gain`, and
+// op_render/op_render_first/op_render_fb never see any envelope type at
+// all -- from the kernel's point of view this could be a fixed gain, a
+// hand-set ramp, or an EG, and it wouldn't know the difference.
 //
 // `amp_atten` (0..1, from lfo.h) is subtracted from each operator's
 // LOG-domain level, BEFORE the exp lookup that turns it into a gain --
@@ -392,6 +408,7 @@ inline float fm_voice_step_pitch_and_mod(FmOp ops[FM_NUM_OPS], const FmPatch &pa
 // an operator with AMS > 0 is slightly attenuated even on a patch with
 // AMD = 0. Skipping that when the LFO happens to be at rest would put a
 // step discontinuity into a patch's level the moment the wheel moved.
+template <typename EnvGlue>
 inline void fm_voice_step_envelopes(FmOp ops[FM_NUM_OPS], const FmPatch &patch, uint32_t n,
                                      float amp_mod = 0.0f) {
     // At most three distinct factors are possible (AMS 1-3), so this is
@@ -413,13 +430,12 @@ inline void fm_voice_step_envelopes(FmOp ops[FM_NUM_OPS], const FmPatch &patch, 
         const FmOpParams &p = patch.op[i];
         FmOp &op = ops[i];
 
-        // F3: the envelope is now stepped once and read twice -- its level
-        // before and after this block -- rather than returning a pair of log2
-        // offsets to be composed with a separate static term. `gain` is the
-        // block's starting gain and `gain_step` the per-sample delta, exactly
-        // as before, so the per-sample kernel is untouched by any of this.
+        // The envelope is stepped once and read twice -- its level before
+        // and after this block. `gain` is the block's starting gain and
+        // `gain_step` the per-sample delta, so the per-sample kernel is
+        // untouched by any of this.
         int32_t level_start = op.eg.level;
-        int32_t level_end = env_dx_step_block(op.eg, n);
+        int32_t level_end = EnvGlue::step_block(op.eg, n);
 
         // Amp mod lands here, in the log domain, between the envelope and
         // eg_to_gain() -- exactly where Dexed puts it (`level -= ldiff` just
@@ -446,14 +462,16 @@ inline void fm_voice_step_envelopes(FmOp ops[FM_NUM_OPS], const FmPatch &patch, 
 // would render silence anyway; this just skips paying for it, mirroring
 // the subtractive engine's `if (!envelope[v].active()) break;`.
 //
-// #49: `peg`/`lfo` are optional (default nullptr, same convention
+// `peg`/`lfo` are optional (default nullptr, same convention
 // fm_voice_note_on()/fm_voice_note_off() use) -- when both are given, every
 // sub-block also steps the voice's pitch EG and LFO
 // (fm_voice_step_pitch_and_mod()) and folds the LFO's amplitude-mod output
 // into fm_voice_step_envelopes(). A caller that omits them gets no live
 // pitch bend recompute at all -- every real caller (device and host) passes
 // real state; nullptr only exists for isolated kernel-only tests that don't
-// care about any of this.
+// care about any of this. `TABLE_BITS`/`EnvGlue` are threaded straight
+// through to fm_voice_render_block()/fm_voice_step_envelopes().
+template <uint32_t TABLE_BITS, typename EnvGlue>
 inline void fm_render_voice(FmOp ops[FM_NUM_OPS], const FmPatch &patch, const FmRouting &r,
                              const FmVoiceBuses &bus, int16_t pan,
                              int32_t *dry_l, int32_t *dry_r, uint32_t frames,
@@ -468,11 +486,11 @@ inline void fm_render_voice(FmOp ops[FM_NUM_OPS], const FmPatch &patch, const Fm
         if (n > FM_BLOCK) n = FM_BLOCK;
         if (peg && lfo) {
             float amp_atten = fm_voice_step_pitch_and_mod(ops, patch, *peg, *lfo, note_inc, n, mod_wheel);
-            fm_voice_step_envelopes(ops, patch, n, amp_atten);
+            fm_voice_step_envelopes<EnvGlue>(ops, patch, n, amp_atten);
         } else {
-            fm_voice_step_envelopes(ops, patch, n);
+            fm_voice_step_envelopes<EnvGlue>(ops, patch, n);
         }
-        fm_voice_render_block(ops, r, bus, n);
+        fm_voice_render_block<TABLE_BITS>(ops, r, bus, n);
         for (uint32_t i = 0; i < n; i++) {
             // The output bus is in FM_CYCLE units like every other bus; this
             // is the single point where it stops being phase-deviation and
