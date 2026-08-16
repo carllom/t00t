@@ -1415,3 +1415,54 @@ sustained pitch step) halved to +2/-1. Both `sam_allophones.h` and
 `sam_phrases.h` regenerated; host suite re-run clean (12/12 + 10/10
 Python tests, full host-render harness). Re-flash and a second listen
 pending.
+
+## Speech Engine — S.A.M. Profiling Rig Phases (#74, code prep)
+
+#69's final slice needs a real profiling-pin reading, which needs Carl at
+the bench -- not something this session can do. What's ready in the
+meantime: `PROFILE_SAM` phases added to `audio_engine.cpp`'s
+`T00T_SPEECH_PROFILE` rig, the same idle/1/2/4/8-voice shape #67 already
+established for the LPC lattice tract, directly comparable phase-for-phase
+against the formant tract's own ~93.5 c/f/voice and LPC's ~77.5. Each
+phase retriggers straight into `SamVoiceState` (mirroring the LPC phases'
+own `LatticeVoiceState` placement-construct) and holds a single,
+table-agnostic allophone index (1 -- valid whether or not
+`T00T_SPEECH_HAS_SAM_DATA` is defined, same reasoning the host harness's
+own mode/wrap checks already use, since render cost doesn't depend on
+which specific allophone is held). Builds clean in both
+`SPEECH_PROFILE=1` and the plain speech build.
+
+**Not yet done:** the actual measurement. `make ENGINE=speech
+SPEECH_PROFILE=1`, flash, read the profiling pin (GPIO 22) across the five
+new SAM phases the same way the formant/LPC phases were already read.
+
+**Measured on real `breadboard_rp2350`.** Carl read the five SAM phases'
+Core 1 duty cycle directly: 0.0/2.0/4.0/8.0/16.0% at idle/1/2/4/8 voices --
+"extremely even," his own words, and indeed exactly linear (2.0% per
+voice at every voice count, no rounding needed). Converted with the same
+formula #67's LPC measurement already established (`duty% * BUF_PERIOD_US
+* 150 MHz / (256 output frames * voice count)`):
+
+| phase | reading | c/f/voice |
+|---|---|---|
+| SAM 1/2/4/8v | 2.0/4.0/8.0/16.0% | 68.03, flat |
+
+**Cheaper than both other tracts** (68.0 vs. formant's 93.5 and LPC's
+77.5) -- plausible on its own terms: three parallel resonators plus one
+frication branch (`sam.h`) is less per-sample work than the formant
+cascade's five plus two, at the same 22.05 kHz native rate.
+
+**Decision: `MAX_VOICES` stays 8, shared across all three tracts,
+unchanged.** Since SAM measured cheaper than the formant tract (the
+existing worst case), the shared pool's cost is already bounded by
+numbers already on record -- no fresh reverb-combined reading was needed,
+the same reasoning #67's own LPC decision already established: a tract
+that measures cheaper than an already-characterized worst case doesn't
+change what that worst case is. Carl confirmed this reading and the
+decision.
+
+Acceptance criteria all met: cost measured across the full 1-8 voice
+range, compared explicitly against both other tracts' figures,
+`MAX_VOICES` confirmed with no follow-up needed, measurement recorded in
+both `module_speech.md` and here. This closes #69's epic -- every child
+issue (#70-74) is now implemented and hardware-verified.
