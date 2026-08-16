@@ -1,6 +1,7 @@
 #include "audio_engine.h"
 #include "render.h"
 #include "phrases.h"
+#include "sam_phrases.h"
 #include "fx/delay.h"
 #include "fx/reverb.h"
 #include "hardware/gpio.h"
@@ -282,11 +283,10 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
                 // No display support for LPC state in this pass -- the
                 // per-voice phoneme grid/F1-F2 plot are formant-specific.
                 s_voice_ui[v] = { 0, 0, PHONEME_COUNT, voices[v].active };
-            } else if (p.tract == SPEECH_TRACT_SAM) {
-                // SAM tract bring-up: no reciter or allophone-table import
-                // tool exists yet, so every SAM voice plays straight from
-                // sam.h's hardcoded fixture, one sustained allophone per
-                // note like the formant tract's own phoneme keyboard.
+            } else if (p.tract == SPEECH_TRACT_SAM && p.utterance == SPEECH_NO_UTTERANCE) {
+                // SAM phoneme keyboard: one sustained allophone per note, no
+                // sequencer -- same shape as the formant tract's own HOLD
+                // path just below.
                 speech_render_voice_sam(voices[v], p.phase_inc, (float)SPEECH_RATE, p.trigger,
                                          p.amplitude, p.gate, p.phoneme, p.pan,
                                          dry_l, dry_r, NATIVE_SAMPLES_PER_BUFFER);
@@ -294,6 +294,16 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
                 // No display support for SAM state in this pass -- see the
                 // LPC lattice branch above for the same reasoning.
                 s_voice_ui[v] = { 0, 0, PHONEME_COUNT, p.gate };
+            } else if (p.tract == SPEECH_TRACT_SAM) {
+                // SAM phrase sequencer (tools/samgen.py's generated
+                // SAM_PHRASES, indexed by p.utterance the same way the
+                // formant tract's own SPEECH_PHRASES already is).
+                const SamUtterance &utt = SAM_PHRASES[p.utterance % SAM_PHRASE_COUNT];
+                speech_render_voice_sam_seq(voices[v], p.phase_inc, (float)SPEECH_RATE, p.trigger,
+                                             p.amplitude, p.gate, utt, p.mode, p.rate, p.pan,
+                                             dry_l, dry_r, NATIVE_SAMPLES_PER_BUFFER);
+                if (voices[v].active) active_mask |= (1u << v);
+                s_voice_ui[v] = { 0, 0, PHONEME_COUNT, voices[v].active };
             } else if (p.utterance == SPEECH_NO_UTTERANCE) {
                 // Phoneme keyboard: one sustained phoneme, no sequencer --
                 // active mirrors gate directly, since there's no utterance

@@ -1,0 +1,24 @@
+# sam_phrases.txt -- plain-text phrase list for tools/samgen.py's
+# `gen-phrases` command (#72, module_speech.md "SAM Tract"). Generates
+# src/engines/speech/sam_phrases.h.
+#
+# Format: one phrase per line, `NAME: word word word`. NAME becomes enum
+# value SAM_PHRASE_<NAME> in sam_phrases.h. Words are run through
+# sam_reciter.py's SAM-flavored letter-to-sound + stress engine, except a
+# word with an attached `{SYM [*]SYM ...}` override -- `machine{M AX SH *IY
+# N}` -- which keeps the word's spelled form for SAM_PHRASE_TEXT[] but
+# replaces its pronunciation with an explicit allophone list (symbols from
+# sam2allophones.py's SAM_ALLOPHONE_NAMES; a leading `*` marks that
+# allophone stressed) instead of running the rules on it at all.
+#
+# Same demo phrases as tools/speech_phrases.txt (the formant tract's own
+# phrase list) so the same words are comparable across tracts. A silent SIL
+# segment is inserted between words and once more at the end of every
+# phrase automatically -- don't add it by hand.
+
+HELLO_WORLD: hello world
+GOOD_MORNING: good morning
+NOW_PLAYING: now playing
+TRACK_SAVED: track saved
+VOICE_TEST: voice test
+DRUM_MACHINE: the drum machine{M AX SH *IY N}

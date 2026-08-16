@@ -3,8 +3,10 @@
 A formant (Klatt-reduced) speech synthesis engine: a phoneme keyboard,
 utterance/phrase playback, a reserved-but-unimplemented singing mode, an
 LPC lattice sibling tract playing back real TMS5220 chip-speech words, and
-a S.A.M.-style sibling tract with a converted allophone table but no
-reciter or MIDI addressing of its own yet. See `engine.md` for the shared
+a S.A.M.-style sibling tract with its own from-scratch reciter, phrase
+bank, and pitch contour, still reachable only through the CC102/CC20
+bring-up hooks (no preset-table entry or display support of its own yet).
+See `engine.md` for the shared
 dual-core architecture; `architecture.md`
 for the cross-engine `VoiceParams`/CMake pattern this module follows;
 `history_speech.md` for build-phase results and full performance
@@ -62,12 +64,16 @@ shimmer are all live MIDI controls) rather than just a talking clock.
   and summed independently (parallel, not cascaded), reusing the same
   glottal-pulse/LFSR-noise excitation, selected per voice by
   `VoiceParams::tract`. Renders at the same native rate and zero-order-hold
-  doubling as the formant tract. No reciter or MIDI word-addressing scheme
-  exists yet: every SAM voice plays one sustained allophone, indexed the
-  same way the formant tract's phoneme keyboard is, from the generated
-  allophone table (`tools/sam2allophones.py`) once converted locally, or a
-  small hardcoded fixture (`sam.h`'s `SAM_TEST_ALLOPHONES`) otherwise — see
-  SAM Tract and MIDI Mapping.
+  doubling as the formant tract. A phoneme keyboard (one sustained
+  allophone, indexed the same way the formant tract's own phoneme keyboard
+  is) and a phrase sequencer (a from-scratch English letter-to-sound +
+  stress reciter, `tools/sam_reciter.py`, feeding a build-time phrase bank
+  reached through the same Program-Change/CC23/CC28 mechanism the formant
+  tract already uses) both exist; allophone targets come from the
+  generated table (`tools/sam2allophones.py`) once converted locally, or a
+  small hardcoded fixture (`sam.h`'s `SAM_TEST_ALLOPHONES`) otherwise. A
+  per-segment pitch-contour target gives phrases S.A.M.'s characteristic
+  stress overshoot — see SAM Tract and MIDI Mapping.
 
 ### MIDI Mapping (Input Capabilities)
 
@@ -99,17 +105,18 @@ encoder block.
 | 103 | LPC pitch-shift multiplier | Q8.8 override on a word's own recorded pitch contour, 0.5x–2x | live |
 | 104 | LPC excitation select | Shared `glottal_pulse()`/noise (<64) vs. the TMS5220's own chirp table + LFSR, paired (≥64) | live |
 
-**Program Change** is tract-dependent: under the formant tract it selects
-an utterance (same value CC23 writes) — phoneme selection is CC20-only;
-under the LPC lattice tract it selects the `KEY_PER_WORD` page instead
-(see LPC Lattice Tract). The two meanings never collide, since only one
-tract is active per channel at a time; the SAM tract has no Program-Change
-meaning of its own yet. "Live" CCs push directly into every currently-held
-voice on the channel, not just the per-channel default for future notes.
-CC102–119 is a reserved block for tract-specific controls, disjoint from
-the formant tract's CC16–28; CC103/104 are LPC-specific, and CC20's
-existing phoneme-select band also reaches the SAM tract's own smaller
-fixture (wrapped, not a dedicated CC of its own yet).
+**Program Change** is tract-dependent: under the formant and SAM tracts it
+selects a phrase (same value CC23 writes — SAM's own `SAM_PHRASES`, not
+the formant tract's `SPEECH_PHRASES`) — phoneme/allophone selection is
+CC20-only; under the LPC lattice tract it selects the `KEY_PER_WORD` page
+instead (see LPC Lattice Tract). The three meanings never collide, since
+only one tract is active per channel at a time. "Live" CCs push directly
+into every currently-held voice on the channel, not just the per-channel
+default for future notes. CC102–119 is a reserved block for tract-specific
+controls, disjoint from the formant tract's CC16–28; CC103/104 are
+LPC-specific, and CC20's existing phoneme-select band also reaches the SAM
+tract's own smaller allophone set (wrapped, not a dedicated CC of its
+own).
 
 ### Display (Presentation Capabilities)
 
@@ -144,6 +151,7 @@ src/engines/speech/
   phonemes.h        GENERATED — phoneme target table
   phrases.h         GENERATED — utterance phoneme strings
   sam_allophones.h  GENERATED, gitignored — SAM allophone target table
+  sam_phrases.h     GENERATED — SAM phrase bank (allophones + pitch contour)
   utterance.h       two hand-picked fixtures (HELLO/CAT), used only by
                      host regression checks
   presets.h         SpeechPreset, voice_apply_preset(), preset table
@@ -214,6 +222,25 @@ open S.A.M. reimplementations (e.g. https://github.com/s-macke/SAM) to run
 `convert` or the reference-gated half of `tools/test_sam2allophones.py`. See
 `sam2allophones.py`'s own module docstring for exactly what is and isn't
 read from that reference data.
+
+`tools/samgen.py` — host-side generator, the SAM tract's own counterpart to
+`speechgen.py`:
+
+```
+samgen.py gen-phrases <phrases.txt> <out.h>   # tools/sam_phrases.txt -> sam_phrases.h
+```
+
+`tools/sam_reciter.py` — a curated, host-only, from-scratch English
+letter-to-sound + stress engine used by `gen-phrases`, independent of
+`nrl_rules.py` (own rule table, own output vocabulary
+(`sam2allophones.py`'s `SAM_ALLOPHONE_NAMES`), own stress-assignment pass)
+though it reimplements the same public NRL-style (Elovitz et al. 1976)
+technique. A mispronounced or mis-stressed word gets an inline override
+(`machine{M AX SH *IY N}`, `*` marking the stressed allophone) rather than
+growing the rule table. `sam_phrases.h` is generated from original content
+(the reciter's own rules, a generic English word list) with no proprietary
+source, so — unlike `sam_allophones.h` — it's committed normally, not
+gitignored.
 
 ## Architecture
 
@@ -515,14 +542,13 @@ native rate and zero-order-hold ×2 resample path -- there's no single
 native sample rate specific to this tract's own source material to
 target, unlike the LPC lattice tract's TMS5220-matched 8 kHz.
 
-**No word-addressing scheme or reciter yet**: every SAM voice plays one
-sustained allophone, held under gate like the formant tract's own phoneme
-keyboard. `VoiceParams::phoneme` -- the same field the formant tract's
-phoneme keyboard reads -- indexes `render.h`'s `sam_allophone_target()`,
-which resolves to the full generated allophone table once one has been
-converted locally, or `sam.h`'s small hardcoded `SAM_TEST_ALLOPHONES`
-fixture (silence, three vowels, one fricative) otherwise -- a voice is
-always valid whichever data source is active.
+**Phoneme keyboard**: `VoiceParams::utterance == SPEECH_NO_UTTERANCE`
+plays one sustained allophone, held under gate, exactly like the formant
+tract's own phoneme keyboard -- `VoiceParams::phoneme` indexes `render.h`'s
+`sam_allophone_target()`, which resolves to the full generated allophone
+table once one has been converted locally, or `sam.h`'s small hardcoded
+`SAM_TEST_ALLOPHONES` fixture (silence, three vowels, one fricative)
+otherwise -- a voice is always valid whichever data source is active.
 
 **Allophone table**: `tools/sam2allophones.py` converts locally-supplied
 S.A.M. reference headers (e.g. `RenderTabs.h`/`SamTabs.h` from one of the
@@ -535,13 +561,42 @@ technique, not Hz values for a resonant filter, so the tool extends the
 same Peterson & Barney (1952) published acoustic data
 `tools/speech_phonemes.csv` already uses instead. What *is* read from the
 reference data is genuinely S.A.M.-specific: which allophones are
-noise-driven (`sampledConsonantFlags`, mapped to `af`/`amp`) and each
+noise-driven (`sampledConsonantFlags`, mapped to `af`/`amp`), each
 formant's relative loudness (`ampl1data`/`ampl2data`/`ampl3data`, through
-the reference's own rescale curve, mapped to `amp`). Without a converted
-table present locally, every SAM voice plays the fixture; the reference
-source directory (`sam/`) and the generated header are both gitignored,
-only the converter is committed -- see `tools/sam2allophones.py`'s own
-module docstring for the full sourcing breakdown.
+the reference's own rescale curve, mapped to `amp`), and each allophone's
+duration (`phonemeLengthTable`, linearly rescaled into milliseconds).
+Without a converted table present locally, every SAM voice plays the
+fixture; the reference source directory (`sam/`) and the generated header
+are both gitignored, only the converter is committed -- see
+`tools/sam2allophones.py`'s own module docstring for the full sourcing
+breakdown.
+
+**Phrase sequencer and reciter**: `VoiceParams::utterance` selecting a
+phrase (the same Program-Change/CC23/CC28 mechanism the formant tract
+already uses, its meaning resolved per-tract at render time) routes a SAM
+voice through `speech_render_voice_sam_seq()` instead -- the same
+sub-block-cut-inside-the-loop shape as the formant tract's own
+`speech_render_voice_seq()`, stepping through a `SamUtterance`
+(`sam.h`: parallel allophone-index and pitch-offset arrays, plus
+`release_index` for `SPEECH_MODE_GATED`) one segment at a time.
+`tools/sam_reciter.py` (a from-scratch English letter-to-sound + stress
+engine, independent of the formant tract's own `nrl_rules.py`) and
+`tools/samgen.py` (phrase-list parsing and header emission, the SAM
+tract's counterpart to `speechgen.py`) turn `tools/sam_phrases.txt` into
+`sam_phrases.h`'s `SAM_PHRASES[]` at build time -- no on-device text entry,
+since this hardware has no text-entry UI. Segment duration comes from
+`sam_allophone_target()`'s resolved `duration_ms` (`sam_seg_duration_samples()`,
+scaled by the voice's live `rate` the same way the formant tract's own
+`speech_seg_duration_samples()` is).
+
+**Pitch contour**: each phrase segment carries its own pitch-offset target
+(semitones, baked in by the reciter's stress assignment -- +3 on a
+stressed allophone, a small negative "declination" on the last voiced
+segment before a phrase's trailing pause, 0 otherwise), ramped by
+`sam_advance_subblock()` the same way F/B/amp already are and applied as a
+multiplier on the glottal phase increment (`exp2f(pitch_offset/12)`, the
+same musical semitone-to-multiplier mapping vibrato already uses) --
+S.A.M.'s characteristic overshoot/undershoot on stressed syllables.
 
 ### Resonator and the Stability Rule
 
@@ -686,14 +741,7 @@ Full measurement breakdown: `history_speech.md`.
 
 ### Future / TODO
 
-- **SAM reciter** — a from-scratch English letter-to-sound reciter and a
-  build-time phrase bank (the allophone/pitch-table import tool is done,
-  see `tools/sam2allophones.py`) are a separate, later slice.
-- **SAM pitch contour** — the stress-driven pitch overshoot/undershoot
-  that gives S.A.M. its characteristic cadence is unbuilt; planned to be
-  baked in by the reciter and rendered as a per-segment ramped target,
-  the same shape F/B targets already ramp.
-- **SAM MIDI/CC integration** — beyond the CC102 tract-select band, the
+- **SAM MIDI/CC integration** — beyond the CC102/CC20 bring-up hooks, the
   SAM tract has no live controls, preset-table entry, or display support
   of its own yet.
 - **Further LPC addressing modes** — `KEY_PER_WORD` is the only
@@ -1016,6 +1064,47 @@ Full measurement breakdown: `history_speech.md`.
     differently (`RenderTabs.h` vs `SamTabs.h`) depending on which fork
     supplied them, so the converter shouldn't need to know or care which
     file a given array lives in.
+45. **`sam_reciter.py` is a fully independent file, not importing
+    `nrl_rules.py`'s rule-matching machinery** — the generic
+    context-template mechanism itself is a reimplementation of the public
+    1976 NRL technique both files already cite, not one file's own
+    invention, but importing it would tie the two reciters together in a
+    way #69's "kept separate" decision doesn't intend; two independent
+    reimplementations of a public algorithm, targeting two different
+    output vocabularies, cost little to keep apart.
+46. **Stress assignment is a heuristic (first non-schwa vowel, function
+    words unstressed), not a lookup** — correctly predicting English word
+    stress needs a pronouncing dictionary this project doesn't have. A
+    word it gets wrong is fixed with a `WORD_EXCEPTIONS` entry, the same
+    "curated set plus inline overrides" posture `nrl_rules.py` already
+    established for pronunciation itself.
+47. **Terminal declination (a small negative pitch offset on a phrase's
+    last voiced segment) is applied by `samgen.py` at the phrase level,
+    not by `sam_reciter.py` at the word level** — falling end-of-utterance
+    intonation is a property of where a word sits in a phrase, not of the
+    word in isolation, so it belongs with the code that already assembles
+    words into a phrase's segment sequence.
+48. **The SAM sequencer (`sam_seg_load()`/`sam_sequencer_advance()`/
+    `speech_render_voice_sam_seq()`) lives in `render.h`, not `sam.h`** —
+    it needs `sam_allophone_target()`'s fixture-vs-generated-table
+    resolver, which itself lives in `render.h` to avoid a circular
+    include (`tract.h` includes `sam.h` before the resolver's
+    conditionally-included generated header would be visible); `sam.h`
+    stays limited to the tract's own DSP primitives and data shapes, as
+    #71 already established.
+49. **`sam_phrases.h` encodes allophones as plain integers, not `SAM_ID_*`
+    enumerator names** — unlike `phrases.h`'s `PH_*` references
+    (`phonemes.h` is always present), `sam_allophones.h` is optional and
+    gitignored, so a header that's supposed to build regardless of
+    whether it exists locally can't name symbols only it defines.
+50. **A SAM phrase's allophone indices are only meaningful once a
+    generated allophone table has actually been converted locally** —
+    without one, they wrap into `sam.h`'s 5-entry fixture the same way a
+    phoneme-keyboard index already does: safe (finite, no crash, no
+    out-of-bounds read), not intelligible. Accepted rather than blocking
+    phrase generation on the reference data's presence, the same
+    fallback-safety contract #71 already established for the phoneme
+    keyboard.
 
 ## Glossary
 

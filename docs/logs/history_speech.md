@@ -1240,3 +1240,101 @@ pass on the default and `fm` engines.
 checked on host only), the reciter and build-time phrase bank, MIDI/CC
 integration beyond the existing CC102/CC20 bring-up hooks, pitch contour,
 and per-voice cost measurement remain separate, later slices of #69.
+
+## Speech Engine — S.A.M. Reciter, Phrase Bank, and Pitch Contour (#72)
+
+#69's third slice: a from-scratch English letter-to-sound + stress engine
+(`tools/sam_reciter.py`), a phrase-bank generator (`tools/samgen.py`,
+mirroring `speechgen.py`'s role), a new sequenced render path
+(`speech_render_voice_sam_seq()`), and per-segment pitch-contour targets.
+
+**Own reciter, not a re-skinned `nrl_rules.py`.** Reimplements the same
+public NRL-technique context-template matching independently (own file, own
+`Rule`/regex machinery, not imported) targeting SAM's own allophone
+segmentation -- notably, single allophones for stops (`P`/`B`/`T`/`D`/`K`/`G`)
+rather than the formant tract's closure+burst pairs, since `sam.h` has no
+plosive-segment mechanism. Ordinary NRL-style rule-authoring bugs turned
+up immediately once real words were tested: several `WORD_EXCEPTIONS`
+stress indices pointed at a consonant instead of the intended vowel
+("good" stressed on `G`, "track" on `T`, "drum" on `D`, "playing" on `L`,
+"machine" on the final `N`) -- caught by `test_sam_reciter.py` asserting
+exactly one stressed allophone per curated word and printing the mismatch,
+not by inspection.
+
+**Stress is a heuristic, not a lookup**: a content word's first
+non-schwa vowel is primary-stressed; a small set of function words (the
+kind #35's own `WORD_EXCEPTIONS` list already names) get none at all.
+Genuinely predicting English stress needs a pronouncing dictionary this
+project doesn't have -- the same "curated set plus inline override" bar
+`nrl_rules.py` already sets for pronunciation itself, extended to stress.
+
+**Pitch contour is two independent pieces, at two different levels.**
+`sam_reciter.py`'s `assign_stress()` marks *which* allophone in a word is
+stressed; `samgen.py` turns that into a signed semitone offset per
+segment (+3 stressed, 0 otherwise) and adds one phrase-level rule of its
+own -- a small negative "terminal declination" on the last voiced segment
+before a phrase's trailing pause, falling end-of-utterance intonation
+being a property of phrase position, not of a word in isolation. `sam.h`
+gained `pitch_offset`/`pitch_offset_tgt` (ramped by `sam_advance_subblock()`
+exactly like F/B/amp) and `sam_snap_pitch()`/`sam_set_pitch_target()`; the
+sequenced render path applies the ramped value as `exp2f(pitch_offset/12)`
+on the glottal phase increment, the same semitone-to-multiplier mapping
+vibrato already uses.
+
+**Sequencer added a `duration_ms` field #71 had deliberately left out** --
+nothing consumed a per-allophone duration until this slice's sequencer
+needed one to know how long to hold each segment. Extended
+`SamAllophoneTarget` and re-ran `sam2allophones.py` against the real,
+already-fetched reference data: `phonemeLengthTable`'s raw tick values
+(no documented ms conversion in any checked source) get a simple linear
+scale (`ticks * 6`, clamped to [20, 200] ms) landing typical entries in
+the same range `speech_phonemes.csv`'s own durations already occupy.
+
+**Bug caught by rebuilding without the generated table, not by
+inspection**: the pitch-contour host check initially hardcoded the
+generated table's own index for "AA" (9) -- correct only when
+`T00T_SPEECH_HAS_SAM_DATA` happens to be defined; without it,
+`sam_allophone_target()`'s resolver wraps that same index onto the
+5-entry fixture's `/s/` (index 4), a fricative with no voiced formant
+content at all, and the "does pitch rise" measurement came back negative
+noise. Fixed by testing the pitch-ramp primitives directly
+(`sam_retrigger()`/`sam_set_pitch_target()`/`sam_advance_subblock()`), the
+same resolver-bypassing shape `render_sam_target_native()` already uses
+for the fixture check -- a test of the mechanism itself shouldn't depend
+on which table happens to be linked in. A second bug in the same
+function (`done == half`, an equality check against a value `done` -- which
+steps by `SPEECH_SUBBLOCK` -- never actually lands on) was caught by the
+same rebuild-without-data run, fixed with a "has this threshold been
+crossed yet" flag instead.
+
+**`sam_phrases.h` is committed, not gitignored** -- unlike
+`sam_allophones.h`, its inputs (the reciter's own rules, a generic English
+phrase list) carry no proprietary reference data, so it follows
+`phrases.h`'s own precedent instead. It encodes allophones as plain
+integers rather than `SAM_ID_*` names specifically so it has no hard
+compile-time dependency on the optional, gitignored `sam_allophones.h`
+existing -- meaningful pronunciation needs the generated table converted
+locally; without one, phrases still build and play, just through the
+5-entry fixture's wrap.
+
+**No `midi_controller.cpp` changes were needed at all** -- CC23/Program
+Change/CC28 already write the same `channel_utterance` field regardless
+of tract; only the render-time resolution (which phrase table
+`p.utterance` indexes into) needed to become tract-dependent, exactly the
+pattern Program Change's LPC-vs-formant meaning already established.
+
+Host-render harness: every `SAM_PHRASES[]` entry renders to WAV (finite,
+unclipped, reaches completion) in both configurations (with and without
+the generated allophone table); the pitch-ramp check and a
+`SPEECH_MODE_GATED` release-bound check (mirroring the formant sequencer's
+own) both pass. `test_sam_reciter.py`: 10 checks, including a regression
+lock that every word `tools/sam_phrases.txt`'s demo phrases use still
+recites without raising. Device firmware builds clean in four
+configurations (with/without the generated table, x plain speech
+engine/`SPEECH_PROFILE=1`) plus a sanity pass on the default and `fm`
+engines.
+
+**Not yet done at this point:** hardware verification, MIDI/CC integration
+beyond the existing CC102/CC20 bring-up hooks (no preset-table entry,
+throat/mouth-style live controls, or display support), and per-voice cost
+measurement remain separate, later slices of #69.
