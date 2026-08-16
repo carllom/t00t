@@ -208,3 +208,80 @@ attack/decay trajectory). `make host` (top-level) builds
 domains' output is shape-comparable to `nuked_dump`'s for the same domains.
 `make ENGINE=opl` and `make ENGINE=fm` both still build clean -- this was
 host-tooling-only work, nothing device-side changed.
+
+### Nuked-OPL3 Curve Conformance (#80)
+
+The correction #78/#79 both explicitly deferred: `tools/opl_ctl_diff.py`
+(mirroring `tools/fm_ctl_diff.py`'s exact-table/tolerance-trajectory split)
+plus the `env_opl.h` fixes it found.
+
+`table/mult` and `table/tl` passed on the first run, as #79 already
+predicted. `table/ksl` needed real work: `env_opl.h` previously attenuated
+KSL as a flat dB-per-octave slope above a hand-picked breakpoint note, with
+no relationship to Nuked-OPL3's actual `kslrom[16]`/`kslshift[4]` ROM tables.
+Ported those two tables verbatim, plus a `opl_note_to_fnum_block()` helper
+that re-derives the block/f-number a real chip would have been programmed
+with for a given MIDI note (t00t itself never encodes pitch that way
+elsewhere -- its phase increment comes from a plain float frequency) so
+`opl_ksl_db()` can run the chip's own ROM-lookup formula instead of the old
+guess. `t00t_opl_ctl_dump.cpp`'s `ksl` domain was rewritten to dump the same
+two raw tables Nuked's own `nuked_dump` does, rather than its previous
+differently-shaped flat-slope dump -- both sides now emit literally the same
+CSV shape, which is what let `table/ksl` become an exact (not just
+shape-comparable) row-for-row diff.
+
+The envelope rate table (`OPL_RATE_TIME_S`, a hand-guessed geometric spread)
+was replaced with a closed-form law calibrated against real measurements of
+Nuked-OPL3's own `eg` dump: real hardware doubles its envelope speed every 4
+steps of a *combined* rate (`ks + reg_rate<<2`, Nuked-OPL3's own
+`OPL3_EnvelopeCalc`), not every step of the raw 4-bit register alone --
+confirmed by sweeping `nuked_dump --domain eg` across the full register
+range and measuring actual crossing times, which came out doubling almost
+exactly per register step at zero key-scale. `opl_effective_rate()`'s old
+midinote-based heuristic boost was replaced with `opl_combined_rate()`,
+which derives the same real `ksv` (block, top bit of f-number) the rate
+formula on real hardware actually uses, reusing `opl_note_to_fnum_block()`
+above. Attack and decay/release get separate reference times (measured
+independently, since attack's real process -- an exponential approach to the
+ceiling -- and decay/release's -- a constant per-tick register step -- are
+physically different even though both follow the same doubling law); this at
+least lands the linear ramp's total duration on the real hardware number
+instead of a guess, though the shape gap itself (linear vs. curved) remains,
+same as #78 already documented.
+
+Chasing the largest early mismatches surfaced two things beyond curve
+tuning:
+
+- **Real hardware's top attack rate is a genuine one-sample snap, not just a
+  very fast ramp.** Nuked-OPL3's own "instant attack" case (`reset &&
+  rate_hi==0x0f`) sets the envelope register straight to its ceiling rather
+  than ramping it, even at maximum speed. `env_opl_advance()`'s attack case
+  now special-cases `combined_rate >= 60` (real hardware's `rate_hi==15`)
+  the same way, snapping `level` to `targetlevel` directly instead of
+  computing an inc that would still take several samples to arrive.
+- **Percussive mode (EGT off) was decaying to silence at the *decay* rate
+  the whole way, not the *release* rate past the sustain point.** Comparing
+  against Nuked-OPL3 directly (not just by ear) found this: real hardware's
+  own envelope generator always transitions decay into what would be the
+  sustain state once it reaches the SL register, and *that* state, not
+  decay, is what continues toward silence using the release rate when EGT is
+  off (`OPL3_EnvelopeCalc`'s `envelope_gen_num_sustain` case falls through to
+  `reg_rr` whenever `reg_type` is 0). `env_opl_advance()`'s stage-2 case now
+  matches: decay always targets the sustain level, and stage 2 either holds
+  there (sustain mode) or keeps moving at the release rate (percussive) --
+  this was a real correctness bug the by-ear pass above never had a way to
+  catch, not a tuning gap.
+
+Final tolerances: decay/release/percussive/KSL-attenuation cases hold FM's
+own tight trajectory tolerance (0.5 dB mean, 5 dB max) once the fixes above
+landed -- real decay/release are already linear in the log domain on real
+hardware, so nothing but the rate law and the two bugs above stood between
+this module and an exact match. Attack cases get a much wider, explicitly
+documented tolerance (10 dB mean, 45 dB max) that accepts the known
+linear-vs-exponential shape gap while still catching a rate table wrong by
+more than that gap alone. All 13 domains pass. `render_opl`'s existing
+bounded/non-silent/idle-after-release check and `make ENGINE=opl` both still
+pass unchanged after the `env_opl.h` rewrite. Needs Carl to reflash and
+confirm the percussive-mode fix and the retuned rate law still sound right
+by ear -- this pass only checked against Nuked-OPL3's numbers, not the
+speakers.
