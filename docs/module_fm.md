@@ -97,8 +97,11 @@ src/engines/fm/
   fm_scale.h          the fixed-point contract (FM_CYCLE/FM_GAIN_MAX/...) —
                        the single anchor op.h/env_dx.h/lfo.h all derive
                        their scale from
-  op.h                FmOp + the three render kernels, note-on/block/voice glue
-  env_dx.h            the DX7 envelope, a direct port of Dexed's Env
+  op.h                FmOp + the three render kernels (templated on
+                       waveform-table bit width), note-on/block/voice glue
+                       (templated on an envelope-glue policy type)
+  env_dx.h            the DX7 envelope, a direct port of Dexed's Env, plus
+                       DxEnvGlue -- op.h's DX7 envelope-glue policy
   pitch_eg.h          voice-wide pitch EG
   lfo.h               voice-wide LFO
   sine_tab.h          the operator sine table
@@ -213,6 +216,7 @@ struct FmOp {
     int32_t *out;            // output bus (or the shared voice mix bus)
     int32_t  fb1, fb2;       // op_render_fb only: last two post-gain outputs
     EnvDX    eg;              // this operator's own 4-stage envelope
+    const int16_t *table;     // this operator's waveform table (FM always uses fm_sine_table)
 };
 ```
 
@@ -224,6 +228,18 @@ eliminating the need to clear a bus before its first writer touches it.
 The `in`/`out` pointers, the kernel selection, and the processing order
 are the entire routing implementation; nothing else changes between
 algorithms.
+
+All three kernels, plus `fm_voice_render_block`/`fm_render_voice`, are
+templated on the waveform table's bit width, so a per-operator `table`
+pointer of a different size costs nothing extra per sample -- the phase
+shift is still a compile-time constant. `fm_voice_note_on`/
+`fm_voice_step_envelopes`/`fm_voice_note_off` are templated on an
+envelope-glue policy type (`env_dx.h`'s `DxEnvGlue`, bundling Dexed's own
+note-on composition and its `init`/`release`/`step_block` calls) instead of
+calling the DX7 envelope functions directly. FM's own call sites select
+`DxEnvGlue` explicitly; both mechanisms exist so a future build variant's
+kernel and voice glue can plug in a different table and envelope family
+without forking this file.
 
 A modulator can drive more than one carrier at once (DX7 algorithms
 19–25): a bus is not treated as emptied by its first reader, so every
@@ -341,8 +357,9 @@ By-Ear Pass, and the ORCH-CHIME RAM Fix".
 - **Free-routing UI / patch model beyond the 32 DX7 algorithms** — not
   started; the engine can already render arbitrary DAG+feedback routings,
   but nothing exposes that beyond what a converted `.syx` patch specifies.
-- **X2 — operator waveform variants** (saw/square/half-sine, DX11/TX81Z
-  style) — one extra table, zero extra inner-loop cost; not built, low
+- **Operator waveform variants** (saw/square/half-sine, DX11/TX81Z style) —
+  the per-operator table pointer (see Decision Record) makes this a data
+  problem, not a kernel one, but no patch data or UI exposes it yet; low
   priority pending headroom.
 - **Core0/Core1 XIP cache contention** — the "keep the kernel in flash"
   measurement (see Decision Record) was taken with Core 0 doing
@@ -460,6 +477,15 @@ By-Ear Pass, and the ORCH-CHIME RAM Fix".
     routing model here are DX7-specific, not generic across FM chip
     families. Revisit only if a concrete need for a shared, cost-weighted
     pool arises, with a fresh design pass at that point.
+20. **The waveform table is a per-operator struct field, and the envelope
+    family is a template parameter, not a runtime branch or a second copy
+    of `op.h`.** Both are resolved at compile time (the table-width shift
+    and the envelope-glue calls are both fixed once a template is
+    instantiated), so a future engine sharing this kernel with a different
+    table size or envelope family costs nothing extra per sample and
+    doesn't fork the file. FM's own call sites instantiate both explicitly
+    rather than relying on a default, so which envelope family and table a
+    given build uses is visible at the call site, not implicit.
 
 ## Glossary
 

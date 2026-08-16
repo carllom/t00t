@@ -197,7 +197,7 @@ int main(int argc, char **argv) {
     const uint32_t note_inc = fm_phase_inc(freq_hz);
     const int16_t  amplitude = (int16_t)((a.velocity / 127.0f) * 32767.0f);
 
-    fm_voice_note_on(ops, patch, note_inc, amplitude, (uint8_t)a.note, &peg, &lfo);
+    fm_voice_note_on<DxEnvGlue>(ops, patch, note_inc, amplitude, (uint8_t)a.note, &peg, &lfo);
 
     const uint32_t gate_frames  = (uint32_t)(a.gate * SAMPLE_RATE);
     const uint32_t total_frames = (uint32_t)((a.gate + a.tail) * SAMPLE_RATE);
@@ -219,7 +219,7 @@ int main(int argc, char **argv) {
 
     for (uint32_t done = 0; done < total_frames; done += SAMPLES_PER_BUFFER) {
         if (!released && done >= gate_frames) {
-            fm_voice_note_off(ops, &peg);
+            fm_voice_note_off<DxEnvGlue>(ops, &peg);
             released = true;
         }
 
@@ -229,8 +229,8 @@ int main(int argc, char **argv) {
         // fm_render_voice() accumulates, same convention as the device mixer.
         std::fill(dry_l.begin(), dry_l.begin() + n, 0);
         std::fill(dry_r.begin(), dry_r.begin() + n, 0);
-        fm_render_voice(ops, patch, routing, bus, /*pan=*/0, dry_l.data(), dry_r.data(), n,
-                        &peg, &lfo, note_inc, (int16_t)((a.mod_wheel / 127.0f) * 32767.0f));
+        fm_render_voice<FM_TABLE_BITS, DxEnvGlue>(ops, patch, routing, bus, /*pan=*/0, dry_l.data(), dry_r.data(), n,
+                                                   &peg, &lfo, note_inc, (int16_t)((a.mod_wheel / 127.0f) * 32767.0f));
 
         if (!freed_at && released && !fm_voice_active(ops, routing)) freed_at = done;
 
