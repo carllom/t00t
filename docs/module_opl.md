@@ -118,6 +118,16 @@ envelope trajectory) from each side; `tools/opl_ctl_diff.py` diffs them
 (mirroring the DX7 module's own `fm_ctl_diff.py`) — exact for the register
 tables, tolerance-based for the envelope trajectories (see Decision Record).
 
+`tools/host_render/render_opl_patch.cpp` — CLI-driven counterpart to
+`render_opl.cpp` above, rendering one `patches.h` patch at a chosen note/
+velocity/gate/tail through the same device code path, matching
+`nuked_render`'s own CLI shape. `tools/opl_compare.py` renders a patch
+through both sides and scores the pair (harmonic/attack/envelope MAE,
+reusing the DX7 module's own `fm_compare.py` scorer unmodified);
+`tools/opl_regress.py`/`opl_thresholds.json` sweep every patch across a
+note/velocity grid against a committed baseline, mirroring the DX7 module's
+own `fm_regress.py`/`fm_thresholds.json`.
+
 ## Architecture
 
 ### Kernel Reuse, Not a Fork
@@ -210,9 +220,6 @@ around ahead of time.
   `eg/attack-*` cases, at a deliberately wide tolerance), not the shape
   itself. Closing this would need the ramp itself to become non-linear, not
   just another round of rate-table tuning.
-- **`fm_regress.py`-equivalent spectral/perceptual regression** — the DX7
-  module's own conformance work has both a control-plane diff
-  (`fm_ctl_diff.py`) and a signal-plane one; OPL only has the former so far.
 - **Patch bank converter** — hand-authored patches only for now; no
   `.op2`/GENMIDI-class converter exists yet.
 - **OPL1 (sine-only subset) and OPL3 (4-operator)** — not started. The

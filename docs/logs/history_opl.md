@@ -285,3 +285,51 @@ pass unchanged after the `env_opl.h` rewrite. Needs Carl to reflash and
 confirm the percussive-mode fix and the retuned rate law still sound right
 by ear -- this pass only checked against Nuked-OPL3's numbers, not the
 speakers.
+
+### Spectral/Envelope Audio Regression Baseline (#81)
+
+The signal-plane counterpart #80 deferred: a committed audio regression gate
+for the OPL module, mirroring the DX7 module's own `fm_regress.py`/
+`fm_thresholds.json`.
+
+`tools/host_render/render_opl_patch.cpp` is the new piece the gate needed:
+`render_opl.cpp` (used by #78 onward) only ever renders its fixed sanity
+sweep, with no CLI. The new tool takes the same kind of note/velocity/gate/
+tail arguments `nuked_render` does, plus `--patch N` indexing `patches.h`,
+and a `--list` mode that prints every patch's registers as CSV in
+`nuked_render`'s own `--op0`/`--op1` field order -- so `tools/opl_compare.py`
+builds `nuked_render`'s arguments straight from `patches.h`, the one place
+patch data is defined, instead of keeping a second hand-copied Python table
+in sync with it. Vibrato is fixed off in the new tool (`mod_wheel=0`):
+Nuked-OPL3's own vibrato register is never written by `nuked_render`, and a
+pitch modulation present on only one side would read as a harmonic-tracking
+error unrelated to the engine under test.
+
+`tools/opl_compare.py` renders a patch through both sides and scores it --
+and reuses the DX7 module's own `fm_compare.py` `compare()`/`print_report()`
+unmodified rather than re-implementing harmonic tracking, STFT geometry and
+envelope-feature extraction a second time; that scorer only assumes two
+mono-normalisable WAVs of a known note; nothing in it is FM-specific. The
+same reuse-not-reimplement move the chip module's `sid_compare.py` already
+made for the AY module.
+
+`tools/opl_regress.py` mirrors `fm_regress.py`'s shape with one structural
+difference: FM sweeps several named `.syx` banks of 32 voices each; OPL has
+no bank converter yet (module_opl.md's Future/TODO), so `patches.h`'s five
+hand-authored patches are the whole corpus, and each note/velocity config's
+row aggregates (mean and worst) over those five rather than over 32 voices
+pulled from a file. Same three gated metrics as the FM gate (harmonic MAE,
+attack-window MAE, envelope MAE) and the same tolerance shape (30% headroom
+or +0.35 dB, whichever is larger).
+
+`--update` against the five patches x five note/velocity configs (three
+octaves apart plus a second velocity, same reasoning as `fm_regress.py`'s
+own `CONFIGS`) produced `opl_thresholds.json`; a plain run against that
+baseline passes clean. Measured numbers land in the high single digits to
+low teens of dB on harmonic/attack MAE and mid-single-digits to ~20 dB on
+envelope MAE depending on patch and velocity -- expected at this stage: the
+attack-curve shape gap (Future/TODO, already tolerance-widened in
+`opl_ctl_diff.py`) and the velocity-to-TL folding both show up here as
+timbral and level differences a spectral scorer can see, not bugs this pass
+found or fixed. The gate's job from here is to catch a *regression* against
+these numbers, the same role the FM gate already plays.

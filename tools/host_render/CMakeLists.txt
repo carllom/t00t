@@ -116,6 +116,20 @@ target_include_directories(render_opl PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}/../../src
 )
 
+# CLI-driven counterpart to render_opl, above: takes the same kind of
+# arguments tools/opl_ref/nuked_render.cpp does (note/velocity/gate/tail),
+# so tools/opl_compare.py and tools/opl_regress.py (issue #81) can render
+# both sides of a comparison. No patches.h presence-gate needed, same as
+# t00t_opl_ctl_dump below -- OPL's patches.h is checked in, not generated.
+add_executable(render_opl_patch
+    render_opl_patch.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/../../src/osc/sine.cpp
+)
+target_include_directories(render_opl_patch PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}
+    ${CMAKE_CURRENT_LIST_DIR}/../../src
+)
+
 # CHIP_STRICT reference-diff harness (module_chip.md §11.1). Takes the same
 # CLI as tools/sid_ref/resid_render.cpp; tools/sid_compare.py runs both and
 # scores the difference. Header-only against src/chip/, no extra .cpp inputs.
