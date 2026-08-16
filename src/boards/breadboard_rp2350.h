@@ -5,9 +5,9 @@
 //
 //   Pico 2 pin          PCM5122 pin     GPIO
 //   ─────────────────────────────────────────
-//   GPIO 16  (pin 21)   BCK             Bit clock
-//   GPIO 17  (pin 22)   WSEL            Word select (LRCK)
 //   GPIO 18  (pin 24)   DIN             Data in
+//   GPIO 19  (pin 25)   BCK             Bit clock
+//   GPIO 20  (pin 26)   WSEL            Word select (LRCK)
 //   3V3 OUT  (pin 36)   VIN             Power (3.3V)
 //   GND      (pin 38)   GND             Ground
 //
@@ -18,6 +18,9 @@
 // DIN MIDI in (via optocoupler) → UART1 RX, GPIO 5 (pin 7), 31250 baud.
 //
 // Profiling pin: GPIO 22 (directly probe on breadboard)
+//
+// GPIO 16/17 (pins 21/22) are reserved for the Pico SWD probe's UART
+// TX/RX tap — kept free of any peripheral function here.
 
 // -----------------------------------------------------
 // NOTE: THIS HEADER IS ALSO INCLUDED BY ASSEMBLER SO
@@ -29,7 +32,7 @@
 
 // --- I2S DAC pins ---
 #define PICO_AUDIO_I2S_DATA_PIN       18
-#define PICO_AUDIO_I2S_CLOCK_PIN_BASE 16   // BCK=16, LRCK=17 (consecutive)
+#define PICO_AUDIO_I2S_CLOCK_PIN_BASE 19   // BCK=19, LRCK=20 (consecutive)
 
 // --- No buttons on breadboard ---
 #define HAS_BUTTONS 0
