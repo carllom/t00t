@@ -303,3 +303,51 @@ Beyond notes it also handles per-channel **CC1 (mod wheel)** → `mod_depth`
 (vibrato), **CC10 (pan)** → `pan` (subtractive engine only; live, applied to
 held voices immediately), and **pitch bend** → phase-increment ratio. CC0/CC32
 (bank select) are stored but not yet used.
+
+**Planned:** a generic input layer sits between transports and modules,
+replacing today's fully-forked per-module `midi_controller.cpp` routing with
+a shared vocabulary (input categories, below) and dispatch mechanism, while
+keeping per-module mapping tables and setters forked. See #84 and the
+Decision Record below.
+
+### Input categories
+
+- **Note** — note number, velocity, implicit voice alloc/release.
+- **Strike** — generic discrete trigger with no note semantics (drum-pad hit,
+  one-shot sample). Not called "Trigger" — see Decision Record.
+- **Modifier** — live continuous value, voice-scoped or module-global via an
+  explicit scope/target on the call.
+- **Configuration** — preset/template select; some values seed initial
+  Modifier values, some are immutable character choices.
+- **Clock** — tempo pulses (e.g. groovebox's 24 PPQN MIDI Clock).
+- **Transport** — play/pause/stop. Distinct from "MIDI transport" (the
+  USB/UART carrier layer, above) — same word, different concept.
+
+Each module declares which categories it supports; `tracker` and `groovebox`
+are excluded from generic Note/Strike (see Decision Record). Source values
+are normalized to a common unit at the layer boundary — setters never see
+raw MIDI bytes. Configurability is build-time only (no persistence mechanism
+exists in this codebase).
+
+## Decision Record
+
+1. **Input layer shares vocabulary and dispatch mechanism, not routing** —
+   `docs/logs/history_groovebox.md:618-771` documents a "shared MIDI shell +
+   per-engine routing hook" design that was planned then abandoned, because
+   per-module routing *logic* diverges too much to share via a hook (only the
+   ~60-line parser, now `midi_parser.h`, earned its sharing). The input layer
+   (#84) deliberately shares less than that attempt: category vocabulary and
+   a generic "walk a per-module table, call a setter" mechanism only — mapping
+   tables and setters stay exactly as forked as they are today.
+2. **No new event queue** — dispatch is synchronous, direct calls (source →
+   generic dispatch → per-module setter → shadow commit), preserving the "no
+   intermediate event queue" invariant in MIDI Input above.
+3. **"Strike," not "Trigger"** — `trigger` already names the per-voice
+   generation counter in every module's `VoiceParams` (see #83), so the new
+   generic-discrete-input category needed a different word to avoid the two
+   meaning different things at different layers in the same codebase.
+4. **`tracker` and `groovebox` excluded from generic Note/Strike** — `tracker`
+   has no note traffic at all; `groovebox`'s routing is channel-semantic
+   (fixed drum/pattern-select/mono-303 map), not "one voice per note."
+   Forcing either through the generic Note/Strike dispatch would recreate the
+   mismatch that sank the routing-hook design in decision 1.

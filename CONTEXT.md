@@ -128,6 +128,54 @@ parses raw bytes and maps notes to voices; fed by pluggable transports:
   [module_speech.md](docs/module_speech.md) / [history_speech.md](docs/logs/history_speech.md),
   [module_tracker.md](docs/module_tracker.md) / [history_tracker.md](docs/logs/history_tracker.md).
 
+## Language
+
+Vocabulary for the planned generic input layer (#84 — see `docs/engine.md`'s
+"MIDI Input" section and Decision Record; not yet implemented).
+
+**Input layer**:
+A shared vocabulary and dispatch mechanism, sitting between input transports
+(MIDI, buttons, future sources) and modules. It shares category types and a
+generic "walk a per-module table, call a setter" mechanism only — mapping
+tables and setter logic stay forked per module, same as today.
+
+**Note**:
+A pitched, voiced input: note number, velocity, implicit voice alloc/release.
+First-class, not a Strike.
+
+**Strike**:
+A discrete, unpitched input with no voice-alloc semantics (a drum-pad hit, a
+one-shot sample trigger).
+_Avoid_: Trigger (already means the per-voice generation counter in
+`VoiceParams`, see `docs/engine.md`'s Trigger/Gate Signaling and issue #83 —
+using it here would mean the same word means two different things at two
+different layers).
+
+**Modifier**:
+A live, continuous input value, voice-scoped or module-global depending on
+an explicit scope/target on the call (e.g. pitch bend targets held voices;
+an FX CC is module-global).
+
+**Configuration**:
+An input that selects a preset/template. Some selected values seed initial
+Modifier values; others are immutable character choices (oscillator type,
+LFO shape).
+
+**Clock**:
+A tempo-pulse input (e.g. groovebox's 24 PPQN MIDI Clock). Distinct from
+Transport.
+
+**Transport**:
+A play/pause/stop input, first-class rather than a generic Strike.
+_Avoid confusing with_: "MIDI transport" (USB vs. UART — the byte-carrying
+layer under MIDI, see the MIDI section above). Same word, unrelated concept.
+
+**Data Exchange**:
+Parked, not decided: a possible category for opaque byte-blob store/retrieve
+of module-specific table data (curves, waveforms, patch data). Mechanically
+distinct from Configuration (bulk/bidirectional/opaque vs. scalar template
+selection). No module implements anything like this today.
+
 ## Notes / gotchas
 
 - Build output in `build/` is checked into the working tree state but is generated.
