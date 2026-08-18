@@ -1,5 +1,6 @@
 #include "midi_controller.h"
 #include "midi_parser.h"
+#include "../input_layer.h"
 #include "../voice_alloc.h"
 #include "presets.h"
 #include "../osc/common.h"
@@ -65,32 +66,6 @@ static float bend_to_ratio(uint16_t bend14) {
     return powf(2.0f, semitones / 12.0f);
 }
 
-static void midi_voice_on(VoiceParamBlock &shadow, int v, uint8_t note, uint8_t velocity, uint8_t channel) {
-    const VoicePreset &pr = presets[channel_program[channel]];
-    float freq = 440.0f * powf(2.0f, (float)(note - 69) / 12.0f);
-    uint32_t base = (pr.waveform == WAVE_SAMPLE && pr.sample)
-        ? osc_sample_phase_inc(pr.sample, freq)
-        : osc_phase_inc(freq);
-
-    voice_base_inc[v] = base;
-    voice_channel[v] = channel;
-    voice_held[v] = true;
-
-    ui_state.last_note = note;
-    ui_state.last_velocity = velocity;
-    ui_state.last_channel = channel;
-    ui_state.program = channel_program[channel];
-
-    VoiceParams &vp = shadow.voices[v];
-    voice_apply_preset(vp, pr);
-    vp.phase_inc = (uint32_t)((float)base * channel_bend_ratio[channel]);
-    vp.amplitude = (int16_t)(velocity * 258);  // override with velocity
-    vp.mod_depth = channel_mod[channel];
-    vp.pan = channel_pan[channel];
-    vp.trigger++;
-    vp.gate = true;
-}
-
 // Re-scale phase_inc for every held voice on a channel after a bend change.
 static void apply_channel_bend(VoiceParamBlock &shadow, uint8_t channel) {
     for (uint32_t v = 0; v < MAX_VOICES; v++) {
@@ -118,6 +93,85 @@ static void apply_channel_pan(VoiceParamBlock &shadow, uint8_t channel) {
         }
     }
 }
+
+// --- Input-layer mapping table (#84/#85) ---
+// Pitch bend has no MIDI CC number of its own; it's given an id outside the
+// 0-127 CC range so it can share the Modifier table with real CC-driven
+// entries without colliding.
+static constexpr uint8_t MOD_ID_PITCH_BEND = 128;
+
+// Note setter: applies a resolved note on/off edge to the shadow block.
+// Voice allocation and voice_held/midi_note_voice bookkeeping stay in
+// midi_controller_process (allocator concerns, not shadow-parameter
+// content) -- this only mutates VoiceParams, same split as #83 draws
+// between edge classification and each engine's own action code.
+//
+// note/velocity arrive un-normalized (input_layer.h's fixed_velocity
+// substitution mutator only knows how to substitute raw 0-127 velocity, so
+// it has to run before any native-unit scaling); note is also an identity
+// (Strike needs it to pick a sound, not just Note to compute a pitch), so
+// it's not something to "normalize" away. The freq/amplitude math below is
+// this setter's own normalization step, same as voice_apply_preset() already
+// being setter-owned.
+static void set_note(VoiceParamBlock &shadow, const InputValue &value) {
+    if (value.note_on) {
+        const VoicePreset &pr = presets[channel_program[value.channel]];
+        float freq = 440.0f * powf(2.0f, (float)(value.note - 69) / 12.0f);
+        uint32_t base = (pr.waveform == WAVE_SAMPLE && pr.sample)
+            ? osc_sample_phase_inc(pr.sample, freq)
+            : osc_phase_inc(freq);
+
+        voice_base_inc[value.voice] = base;
+        voice_channel[value.voice] = value.channel;
+
+        ui_state.last_note = value.note;
+        ui_state.last_velocity = value.velocity;
+        ui_state.last_channel = value.channel;
+        ui_state.program = channel_program[value.channel];
+
+        VoiceParams &vp = shadow.voices[value.voice];
+        voice_apply_preset(vp, pr);
+        vp.phase_inc = (uint32_t)((float)base * channel_bend_ratio[value.channel]);
+        vp.amplitude = (int16_t)(value.velocity * 258);  // override with velocity
+        vp.mod_depth = channel_mod[value.channel];
+        vp.pan = channel_pan[value.channel];
+        vp.trigger++;
+        vp.gate = true;
+    } else {
+        shadow.voices[value.voice].gate = false;
+    }
+}
+
+static void set_mod_wheel(VoiceParamBlock &shadow, const InputValue &value) {
+    channel_mod[value.channel] = (int16_t)value.scalar;
+    apply_channel_mod(shadow, value.channel);
+}
+
+static void set_pan(VoiceParamBlock &shadow, const InputValue &value) {
+    channel_pan[value.channel] = (int16_t)value.scalar;
+    apply_channel_pan(shadow, value.channel);
+}
+
+static void set_pitch_bend(VoiceParamBlock &shadow, const InputValue &value) {
+    channel_bend_ratio[value.channel] = value.scalar;
+    apply_channel_bend(shadow, value.channel);
+}
+
+static constexpr InputCategory kCapabilities[] = {
+    InputCategory::NOTE,
+    InputCategory::MODIFIER,
+};
+
+static constexpr InputMapEntryT<VoiceParamBlock> kMappingTable[] = {
+    // category            id_low              id_high             channel   fixed_vel  setter
+    { InputCategory::NOTE,     0,                  127,                0xFF,     0,       set_note },
+    { InputCategory::MODIFIER, 1,                  1,                  0xFF,     0,       set_mod_wheel },   // CC1: mod wheel
+    { InputCategory::MODIFIER, 10,                 10,                 0xFF,     0,       set_pan },         // CC10: pan
+    { InputCategory::MODIFIER, MOD_ID_PITCH_BEND,  MOD_ID_PITCH_BEND,  0xFF,     0,       set_pitch_bend },
+};
+
+static_assert(input_table_declares_capabilities(kMappingTable, kCapabilities),
+              "subtractive mapping table entry uses an InputCategory not in kCapabilities");
 
 void midi_controller_init() {
     midi_parser.init();
@@ -167,7 +221,14 @@ void midi_controller_process(const uint8_t *data, uint32_t len, ParamExchange *p
                 int v = voice_alloc_allocate();
                 if (v >= 0) {
                     midi_note_voice[note] = (int8_t)v;
-                    midi_voice_on(shadow, v, note, ev.data2, ev.channel);
+                    InputValue value{};
+                    value.channel = ev.channel;
+                    value.note = note;
+                    value.velocity = ev.data2;
+                    value.voice = (int8_t)v;
+                    value.note_on = true;
+                    input_dispatch(shadow, kMappingTable, InputCategory::NOTE, note, value);
+                    voice_held[v] = true;
                     changed = true;
                 }
                 break;
@@ -175,7 +236,12 @@ void midi_controller_process(const uint8_t *data, uint32_t len, ParamExchange *p
             case MIDI_NOTE_OFF: {
                 int8_t v = midi_note_voice[ev.data1];
                 if (v >= 0) {
-                    shadow.voices[v].gate = false;
+                    InputValue value{};
+                    value.channel = ev.channel;
+                    value.note = ev.data1;
+                    value.voice = v;
+                    value.note_on = false;
+                    input_dispatch(shadow, kMappingTable, InputCategory::NOTE, ev.data1, value);
                     voice_held[v] = false;
                     voice_alloc_release(v);
                     midi_note_voice[ev.data1] = -1;
@@ -185,19 +251,25 @@ void midi_controller_process(const uint8_t *data, uint32_t len, ParamExchange *p
             }
             case MIDI_CC: {
                 switch (ev.data1) {
-                    case 1:  // mod wheel → vibrato depth
-                        channel_mod[ev.channel] = (int16_t)(ev.data2 * 258);  // 0..127 → ~0..32766
-                        apply_channel_mod(shadow, ev.channel);
+                    case 1: {  // mod wheel → vibrato depth
+                        InputValue value{};
+                        value.channel = ev.channel;
+                        value.scalar = (float)(ev.data2 * 258);  // 0..127 → ~0..32766
+                        input_dispatch(shadow, kMappingTable, InputCategory::MODIFIER, 1, value);
                         ui_state.mod = ev.data2;
                         ui_state.last_channel = ev.channel;
                         changed = true;
                         break;
-                    case 10:  // pan (CC10) — 0=full left, 64=center, 127=full right
-                        channel_pan[ev.channel] = (int16_t)(((int32_t)ev.data2 - 64) * 512);
-                        apply_channel_pan(shadow, ev.channel);
+                    }
+                    case 10: {  // pan (CC10) — 0=full left, 64=center, 127=full right
+                        InputValue value{};
+                        value.channel = ev.channel;
+                        value.scalar = (float)(((int32_t)ev.data2 - 64) * 512);
+                        input_dispatch(shadow, kMappingTable, InputCategory::MODIFIER, 10, value);
                         ui_state.last_channel = ev.channel;
                         changed = true;
                         break;
+                    }
                     case 74:  // effect type select — split range into FX_COUNT bands
                         shadow.fx.type = (uint8_t)((uint32_t)ev.data2 * FX_COUNT / 128u);
                         ui_state.fx_type = shadow.fx.type;
@@ -226,8 +298,10 @@ void midi_controller_process(const uint8_t *data, uint32_t len, ParamExchange *p
             }
             case MIDI_PITCH_BEND: {
                 uint16_t bend14 = (uint16_t)(ev.data1 | (ev.data2 << 7));
-                channel_bend_ratio[ev.channel] = bend_to_ratio(bend14);
-                apply_channel_bend(shadow, ev.channel);
+                InputValue value{};
+                value.channel = ev.channel;
+                value.scalar = bend_to_ratio(bend14);
+                input_dispatch(shadow, kMappingTable, InputCategory::MODIFIER, MOD_ID_PITCH_BEND, value);
                 ui_state.bend = (int16_t)((int)bend14 - PITCH_BEND_CENTER);
                 ui_state.last_channel = ev.channel;
                 changed = true;
