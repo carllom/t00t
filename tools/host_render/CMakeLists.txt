@@ -19,6 +19,15 @@ target_include_directories(render_res2p PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}/../../src
 )
 
+# Host build of src/input_layer.h (#84/#85, issue #86): the generic input
+# dispatch mechanism's own unit tests (no-arg invocation, same convention as
+# render_xm_device.cpp). Header-only, no other sources needed.
+add_executable(test_input_layer test_input_layer.cpp)
+target_include_directories(test_input_layer PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}
+    ${CMAKE_CURRENT_LIST_DIR}/../../src
+)
+
 # Host build of src/engines/tracker/mixer.h (issue #15). Pulls in osc/sine.cpp
 # for pan_gains_q15's wavetable; everything else it touches is header-only.
 add_executable(render_tracker_mixer
