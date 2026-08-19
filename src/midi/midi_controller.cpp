@@ -202,6 +202,10 @@ static constexpr InputMapEntryT<VoiceParamBlock> kMappingTable[] = {
 static_assert(input_table_declares_capabilities(kMappingTable, kCapabilities),
               "subtractive mapping table entry uses an InputCategory not in kCapabilities");
 
+void midi_controller_dispatch_note(VoiceParamBlock &shadow, uint8_t note, const InputValue &value) {
+    input_dispatch(shadow, kMappingTable, InputCategory::NOTE, note, value);
+}
+
 void midi_controller_init() {
     midi_parser.init();
     for (int i = 0; i < 128; i++) midi_note_voice[i] = -1;

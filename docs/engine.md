@@ -154,11 +154,20 @@ controller_tick(params):
   voice_alloc_update()                  // drain reverse FIFO for active bitmap
   shadow = params->active()             // start from current committed truth
   poll buttons → integrator debounce → edge detect
-    on press:  v = voice_alloc_allocate(); apply preset to shadow.voices[v];
-               phase_inc, trigger++, gate = true
-    on release: shadow.voices[v].gate = false; voice_alloc_release(v)
+    on press:   v = voice_alloc_allocate();
+                value = shape_button_event(SensorEvent, button's ButtonShapingConfig)
+                value.voice = v; midi_controller_dispatch_note(shadow, note, value)
+    on release: value = shape_button_event(...); midi_controller_dispatch_note(...);
+                voice_alloc_release(v)
   if changed: params->commit()          // flip param double-buffer
 ```
+
+Each button's debounced edge becomes a `SensorEvent` (`src/sensor_event.h`),
+Shaped into an `InputValue` via `shape_button_event()` (`src/button_shaping.h`)
+-- supplying the button's fixed note, channel, and (on press) a fixed
+velocity a bare switch has no signal for -- then dispatched through
+`midi_controller_dispatch_note()` into `subtractive`'s shared
+`kMappingTable`/`set_note` Handler, the same one MIDI note-on/off drives.
 
 There is no separate event queue: edges are applied straight to the shadow
 block and committed in the same tick.
@@ -264,9 +273,9 @@ Modular-arithmetic comparison `(int8_t)(a - b) < 0` handles wrap correctly;
 safe with ≤16 concurrent voices (gap never exceeds 128).
 
 ### Button behavior
-Each button cycles through a table of 4 notes on successive presses.
-Voice is allocated on press, released on release. Long release (800ms)
-ensures multiple voices can be heard simultaneously.
+Each button plays one fixed note, on its own channel. Voice is allocated on
+press, released on release. Long release (800ms) ensures multiple voices
+can be heard simultaneously.
 
 ## Host DSP Tooling
 
@@ -318,13 +327,23 @@ the dispatch table, since neither needs its channel/velocity matching.
 `groovebox` and `tracker` each keep their own fully independent, fully-forked
 `midi_controller.cpp` — see Decision Record.
 
+GPIO buttons (VGA board only) reach the same `kMappingTable`/`set_note`
+Handler through a parallel, non-MIDI path: `controller_tick()` turns a
+debounced edge into a `SensorEvent` (`src/sensor_event.h`), Shapes it into
+an `InputValue` via `shape_button_event()` (`src/button_shaping.h` --
+supplying the button's configured note, channel, and a fixed velocity a
+bare switch has no signal for), then calls
+`midi_controller_dispatch_note()`, a thin wrapper exposing
+`kMappingTable`/`input_dispatch()` to callers outside
+`src/midi/midi_controller.cpp`.
+
 The dispatch mechanism above (shared vocabulary and a per-module mapping
 table, #86) is built for `subtractive` only. A from-scratch redesign of the
 whole input pipeline settled a fuller vocabulary and requirement set on top
 of it without discarding the mechanism itself — see Decision Record entry 5.
-`groovebox`/`tracker` adopting it, and non-MIDI input sources (a
-`SensorEvent` type exists for GPIO buttons, `src/sensor_event.h`, not yet
-wired into a real input path), remain open work.
+`groovebox`/`tracker` adopting it, and non-MIDI input sources beyond GPIO
+buttons (e.g. potentiometers -- `SensorEvent` already covers the shape, see
+`src/sensor_event.h`), remain open work.
 
 ### Input categories
 

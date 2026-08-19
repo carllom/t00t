@@ -1,6 +1,7 @@
 #pragma once
 
 #include "engine.h"
+#include "../input_layer.h"
 #include <cstdint>
 
 // Transport-agnostic MIDI controller.
@@ -11,6 +12,12 @@ void midi_controller_init();
 
 // Feed raw MIDI bytes. Parses, handles note on/off, commits if changed.
 void midi_controller_process(const uint8_t *data, uint32_t len, ParamExchange *params);
+
+// Dispatch an already-Shaped NOTE Input event (voice already resolved by
+// the caller's own voice-allocator call) through the shared kMappingTable/
+// set_note Handler -- lets a non-MIDI NOTE source (a GPIO button) reach the
+// same Handler a MIDI note-on/off does, without duplicating its logic.
+void midi_controller_dispatch_note(VoiceParamBlock &shadow, uint8_t note, const InputValue &value);
 
 // --- Snapshot of recent MIDI activity for a display/UI (Core 0) ---
 struct MidiUiState {

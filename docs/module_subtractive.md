@@ -27,7 +27,7 @@ oscillator.
 - **Presets**: 11 factory presets (3 synthesized, 8 sample-based) — see
   `presets.h`
 - No arpeggiator or step sequencer in the engine itself; the VGA board's
-  buttons each cycle a fixed 4-note pattern (see MIDI mapping below)
+  buttons each play one fixed note (see MIDI mapping below)
 
 ### MIDI Mapping (Input Capabilities)
 
@@ -47,8 +47,9 @@ oscillator.
 | Program Change | — | 0–127 | microKORG numbering (tens digit = row, ones digit = column) mapped to one of the 11 factory presets; affects future notes only |
 
 Non-MIDI input: VGA board buttons (A/B/C, `vgaboard_rp2350` only) — each
-fixed to one preset, cycling through its own 4-note pattern on successive
-presses.
+fixed to one note/channel/preset, routed through the same Shaping →
+`input_dispatch()` → `set_note` path a MIDI note-on/off uses (see
+`engine.md`'s MIDI Input section).
 
 ### Display (Presentation Capabilities)
 
@@ -74,8 +75,9 @@ change-detected redraws only):
 
 Also draws on shared, non-engine-specific code: `src/controller.cpp`
 (VGA-board buttons — subtractive is the only engine that links it, see
-`CMakeLists.txt`) and `src/midi/midi_controller.cpp` (no engine-specific
-override).
+`CMakeLists.txt`), `src/button_shaping.h`/`src/sensor_event.h` (button
+SensorEvent → Input event Shaping), and `src/midi/midi_controller.cpp`
+(no engine-specific override).
 
 ### Build
 
@@ -246,12 +248,6 @@ Idle ~0.6%. One voice ~5–6% (more with LFO and filter both active). Delay
 insert adds ~1.5pp; reverb adds ~8pp. Measured on breadboard_rp2350 at
 44.1 kHz / 150 MHz. Full measurement history: `history_subtractive.md`.
 
-### Future / TODO
-
-GPIO button input (currently hardcoded per-button logic in
-`src/controller.cpp`) is planned to move onto the same generic dispatch
-mechanism MIDI already uses — see `engine.md`'s MIDI Input section.
-
 ## Decision Record
 
 1. **Attack is linear, decay/release are exponential** — matches how
@@ -278,6 +274,11 @@ mechanism MIDI already uses — see `engine.md`'s MIDI Input section.
 7. **Program Change uses microKORG-specific numbering** (row = tens digit,
    column = ones digit) rather than a linear 0–127 map — matches the specific
    external controller this engine was built to pair with.
+8. **Each VGA board button plays one fixed note**, not the old per-button
+   4-note cycle — a bare on/off switch has no state to key a cycle position
+   off other than the button itself, and a fixed note keeps the button's
+   Shaping config (note, channel, velocity) a plain, self-contained value
+   rather than mutable per-button state threaded through the input path.
 
 ## Glossary
 

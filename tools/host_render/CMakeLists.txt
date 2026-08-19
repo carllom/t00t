@@ -47,6 +47,15 @@ target_include_directories(test_sensor_event PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}/../../src
 )
 
+# Host build of src/button_shaping.h (ticket #104): the SensorEvent ->
+# Shaping -> input_dispatch() path a GPIO button takes to reach the same
+# Handler a MIDI note-on/off would. Header-only.
+add_executable(test_button_shaping test_button_shaping.cpp)
+target_include_directories(test_button_shaping PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}
+    ${CMAKE_CURRENT_LIST_DIR}/../../src
+)
+
 # Host build of src/voice_alloc.h/.cpp's steal-priority tiering (ticket
 # #101). Compiles the real, unmodified voice_alloc.cpp so the test exercises
 # production VoiceAllocator::init()/allocate()/release() directly -- the
