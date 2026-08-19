@@ -157,6 +157,31 @@ static void set_pitch_bend(VoiceParamBlock &shadow, const InputValue &value) {
     apply_channel_bend(shadow, value.channel);
 }
 
+// FX setters write shadow.fx -- one instance per VoiceParamBlock, not
+// per-voice -- a true module-global Modifier, unlike mod wheel/pan/pitch
+// bend above which are per-channel. Each takes the CC's raw 0-127 byte via
+// value.scalar and does its own byte->native conversion, same as every
+// other setter in this file.
+static void set_fx_type(VoiceParamBlock &shadow, const InputValue &value) {
+    shadow.fx.type = (uint8_t)((uint32_t)value.scalar * FX_COUNT / 128u);
+    ui_state.fx_type = shadow.fx.type;
+}
+
+static void set_fx_mix(VoiceParamBlock &shadow, const InputValue &value) {
+    shadow.fx.mix = (uint8_t)value.scalar;
+    ui_state.fx_mix = shadow.fx.mix;
+}
+
+static void set_fx_p1(VoiceParamBlock &shadow, const InputValue &value) {
+    shadow.fx.p1 = (uint8_t)value.scalar;
+    ui_state.fx_p1 = shadow.fx.p1;
+}
+
+static void set_fx_p2(VoiceParamBlock &shadow, const InputValue &value) {
+    shadow.fx.p2 = (uint8_t)value.scalar;
+    ui_state.fx_p2 = shadow.fx.p2;
+}
+
 static constexpr InputCategory kCapabilities[] = {
     InputCategory::NOTE,
     InputCategory::MODIFIER,
@@ -168,6 +193,10 @@ static constexpr InputMapEntryT<VoiceParamBlock> kMappingTable[] = {
     { InputCategory::MODIFIER, 1,                  1,                  0xFF,     0,       set_mod_wheel },   // CC1: mod wheel
     { InputCategory::MODIFIER, 10,                 10,                 0xFF,     0,       set_pan },         // CC10: pan
     { InputCategory::MODIFIER, MOD_ID_PITCH_BEND,  MOD_ID_PITCH_BEND,  0xFF,     0,       set_pitch_bend },
+    { InputCategory::MODIFIER, 72,                 72,                 0xFF,     0,       set_fx_p1 },       // CC72: FX param 1
+    { InputCategory::MODIFIER, 73,                 73,                 0xFF,     0,       set_fx_mix },      // CC73: FX wet/dry mix
+    { InputCategory::MODIFIER, 74,                 74,                 0xFF,     0,       set_fx_type },     // CC74: FX type select
+    { InputCategory::MODIFIER, 75,                 75,                 0xFF,     0,       set_fx_p2 },       // CC75: FX param 2
 };
 
 static_assert(input_table_declares_capabilities(kMappingTable, kCapabilities),
@@ -270,26 +299,38 @@ void midi_controller_process(const uint8_t *data, uint32_t len, ParamExchange *p
                         changed = true;
                         break;
                     }
-                    case 74:  // effect type select — split range into FX_COUNT bands
-                        shadow.fx.type = (uint8_t)((uint32_t)ev.data2 * FX_COUNT / 128u);
-                        ui_state.fx_type = shadow.fx.type;
+                    case 74: {  // effect type select — split range into FX_COUNT bands
+                        InputValue value{};
+                        value.channel = ev.channel;
+                        value.scalar = (float)ev.data2;
+                        input_dispatch(shadow, kMappingTable, InputCategory::MODIFIER, 74, value);
                         changed = true;
                         break;
-                    case 73:  // effect wet/dry mix (global)
-                        shadow.fx.mix = ev.data2;
-                        ui_state.fx_mix = ev.data2;
+                    }
+                    case 73: {  // effect wet/dry mix (global)
+                        InputValue value{};
+                        value.channel = ev.channel;
+                        value.scalar = (float)ev.data2;
+                        input_dispatch(shadow, kMappingTable, InputCategory::MODIFIER, 73, value);
                         changed = true;
                         break;
-                    case 72:  // effect param 1: delay feedback / reverb room size
-                        shadow.fx.p1 = ev.data2;
-                        ui_state.fx_p1 = ev.data2;
+                    }
+                    case 72: {  // effect param 1: delay feedback / reverb room size
+                        InputValue value{};
+                        value.channel = ev.channel;
+                        value.scalar = (float)ev.data2;
+                        input_dispatch(shadow, kMappingTable, InputCategory::MODIFIER, 72, value);
                         changed = true;
                         break;
-                    case 75:  // effect param 2: delay time / reverb damping
-                        shadow.fx.p2 = ev.data2;
-                        ui_state.fx_p2 = ev.data2;
+                    }
+                    case 75: {  // effect param 2: delay time / reverb damping
+                        InputValue value{};
+                        value.channel = ev.channel;
+                        value.scalar = (float)ev.data2;
+                        input_dispatch(shadow, kMappingTable, InputCategory::MODIFIER, 75, value);
                         changed = true;
                         break;
+                    }
                     case 0:   channel_bank_msb[ev.channel] = ev.data2; break;
                     case 32:  channel_bank_lsb[ev.channel] = ev.data2; break;
                     default:  break;  // other CCs — ignored
