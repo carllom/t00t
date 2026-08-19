@@ -39,6 +39,24 @@ target_include_directories(test_envelope PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}/../../src
 )
 
+# Host build of src/voice_alloc.h/.cpp's steal-priority tiering (ticket
+# #101). Compiles the real, unmodified voice_alloc.cpp so the test exercises
+# production VoiceAllocator::init()/allocate()/release() directly -- the
+# test itself never calls update() (its hardware FIFO drain isn't
+# host-buildable), but the file still needs to compile. host_stub_engine/
+# stands in for a real engine's engine.h (providing just MAX_VOICES) and a
+# minimal pico/multicore.h stub (providing just the one symbol update()
+# references); it must come first so it shadows the real ones on the path.
+add_executable(test_voice_alloc
+    test_voice_alloc.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/../../src/voice_alloc.cpp
+)
+target_include_directories(test_voice_alloc PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}/host_stub_engine
+    ${CMAKE_CURRENT_LIST_DIR}
+    ${CMAKE_CURRENT_LIST_DIR}/../../src
+)
+
 # Host build of src/engines/tracker/mixer.h (issue #15). Pulls in osc/sine.cpp
 # for pan_gains_q15's wavetable; everything else it touches is header-only.
 add_executable(render_tracker_mixer
