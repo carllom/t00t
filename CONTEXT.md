@@ -135,7 +135,7 @@ Vocabulary for the Core 0 input pipeline. The category vocabulary below
 mechanism vocabulary (Input pipeline, Input subsystem, Router, Input event,
 Normalization, Handler, Voice Allocation Interface) belongs to a from-scratch
 redesign effort superseding #84/#85's narrower "shared vocabulary + table
-dispatch" design (see the in-progress wayfinder map — link TBD).
+dispatch" design — wayfinder map #94, spec #99, tickets #100-104.
 
 **Input pipeline**:
 The complete flow from a physical/transport input source to a module's own

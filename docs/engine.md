@@ -237,6 +237,13 @@ Core 1 keeps `last_trigger[v]` per voice. Detection logic:
 This handles re-triggers cleanly: rapid off→on produces a new trigger value,
 which Core 1 detects even if it missed the intermediate gate=false.
 
+"Transition ADSR to release phase" is `Envelope::release(cfg)`'s default
+behavior — immediate, from whatever stage the envelope is in. `EnvConfig`
+also carries a `gated_attack_decay` option (default `true`, matching that
+default): set false, a release requested during attack or decay is deferred
+until they finish naturally instead of interrupting them. No preset sets it
+false today.
+
 ## Dynamic Voice Allocation
 
 16-voice polyphonic allocator on Core 0. Core 1 provides feedback via a
@@ -299,35 +306,44 @@ event queue — each input source writes the param shadow and commits directly.
 
 Both transports route through `midi_controller_process()`, which parses MIDI
 bytes, maps note on/off to voices via the allocator, and commits the shadow.
-Beyond notes it also handles per-channel **CC1 (mod wheel)** → `mod_depth`
-(vibrato), **CC10 (pan)** → `pan` (subtractive engine only; live, applied to
-held voices immediately), and **pitch bend** → phase-increment ratio. CC0/CC32
-(bank select) are stored but not yet used.
+For `subtractive`, note on/off, **CC1 (mod wheel)** → `mod_depth` (vibrato),
+**CC10 (pan)** → `pan` (live, applied to held voices immediately), **pitch
+bend** → phase-increment ratio, and **CC72-75 (FX type/mix/param1/param2)**
+→ the module-global `shadow.fx` struct all route through a shared per-module
+mapping table and a generic dispatch mechanism (`src/input_layer.h`,
+`input_dispatch()`). CC0/CC32 (bank select) are stored per-channel and
+consumed by **Program Change**, which selects a preset for future notes on
+that channel; both stay direct Core-0-local writes rather than going through
+the dispatch table, since neither needs its channel/velocity matching.
+`groovebox` and `tracker` each keep their own fully independent, fully-forked
+`midi_controller.cpp` — see Decision Record.
 
-**Planned:** a generic input layer sits between transports and modules,
-replacing today's fully-forked per-module `midi_controller.cpp` routing with
-a shared vocabulary (input categories, below) and dispatch mechanism, while
-keeping per-module mapping tables and setters forked. See #84 and the
-Decision Record below.
+The dispatch mechanism above (shared vocabulary and a per-module mapping
+table, #86) is built for `subtractive` only. A from-scratch redesign of the
+whole input pipeline settled a fuller vocabulary and requirement set on top
+of it without discarding the mechanism itself — see Decision Record entry 5.
+`groovebox`/`tracker` adopting it, and non-MIDI input sources (a
+`SensorEvent` type exists for GPIO buttons, `src/sensor_event.h`, not yet
+wired into a real input path), remain open work.
 
 ### Input categories
 
-- **Note** — note number, velocity, implicit voice alloc/release.
-- **Strike** — generic discrete trigger with no note semantics (drum-pad hit,
-  one-shot sample). Not called "Trigger" — see Decision Record.
-- **Modifier** — live continuous value, voice-scoped or module-global via an
-  explicit scope/target on the call.
-- **Configuration** — preset/template select; some values seed initial
-  Modifier values, some are immutable character choices.
-- **Clock** — tempo pulses (e.g. groovebox's 24 PPQN MIDI Clock).
-- **Transport** — play/pause/stop. Distinct from "MIDI transport" (the
-  USB/UART carrier layer, above) — same word, different concept.
+Note, Strike, Modifier, Configuration, Clock, and Transport are the category
+vocabulary a source event is classified into before reaching a module's
+mapping table. Definitions live in root `CONTEXT.md`'s "Language" section,
+the single source of truth for this vocabulary — not duplicated here, to
+avoid a second copy drifting out of sync as the vocabulary evolves.
+`subtractive` is the only module built against it via the generic dispatch
+mechanism so far; `tracker` and `groovebox` are deliberately excluded (see
+Decision Record).
 
-Each module declares which categories it supports; `tracker` and `groovebox`
-are excluded from generic Note/Strike (see Decision Record). Source values
-are normalized to a common unit at the layer boundary — setters never see
-raw MIDI bytes. Configurability is build-time only (no persistence mechanism
-exists in this codebase).
+Each module declares which categories it supports via a compile-time
+capability list, checked against its own mapping table with a
+`static_assert`. Whether a value has been converted to a module-native unit
+before a setter sees it depends on the category and the setter itself — see
+CONTEXT.md's Shaping vs. Normalization entries; it is not "never raw," as an
+earlier version of this design assumed. Configurability is build-time only
+(no persistence mechanism exists in this codebase).
 
 ## Decision Record
 
@@ -351,3 +367,15 @@ exists in this codebase).
    (fixed drum/pattern-select/mono-303 map), not "one voice per note."
    Forcing either through the generic Note/Strike dispatch would recreate the
    mismatch that sank the routing-hook design in decision 1.
+5. **A from-scratch input-pipeline redesign superseded #84/#85, without
+   discarding #86's mechanism** — a wayfinder effort (issue #94, spec #99)
+   revisited the whole Core 0 input pipeline with a goal the original design
+   didn't have: decoupling dynamic voice allocation from MIDI parsing
+   entirely, into a "Voice Allocation Interface" a module's own setter opts
+   into and calls directly. It found no reason to replace `input_dispatch()`/
+   `InputMapEntryT` — every new requirement (module-global Modifiers, a
+   non-MIDI `SensorEvent` source, a self-expiring `Strike` pattern) fit on
+   top of it — so that mechanism continues, extended rather than rebuilt.
+   Confirmed decision 4 still holds by re-examining `groovebox`/`tracker`'s
+   actual routing rather than assuming it. The full settled vocabulary lives
+   in `CONTEXT.md`, not here.
