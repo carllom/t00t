@@ -107,11 +107,15 @@ SUSTAIN:  level = sustain_level, held while gate is true
 RELEASE:  level *= release_coeff, until level < epsilon → IDLE
 ```
 
-`EnvConfig` holds `attack_rate`, `decay_coeff`, `sustain_level`, `release_coeff`,
-built from milliseconds via `env_config(attack_ms, decay_ms, sustain_pct, release_ms)`.
-`Envelope` exposes `init()`, `trigger()`, `release()`, `active()`, and
-`advance(cfg)` (returns the current float level). Release from any active state
-transitions to RELEASE using the current level as the starting point.
+`EnvConfig` holds `attack_rate`, `decay_coeff`, `sustain_level`,
+`release_coeff`, and `gated_attack_decay` (default `true`), built from
+milliseconds via `env_config(attack_ms, decay_ms, sustain_pct, release_ms)`.
+`Envelope` exposes `init()`, `trigger()`, `release(cfg)`, `active()`, and
+`advance(cfg)` (returns the current float level). With `gated_attack_decay`
+true — the only value any preset here uses today — release from any active
+state transitions to RELEASE immediately, using the current level as the
+starting point. Set false, a release requested during ATTACK or DECAY is
+deferred until they finish naturally instead of interrupting them.
 
 Amplitude chain per sample (Core 1 render loop):
 ```
@@ -244,7 +248,9 @@ insert adds ~1.5pp; reverb adds ~8pp. Measured on breadboard_rp2350 at
 
 ### Future / TODO
 
-None currently planned.
+GPIO button input (currently hardcoded per-button logic in
+`src/controller.cpp`) is planned to move onto the same generic dispatch
+mechanism MIDI already uses — see `engine.md`'s MIDI Input section.
 
 ## Decision Record
 
