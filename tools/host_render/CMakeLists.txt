@@ -39,6 +39,14 @@ target_include_directories(test_envelope PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}/../../src
 )
 
+# Host build of src/sensor_event.h (ticket #103): the non-MIDI physical
+# input event type and its construction helpers. Header-only.
+add_executable(test_sensor_event test_sensor_event.cpp)
+target_include_directories(test_sensor_event PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}
+    ${CMAKE_CURRENT_LIST_DIR}/../../src
+)
+
 # Host build of src/voice_alloc.h/.cpp's steal-priority tiering (ticket
 # #101). Compiles the real, unmodified voice_alloc.cpp so the test exercises
 # production VoiceAllocator::init()/allocate()/release() directly -- the
