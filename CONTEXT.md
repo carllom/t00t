@@ -217,10 +217,17 @@ allocation from input handling is this redesign's reason to exist, so the
 category can't presuppose the coupling being removed.
 
 **Strike**:
-A discrete, unpitched input (a drum-pad hit, a one-shot sample trigger) — no
-note number, no pitch. Like Note, may still reach the Voice Allocation
+A discrete, unpitched input (a drum-pad hit, a one-shot sample trigger). An
+identifying number may still be present and required (e.g. which drum/sample
+to trigger) — the defining trait is that the number, if any, is never
+interpreted as pitch. Like Note, may still reach the Voice Allocation
 Interface for a free synthesis voice; the category is about the absence of
-pitch, not about whether allocation happens.
+pitch, not about whether an identifier or allocation is involved.
+_Changed from_: "no note number, no pitch" — read literally, wrong for a
+drum-pad hit, whose MIDI note number is a required identity field (which
+drum/sample to trigger via a kit lookup), just never converted to pitch/Hz.
+Surfaced while sanity-checking against `groovebox`'s real drum-trigger code
+(`trigger_drum()`'s `kit_find(kit_808, note)`) during wayfinder ticket #98.
 _Avoid_: Trigger (already means the per-voice generation counter in
 `VoiceParams`, see `docs/engine.md`'s Trigger/Gate Signaling and issue #83 —
 using it here would mean the same word means two different things at two
