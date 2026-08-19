@@ -27,16 +27,17 @@ enum class InputCategory : uint8_t {
                     // transport (USB/UART), see docs/engine.md
 };
 
-// Scope of a Modifier value: does it apply to one voice, or to every voice
-// (module-global, e.g. a channel's currently-held voices)?
-enum class ModifierScope : uint8_t { VOICE, GLOBAL };
-
 // Normalized value carried by a dispatched input event. Which fields are
 // meaningful depends on the InputCategory the event was matched under --
 // setters know their own category and read only the field(s) that apply,
 // the same convention midi_parser.h's MidiEvent already uses for data1/data2.
 // Never carries raw MIDI bytes: callers normalize to native units (Hz,
 // semitones, Q15, an enum index, ...) before building one of these.
+//
+// No scope field: whether a MODIFIER's setter targets one voice, every
+// currently-held voice on a channel, or a single module-global value is
+// entirely the setter's own decision -- never something the Router/dispatch
+// mechanism needs to know or branch on.
 struct InputValue {
     uint8_t channel = 0xFF;  // originating channel (0-15), 0xFF = not channel-scoped
     uint8_t note = 0;        // NOTE/STRIKE: note number (0-127)
@@ -44,7 +45,6 @@ struct InputValue {
     int8_t voice = -1;       // NOTE/STRIKE: resolved voice index, -1 if none
     bool note_on = false;    // NOTE/STRIKE: true = onset edge, false = release edge
     float scalar = 0.0f;     // MODIFIER: normalized native-unit value
-    ModifierScope scope = ModifierScope::GLOBAL;  // MODIFIER: voice vs module-global
     uint8_t index = 0;       // CONFIGURATION: selected index/program
 };
 

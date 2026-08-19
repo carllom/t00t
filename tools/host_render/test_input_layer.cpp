@@ -24,6 +24,10 @@ struct TestContext {
     uint8_t last_channel = 0;
     uint8_t last_velocity = 0;
     float last_scalar = 0.0f;
+    int global_target = -1;  // simulates a module-global write (e.g. shadow.fx.*),
+                              // distinct from a per-voice/per-channel one -- there is
+                              // no dispatch-level "scope" concept, so this is purely
+                              // a fact about what set_fx_like below chooses to write
 };
 
 void set_note(TestContext &ctx, const InputValue &v) {
@@ -40,11 +44,24 @@ void set_modifier(TestContext &ctx, const InputValue &v) {
     ctx.last_scalar = v.scalar;
 }
 
+// A module-global Modifier setter (mirrors subtractive's FX CC setters,
+// which write shadow.fx.* -- one instance per VoiceParamBlock, not
+// per-voice). Nothing about the dispatch mechanism needs to know this
+// setter's target is global rather than per-voice/per-channel: it's purely
+// the setter's own choice of what to write, same call shape as set_modifier.
+void set_fx_like(TestContext &ctx, const InputValue &v) {
+    ctx.calls++;
+    ctx.last_category = InputCategory::MODIFIER;
+    ctx.last_channel = v.channel;
+    ctx.global_target = (int)v.scalar;
+}
+
 constexpr InputMapEntryT<TestContext> kTable[] = {
     { InputCategory::NOTE,     60,  72,  0xFF, 0,   set_note },      // one-octave note range
     { InputCategory::MODIFIER, 1,   1,   0xFF, 0,   set_modifier },  // CC1, any channel
     { InputCategory::MODIFIER, 10,  10,  5,    0,   set_modifier },  // CC10, channel 5 only
     { InputCategory::NOTE,     90,  90,  0xFF, 100, set_note },      // fixed velocity 100
+    { InputCategory::MODIFIER, 74,  74,  0xFF, 0,   set_fx_like },   // CC74-style, module-global, any channel
 };
 
 bool test_dispatch_matches_category_and_id() {
@@ -125,6 +142,28 @@ bool test_fixed_velocity_substitution() {
     return ok;
 }
 
+bool test_module_global_dispatch() {
+    TestContext ctx_ch3, ctx_ch9;
+    InputValue value_ch3{};
+    value_ch3.channel = 3;
+    value_ch3.scalar = 42.0f;
+    InputValue value_ch9{};
+    value_ch9.channel = 9;
+    value_ch9.scalar = 42.0f;
+
+    input_dispatch(ctx_ch3, kTable, InputCategory::MODIFIER, 74, value_ch3);
+    input_dispatch(ctx_ch9, kTable, InputCategory::MODIFIER, 74, value_ch9);
+
+    // channel_filter=0xFF: reaches its setter regardless of which channel
+    // sent it -- and the setter itself writes a module-global target, not
+    // anything per-channel/per-voice. No scope field anywhere in this path.
+    bool ok = ctx_ch3.calls == 1 && ctx_ch3.global_target == 42 &&
+              ctx_ch9.calls == 1 && ctx_ch9.global_target == 42;
+    printf(ok ? "  OK: module-global (FX-style) dispatch writes its target regardless of originating channel\n"
+              : "  FAIL: module-global dispatch did not behave the same across channels\n");
+    return ok;
+}
+
 // --- Compile-time capability check ---
 
 constexpr InputCategory kGoodCapabilities[] = { InputCategory::NOTE, InputCategory::MODIFIER };
@@ -164,6 +203,8 @@ int main() {
     ok = test_channel_filter() && ok;
     printf("\n== velocity fixed-value substitution ==\n");
     ok = test_fixed_velocity_substitution() && ok;
+    printf("\n== module-global (FX-style) Handler dispatch ==\n");
+    ok = test_module_global_dispatch() && ok;
     printf("\n== compile-time capability-vs-mapping-table check ==\n");
     ok = test_capability_check() && ok;
 
