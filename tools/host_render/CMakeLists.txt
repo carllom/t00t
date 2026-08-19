@@ -28,6 +28,17 @@ target_include_directories(test_input_layer PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}/../../src
 )
 
+# Host build of src/envelope.h's non-interruptible release option (ticket
+# #100). Pulls in envelope.cpp for env_config(); no other sources needed.
+add_executable(test_envelope
+    test_envelope.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/../../src/envelope.cpp
+)
+target_include_directories(test_envelope PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}
+    ${CMAKE_CURRENT_LIST_DIR}/../../src
+)
+
 # Host build of src/engines/tracker/mixer.h (issue #15). Pulls in osc/sine.cpp
 # for pan_gains_q15's wavetable; everything else it touches is header-only.
 add_executable(render_tracker_mixer
