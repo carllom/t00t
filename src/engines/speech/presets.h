@@ -14,9 +14,9 @@
 // voice sounds like, applied at note-on. Several of the fields a preset
 // sets here (formant_shift, bandwidth_scale, jitter, shimmer, mode,
 // rate, lfo_rate/lfo_depth) also have their own live per-channel CC
-// (midi_controller.cpp CC21/22/24-27/1/76), so selecting a preset writes the
-// *channel*-level state those CCs track (midi_controller.cpp's
-// speech_load_preset(), via this header's voice_apply_preset()), not just
+// (input_subsystem.cpp CC21/22/24-27/1/76), so selecting a preset writes the
+// *channel*-level state those CCs track (input_subsystem.cpp's
+// speech_apply_preset(), via this header's voice_apply_preset()), not just
 // the one voice about to sound. That is what makes a preset switch a
 // starting point a player can still tweak live afterward, rather than a
 // value that would just get immediately overwritten by whatever the
@@ -63,7 +63,7 @@ inline constexpr int16_t speech_q8_8(float v) {
 // full width, detune sweeps +/-CHORUS_DETUNE_SEMITONES, both deterministic
 // functions of the slot index so no extra per-voice state is needed. Shared
 // by voice_apply_preset() below (called with voice_index == 0 by callers
-// that don't yet know the real allocated slot) and by midi_controller.cpp,
+// that don't yet know the real allocated slot) and by input_subsystem.cpp,
 // which calls it again once voice_alloc_allocate() has returned the real
 // slot for this note-on.
 inline void speech_chorus_apply(VoiceParams &vp, uint32_t voice_index) {
@@ -127,7 +127,7 @@ enum SpeechPresetId : uint8_t {
 static constexpr SpeechPreset presets[SPEECH_PRESET_COUNT] = {
     // name                utterance             phoneme  mode                rate  fmt_shift          bw_scale                    jit  shim lfo_rate lfo_depth chorus  tract                  page  pitch_shift        chirp_exciter  throat             mouth
     // PH_I / formant_shift 1.0x / bandwidth_scale 1.0x matches
-    // midi_controller.cpp's original power-on default exactly, so this
+    // input_subsystem.cpp's original power-on default exactly, so this
     // preset being channel 0's initial load is not a behaviour change.
     { "PHON KEYS",   SPEECH_NO_UTTERANCE, PH_I,   SPEECH_MODE_GATED,   16, speech_q8_8(1.0f), speech_q8_8(1.0f),           0,   0,  0.0f, 0.0f, false, SPEECH_TRACT_FORMANT, 0, speech_q8_8(1.0f), false, speech_q8_8(1.0f), speech_q8_8(1.0f) },
     { "ANNOUNCE",    PHRASE_VOICE_TEST,   PH_SIL, SPEECH_MODE_ONESHOT, 16, speech_q8_8(1.0f), speech_q8_8(1.0f),           0,   0,  0.0f, 0.0f, false, SPEECH_TRACT_FORMANT, 0, speech_q8_8(1.0f), false, speech_q8_8(1.0f), speech_q8_8(1.0f) },
@@ -144,7 +144,7 @@ static constexpr SpeechPreset presets[SPEECH_PRESET_COUNT] = {
     // channel that switches back to a formant preset afterward doesn't
     // inherit anything unusual. GATED (the engine's own default mode) and
     // page 0, the same starting page a channel already has at power-on.
-    // chirp_exciter false -- CC104 (midi_controller.cpp) switches it live,
+    // chirp_exciter false -- CC104 (input_subsystem.cpp) switches it live,
     // this preset doesn't pick a side.
     { "LPC WORDS",   SPEECH_NO_UTTERANCE, PH_I,   SPEECH_MODE_GATED,   16, speech_q8_8(1.0f), speech_q8_8(1.0f),           0,   0,  0.0f, 0.0f, false, SPEECH_TRACT_LATTICE, 0, speech_q8_8(1.0f), false, speech_q8_8(1.0f), speech_q8_8(1.0f) },
     // SAM tract: phoneme/formant_shift/bandwidth_scale/jitter/shimmer/lfo/
@@ -153,7 +153,7 @@ static constexpr SpeechPreset presets[SPEECH_PRESET_COUNT] = {
     // above. utterance selects SAM_PHRASE_HELLO_WORLD (index 0 of the
     // generated phrase bank, tools/samgen.py) so a note-on immediately
     // demonstrates the reciter and pitch contour, GATED (the engine's own
-    // default mode). throat/mouth neutral -- CC105/106 (midi_controller.cpp)
+    // default mode). throat/mouth neutral -- CC105/106 (input_subsystem.cpp)
     // shape them live, this preset doesn't pick a side.
     { "SAM WORDS",   SAM_PHRASE_HELLO_WORLD, PH_SIL, SPEECH_MODE_GATED, 16, speech_q8_8(1.0f), speech_q8_8(1.0f),          0,   0,  0.0f, 0.0f, false, SPEECH_TRACT_SAM,     0, speech_q8_8(1.0f), false, speech_q8_8(1.0f), speech_q8_8(1.0f) },
 };

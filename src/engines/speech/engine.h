@@ -48,7 +48,7 @@ struct VoiceParams {
     uint8_t    rate;  // Q4.4 segment-duration scale, 16 = 1.0x nominal
     // Vibrato/jitter/shimmer (module_speech.md "Vibrato LFO"/"Jitter and
     // shimmer"). All four are live, same push-to-held-voices treatment as
-    // formant_shift/bandwidth_scale above -- midi_controller.cpp's CC
+    // formant_shift/bandwidth_scale above -- input_subsystem.cpp's CC
     // handlers for CC1/CC24/CC25/CC26/CC76 write straight into a held
     // voice's shadow copy, not just the per-channel default for future
     // notes.
@@ -57,11 +57,11 @@ struct VoiceParams {
     float    lfo_rate;    // vibrato LFO rate, Hz, 0 = off (excitation.h VIBRATO_*)
     float    lfo_depth;   // vibrato depth, 0.0-1.0
     // Selects which tract render.h renders this voice through (tract.h's
-    // SpeechTract), set from CC102 (midi_controller.cpp).
+    // SpeechTract), set from CC102 (input_subsystem.cpp).
     SpeechTract tract;
     // KEY_PER_WORD addressing (module_speech.md "LPC Lattice Tract"): the
     // word this voice plays under SPEECH_TRACT_LATTICE, resolved by
-    // midi_controller.cpp from the note number and the channel's current
+    // input_subsystem.cpp from the note number and the channel's current
     // Program-Change page. Defaults to lattice.h's LATTICE_TEST_WORD so a
     // voice is always valid whether or not a real corpus
     // (lattice_words.h) has been generated locally.
@@ -74,7 +74,7 @@ struct VoiceParams {
     // Live throat/mouth timbre pair, SPEECH_TRACT_SAM only (sam.h) -- Q8.8,
     // 256 = 1.0x, the same encoding and live push-to-held-voices treatment
     // as formant_shift/bandwidth_scale above. Set from CC105/CC106
-    // (midi_controller.cpp).
+    // (input_subsystem.cpp).
     int16_t sam_throat;
     int16_t sam_mouth;
 };

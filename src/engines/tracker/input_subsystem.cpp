@@ -4,7 +4,7 @@
 #include "player_task.h"
 
 // tracker's Input subsystem: no live-note traffic in this engine at all
-// (module_tracker.md, #13) -- the module plays itself (player_task.cpp
+// (module_tracker.md) -- the module plays itself (player_task.cpp
 // auto-plays on boot), so MIDI here drives transport/seek rather than
 // notes. kMappingTable has no NOTE/MODIFIER entries; MIDI note on/off and
 // any CC silently no-op through the Router, same as any unmapped id.
