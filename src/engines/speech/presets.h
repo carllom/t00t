@@ -6,6 +6,10 @@
 #include "sam_phrases.h"
 #include <cmath>
 
+#ifdef T00T_SPEECH_HAS_LATTICE_WORDS
+#include "lattice_words.h"
+#endif
+
 // Preset table (module_speech.md "Preset table"): a SpeechPreset is what a
 // voice sounds like, applied at note-on. Several of the fields a preset
 // sets here (formant_shift, bandwidth_scale, jitter, shimmer, mode,
@@ -153,3 +157,41 @@ static constexpr SpeechPreset presets[SPEECH_PRESET_COUNT] = {
     // shape them live, this preset doesn't pick a side.
     { "SAM WORDS",   SAM_PHRASE_HELLO_WORLD, PH_SIL, SPEECH_MODE_GATED, 16, speech_q8_8(1.0f), speech_q8_8(1.0f),          0,   0,  0.0f, 0.0f, false, SPEECH_TRACT_SAM,     0, speech_q8_8(1.0f), false, speech_q8_8(1.0f), speech_q8_8(1.0f) },
 };
+
+// KEY_PER_WORD paging (module_speech.md "LPC Lattice Tract"): a page is
+// LPC_PAGE_WORDS keys wide, matching the acceptance-tested keyboard span
+// (0-127) -- what makes a corpus wider than one keyboard reachable a page
+// at a time. LPC_PAGE_COUNT depends on whichever corpus (if any) was
+// generated locally (lattice_words.h, gitignored -- tools/talkie2lattice.py);
+// without one, there's just the single fallback LATTICE_TEST_WORD, so
+// exactly one page exists.
+static constexpr uint32_t LPC_PAGE_WORDS = 128;
+#ifdef T00T_SPEECH_HAS_LATTICE_WORDS
+static constexpr uint32_t LPC_PAGE_COUNT = (LATTICE_WORD_COUNT + LPC_PAGE_WORDS - 1) / LPC_PAGE_WORDS;
+#else
+static constexpr uint32_t LPC_PAGE_COUNT = 1;
+#endif
+
+// Every LPC lattice page is PRESET_LPC_WORDS verbatim except which page it
+// points at -- generated rather than hand-written since the real page
+// count is a local, corpus-dependent fact, not a fixed table size. Input
+// subsystem's Program Change Handler addresses these as a contiguous
+// extension of `presets[]`: index SPEECH_PRESET_COUNT is page 0,
+// SPEECH_PRESET_COUNT+1 is page 1, and so on. A plain aggregate wrapping
+// a C array, not std::array -- nothing else in this codebase pulls that
+// header in, and a for-loop inside a constexpr function needs some
+// returnable type to build the table into.
+struct LpcPageTable {
+    SpeechPreset pages[LPC_PAGE_COUNT];
+};
+
+inline constexpr LpcPageTable make_lpc_page_presets() {
+    LpcPageTable t{};
+    for (uint32_t p = 0; p < LPC_PAGE_COUNT; p++) {
+        t.pages[p] = presets[PRESET_LPC_WORDS];
+        t.pages[p].lattice_page = (uint8_t)p;
+    }
+    return t;
+}
+
+inline constexpr LpcPageTable lpc_page_presets = make_lpc_page_presets();
