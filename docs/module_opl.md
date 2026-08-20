@@ -147,13 +147,14 @@ friends) — those FM functions are hardcoded to a `const FmPatch&` and to
 `FmOp::eg` as a concrete `EnvDX`, neither of which fits OPL's own patch or
 envelope shape.
 
-Every voice's `FmOp` array is still the full six-wide `FM_NUM_OPS` array
-the reused `fm_voice_render_block()` iterates, even though only two
-operator slots ever carry real signal — slots 2-5 are permanently inert
-padding, zeroed once at boot, each writing to its own never-read scratch
-bus. This is a small, bounded per-voice cost traded for zero new routing
-plumbing; see Status and Plan for why real per-voice cost is still an open
-question rather than something optimized against ahead of measurement.
+Every voice's `FmOp` array is still the full six-wide `FM_NUM_OPS` array,
+but `fm_voice_render_block()` (`../fm/op.h`) only loops `order[0..num_ops-1]`
+— a field on `FmRouting` each routing sets for itself, FM's own
+`fm_resolve_routing()` always to `FM_NUM_OPS` (every DX7 algorithm is
+structurally six operators wide), OPL's two fixed-algorithm literals
+(`patch.h`) to 2. Slots 2-5 of every voice's array are simply never visited
+by the per-sample kernel, not computed at zero gain and discarded — see
+Decision Record entry 9.
 
 ### `EnvOpl` — the OPL Envelope
 
@@ -204,12 +205,29 @@ folded into both operators' phase increment once per control block.
 
 ### Performance
 
-Not yet measured on real hardware — the GPIO-22 profiling-pin rig every
-other engine's per-voice cost figure comes from hasn't been run against
-this module yet. The six-wide (mostly inert) per-voice operator array (see
-Architecture) means "OPL is cheaper per voice than the DX7 module" is a
-hypothesis this measurement still needs to confirm, not a number designed
-around ahead of time.
+First hardware pass (#82, GPIO-22 `PROFILE_PIN`, `breadboard_rp2350`)
+measured ~114 c/f/voice on one patch (OPL BELL) — most of the gap against
+the ~34 c/f/voice scoping estimate traced to the four unused operator slots
+per voice running their full per-sample kernel for nothing, fixed by
+`FmRouting::num_ops` (Decision Record entry 9, confirmed a no-op for audio
+output via bit-identical WAV render before/after). A second hardware pass
+against the fix confirmed the drop: **~67 c/f/voice, a 41% cut**, with
+delay/reverb's own fixed overhead unchanged (confirming the fix touched
+only per-voice cost). Full numbers and the FM-baseline comparison:
+`history_opl.md`, "Hardware Voice-Count Sweep, Post-`num_ops` Fix".
+
+A second patch (OPL ORGAN — no feedback, additive, the opposite end of
+BELL's feedback-heavy FM chain) measured **~54 c/f/voice**, about 20%
+cheaper — attributable to feedback's own extra per-sample arithmetic
+(`op_render_fb`, `../fm/op.h`), the one thing in the per-sample kernel that
+actually varies cost between patches on this 2-operator, fixed-two-algorithm
+module (algorithm choice and waveform select don't touch it). **Real
+per-patch cost lands in a ~54–67 c/f/voice range** — two patches bracketing
+that one axis is reasonable coverage here, unlike the DX7 module's free
+6-operator routing space, where per-patch cost genuinely spans a wide range
+and needs broader sampling. At 9 voices + reverb, even the more expensive
+patch (BELL) is only 26.0% duty. Full numbers: `history_opl.md`, "Hardware
+Voice-Count Sweep, Post-`num_ops` Fix" and "Second Patch: OPL ORGAN".
 
 ### Future / TODO
 
@@ -242,12 +260,13 @@ around ahead of time.
    either module — reusing them verbatim means a fix or a future
    optimization to that shared kernel benefits both engines at once,
    rather than needing to be ported by hand into a second copy.
-2. **Every voice's operator array stays six-wide, with four inert slots**,
+2. **Every voice's operator array stays six-wide, with four unused slots**,
    rather than a hand-rolled two-operator loop, so the reused
    `fm_voice_render_block()` (and its routing-literal input shape) could be
-   used completely unchanged. The bounded extra per-sample cost on the four
-   dead slots is accepted as a skeleton-stage tradeoff, not treated as
-   settled — see Status and Plan.
+   used completely unchanged. `FmRouting::num_ops` (entry 9) means those
+   four slots cost nothing per sample; the remaining tradeoff is SRAM only
+   (`sizeof(FmOp)` × 4 × `MAX_VOICES`, unmeasured but small next to the
+   module's other fixed working set).
 3. **OPL's patch and envelope types are not extensions of the DX7 module's
    `FmOpParams`/`EnvDX`.** OPL has waveform select and an EG-type flag DX7
    doesn't; DX7 has ratio/detune/fixed-frequency/key-scaling-curve fields
@@ -283,6 +302,18 @@ around ahead of time.
    `src/input_layer.h`) — it routed to the exact same patch-select logic
    Program Change already did, so keeping it would only have been a second
    table entry for one setter. Program Change alone now selects the patch.
+9. **`FmRouting` gained a `num_ops` field bounding `fm_voice_render_block()`'s
+   loops**, instead of forking a two-operator-only render path. A hardware
+   pass (#82) measured OPL's per-voice cost at ~114 c/f/voice against a
+   scoping estimate of ~34 — most of the gap traced to the four unused
+   operator slots still running the full per-sample kernel (phase, table
+   lookup, gain multiply) every sample, just to write a bus nothing reads.
+   `num_ops` is data on the routing (FM's own `fm_resolve_routing()` sets it
+   to `FM_NUM_OPS` unconditionally, unaffected), not a template parameter or
+   a second render function, so it costs one field and one loop-bound change
+   in shared code the DX7 module also uses — and generalizes to a future
+   4-operator OPL3 routing (Future/TODO) by setting `num_ops = 4`, with no
+   further kernel changes needed.
 
 ## Glossary
 

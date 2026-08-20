@@ -166,6 +166,13 @@ struct FmRouting {
     uint8_t kernel[FM_NUM_OPS];
     uint8_t in_bus[FM_NUM_OPS];
     uint8_t out_bus[FM_NUM_OPS];
+    // How many of the FM_NUM_OPS slots above are real -- fm_voice_render_block()
+    // (op.h) loops only `order[0..num_ops-1]`, so a routing that never uses
+    // every slot (OPL2's two fixed algorithms, patch.h in engines/opl/) pays
+    // no per-sample cost for the rest. FM's own fm_resolve_routing() below
+    // always sets this to FM_NUM_OPS -- every DX7 algorithm is structurally
+    // six operators wide.
+    uint8_t num_ops;
     uint8_t clear_bus_mask;
     // `op_render_fb` (op.h) applies the TOTAL right-shift `fb_shift + 1` to
     // (fb1+fb2) before feeding it back into phase -- the `+1` matches
@@ -191,6 +198,7 @@ struct FmRouting {
 // reject.
 inline bool fm_resolve_routing(const FmPatch &patch, FmRouting &r) {
     r.valid = false;
+    r.num_ops = FM_NUM_OPS;
 
     // A patch that targets its own index is malformed: that's not a valid
     // way to express self-modulation in this model (use `feedback_level`
