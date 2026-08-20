@@ -5,25 +5,17 @@
 #include "voice_alloc.h"
 #include <cmath>
 
-#ifdef T00T_FM_HAS_PATCHES
-#include "patches.h"
-#endif
-
-// FM MIDI controller (#44, module_fm.md P1): note on/off + pitch bend + velocity,
-// mirroring the shared src/midi/midi_controller.cpp's channel-bend/pan
-// pattern. Own controller (not the shared one): this engine's VoiceParams
-// carries a patch pointer, not a VoicePreset the shared controller's
-// presets.h shape expects.
+// FM's own MIDI controller, not the shared src/midi/midi_controller.cpp:
+// this engine's VoiceParams carries a patch pointer, not a VoicePreset the
+// shared controller's presets.h shape expects. NOTE/MODIFIER/CONFIGURATION
+// input all route through the shared Router (src/input_layer.h,
+// input_dispatch()) into this file's own kMappingTable/Handlers -- the
+// mechanism is shared, the mapping and Handlers are fully this module's own.
 //
-// Patch select (#47, module_fm.md P3): patches.h is generated locally and
-// gitignored (a real DX7 bank's patch data, not something to check into git
-// history -- see CMakeLists.txt's T00T_FM_HAS_PATCHES gate), so patch
-// select is conditionally compiled. When patches.h is present, Program
-// Change and CC30 (data2, same range) both pick
-// `patches[value % FM_PATCH_COUNT]` -- CC30 exists because the BeatStep
-// Pro's encoders are absolute CC (16-31) and can't reliably send a real
-// Program Change, same reasoning #36 gave speech's phrase-bank CCs. Without
-// patches.h, every voice plays FM_TEST_PATCH.
+// Patch select: Program Change picks `FM_PATCHES[value.index % FM_PATCH_COUNT]`
+// (patch.h) -- always at least one entry (FM_TEST_PATCH) even without a
+// real DX7 bank generated locally, so this path never needs to branch on
+// whether one exists.
 
 static MidiParser midi_parser;
 static int8_t midi_note_voice[128];
@@ -45,9 +37,9 @@ static constexpr float PITCH_BEND_RANGE_SEMITONES = 2.0f;
 
 static float   channel_bend_ratio[NUM_CHANNELS];  // phase_inc multiplier (1.0 = centered)
 static int16_t channel_pan[NUM_CHANNELS];         // CC10 pan, Q15
-static const FmPatch *channel_patch[NUM_CHANNELS];  // #47: defaults to FM_TEST_PATCH, PC/CC30 override it
+static const FmPatch *channel_patch[NUM_CHANNELS];  // defaults to FM_TEST_PATCH, Program Change overrides it
 static uint8_t channel_program[NUM_CHANNELS];       // FM_PATCHES[] index, for ui_state.program
-static int16_t channel_mod_wheel[NUM_CHANNELS];     // #49: CC1, Q15 -- scales the patch's own LFO depth (live)
+static int16_t channel_mod_wheel[NUM_CHANNELS];     // CC1, Q15 -- scales the patch's own LFO depth (live)
 
 // --- UI snapshot (updated on each event, read by the display) ---
 static MidiUiState ui_state;
@@ -59,31 +51,6 @@ static float bend_to_ratio(uint16_t bend14) {
     float semitones = ((float)bend14 - (float)PITCH_BEND_CENTER) / (float)PITCH_BEND_CENTER
                       * PITCH_BEND_RANGE_SEMITONES;
     return powf(2.0f, semitones / 12.0f);
-}
-
-static void midi_voice_on(VoiceParamBlock &shadow, int v, uint8_t note, uint8_t velocity, uint8_t channel) {
-    float freq = 440.0f * powf(2.0f, (float)(note - 69) / 12.0f);
-    uint32_t base = fm_phase_inc(freq);
-
-    voice_base_inc[v] = base;
-    voice_channel[v] = channel;
-    voice_program[v] = channel_program[channel];
-    voice_held[v] = true;
-
-    VoiceParams &vp = shadow.voices[v];
-    vp.phase_inc = (uint32_t)((float)base * channel_bend_ratio[channel]);
-    vp.amplitude = (int16_t)(velocity * 258);  // 0..127 -> ~0..32766, "velocity as plain amplitude" (#44)
-    vp.pan = channel_pan[channel];
-    vp.patch = channel_patch[channel];
-    vp.note = note;  // #48: key level/rate scaling need the raw note, not just phase_inc
-    vp.mod_wheel = channel_mod_wheel[channel];  // #49
-    vp.trigger++;
-    vp.gate = true;
-
-    ui_state.last_note = note;
-    ui_state.last_velocity = velocity;
-    ui_state.last_channel = channel;
-    ui_state.program = channel_program[channel];
 }
 
 // Re-scale phase_inc for every held voice on a channel after a bend change.
@@ -105,9 +72,8 @@ static void apply_channel_pan(VoiceParamBlock &shadow, uint8_t channel) {
     }
 }
 
-// Push mod wheel (CC1, #49) to every held voice on a channel -- live, same
-// "sweeping the knob is audible mid-note" treatment CC21/22 use in speech's
-// midi_controller.cpp.
+// Push mod wheel (CC1) to every held voice on a channel -- live, a source
+// competing with the patch's own LFO PMD/AMD depth (lfo.h's max() rule).
 static void apply_channel_mod_wheel(VoiceParamBlock &shadow, uint8_t channel) {
     for (uint32_t v = 0; v < MAX_VOICES; v++) {
         if (voice_held[v] && voice_channel[v] == channel) {
@@ -115,6 +81,116 @@ static void apply_channel_mod_wheel(VoiceParamBlock &shadow, uint8_t channel) {
         }
     }
 }
+
+// --- Router mapping table (src/input_layer.h) ---
+// Pitch bend has no MIDI CC number of its own; Program Change has no CC
+// number at all -- both get a synthetic id outside the 0-127 CC range so
+// they can share their category's table without colliding with real CCs.
+static constexpr uint8_t MOD_ID_PITCH_BEND = 128;
+static constexpr uint8_t CONFIG_ID_PATCH = 0;
+
+// Note setter: applies a resolved note on/off edge to the shadow block.
+// Voice allocation and voice_held/midi_note_voice bookkeeping stay in
+// midi_controller_process (allocator concerns, not shadow-parameter
+// content) -- this only mutates VoiceParams and this voice's own tracking.
+static void set_note(VoiceParamBlock &shadow, const InputValue &value) {
+    if (value.note_on) {
+        float freq = 440.0f * powf(2.0f, (float)(value.note - 69) / 12.0f);
+        uint32_t base = fm_phase_inc(freq);
+
+        voice_base_inc[value.voice] = base;
+        voice_channel[value.voice] = value.channel;
+        voice_program[value.voice] = channel_program[value.channel];
+
+        ui_state.last_note = value.note;
+        ui_state.last_velocity = value.velocity;
+        ui_state.last_channel = value.channel;
+        ui_state.program = channel_program[value.channel];
+
+        VoiceParams &vp = shadow.voices[value.voice];
+        vp.phase_inc = (uint32_t)((float)base * channel_bend_ratio[value.channel]);
+        vp.amplitude = (int16_t)(value.velocity * 258);  // 0..127 -> ~0..32766, plain amplitude scaling
+        vp.pan = channel_pan[value.channel];
+        vp.patch = channel_patch[value.channel];
+        vp.note = value.note;  // key level/rate scaling need the raw note, not just phase_inc
+        vp.mod_wheel = channel_mod_wheel[value.channel];
+        vp.trigger++;
+        vp.gate = true;
+    } else {
+        shadow.voices[value.voice].gate = false;
+    }
+}
+
+static void set_mod_wheel(VoiceParamBlock &shadow, const InputValue &value) {
+    channel_mod_wheel[value.channel] = (int16_t)value.scalar;
+    apply_channel_mod_wheel(shadow, value.channel);
+}
+
+static void set_pan(VoiceParamBlock &shadow, const InputValue &value) {
+    channel_pan[value.channel] = (int16_t)value.scalar;
+    apply_channel_pan(shadow, value.channel);
+}
+
+static void set_pitch_bend(VoiceParamBlock &shadow, const InputValue &value) {
+    channel_bend_ratio[value.channel] = value.scalar;
+    apply_channel_bend(shadow, value.channel);
+}
+
+// FX setters write shadow.fx -- one instance per VoiceParamBlock, not
+// per-voice -- a true module-global Modifier, unlike mod wheel/pan/pitch
+// bend above which are per-channel.
+static void set_fx_type(VoiceParamBlock &shadow, const InputValue &value) {
+    shadow.fx.type = (uint8_t)((uint32_t)value.scalar * FX_COUNT / 128u);
+    ui_state.fx_type = shadow.fx.type;
+}
+
+static void set_fx_mix(VoiceParamBlock &shadow, const InputValue &value) {
+    shadow.fx.mix = (uint8_t)value.scalar;
+    ui_state.fx_mix = shadow.fx.mix;
+}
+
+static void set_fx_p1(VoiceParamBlock &shadow, const InputValue &value) {
+    shadow.fx.p1 = (uint8_t)value.scalar;
+    ui_state.fx_p1 = shadow.fx.p1;
+}
+
+static void set_fx_p2(VoiceParamBlock &shadow, const InputValue &value) {
+    shadow.fx.p2 = (uint8_t)value.scalar;
+    ui_state.fx_p2 = shadow.fx.p2;
+}
+
+// Patch select: Program Change is this module's only Configuration input --
+// picks a patch by index (wrapped into FM_PATCH_COUNT, always >= 1) for
+// future notes on the channel. Doesn't touch the shadow block itself, so
+// callers don't need to commit for it alone.
+static void set_patch(VoiceParamBlock &, const InputValue &value) {
+    uint8_t idx = (uint8_t)(value.index % FM_PATCH_COUNT);
+    channel_patch[value.channel] = &FM_PATCHES[idx];
+    channel_program[value.channel] = idx;
+    ui_state.program = idx;
+}
+
+static constexpr InputCategory kCapabilities[] = {
+    InputCategory::NOTE,
+    InputCategory::MODIFIER,
+    InputCategory::CONFIGURATION,
+};
+
+static constexpr InputMapEntryT<VoiceParamBlock> kMappingTable[] = {
+    // category                  id_low              id_high             channel   fixed_vel  setter
+    { InputCategory::NOTE,          0,                  127,                0xFF,     0,       set_note },
+    { InputCategory::MODIFIER,      1,                  1,                  0xFF,     0,       set_mod_wheel },   // CC1: mod wheel
+    { InputCategory::MODIFIER,      10,                 10,                 0xFF,     0,       set_pan },         // CC10: pan
+    { InputCategory::MODIFIER,      MOD_ID_PITCH_BEND,  MOD_ID_PITCH_BEND,  0xFF,     0,       set_pitch_bend },
+    { InputCategory::MODIFIER,      72,                 72,                 0xFF,     0,       set_fx_p1 },       // CC72: FX param 1
+    { InputCategory::MODIFIER,      73,                 73,                 0xFF,     0,       set_fx_mix },      // CC73: FX wet/dry mix
+    { InputCategory::MODIFIER,      74,                 74,                 0xFF,     0,       set_fx_type },     // CC74: FX type select
+    { InputCategory::MODIFIER,      75,                 75,                 0xFF,     0,       set_fx_p2 },       // CC75: FX param 2
+    { InputCategory::CONFIGURATION, CONFIG_ID_PATCH,    CONFIG_ID_PATCH,    0xFF,     0,       set_patch },       // Program Change: patch select
+};
+
+static_assert(input_table_declares_capabilities(kMappingTable, kCapabilities),
+              "fm mapping table entry uses an InputCategory not in kCapabilities");
 
 void midi_controller_init() {
     midi_parser.init();
@@ -163,7 +239,14 @@ void midi_controller_process(const uint8_t *data, uint32_t len, ParamExchange *p
                 int v = voice_alloc_allocate();
                 if (v >= 0) {
                     midi_note_voice[note] = (int8_t)v;
-                    midi_voice_on(shadow, v, note, ev.data2, ev.channel);
+                    InputValue value{};
+                    value.channel = ev.channel;
+                    value.note = note;
+                    value.velocity = ev.data2;
+                    value.voice = (int8_t)v;
+                    value.note_on = true;
+                    input_dispatch(shadow, kMappingTable, InputCategory::NOTE, note, value);
+                    voice_held[v] = true;
                     changed = true;
                 }
                 break;
@@ -171,7 +254,12 @@ void midi_controller_process(const uint8_t *data, uint32_t len, ParamExchange *p
             case MIDI_NOTE_OFF: {
                 int8_t v = midi_note_voice[ev.data1];
                 if (v >= 0) {
-                    shadow.voices[v].gate = false;
+                    InputValue value{};
+                    value.channel = ev.channel;
+                    value.note = ev.data1;
+                    value.voice = v;
+                    value.note_on = false;
+                    input_dispatch(shadow, kMappingTable, InputCategory::NOTE, ev.data1, value);
                     voice_held[v] = false;
                     voice_alloc_release(v);
                     midi_note_voice[ev.data1] = -1;
@@ -181,74 +269,80 @@ void midi_controller_process(const uint8_t *data, uint32_t len, ParamExchange *p
             }
             case MIDI_CC: {
                 switch (ev.data1) {
-                    case 1:  // mod wheel — a separate source competing with the patch's own LFO PMD/AMD depth (lfo.h's max() rule), live
-                        channel_mod_wheel[ev.channel] = (int16_t)(ev.data2 * 258);
-                        apply_channel_mod_wheel(shadow, ev.channel);
+                    case 1: {  // mod wheel — a source competing with the patch's own LFO PMD/AMD depth, live
+                        InputValue value{};
+                        value.channel = ev.channel;
+                        value.scalar = (float)(ev.data2 * 258);
+                        input_dispatch(shadow, kMappingTable, InputCategory::MODIFIER, 1, value);
                         ui_state.mod = ev.data2;
                         ui_state.last_channel = ev.channel;
                         changed = true;
                         break;
-                    case 10:  // pan (CC10) — 0=full left, 64=center, 127=full right
-                        channel_pan[ev.channel] = (int16_t)(((int32_t)ev.data2 - 64) * 512);
-                        apply_channel_pan(shadow, ev.channel);
-                        ui_state.last_channel = ev.channel;
-                        changed = true;
-                        break;
-                    case 74:  // effect type select — split range into FX_COUNT bands
-                        shadow.fx.type = (uint8_t)((uint32_t)ev.data2 * FX_COUNT / 128u);
-                        ui_state.fx_type = shadow.fx.type;
-                        changed = true;
-                        break;
-                    case 73:  // effect wet/dry mix (global)
-                        shadow.fx.mix = ev.data2;
-                        ui_state.fx_mix = ev.data2;
-                        changed = true;
-                        break;
-                    case 72:  // effect param 1: delay feedback / reverb room size
-                        shadow.fx.p1 = ev.data2;
-                        ui_state.fx_p1 = ev.data2;
-                        changed = true;
-                        break;
-                    case 75:  // effect param 2: delay time / reverb damping
-                        shadow.fx.p2 = ev.data2;
-                        ui_state.fx_p2 = ev.data2;
-                        changed = true;
-                        break;
-#ifdef T00T_FM_HAS_PATCHES
-                    case 30: {  // patch select (#47) — CC alternative to Program Change
-                        uint8_t idx = (uint8_t)(ev.data2 % FM_PATCH_COUNT);
-                        channel_patch[ev.channel] = &FM_PATCHES[idx];
-                        channel_program[ev.channel] = idx;
-                        ui_state.program = idx;
+                    }
+                    case 10: {  // pan (CC10) — 0=full left, 64=center, 127=full right
+                        InputValue value{};
+                        value.channel = ev.channel;
+                        value.scalar = (float)(((int32_t)ev.data2 - 64) * 512);
+                        input_dispatch(shadow, kMappingTable, InputCategory::MODIFIER, 10, value);
                         ui_state.last_channel = ev.channel;
                         changed = true;
                         break;
                     }
-#endif
-                    default:  break;  // other CCs unmapped
+                    case 74: {  // effect type select — split range into FX_COUNT bands
+                        InputValue value{};
+                        value.channel = ev.channel;
+                        value.scalar = (float)ev.data2;
+                        input_dispatch(shadow, kMappingTable, InputCategory::MODIFIER, 74, value);
+                        changed = true;
+                        break;
+                    }
+                    case 73: {  // effect wet/dry mix (global)
+                        InputValue value{};
+                        value.channel = ev.channel;
+                        value.scalar = (float)ev.data2;
+                        input_dispatch(shadow, kMappingTable, InputCategory::MODIFIER, 73, value);
+                        changed = true;
+                        break;
+                    }
+                    case 72: {  // effect param 1: delay feedback / reverb room size
+                        InputValue value{};
+                        value.channel = ev.channel;
+                        value.scalar = (float)ev.data2;
+                        input_dispatch(shadow, kMappingTable, InputCategory::MODIFIER, 72, value);
+                        changed = true;
+                        break;
+                    }
+                    case 75: {  // effect param 2: delay time / reverb damping
+                        InputValue value{};
+                        value.channel = ev.channel;
+                        value.scalar = (float)ev.data2;
+                        input_dispatch(shadow, kMappingTable, InputCategory::MODIFIER, 75, value);
+                        changed = true;
+                        break;
+                    }
+                    default: break;  // other CCs unmapped
                 }
                 break;
             }
             case MIDI_PITCH_BEND: {
                 uint16_t bend14 = (uint16_t)(ev.data1 | (ev.data2 << 7));
-                channel_bend_ratio[ev.channel] = bend_to_ratio(bend14);
-                apply_channel_bend(shadow, ev.channel);
+                InputValue value{};
+                value.channel = ev.channel;
+                value.scalar = bend_to_ratio(bend14);
+                input_dispatch(shadow, kMappingTable, InputCategory::MODIFIER, MOD_ID_PITCH_BEND, value);
                 ui_state.bend = (int16_t)((int)bend14 - PITCH_BEND_CENTER);
                 ui_state.last_channel = ev.channel;
                 changed = true;
                 break;
             }
-#ifdef T00T_FM_HAS_PATCHES
-            case MIDI_PROGRAM_CHANGE: {  // #47 — see CC30 above for the BeatStep Pro alternative
-                uint8_t idx = (uint8_t)(ev.data1 % FM_PATCH_COUNT);
-                channel_patch[ev.channel] = &FM_PATCHES[idx];
-                channel_program[ev.channel] = idx;
-                ui_state.program = idx;
+            case MIDI_PROGRAM_CHANGE: {
+                InputValue value{};
+                value.channel = ev.channel;
+                value.index = ev.data1;
+                input_dispatch(shadow, kMappingTable, InputCategory::CONFIGURATION, CONFIG_ID_PATCH, value);
                 ui_state.last_channel = ev.channel;
-                changed = true;
                 break;
             }
-#endif
             default: break;
         }
     }
