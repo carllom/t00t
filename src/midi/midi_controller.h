@@ -1,6 +1,7 @@
 #pragma once
 
 #include "engine.h"
+#include "../input_layer.h"
 #include <cstdint>
 
 // Transport-agnostic MIDI controller.
@@ -11,6 +12,12 @@ void midi_controller_init();
 
 // Feed raw MIDI bytes. Parses, handles note on/off, commits if changed.
 void midi_controller_process(const uint8_t *data, uint32_t len, ParamExchange *params);
+
+// Dispatch an already-Shaped NOTE Input event (voice already resolved by
+// the caller's own voice-allocator call) through the shared kMappingTable/
+// set_note Handler -- lets a non-MIDI NOTE source (a GPIO button) reach the
+// same Handler a MIDI note-on/off does, without duplicating its logic.
+void midi_controller_dispatch_note(VoiceParamBlock &shadow, uint8_t note, const InputValue &value);
 
 // --- Snapshot of recent MIDI activity for a display/UI (Core 0) ---
 struct MidiUiState {
@@ -25,4 +32,10 @@ struct MidiUiState {
     uint8_t fx_p1;          // CC72: delay feedback / reverb room size, 0..127
     uint8_t fx_p2;          // CC75: delay time / reverb damping, 0..127
 };
-void midi_controller_ui_state(MidiUiState *out);
+
+// Shared instance: only one engine is ever linked at a time, so there's no
+// need for a private copy per module -- a module's own Handlers still
+// write whichever fields apply to them, same as always.
+inline MidiUiState ui_state;
+
+inline void midi_controller_ui_state(MidiUiState *out) { *out = ui_state; }

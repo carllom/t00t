@@ -2412,3 +2412,57 @@ checks. The move only targeted ORCH-CHIME's address-dependent cost, but
 apparently shaved a little general XIP pressure elsewhere too. Treated as
 a modest, incidental gain — no new profiling task opened for it.
 
+
+## 8. Core 0 Input Pipeline Migration (#106)
+
+Plan: migrate `fm`'s `midi_controller.cpp` onto the Router
+(`input_dispatch()`/`InputMapEntryT`, `src/input_layer.h`) that
+`subtractive` already used, following the from-scratch input-pipeline
+redesign (map #94, spec #99, tickets #100-104) into the first of the four
+other engines plus tracker (wayfinder map #105). Free to remap fm's actual
+input controls to fit the Note/Strike/Modifier/Configuration/Clock/
+Transport vocabulary rather than porting the ad hoc, incrementally-grown
+mapping unchanged.
+
+What shipped: NOTE/MODIFIER/CONFIGURATION all route through
+`input_dispatch()` into fm's own `kMappingTable`, voice allocation
+resolved inside `set_note()` (the Voice Allocation Interface). CC30 —
+an alternate live-encoder patch-select path for controllers (the Arturia
+BeatStep Pro) whose absolute-CC encoders can't send Program Change — was
+dropped rather than kept alongside Program Change, settling a standing
+convention for the whole migration effort: preset selection is Program
+Change -> `CONFIGURATION` -> a module's own preset setter, not each module
+picking its own CC/PC split. `patch.h` reworked so `FM_PATCHES`/
+`FM_PATCH_COUNT` are always defined (a single-entry fallback without a
+generated DX7 bank), so Program Change never needs to branch on whether
+`T00T_FM_HAS_PATCHES` is set.
+
+Follow-on: comparing fm's freshly-migrated `midi_controller_process()`
+against `subtractive`'s found the two nearly identical — the remaining
+differences (a microKORG-specific Program Change decoding quirk, and
+per-module-duplicated bank-select storage) were Handler-local and
+generic-plumbing concerns respectively, not genuine routing divergence.
+This surfaced a follow-up ticket, "Generalize midi_controller_process()
+into shared dispatch helpers" (#111): `src/midi/midi_dispatch.h`/`.cpp`
+now holds the shared, module-agnostic generic per-message-type dispatch
+helpers (`midi_dispatch_cc()`, `midi_dispatch_pitch_bend()`,
+`midi_dispatch_program_change()`, `midi_dispatch_note()`) both
+`subtractive` and `fm` build their own `midi_controller_process()` from —
+retrofitted onto `subtractive` too, even though it sat outside this map's
+five destination modules.
+
+That first dispatch-layer pass still called `voice_alloc_allocate()`/
+`release()` from *inside* the generic dispatch loop, before any Handler
+ran — exactly the "interleaved inside event parsing" shape spec #99's own
+Voice Allocation Interface design ruled out, just relocated one layer up
+from the old per-module `midi_controller_process()` rather than actually
+removed. Fixed by a second follow-up, "Move voice allocation into
+set_note(); centralize MidiParser/MidiUiState" (#112): voice resolution
+is now entirely `set_note()`'s own job, via its own `note_voice[]`
+lookup (steal-on-retrigger included) — the generic loop needs no
+per-note/per-voice tracking arrays at all. Files renamed
+`input_subsystem.cpp` across every migrated engine (`CONTEXT.md` flags
+bare "Input" as too generic on its own). `MidiParser`/`MidiUiState`
+storage, and `midi_controller_ui_state()` itself, became shared `inline`
+instances (`midi_parser.h`/`midi_controller.h`) once every engine's own
+copy turned out byte-identical.

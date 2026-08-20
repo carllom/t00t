@@ -27,7 +27,7 @@ oscillator.
 - **Presets**: 11 factory presets (3 synthesized, 8 sample-based) — see
   `presets.h`
 - No arpeggiator or step sequencer in the engine itself; the VGA board's
-  buttons each cycle a fixed 4-note pattern (see MIDI mapping below)
+  buttons each play one fixed note (see MIDI mapping below)
 
 ### MIDI Mapping (Input Capabilities)
 
@@ -47,8 +47,9 @@ oscillator.
 | Program Change | — | 0–127 | microKORG numbering (tens digit = row, ones digit = column) mapped to one of the 11 factory presets; affects future notes only |
 
 Non-MIDI input: VGA board buttons (A/B/C, `vgaboard_rp2350` only) — each
-fixed to one preset, cycling through its own 4-note pattern on successive
-presses.
+fixed to one note/channel/preset, routed through the same Shaping →
+`input_dispatch()` → `set_note` path a MIDI note-on/off uses (see
+`engine.md`'s MIDI Input section).
 
 ### Display (Presentation Capabilities)
 
@@ -71,11 +72,17 @@ change-detected redraws only):
 - `presets.h` — `VoicePreset` struct and the 11-entry factory preset table
 - `audio_engine.cpp` — Core 1 render loop
 - `display.cpp` — Core 0 status display
+- `input_subsystem.cpp` — the Input pipeline's module-specific tail:
+  mapping table, Handlers, and Voice Allocation Interface calls, built on
+  the shared dispatch layer below
 
 Also draws on shared, non-engine-specific code: `src/controller.cpp`
 (VGA-board buttons — subtractive is the only engine that links it, see
-`CMakeLists.txt`) and `src/midi/midi_controller.cpp` (no engine-specific
-override).
+`CMakeLists.txt`), `src/button_shaping.h`/`src/sensor_event.h` (button
+SensorEvent → Input event Shaping), and `src/midi/midi_dispatch.h`/`.cpp`/
+`midi_controller_generic.h` (shared generic per-MIDI-message-type dispatch
+helpers, bank-select state, and the full parse-and-dispatch loop — also
+used by `fm`).
 
 ### Build
 
@@ -107,11 +114,15 @@ SUSTAIN:  level = sustain_level, held while gate is true
 RELEASE:  level *= release_coeff, until level < epsilon → IDLE
 ```
 
-`EnvConfig` holds `attack_rate`, `decay_coeff`, `sustain_level`, `release_coeff`,
-built from milliseconds via `env_config(attack_ms, decay_ms, sustain_pct, release_ms)`.
-`Envelope` exposes `init()`, `trigger()`, `release()`, `active()`, and
-`advance(cfg)` (returns the current float level). Release from any active state
-transitions to RELEASE using the current level as the starting point.
+`EnvConfig` holds `attack_rate`, `decay_coeff`, `sustain_level`,
+`release_coeff`, and `gated_attack_decay` (default `true`), built from
+milliseconds via `env_config(attack_ms, decay_ms, sustain_pct, release_ms)`.
+`Envelope` exposes `init()`, `trigger()`, `release(cfg)`, `active()`, and
+`advance(cfg)` (returns the current float level). With `gated_attack_decay`
+true — the only value any preset here uses today — release from any active
+state transitions to RELEASE immediately, using the current level as the
+starting point. Set false, a release requested during ATTACK or DECAY is
+deferred until they finish naturally instead of interrupting them.
 
 Amplitude chain per sample (Core 1 render loop):
 ```
@@ -242,10 +253,6 @@ Idle ~0.6%. One voice ~5–6% (more with LFO and filter both active). Delay
 insert adds ~1.5pp; reverb adds ~8pp. Measured on breadboard_rp2350 at
 44.1 kHz / 150 MHz. Full measurement history: `history_subtractive.md`.
 
-### Future / TODO
-
-None currently planned.
-
 ## Decision Record
 
 1. **Attack is linear, decay/release are exponential** — matches how
@@ -272,6 +279,24 @@ None currently planned.
 7. **Program Change uses microKORG-specific numbering** (row = tens digit,
    column = ones digit) rather than a linear 0–127 map — matches the specific
    external controller this engine was built to pair with.
+8. **Each VGA board button plays one fixed note**, not the old per-button
+   4-note cycle — a bare on/off switch has no state to key a cycle position
+   off other than the button itself, and a fixed note keeps the button's
+   Shaping config (note, channel, velocity) a plain, self-contained value
+   rather than mutable per-button state threaded through the input path.
+9. **Program Change now routes through the Router** (`CONFIGURATION`,
+   `src/midi/midi_dispatch.h`'s shared synthetic id) instead of bypassing
+   the dispatch table directly — the microKORG row/col decoding stays
+   entirely inside this module's own patch-select Handler, reading the
+   bank value via `midi_channel_bank_msb()` (shared, module-agnostic
+   plumbing) rather than a locally duplicated array.
+10. **Voice allocation lives inside `set_note()`, not the dispatch loop**
+    — `voice_alloc_allocate()`/`release()` are the Voice Allocation
+    Interface (CONTEXT.md), reached from a Handler, never interleaved in
+    MIDI parsing/dispatch. `set_note()` resolves its own voice via its own
+    `note_voice[]` lookup (steal-on-retrigger included); the GPIO
+    button path (`controller.cpp`) reaches the same Handler and no longer
+    pre-allocates a voice of its own.
 
 ## Glossary
 

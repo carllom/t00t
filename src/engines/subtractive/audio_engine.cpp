@@ -136,7 +136,7 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
 
             // Detect gate-off edge
             if (!p.gate && voice_gated[v]) {
-                envelope[v].release();
+                envelope[v].release(env_cfg);
                 voice_gated[v] = false;
             } else {
                 voice_gated[v] = p.gate;

@@ -55,7 +55,7 @@ struct VoiceParams {
                            // to pitch (module_chip.md §12.2, note_freq.h).
     uint8_t  instrument;   // index into INSTRUMENTS[] (VT_SID, engines/chip/instruments.h)
                            // or AY_INSTRUMENTS[] (VT_AY, ay_instruments.h) -- which table
-                           // depends on type, resolved by midi_controller.cpp at note-on
+                           // depends on type, resolved by input_subsystem.cpp at note-on
                            // from one combined selection space (TOTAL_INSTRUMENT_COUNT)
     uint8_t  trigger;      // generation counter, incremented on each note-on
     uint8_t  velocity;     // 1-127 (§13.7)
@@ -68,7 +68,7 @@ struct VoiceParams {
                            // A single global choice, not really per-voice, but
                            // VoiceParams is the only Core0->Core1 channel and
                            // this is one byte -- replicated identically to
-                           // every voice by midi_controller.cpp (CC17), Core 1
+                           // every voice by input_subsystem.cpp (CC17), Core 1
                            // reads it once from voice 0 rather than widening
                            // the shared VoiceParamBlockT (engine_base.h) for
                            // every other engine to carry unused.

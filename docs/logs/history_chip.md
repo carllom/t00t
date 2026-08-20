@@ -1650,3 +1650,28 @@ reworded from "considered and rejected for now" to "out of scope, not
 just deferred" — the tag-bit scheme itself stays on record there in case
 a future author wants the reasoning, but Future/TODO no longer lists it
 as pending work.
+
+## 15. Core 0 Input Pipeline Migration (#107)
+
+Plan: migrate `chip`'s `midi_controller.cpp` onto the Router
+(`input_dispatch()`/`InputMapEntryT`), following `fm`'s own migration
+(#106) into the next engine in wayfinder map #105's preferred order.
+Explicitly told to look at the refactorings `fm`'s ticket had already
+settled (the shared dispatch layer, #111/#112) and align to both
+`subtractive` and `fm` as closely as possible rather than rediscovering
+the same shape independently.
+
+What shipped: same shape as `fm` — NOTE/MODIFIER/CONFIGURATION via
+`input_dispatch()`, file renamed `input_subsystem.cpp`, voice allocation
+resolved inside `set_note()`. CC16 — chip's own alternate live-encoder
+instrument-select path — dropped, same BeatStep-Pro-safe-encoder
+rationale fm's CC30 was dropped for (preset selection is Program Change
+only, the standing convention #106 settled).
+
+Chip's own complication beyond the fm template: filter-bus binding, a
+second allocator-like concern alongside dynamic voice allocation (which
+SID/AY filter bus a voice's output routes through). Resolved by placing
+`bind_filter()`/`release_bus()` inside `set_note()` alongside
+`voice_alloc_allocate()`/`release()` — its lifecycle already matched
+voice allocation's own timing (bound at note-on, released at note-off),
+so relocating it changed where the code lives, not when it runs.

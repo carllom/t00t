@@ -41,7 +41,7 @@ using VoiceParamBlock = VoiceParamBlockT<VoiceParams>;
 using ParamExchange = ParamExchangeT<VoiceParams>;
 
 // Channel -> patch lookup for the display (module_fm.md "Display"). Same
-// Core-0-only state midi_controller.cpp's note-on path already reads;
+// Core-0-only state input_subsystem.cpp's note-on path already reads;
 // always valid (defaults to &FM_TEST_PATCH), whether or not patches.h is
 // present.
 const FmPatch *fm_channel_patch(uint8_t channel);

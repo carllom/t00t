@@ -191,7 +191,7 @@ int main(int argc, char **argv) {
     fm_pitch_eg_init(peg);
     fm_lfo_init(lfo);
 
-    // Same note->frequency conversion the device's midi_controller.cpp uses,
+    // Same note->frequency conversion the device's input_subsystem.cpp uses,
     // and the same 12-TET reference Dexed's standard tuning resolves to.
     const float    freq_hz  = 440.0f * powf(2.0f, (float)(a.note - 69) / 12.0f);
     const uint32_t note_inc = fm_phase_inc(freq_hz);

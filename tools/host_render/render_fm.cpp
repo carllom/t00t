@@ -161,7 +161,7 @@ static void render_patch_note(const FmPatch &patch, float note_hz, const FmRouti
     uint32_t inc = fm_phase_inc(note_hz);
     // #48: fm_voice_note_on() now needs the raw MIDI note (key level/rate
     // scaling), not just the Hz-derived phase increment -- inverting
-    // midi_controller.cpp's own note-to-Hz formula (A4=69=440Hz) rather
+    // input_subsystem.cpp's own note-to-Hz formula (A4=69=440Hz) rather
     // than adding a second, separate "midinote" parameter every caller
     // here would have to also track alongside note_hz.
     int note_round = (int)lroundf(69.0f + 12.0f * log2f(note_hz / 440.0f));

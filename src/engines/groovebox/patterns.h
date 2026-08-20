@@ -59,7 +59,3 @@ static const SeqPattern seq_patterns[] = {
     { 16, seq_patt2 },
 };
 static constexpr uint8_t SEQ_PATTERN_COUNT = sizeof(seq_patterns) / sizeof(seq_patterns[0]);
-
-// On the pattern channel, this note selects/toggles pattern 0; the next note
-// pattern 1, and so on.
-static constexpr uint8_t SEQ_PATTERN_BASE_NOTE = 36;

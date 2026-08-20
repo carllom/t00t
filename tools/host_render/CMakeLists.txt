@@ -19,6 +19,61 @@ target_include_directories(render_res2p PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}/../../src
 )
 
+# Host build of src/input_layer.h (#84/#85, issue #86): the generic input
+# dispatch mechanism's own unit tests (no-arg invocation, same convention as
+# render_xm_device.cpp). Header-only, no other sources needed.
+add_executable(test_input_layer test_input_layer.cpp)
+target_include_directories(test_input_layer PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}
+    ${CMAKE_CURRENT_LIST_DIR}/../../src
+)
+
+# Host build of src/envelope.h's non-interruptible release option (ticket
+# #100). Pulls in envelope.cpp for env_config(); no other sources needed.
+add_executable(test_envelope
+    test_envelope.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/../../src/envelope.cpp
+)
+target_include_directories(test_envelope PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}
+    ${CMAKE_CURRENT_LIST_DIR}/../../src
+)
+
+# Host build of src/sensor_event.h (ticket #103): the non-MIDI physical
+# input event type and its construction helpers. Header-only.
+add_executable(test_sensor_event test_sensor_event.cpp)
+target_include_directories(test_sensor_event PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}
+    ${CMAKE_CURRENT_LIST_DIR}/../../src
+)
+
+# Host build of src/button_shaping.h (ticket #104): the SensorEvent ->
+# Shaping -> input_dispatch() path a GPIO button takes to reach the same
+# Handler a MIDI note-on/off would. Header-only.
+add_executable(test_button_shaping test_button_shaping.cpp)
+target_include_directories(test_button_shaping PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}
+    ${CMAKE_CURRENT_LIST_DIR}/../../src
+)
+
+# Host build of src/voice_alloc.h/.cpp's steal-priority tiering (ticket
+# #101). Compiles the real, unmodified voice_alloc.cpp so the test exercises
+# production VoiceAllocator::init()/allocate()/release() directly -- the
+# test itself never calls update() (its hardware FIFO drain isn't
+# host-buildable), but the file still needs to compile. host_stub_engine/
+# stands in for a real engine's engine.h (providing just MAX_VOICES) and a
+# minimal pico/multicore.h stub (providing just the one symbol update()
+# references); it must come first so it shadows the real ones on the path.
+add_executable(test_voice_alloc
+    test_voice_alloc.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/../../src/voice_alloc.cpp
+)
+target_include_directories(test_voice_alloc PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}/host_stub_engine
+    ${CMAKE_CURRENT_LIST_DIR}
+    ${CMAKE_CURRENT_LIST_DIR}/../../src
+)
+
 # Host build of src/engines/tracker/mixer.h (issue #15). Pulls in osc/sine.cpp
 # for pan_gains_q15's wavetable; everything else it touches is header-only.
 add_executable(render_tracker_mixer
