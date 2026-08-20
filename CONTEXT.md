@@ -331,10 +331,13 @@ Other Pages hold whatever doesn't fit there, or doesn't belong densely
 packed alongside it.
 
 **Header**:
-The top chrome region of a Page — today a static, identical-across-modules
-"t00t" banner (only its accent color varies per module, kept as intentional
-per-module branding). Being redesigned to also carry Page-identifying
-context (e.g. which Page is showing) rather than stay purely decorative.
+The top chrome region of a Page — two rows (module name; Page name plus a
+Page indicator when a module has more than one Page). No literal "t00t"
+wordmark: the per-module accent color (`COL_TITLE`) already carries the
+branding. The Page indicator is a row of small filled/dim cells, one per
+Page, reusing ActivityGrid's shape — omitted entirely for a single-Page
+module. Content stays clear of the panel's rounded corners (see
+[docs/lcd-driver-capabilities.md](docs/lcd-driver-capabilities.md)).
 
 ## Notes / gotchas
 
