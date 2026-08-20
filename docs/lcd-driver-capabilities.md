@@ -20,6 +20,20 @@ for the family. It was verified applicable here directly: every extended
 `NVGAMCTRL`(E1h) — matches this datasheet's command names and opcodes
 exactly (§9.2, pp. 260–316). Page numbers below cite this document.
 
+## Physical panel: rounded corners
+
+Not a controller register, a hardware fact about the panel itself: the
+visible glass is physically rounded at all four corners, radius **~30px**.
+Content placed within that radius of any corner is not visible, regardless
+of what the controller writes to GRAM there. `subtractive/display.cpp`'s
+existing comment ("Centre the title so it clears the panel's rounded
+corners") already worked around this without stating the radius; this is
+that number, made explicit. Any Widget/Page content near the top or bottom
+edge — the Header chrome most immediately — needs to keep clear of a
+quarter-circle at each corner: for content whose top (or bottom) edge sits
+`y` pixels from that edge, the safe horizontal margin from the corner is
+`30 - sqrt(30² - (30-y)²)` (0 once `y >= 30`).
+
 ## What the driver currently does
 
 Source: `src/wslcd/lcd_st7789.cpp`/`.h`, `src/wslcd/gfx.cpp`/`.h`,
