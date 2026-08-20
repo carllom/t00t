@@ -323,23 +323,28 @@ sources like GPIO buttons too (see below); one not yet migrated onto the
 Router keeps the older `midi_controller.cpp` name until its own migration
 ticket. Both transports route through `midi_controller_process()`, which
 parses MIDI bytes and dispatches each message -- never resolving a voice
-itself; see the Voice Allocation Interface entry below. For `subtractive`,
-`fm`, `chip`, `tracker`, and `groovebox`, this function is a one-line call
-into `midi_controller_process_generic()` (`src/midi/midi_controller_generic.h`),
-which is built from `src/midi/midi_dispatch.h`'s shared, module-agnostic
-generic helpers — one per MIDI message shape (`midi_dispatch_cc()`,
-`midi_dispatch_pitch_bend()`, `midi_dispatch_program_change()`,
-`midi_dispatch_note()`, `midi_dispatch_clock()`, `midi_dispatch_transport()`).
-A module's own `input_subsystem.cpp` shrinks to its `kMappingTable`, its
-Handlers (including voice resolution, inside its own NOTE Handler), and
-that one-line call; `tracker` has no `NOTE`/`MODIFIER` entries at all (no
+itself; see the Voice Allocation Interface entry below. Every engine --
+`subtractive`, `fm`, `chip`, `tracker`, `groovebox`, and `speech` -- builds
+this function as a one-line call into `midi_controller_process_generic()`
+(`src/midi/midi_controller_generic.h`), which is built from
+`src/midi/midi_dispatch.h`'s shared, module-agnostic generic helpers — one
+per MIDI message shape (`midi_dispatch_cc()`, `midi_dispatch_pitch_bend()`,
+`midi_dispatch_program_change()`, `midi_dispatch_note()`,
+`midi_dispatch_clock()`, `midi_dispatch_transport()`). A module's own
+`input_subsystem.cpp` shrinks to its `kMappingTable`, its Handlers
+(including voice resolution, inside its own NOTE Handler), and that
+one-line call; `tracker` has no `NOTE`/`MODIFIER` entries at all (no
 live-note traffic, per module_tracker.md), which is fine — an unmatched
 category/id is always a no-op, same mechanism, just an empty table region.
 `groovebox` originally didn't fit the generic loop's uniform `NOTE`
 dispatch (channel picked the category itself) and kept its own forked
 loop for a while — see Decision Record entries 9 and 10 for how that
 barrier was removed by remapping its inputs, not by changing the
-mechanism.
+mechanism. `speech` fit the generic loop's shape (dynamic `voice_alloc`,
+one voice per note) from the start, no fork ever needed -- its own
+migration's remap was a different kind, unifying Program Change with a
+now-redundant preset-select CC rather than removing a forked loop (see
+module_speech.md's Decision Record).
 
 For `subtractive`/`fm`/`chip`, note on/off, **pitch bend**, per-module CCs
 (mod wheel/pan/instrument-select/speaker-sim as applicable), **CC72-75 (FX
@@ -379,25 +384,29 @@ The dispatch mechanism above (shared vocabulary and a per-module mapping
 table, #86) started `subtractive`-only; a from-scratch redesign of the
 whole input pipeline settled a fuller vocabulary and requirement set on top
 of it without discarding the mechanism itself — see Decision Record entry 5
-— and `fm`/`chip`/`tracker`/`groovebox` have since joined `subtractive` in
-also sharing `midi_controller_process()`'s own generic message-dispatch
-shape (`src/midi/midi_dispatch.h`), not just the Router underneath it.
-`groovebox` reached that point last and by a different route: it composed
-`midi_dispatch.h`'s lower-level generic helpers directly in its own
-process loop for a while, because its channel-semantic routing
-(drums/pattern-select/303) picked a different category per channel, which
-the shared loop's uniform `NOTE`/`CONFIGURATION` dispatch couldn't
-express. Remapping two inputs — drums moved from `Strike` to `Note`
-(channel decides what a note means *inside* the Handler, not the loop)
-and pattern-select moved from a `NOTE_ON`-shaped message to Program
+— and `fm`/`chip`/`tracker`/`groovebox`/`speech` have since joined
+`subtractive` in also sharing `midi_controller_process()`'s own generic
+message-dispatch shape (`src/midi/midi_dispatch.h`), not just the Router
+underneath it -- all six engines, the whole migration effort (wayfinder
+map "Migrate remaining engines onto the Core 0 input pipeline", #105).
+`groovebox` reached that point last among the five and by a different
+route: it composed `midi_dispatch.h`'s lower-level generic helpers
+directly in its own process loop for a while, because its channel-semantic
+routing (drums/pattern-select/303) picked a different category per
+channel, which the shared loop's uniform `NOTE`/`CONFIGURATION` dispatch
+couldn't express. Remapping two inputs — drums moved from `Strike` to
+`Note` (channel decides what a note means *inside* the Handler, not the
+loop) and pattern-select moved from a `NOTE_ON`-shaped message to Program
 Change/`CONFIGURATION` (matching every other module's preset-select
 convention) — removed that barrier, and adding `MIDI_CLOCK` to the shared
 loop removed the last reason to keep a fork at all (see Decision Record
 entries 9 and 10). `speech` (same dynamic-allocation, one-voice-per-note
-shape as subtractive/fm/chip) is the only module left to migrate onto the
-generic loop; non-MIDI input sources beyond GPIO buttons (e.g.
-potentiometers -- `SensorEvent` already covers the shape, see
-`src/sensor_event.h`) remain open work.
+shape as subtractive/fm/chip) fit the generic loop directly, no fork ever
+needed -- its own remap unified Program Change with a redundant
+preset-select CC instead (module_speech.md's own Decision Record).
+Non-MIDI input sources beyond GPIO buttons (e.g. potentiometers --
+`SensorEvent` already covers the shape, see `src/sensor_event.h`) remain
+open work, outside this map's scope.
 
 ### Input categories
 
@@ -406,10 +415,10 @@ vocabulary a source event is classified into before reaching a module's
 mapping table. Definitions live in root `CONTEXT.md`'s "Language" section,
 the single source of truth for this vocabulary — not duplicated here, to
 avoid a second copy drifting out of sync as the vocabulary evolves. Every
-migrated engine (`subtractive`, `fm`, `chip`, `tracker`, `groovebox`) is
+engine (`subtractive`, `fm`, `chip`, `tracker`, `groovebox`, `speech`) is
 built against it via the generic dispatch mechanism now — `groovebox` uses
 `Configuration`/`Note`/`Modifier`/`Clock`/`Transport`, the richest table so
-far, all through the same shared loop every other migrated engine uses (see
+far, all through the same shared loop every other engine uses (see
 Decision Record). `Strike` remains part of the vocabulary but currently has
 no user: `groovebox`'s drums were its original motivating case, remapped
 onto `Note` (see Decision Record entry 10) once channel-based branching
@@ -554,3 +563,25 @@ earlier version of this design assumed. Configurability is build-time only
     and `patterns.h`'s `SEQ_PATTERN_BASE_NOTE` — both `groovebox`-only,
     both now unreferenced anywhere — were removed rather than left as dead
     code.
+11. **`speech` migrated onto `midi_controller_process_generic()` directly,
+    no fork ever needed** — unlike `groovebox`, its `NOTE`/`MODIFIER`
+    dispatch already fit the generic loop's shape (dynamic `voice_alloc`,
+    one voice per note, same as `subtractive`/`fm`/`chip`) from the start.
+    The remap this module needed was a different kind: Program Change used
+    to mean something different depending on the channel's current tract
+    (select an utterance under formant/SAM, select a `KEY_PER_WORD` page
+    under LPC lattice — a raw branch inside the `MIDI_PROGRAM_CHANGE` case
+    itself, module_speech.md's own Decision Record entry 21's original
+    text), and CC16 duplicated Program Change's "load a preset" operation
+    as a second, BeatStep-Pro-safe input path (same rationale `fm`'s CC30/
+    `chip`'s CC16 were dropped for). Both resolved by recognizing a
+    `KEY_PER_WORD` page *is* a preset — `presets.h`'s `SpeechPreset` already
+    carried `tract`/`lattice_page` fields — so Program Change's Handler
+    (`set_program()`) never branches on tract at all: it addresses
+    `presets[]` and a compile-time-generated `lpc_page_presets` table
+    (sized from `LATTICE_WORD_COUNT`, the gitignored, locally-generated
+    corpus's own word count, or exactly one page without one) as one
+    contiguous space, and CC16 was dropped as the now-fully-redundant
+    path. With this migration, all six engines — `subtractive`, `fm`,
+    `chip`, `tracker`, `groovebox`, `speech` — share
+    `midi_controller_process_generic()`, closing out this map.

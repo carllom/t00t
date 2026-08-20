@@ -372,6 +372,7 @@ static_assert(input_table_declares_capabilities(kMappingTable, kCapabilities),
 
 void midi_controller_init() {
     midi_parser.init();
+    midi_bank_select_init();
     g_303 = tb303_default;
     g_303_note = -1;
     g_303_bend = 1.0f;

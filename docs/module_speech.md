@@ -93,7 +93,6 @@ encoder block.
 | 1 | Mod wheel (GM) | Vibrato depth | live |
 | 10 | Pan (GM) | Pan | next note |
 | 15 | Velocity toggle | 0-63 = every note at max velocity, 64-127 = use received velocity (default) | next note |
-| 16 | Preset select | Loads a `presets[]` entry (bulk-writes the CCs below) | next note |
 | 20 | Phoneme select | Phoneme keyboard index | next note |
 | 21 | Formant shift | Tract length / "gender" | live |
 | 22 | Bandwidth scale | Resonance / breathiness | live |
@@ -110,18 +109,25 @@ encoder block.
 | 105 | SAM throat | Tract length / "gender" — SAM tract only | live |
 | 106 | SAM mouth | Resonance / brightness — SAM tract only | live |
 
-**Program Change** is tract-dependent: under the formant and SAM tracts it
-selects a phrase (same value CC23 writes — SAM's own `SAM_PHRASES`, not
-the formant tract's `SPEECH_PHRASES`) — phoneme/allophone selection is
-CC20-only; under the LPC lattice tract it selects the `KEY_PER_WORD` page
-instead (see LPC Lattice Tract). The three meanings never collide, since
-only one tract is active per channel at a time. "Live" CCs push directly
-into every currently-held voice on the channel, not just the per-channel
-default for future notes. CC102–119 is a reserved block for tract-specific
-controls, disjoint from the formant tract's CC16–28; CC103/104 are
-LPC-specific, and CC20's existing phoneme-select band also reaches the SAM
-tract's own smaller allophone set (wrapped, not a dedicated CC of its
-own).
+**Program Change** loads a preset (`presets.h`) -- one uniform operation
+regardless of tract, not a tract-dependent branch. `presets[]`'s named
+entries (bulk-writes every CC above at once, including the phrase a
+formant/SAM voice plays -- same value CC23 writes) and the generated LPC
+lattice page table (`lpc_page_presets`, see LPC Lattice Tract) share one
+contiguous address space: `value.index < SPEECH_PRESET_COUNT` loads a
+named preset, anything at or past it loads an LPC page. A preset carries
+its own tract as one of its fields, so loading one can itself switch
+tract; CC102 (below) is a second, independent way to move tract without
+picking a different preset. A preset can set `phoneme` too (the phoneme
+keyboard's own default preset does), but CC20 is still the only *live*
+phoneme control -- there's no way to change just the phoneme without
+loading a whole preset around it. "Live" CCs push
+directly into every currently-held voice on the channel, not just the
+per-channel default for future notes. CC102–119 is a reserved block for
+tract-specific controls, disjoint from the formant tract's CC20–28; CC103/
+104 are LPC-specific, and CC20's existing phoneme-select band also reaches
+the SAM tract's own smaller allophone set (wrapped, not a dedicated CC of
+its own).
 
 ### Display (Presentation Capabilities)
 
@@ -159,8 +165,9 @@ src/engines/speech/
   sam_phrases.h     GENERATED — SAM phrase bank (allophones + pitch contour)
   utterance.h       two hand-picked fixtures (HELLO/CAT), used only by
                      host regression checks
-  presets.h         SpeechPreset, voice_apply_preset(), preset table
-  midi_controller.cpp  MIDI parsing, CC map, program change
+  presets.h         SpeechPreset, voice_apply_preset(), preset table,
+                     generated LPC lattice page table
+  input_subsystem.cpp  mapping table, Handlers, program-change/preset select
   display.cpp       LCD status, per-voice phoneme grid, F1/F2 formant plot
 ```
 
@@ -463,7 +470,7 @@ convex, so linearly interpolating between two in-range coefficients can
 never leave it. Debug builds assert this after every interpolation step.
 
 **Word data**: `tools/talkie2lattice.py` decodes a real Talkie TMS5220
-vocab source into `lattice_words.h` (`LATTICE_WORDS[]`, gitignored, ~1,163
+vocab source into `lattice_words.h` (`LATTICE_WORDS[]`, gitignored, 1,173
 words once generated locally). Without a generated corpus, every lattice
 voice plays one hardcoded fixture, `lattice.h`'s `LATTICE_TEST_WORD` —
 reflection coefficients from a real order-10 Levinson-Durbin analysis of
@@ -478,11 +485,12 @@ than the test word's own smoother, synthetic ones), which leaves
 **`KEY_PER_WORD` addressing**: the only word-addressing mode built so far,
 of three the design leaves room for (see Decision Record). MIDI note
 number (0–127) selects a word within the channel's current 128-word page;
-Program Change selects which page is current (tract-dependent — see MIDI
-Mapping). `midi_controller.cpp`'s `speech_lattice_word_for_key()` resolves
-note+page to a `LATTICE_WORDS[]` entry, wrapping with `%` past the last,
-partially-populated page the same way every other table lookup in this
-module wraps out-of-range input. `VoiceParams::lattice_word` carries the
+Program Change selects which page is current (see MIDI Mapping — a page is
+a preset like any other, addressed as a contiguous extension of
+`presets[]`, not a tract-dependent special case). `input_subsystem.cpp`'s
+`speech_lattice_word_for_key()` resolves note+page to a `LATTICE_WORDS[]`
+entry, wrapping with `%` past the last, partially-populated page the same
+way every other table lookup in this module wraps out-of-range input. `VoiceParams::lattice_word` carries the
 resolved word as a pointer, set at note-on and read straight through by
 `audio_engine.cpp` — always valid, defaulting to `&LATTICE_TEST_WORD`,
 whether or not a corpus has been generated. A word plays at its own
@@ -836,16 +844,20 @@ Full measurement breakdown: `history_speech.md`.
    exception list**, not the ~400-rule original NRL report — a mispronounced
    word gets an inline override rather than growing the rule table to
    chase one exception.
-9. **Program Change selects an utterance, not a phoneme** — a single PC
-   message can't mean both, and CC20 already covers phoneme selection for
-   controllers (this project's BeatStep Pro) that can't reliably send
-   real Program Change anyway.
+9. **Program Change selects a preset, never a phoneme directly** — a
+   preset can still set `phoneme` as one of its bulk-written fields (the
+   phoneme keyboard's own default preset does), but there's no way to
+   reach phoneme selection *live*, mid-performance, except CC20 — a single
+   PC message can't mean both "load this whole preset" and "just change
+   the phoneme," and CC20 already covers the live case for controllers
+   (this project's BeatStep Pro) that can't reliably send real Program
+   Change anyway.
 10. **Phrase-bank mode (CC28) is a per-channel toggle, not a `SpeechMode`
     value** — it changes which utterance a note-on selects, not how
     note-off behaves, so it composes with all modes instead of being one.
-11. **Preset selection (CC16) bulk-writes the same per-channel state the
-    live CCs individually own**, rather than every note-on re-deriving
-    from the preset table directly — applying a preset straight to a
+11. **Preset selection (Program Change) bulk-writes the same per-channel
+    state the live CCs individually own**, rather than every note-on
+    re-deriving from the preset table directly — applying a preset straight to a
     fresh voice at every note-on (the subtractive engine's pattern) would
     make live CC tweaks stop affecting future notes the moment a preset
     was selected once, since several preset-owned fields (formant shift,
@@ -914,12 +926,19 @@ Full measurement breakdown: `history_speech.md`.
     keyboard) and two-CC pseudo-program-select modes both need either
     standard Bank Select support or a controller workaround this slice
     doesn't need yet.
-21. **Program Change's meaning is tract-dependent** (utterance under the
-    formant tract, `KEY_PER_WORD` page under the LPC tract) rather than a
-    new dedicated CC for page-select — reuses the meaning Program Change
-    already has ("what a note-on plays"), and the two tracts are mutually
-    exclusive per channel, so there's no message that could mean both at
-    once.
+21. **`KEY_PER_WORD` page selection reuses Program Change rather than a
+    new dedicated CC** — a page is a preset like any other (decision 26),
+    so it rides the same "load a preset" operation every other tract
+    already uses Program Change for, addressed as a contiguous extension
+    of `presets[]` (`SPEECH_PRESET_COUNT + page`) rather than a
+    tract-dependent special case Program Change's Handler would need to
+    branch on. Superseded a first cut where Program Change's meaning
+    literally depended on the channel's current tract at dispatch time
+    (utterance under formant/SAM, page under LPC) -- migrating onto the
+    Core 0 input pipeline's shared dispatch loop
+    (`midi_controller_process_generic()`, see decision 55) surfaced that
+    the branch was never load-bearing: a page is just a preset whose
+    fields happen to be LPC-specific.
 22. **`VoiceParams::lattice_word` carries a pointer, not an index** —
     mirrors the FM engine's own `const FmPatch *patch` field. A voice is
     always valid (defaults to `&LATTICE_TEST_WORD`) whether or not
@@ -956,9 +975,9 @@ Full measurement breakdown: `history_speech.md`.
     of writing it out on nine already-existing rows is one column.
     `lattice_page` isn't a `VoiceParams` field (it's per-channel
     addressing state, not a per-voice render parameter), so
-    `speech_load_preset()` reads it straight from the preset row rather
-    than through `voice_apply_preset()`, the same way it already reads
-    `chorus`.
+    `speech_apply_preset()` (`input_subsystem.cpp`) reads it straight from
+    the preset row rather than through `voice_apply_preset()`, the same
+    way it already reads `chorus`.
 27. **`MAX_VOICES = 8` stays shared between both tracts, not split into a
     separate per-tract budget** — real hardware measurement put the LPC
     lattice tract at ~77.5 cycles/frame/voice, flat from 1 to 8 voices,
@@ -1159,6 +1178,27 @@ Full measurement breakdown: `history_speech.md`.
     without needing a fresh SAM+reverb reading: a tract that measures
     cheaper than an already-characterized worst case doesn't change what
     that worst case is.
+55. **Migrating onto the Core 0 input pipeline dropped CC16 rather than
+    keeping it alongside Program Change** — CC16 and Program Change had
+    become the exact same "load a preset" operation once `KEY_PER_WORD`
+    pages joined `presets[]`'s address space (decision 21), so keeping
+    both would mean two input paths reaching identical behavior, not two
+    different concepts. Every other migrated module's own CC-alternative
+    to Program Change (`fm`'s CC30, `chip`'s CC16) was dropped the same
+    way, for the same reason: a redundant path, not a second axis. Unlike
+    `groovebox` (which kept its own forked `midi_controller_process()` for
+    a time, until its inputs were remapped enough to drop the fork too —
+    see `engine.md`'s Decision Record), speech's NOTE/MODIFIER/
+    CONFIGURATION dispatch fit `midi_controller_process_generic()`
+    directly from the start — the same one-voice-per-note,
+    dynamic-`voice_alloc` shape `subtractive`/`fm`/`chip` already use, no
+    forked loop ever needed. `lpc_page_presets` (`presets.h`) is generated
+    at compile time via a small `constexpr` loop, not hand-written rows or
+    a preprocessor macro (the preprocessor can't see `LATTICE_WORD_COUNT`,
+    an enum sentinel in the gitignored, locally-generated
+    `lattice_words.h`) — sized to the real corpus when one exists locally,
+    or exactly one page (matching `LATTICE_TEST_WORD`'s single fixture)
+    when it doesn't.
 
 ## Glossary
 
