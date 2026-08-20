@@ -259,6 +259,60 @@ of module-specific table data (curves, waveforms, patch data). Mechanically
 distinct from Configuration (bulk/bidirectional/opaque vs. scalar template
 selection). No module implements anything like this today.
 
+### Display / UI
+
+Vocabulary for standardizing shared LCD UI components and page structure
+across modules — wayfinder map "Display: shared UI components and page
+structure" (breadboard board only; the LCD's own driver vocabulary lives in
+[src/wslcd/](src/wslcd/), not here).
+
+**Page**:
+One of a module's several top-level display screens, each presenting a
+different aspect of the module (e.g. a main performance view vs. an FX view).
+_Avoid_: "Mode" — already claimed by several unrelated concepts in this
+codebase (`FilterMode`; `SpeechMode`'s LOOP/GATED/ONESHOT playback behavior;
+groovebox's own display already has a literal `MODE` row showing DRUM-vs-303
+channel state) — none of which mean "which screen is showing."
+
+**Widget**:
+A reusable rendering unit shared across modules' Pages — e.g. a parameter
+row, a value readout, a title/breadcrumb, a meter/bar — that renders one
+piece of module state to the screen in a standard way.
+_Avoid_: "Component" — already used loosely in this repo's own docs/history
+for generic, non-UI reusable code pieces (e.g. `history_groovebox.md`'s
+"Existing component" table, `history_speech.md`'s "Common Component
+Extraction").
+
+**Value row**:
+A Widget showing a label plus its value as plain text (today's `draw_val`/
+`draw_label` pattern, independently hand-rolled per module). Kept for values
+that want to stay generic and maximally readable (e.g. NOTE, VOICES count) —
+not being replaced outright by Value bar, which suits a different case (see
+below).
+
+**Value bar**:
+A Widget showing a label overlaid on a proportional fill bar, for CC-style
+continuous values (pan, FX mix, filter cutoff) — more screen-estate-compact
+than a Value row for this case, since the fill level itself carries most of
+the value's meaning. Rendered by splitting the label's text draw at the fill
+boundary into two calls with different backgrounds (fill color / off color)
+— ordinary sequential overwrites, not a boolean/compositing operation; see
+[docs/lcd-driver-capabilities.md](docs/lcd-driver-capabilities.md), which
+already established the ST7789 has no hardware compositing ALU and this
+driver keeps no shadow framebuffer.
+
+**Performance page**:
+The one required Page every module presents: a dense summary of most of that
+module's tweakable controls, serving as the module's default/main view.
+Other Pages hold whatever doesn't fit there, or doesn't belong densely
+packed alongside it.
+
+**Header**:
+The top chrome region of a Page — today a static, identical-across-modules
+"t00t" banner (only its accent color varies per module, kept as intentional
+per-module branding). Being redesigned to also carry Page-identifying
+context (e.g. which Page is showing) rather than stay purely decorative.
+
 ## Notes / gotchas
 
 - Build output in `build/` is checked into the working tree state but is generated.
