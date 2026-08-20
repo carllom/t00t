@@ -932,13 +932,7 @@ Full measurement breakdown: `history_speech.md`.
     already uses Program Change for, addressed as a contiguous extension
     of `presets[]` (`SPEECH_PRESET_COUNT + page`) rather than a
     tract-dependent special case Program Change's Handler would need to
-    branch on. Superseded a first cut where Program Change's meaning
-    literally depended on the channel's current tract at dispatch time
-    (utterance under formant/SAM, page under LPC) -- migrating onto the
-    Core 0 input pipeline's shared dispatch loop
-    (`midi_controller_process_generic()`, see decision 55) surfaced that
-    the branch was never load-bearing: a page is just a preset whose
-    fields happen to be LPC-specific.
+    branch on (see decision 55).
 22. **`VoiceParams::lattice_word` carries a pointer, not an index** —
     mirrors the FM engine's own `const FmPatch *patch` field. A voice is
     always valid (defaults to `&LATTICE_TEST_WORD`) whether or not

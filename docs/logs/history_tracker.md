@@ -633,3 +633,28 @@ between 16 voices at 75% and 16 voices with headroom. The reasoning for
 proving the pattern in the tracker engine first — where the voice loop is
 simple enough to get right quickly — rather than refactoring the
 subtractive engine directly, is lower risk.
+
+## Tracker Engine — Core 0 Input Pipeline Migration (#108)
+
+Plan: migrate tracker's `midi_controller.cpp` onto the Router, following
+`fm` (#106) and `chip` (#107) — with an explicit note to look for
+refactoring the ticket body itself might not cover yet, since it was
+written before those two tickets' work landed. The open question: tracker
+plays itself (`player_task.cpp` auto-plays on boot) and has essentially no
+live-note traffic, so does it fit the shared generic loop at all, or does
+it need its own routing?
+
+What shipped: tracker uses `midi_controller_process_generic()` too,
+despite zero live-note traffic — its `kMappingTable` simply has no
+`NOTE`/`MODIFIER` entries, and an unmatched category/id is already a
+no-op by the Router's own contract, so nothing about the generic loop's
+NOTE/CC handling needed to change to accommodate that. What the loop *did*
+need, and gained specifically for tracker: generic `TRANSPORT` dispatch
+(`midi_dispatch_transport()`, MIDI Start/Continue/Stop), the first module
+to actually exercise that category — added to
+`midi_controller_process_generic()` itself rather than forked, since
+Transport carries no payload beyond which message it is (module-global,
+like play/stop). Program Change stays `CONFIGURATION`, but with tracker's
+own meaning (seek to an order, not select a preset) — no mechanism change
+needed, `CONFIGURATION`'s `value.index` field already means whatever a
+module's own Handler decides it means.

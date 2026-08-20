@@ -221,8 +221,9 @@ use. What stays this module's own are its `kMappingTable`, its Handlers
 (including `set_note()` branching on `value.channel` to decide drum-kit
 lookup vs. TB-303, and voice resolution — fixed, not dynamic `voice_alloc`
 — inside that same Handler), and the sequencer's per-channel/per-voice
-state — see `engine.md`'s Decision Record for how this module's routing
-got here (it wasn't the original shape of the migration). The shared
+state — see `history_groovebox.md`'s Core 0 Input Pipeline Migration entry
+for how this module's routing got here (it wasn't the original shape of
+the migration). The shared
 `engine_base.h` holds `MAX_VOICES`, `Waveform`, `FilterMode`,
 `EffectParams`, and the `VoiceParamBlockT`/`ParamExchangeT` templates every
 engine's `engine.h` instantiates; it does not define a shared
@@ -304,35 +305,26 @@ it.
 10. **`voice_alloc.cpp` stays linked** even though its `allocate()`/
     `release()` are never called — its `init()`/`update()`/`active_mask()`
     telemetry is reused as-is to feed the LCD's voice-activity display.
-11. **Migrating onto the Router settled on remapping inputs to fit the
-    shared dispatch loop, not carving out permanent exceptions from it.**
-    First pass: drums dispatched as `Strike` (a drum's note number is a
-    required kit-lookup identity, never interpreted as pitch) and
-    pattern-select arrived as a MIDI `NOTE_ON` dispatched under
-    `Configuration` instead, since that's what it means (spec #99's own
-    worked example for this exact case) — both handled by this module's
-    own forked process loop, since a per-channel category choice didn't
-    fit `midi_controller_process_generic()`'s uniform `NOTE` dispatch.
-    That barrier turned out removable, not load-bearing: drums now
-    dispatch as plain `Note`, with `set_note()` itself branching on
-    `value.channel` to reach the kit-lookup path instead of the Router
-    branching on category; pattern-select moved from a `NOTE_ON`-shaped
-    message to a real Program Change on the pattern channel, dispatched as
+11. **Drums, pattern-select, and pitch bend reach the Router by remapping
+    to fit the shared dispatch loop, not by carving out permanent
+    exceptions from it.** Drums dispatch as plain `Note` — `set_note()`
+    itself branches on `value.channel` to reach the kit-lookup path,
+    rather than the Router branching on category. Pattern-select is a
+    real Program Change on the pattern channel, dispatched as
     `Configuration` like every other module's preset select
     (`channel_filter`'s exact-match routes it to `set_pattern_select()`
-    instead of colliding with a real preset select). Pitch bend's
-    drum-channel exclusion moved the same way, from the process loop into
-    `set_303_bend()` itself. MIDI Clock's Handler still drives the
-    sequencer's own Note-like 303 steps directly (`seq_play_step()` ->
-    `play_303()`) rather than re-entering the Router a second time —
-    that part was never the barrier, `MIDI_CLOCK` just needed adding to
-    `midi_controller_process_generic()` itself once everything else no
-    longer needed a fork. With all three settled, `midi_controller_process()`
-    is now the same one-line call into the shared generic loop every other
-    migrated module uses — see `engine.md`'s Decision Record for the fuller
-    account. `midi_dispatch_strike()` and `patterns.h`'s
-    `SEQ_PATTERN_BASE_NOTE`, both left behind by this remap and unreferenced
-    anywhere, were removed.
+    without colliding with a real preset select). Pitch bend's
+    drum-channel exclusion lives in `set_303_bend()` itself, not the
+    process loop. MIDI Clock's Handler still drives the sequencer's own
+    Note-like 303 steps directly (`seq_play_step()` -> `play_303()`)
+    rather than re-entering the Router a second time. With all of this,
+    `midi_controller_process()` is the same one-line call into the shared
+    generic loop every other migrated module uses — an earlier design
+    routed drums as `Strike` and pattern-select as a `NOTE_ON`-shaped
+    message instead, forcing a forked process loop; see
+    `history_groovebox.md`'s Core 0 Input Pipeline Migration entry for
+    that history. `midi_dispatch_strike()` and `patterns.h`'s
+    `SEQ_PATTERN_BASE_NOTE`, orphaned by the remap, were removed.
 12. **The shared `engine_base.h` does not define a common voice-parameter
     base struct** — each engine's `VoiceParams`, including this one's,
     stays a from-scratch flat struct rather than inheriting shared fields.

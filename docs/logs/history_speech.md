@@ -1466,3 +1466,83 @@ range, compared explicitly against both other tracts' figures,
 `MAX_VOICES` confirmed with no follow-up needed, measurement recorded in
 both `module_speech.md` and here. This closes #69's epic -- every child
 issue (#70-74) is now implemented and hardware-verified.
+
+## Speech Engine — Core 0 Input Pipeline Migration (#110)
+
+Plan: migrate speech's `midi_controller.cpp` — by far the largest CC
+surface of any module, ~20 CCs across the formant/SAM/LPC-lattice tracts,
+plus `NOTE` with dynamic voice allocation — onto the Router. Last of the
+five engines in wayfinder map #105, closing the map out. Two genuine
+category-boundary problems flagged going in, not just table-filling: (1)
+Program Change was tract-dependent — the same MIDI message meant "select
+an utterance" under the formant/SAM tracts but "select a `KEY_PER_WORD`
+page" under the LPC lattice tract, resolved by reading `channel_tract[ch]`
+at dispatch time; (2) CC28 (phrase-bank mode) changes what `NOTE`'s own
+note-number field means at the next note-on (pitch only vs. pitch +
+phrase-select).
+
+**Grilling, round 1**: proposed a single `CONFIGURATION` Handler
+branching on `channel_tract[value.channel]` for question 1, matching
+groovebox's `set_note()` channel-branching precedent (#109). Question 2
+confirmed to not be a category-boundary problem at all — ordinary
+Handler-owned state reading, the same pattern `set_note()` already uses
+for every other channel default (phoneme, mode, rate, etc.). Also flagged
+CC16 (preset select) as a genuinely different axis from Program Change
+(a bulk multi-field template load vs. a single utterance/page index), not
+a redundant CC-alternative like fm's CC30/chip's CC16 — recommended
+keeping it, tagged `MODIFIER` (forced by `midi_dispatch_cc()`'s hardcoded
+category, discovered while checking the mechanism).
+
+**User's response reframed the whole thing**: an utterance preset and a
+`KEY_PER_WORD` page are the same *kind* of thing in this domain — both
+are "what a preset selects." The corpus's ~1600 words spread across
+several pages, and every page is itself a sort of preset; laid out in
+sequence in the preset table, there's no real difference between an
+utterance preset and a page preset. Authorized reworking the preset list
+to make this true.
+
+**Round 2**: `presets.h`'s `SpeechPreset` already carried `tract`/
+`lattice_page` fields (from the original LPC lattice tract work, #70-74),
+with one existing `PRESET_LPC_WORDS` entry (page 0) — unifying Program
+Change and CC16 into "load `presets[value.index]`" needs no tract-branching
+Handler logic at all. Real constraint: `lattice_words.h` (the generated
+corpus, `LATTICE_WORD_COUNT`) is gitignored and per-user, so the LPC page
+count can't be hardcoded. Proposed and confirmed: keep the named presets
+as a fixed table, and address LPC pages as a **compile-time-generated**
+extension — `lpc_page_presets`, sized from `LATTICE_WORD_COUNT` via a
+`constexpr` for-loop (not a preprocessor macro — the preprocessor can't
+see an enum sentinel), each entry the `PRESET_LPC_WORDS` template with
+`.lattice_page` incrementing. `set_program()`'s Handler addresses
+`presets[]` and `lpc_page_presets` as one contiguous space: `value.index
+< SPEECH_PRESET_COUNT` loads a named preset, anything at or past it loads
+an LPC page. CC16 dropped outright — it became the exact same "load a
+preset" operation Program Change now owns, not a second axis. CC102
+(tract select) kept as an independent live control, since loading a
+preset and moving tract without picking a different preset are still
+genuinely different operations.
+
+Verified against a real corpus, at the user's suggestion: the Talkie vocab
+source files (`talkie/*.ino`) were already present locally (gitignored,
+not committed), so `tools/talkie2lattice.py` generated a real
+`lattice_words.h` for reference — **1173 words, 10 pages** (the doc's old
+"~1,163" estimate corrected to match). Both the with-corpus and
+without-corpus (`LPC_PAGE_COUNT = 1`) paths build clean.
+
+Unlike groovebox, no forked `midi_controller_process()` was ever needed —
+speech's `NOTE`/`MODIFIER` dispatch (dynamic `voice_alloc`, one voice per
+note) already fit `midi_controller_process_generic()`'s shape from the
+start, same as `subtractive`/`fm`/`chip`. File renamed
+`input_subsystem.cpp`; the old `midi_voice_on()`/`speech_load_preset()`
+merged/renamed into `set_note()`/`speech_apply_preset()` to match the
+Handler-owned-state pattern every other migrated module uses.
+
+Caught in review and fixed in passing: groovebox's `midi_controller_init()`
+was missing the `midi_bank_select_init()` call every other migrated
+module makes.
+
+Verified: all 6 engines build clean (both with and without the generated
+LPC corpus), full host test suite passes including a full 1173-word LPC
+corpus render check (`render_speech`'s own `--check`-equivalent default
+run), confirmed working on hardware. With this, all six engines share
+`midi_controller_process_generic()` — wayfinder map "Migrate remaining
+engines onto the Core 0 input pipeline" (#105) closed.

@@ -793,3 +793,72 @@ reverb FX, ParamExchange IPC, MIDI transports, dual-core structure.
 
 **909's metal voices and sample-trigger pads are essentially free** once the
 sample voice type exists — the existing sample player already does the work.
+
+## 13. Core 0 Input Pipeline Migration (#109)
+
+Plan: migrate groovebox's `midi_controller.cpp` onto the Router, following
+`fm`/`chip`/`tracker` (#106-108) — the last of the four remaining engines
+in wayfinder map #105's preferred order before `speech`, expected to be
+harder/more uncertain than the others since groovebox's fixed
+drum/pattern-select/mono-303 map is genuinely channel-semantic rather than
+"one voice per note." Free to remap groovebox's actual input controls to
+fit the Note/Strike/Modifier/Configuration/Clock/Transport vocabulary
+rather than porting the ad hoc mapping unchanged.
+
+**First pass** (built, host-tested, reviewed — not committed): channel
+alone decided the dispatch category. Drums (channel 10) dispatched as
+`Strike` — a fixed kit-voice lookup, the note number never interpreted as
+pitch. Pattern-select (channel 16) arrived as a MIDI `NOTE_ON` but
+dispatched under `Configuration` instead, since that's what it actually
+means — spec #99's own worked example for this exact case. The 303 (any
+other channel) dispatched as `Note`, on a fixed voice (`GV_303`), not
+dynamic `voice_alloc`. Because channel alone picked the category, this
+didn't fit `midi_controller_process_generic()`'s uniform `NOTE` dispatch,
+so groovebox composed `midi_dispatch.h`'s lower-level generic helpers
+directly in its own forked `midi_controller_process()` instead. Two new
+generic helpers earned their place doing this: `midi_dispatch_strike()`
+(identical shape to `midi_dispatch_note()`, tagged `Strike`) and
+`midi_dispatch_clock()` (identical shape to `midi_dispatch_transport()`,
+tagged `Clock`, added specifically for the step sequencer) — both
+mirroring an existing category's dispatch function rather than inventing
+a new shape. MIDI Clock's own Handler drives the sequencer's Note-like
+303 steps directly via `seq_play_step()` -> `play_303()`, never
+re-entering the Router a second time (spec #99 user story 24).
+
+**User pushback**: rejected the "groovebox must fork the process loop"
+premise outright. Two concrete instructions: (1) pattern select moves to
+Program Change, propagating the program number and channel into
+`CONFIGURATION`; (2) stop creating `Strike` events for the drum channel —
+just propagate drum hits as `Note` events and let the Handler figure out
+drum-vs-303 from the channel.
+
+**Revision**: drums now dispatch as plain `Note` — `set_note()` itself
+branches on `value.channel` to reach the kit-lookup path, instead of the
+Router branching on category. Pattern-select moved from the
+`NOTE_ON`-shaped message to a real Program Change on the pattern channel,
+dispatched as `Configuration` like every other module's preset select —
+`channel_filter`'s exact-match (not just "any channel") is what routes it
+to `set_pattern_select()` without colliding with a real preset select.
+Pitch bend's drum-channel exclusion moved the same way, from a
+loop-level channel check into `set_303_bend()` itself. The one piece that
+couldn't move into a remap — `MIDI_CLOCK` — was missing from
+`midi_controller_process_generic()` itself, not from groovebox's own
+routing (a gap in the shared loop, since no other engine needed a Clock
+category before this), so it was added there directly, dispatched via
+`midi_dispatch_clock()` (a no-op for every module with no `CLOCK` table
+entry, same as an unmatched `NOTE`/`MODIFIER` id).
+
+With all three remapped, `midi_controller_process()` collapsed to the
+same one-line `midi_controller_process_generic()` call every other
+migrated module uses — no forked loop left anywhere in this migration
+effort. `midi_dispatch_strike()` and `patterns.h`'s
+`SEQ_PATTERN_BASE_NOTE`, both orphaned by the remap and unreferenced
+anywhere, were removed rather than left as dead code.
+
+Caught during the follow-up `speech` ticket's review and fixed in
+passing: `midi_controller_init()` was missing the
+`midi_bank_select_init()` call every other migrated module makes —
+harmless (it only zeroes already-zero static state) but inconsistent.
+
+Verified: all 6 engines build clean, full host test suite passes,
+confirmed working on hardware with no visible performance degradation.

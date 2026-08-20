@@ -28,7 +28,7 @@
 //     instead of colliding with a real preset select.
 //   - MIDI Clock drives the step sequencer directly from its own Handler,
 //     without going through the Router a second time even though it plays
-//     Note-like 303 steps internally (spec #99 user story 24).
+//     Note-like 303 steps internally.
 //   - Pitch bend is 303-only; set_303_bend() ignores it on the drum
 //     channel itself, since a bare channel_filter can't express "every
 //     channel except one" (CONTEXT.md's Shaping entry).
@@ -308,9 +308,8 @@ static void set_fx_p2(VoiceParamBlock &shadow, const InputValue &value) {
 
 // Clock Handler: drives the step sequencer directly, including playing (or
 // releasing) a 303 step via play_303() -- never re-entering the Router for
-// its own internal Note-like behavior (spec #99 user story 24). 24 PPQN;
-// advances a 16th-note step every PULSES_PER_STEP pulses, playing on the
-// step's first pulse.
+// its own internal Note-like behavior. 24 PPQN; advances a 16th-note step
+// every PULSES_PER_STEP pulses, playing on the step's first pulse.
 static void set_clock(VoiceParamBlock &shadow, const InputValue &) {
     if (!(seq_playing && seq_clock_running)) return;
     if (seq_pulse == 0) seq_play_step(shadow);
