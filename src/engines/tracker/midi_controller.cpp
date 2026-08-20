@@ -6,9 +6,6 @@
 // auto-plays on boot), so MIDI here drives play/stop/seek rather than notes
 // -- there's no live-note path in this engine at all.
 
-static MidiParser midi_parser;
-static MidiUiState ui_state;
-
 void midi_controller_init() {
     midi_parser.init();
     ui_state = { 0xFF, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
@@ -39,5 +36,3 @@ void midi_controller_process(const uint8_t *data, uint32_t len, ParamExchange *)
         }
     }
 }
-
-void midi_controller_ui_state(MidiUiState *out) { *out = ui_state; }

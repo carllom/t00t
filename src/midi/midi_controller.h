@@ -32,4 +32,10 @@ struct MidiUiState {
     uint8_t fx_p1;          // CC72: delay feedback / reverb room size, 0..127
     uint8_t fx_p2;          // CC75: delay time / reverb damping, 0..127
 };
-void midi_controller_ui_state(MidiUiState *out);
+
+// Shared instance: only one engine is ever linked at a time, so there's no
+// need for a private copy per module -- a module's own Handlers still
+// write whichever fields apply to them, same as always.
+inline MidiUiState ui_state;
+
+inline void midi_controller_ui_state(MidiUiState *out) { *out = ui_state; }

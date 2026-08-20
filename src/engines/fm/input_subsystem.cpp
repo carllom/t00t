@@ -18,7 +18,7 @@
 // real DX7 bank generated locally, so this path never needs to branch on
 // whether one exists.
 
-static MidiParser midi_parser;
+// Parser state: the shared MidiParser instance, midi_parser.h.
 static int8_t note_voice[128];
 
 // --- Per-voice tracking (Core 0) ---
@@ -39,11 +39,6 @@ static int16_t channel_pan[NUM_CHANNELS];         // CC10 pan, Q15
 static const FmPatch *channel_patch[NUM_CHANNELS];  // defaults to FM_TEST_PATCH, Program Change overrides it
 static uint8_t channel_program[NUM_CHANNELS];       // FM_PATCHES[] index, for ui_state.program
 static int16_t channel_mod_wheel[NUM_CHANNELS];     // CC1, Q15 -- scales the patch's own LFO depth (live)
-
-// --- UI snapshot (updated on each event, read by the display) ---
-static MidiUiState ui_state;
-
-void midi_controller_ui_state(MidiUiState *out) { *out = ui_state; }
 
 // Re-scale phase_inc for every held voice on a channel after a bend change.
 static void apply_channel_bend(VoiceParamBlock &shadow, uint8_t channel) {
@@ -226,7 +221,7 @@ void midi_controller_init() {
 }
 
 void midi_controller_process(const uint8_t *data, uint32_t len, ParamExchange *params) {
-    midi_controller_process_generic(data, len, params, midi_parser, kMappingTable, ui_state);
+    midi_controller_process_generic(data, len, params, kMappingTable);
 }
 
 const FmPatch *fm_channel_patch(uint8_t channel) {

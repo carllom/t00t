@@ -7,12 +7,14 @@
 #include <cstdint>
 
 // The full parse-and-dispatch loop for a standard, "one voice per note"
-// module: feeds raw bytes through a MidiParser, routes each parsed message
-// through midi_dispatch.h's generic helpers, and commits the shadow block
-// if anything changed. A module's own top-level midi_controller_process()
-// (required per-engine by the build's file selection, see CMakeLists.txt)
-// is a one-line call into this -- table, per-voice/per-channel state, and
-// ui_state stay entirely the caller's own.
+// module: feeds raw bytes through midi_parser.h's shared MidiParser
+// instance, routes each parsed message through midi_dispatch.h's generic
+// helpers (updating midi_controller.h's shared MidiUiState where a
+// Handler can't -- see the MIDI_PITCH_BEND case below), and commits the
+// shadow block if anything changed. A module's own top-level
+// midi_controller_process() (required per-engine by the build's file
+// selection, see CMakeLists.txt) is a one-line call into this -- only the
+// table and per-voice/per-channel state stay the caller's own.
 //
 // Deliberately does not resolve a voice for NOTE_ON/OFF, or touch
 // voice_alloc.h at all: voice resolution is the Voice Allocation
@@ -29,8 +31,7 @@
 template <typename VoiceParams, uint32_t N>
 inline void midi_controller_process_generic(
         const uint8_t *data, uint32_t len, ParamExchangeT<VoiceParams> *params,
-        MidiParser &parser, const InputMapEntryT<VoiceParamBlockT<VoiceParams>> (&table)[N],
-        MidiUiState &ui_state) {
+        const InputMapEntryT<VoiceParamBlockT<VoiceParams>> (&table)[N]) {
     if (len == 0) return;
 
     bool changed = false;
@@ -39,7 +40,7 @@ inline void midi_controller_process_generic(
 
     for (uint32_t i = 0; i < len; i++) {
         MidiEvent ev;
-        if (!parser.feed(data[i], ev)) continue;
+        if (!midi_parser.feed(data[i], ev)) continue;
 
         switch (ev.type) {
             case MIDI_NOTE_ON:

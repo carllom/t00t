@@ -39,8 +39,6 @@ enum BspCC : uint8_t {
 static constexpr uint16_t PITCH_BEND_CENTER = 8192;
 static constexpr float    PITCH_BEND_RANGE_SEMITONES = 2.0f;
 
-static MidiParser midi_parser;
-
 // --- Sequencer state (Core 0) ---
 static bool    seq_playing = false;      // a pattern is armed/looping
 static uint8_t seq_index = 0;            // which pattern
@@ -77,9 +75,6 @@ static void held_remove(uint8_t note) {
     }
 }
 
-// --- UI snapshot ---
-static MidiUiState ui_state;
-void midi_controller_ui_state(MidiUiState *out) { *out = ui_state; }
 
 static float note_to_freq(uint8_t note) {
     return 440.0f * powf(2.0f, (float)(note - 69) / 12.0f);

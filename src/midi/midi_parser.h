@@ -114,3 +114,9 @@ struct MidiParser {
         }
     }
 };
+
+// Shared instance: only one engine is ever linked at a time, and MIDI_USB
+// and MIDI_UART both feed their bytes through midi_controller_process()
+// regardless of transport, so no module needs (or gets to keep) a private
+// copy of its own.
+inline MidiParser midi_parser;
