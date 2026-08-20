@@ -97,6 +97,17 @@ inline void midi_dispatch_note(Context &ctx, const InputMapEntryT<Context> (&tab
     input_dispatch(ctx, table, InputCategory::NOTE, note, value);
 }
 
+// Generic Clock dispatch: a tempo pulse, no payload beyond which pulse it
+// is (module-global, like Transport). `clock_id` lets a module distinguish
+// multiple clock sources/rates if it ever needs to; a module with only one
+// just always passes the same constant.
+template <typename Context, uint32_t N>
+inline void midi_dispatch_clock(Context &ctx, const InputMapEntryT<Context> (&table)[N],
+                                 uint8_t clock_id) {
+    InputValue value{};
+    input_dispatch(ctx, table, InputCategory::CLOCK, clock_id, value);
+}
+
 // Generic Transport dispatch: play/pause/stop, no payload beyond which
 // transport message it is (Transport is module-global, not per-channel).
 // `transport_id` is the MIDI transport message type itself
