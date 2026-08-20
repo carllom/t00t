@@ -43,8 +43,10 @@ static uint8_t    voice_last_trigger[MAX_VOICES];
 static bool       voice_gated[MAX_VOICES];  // Core 1's own gate-edge tracking, for the release transition
 
 // Shared bus scratch -- reused across every voice, sequentially, within a
-// pass. Six-wide to match FmRouting's fixed FM_NUM_OPS width, even though
-// only buses 0/1 (and OUT) ever carry real signal for a 2-operator voice.
+// pass. FmVoiceBuses::mod[] is fixed at FM_NUM_OPS wide (op.h), so all six
+// pointers below must be valid even though OPL's routing (num_ops = 2,
+// patch.h) only ever dereferences mod[0]/mod[1] -- bus_mod2..5 are never
+// read or written.
 static int32_t bus_mod0[FM_BLOCK], bus_mod1[FM_BLOCK], bus_mod2[FM_BLOCK];
 static int32_t bus_mod3[FM_BLOCK], bus_mod4[FM_BLOCK], bus_mod5[FM_BLOCK];
 static int32_t bus_out[FM_BLOCK];

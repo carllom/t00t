@@ -41,10 +41,11 @@ struct OplPatch {
 
 // The two fixed OPL2 2-operator algorithms, expressed directly as FmRouting
 // literals -- OPL2 has only these two topologies, so there is nothing to
-// resolve at note-on. Operator slots 2-5 are
-// permanently inert padding (fm_voice_render_block(), reused from ../fm/op.h,
-// always iterates all FM_NUM_OPS slots): each writes to its own numbered bus,
-// which nothing else ever reads, and is never given a nonzero gain.
+// resolve at note-on. `num_ops = 2`: fm_voice_render_block() (../fm/op.h)
+// loops only `order[0..num_ops-1]`, so operator slots 2-5 of every voice's
+// six-wide FmOp array are never visited by the per-sample kernel at all --
+// not computed-and-discarded, simply skipped. The trailing entries in the
+// arrays below are unused padding, past `num_ops`.
 //
 // A patch's chosen feedback amount isn't compile-time, so kernel[0]/
 // fb_shift[0]/clear_bus_mask on op0 are patched into a per-voice copy of
@@ -52,10 +53,11 @@ struct OplPatch {
 
 // FM chain: op0 modulates op1 (bus 1), op1 is the carrier.
 inline constexpr FmRouting OPL_ROUTING_FM = {
-    /* order          */ {0, 1, 2, 3, 4, 5},
+    /* order          */ {0, 1, 0, 0, 0, 0},
     /* kernel         */ {FM_KERNEL_FIRST, FM_KERNEL_FIRST, FM_KERNEL_FIRST, FM_KERNEL_FIRST, FM_KERNEL_FIRST, FM_KERNEL_FIRST},
     /* in_bus         */ {FM_BUS_ZERO, 1, FM_BUS_ZERO, FM_BUS_ZERO, FM_BUS_ZERO, FM_BUS_ZERO},
     /* out_bus        */ {1, FM_TARGET_OUT, 2, 3, 4, 5},
+    /* num_ops        */ 2,
     /* clear_bus_mask */ 0,
     /* fb_shift       */ {0, 0, 0, 0, 0, 0},
     /* valid          */ true,
@@ -63,10 +65,11 @@ inline constexpr FmRouting OPL_ROUTING_FM = {
 
 // Additive: op0 and op1 are both carriers, summed directly into OUT.
 inline constexpr FmRouting OPL_ROUTING_ADD = {
-    /* order          */ {0, 1, 2, 3, 4, 5},
+    /* order          */ {0, 1, 0, 0, 0, 0},
     /* kernel         */ {FM_KERNEL_FIRST, FM_KERNEL_PLAIN, FM_KERNEL_FIRST, FM_KERNEL_FIRST, FM_KERNEL_FIRST, FM_KERNEL_FIRST},
     /* in_bus         */ {FM_BUS_ZERO, FM_BUS_ZERO, FM_BUS_ZERO, FM_BUS_ZERO, FM_BUS_ZERO, FM_BUS_ZERO},
     /* out_bus        */ {FM_TARGET_OUT, FM_TARGET_OUT, 2, 3, 4, 5},
+    /* num_ops        */ 2,
     /* clear_bus_mask */ 0,
     /* fb_shift       */ {0, 0, 0, 0, 0, 0},
     /* valid          */ true,

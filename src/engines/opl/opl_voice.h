@@ -16,9 +16,12 @@
 // unchanged is everything below that layer -- FmOp itself, the three
 // per-sample kernels, and fm_voice_render_block()'s routing interpreter.
 //
-// Operator slots 2-5 of every voice's 6-wide FmOp array are permanently
-// inert padding (see patch.h's routing literals) -- zeroed once at boot and
-// never touched again, so note-on/step/render only ever look at slots 0/1.
+// Operator slots 2-5 of every voice's 6-wide FmOp array are unused: patch.h's
+// routing literals set `num_ops = 2`, so fm_voice_render_block() (../fm/op.h)
+// never visits them -- not computed at zero gain, simply skipped, so they
+// cost nothing per sample. note-on/step/render below only ever touch
+// slots 0/1; the zeroing here is just tidiness (harmless, not load-bearing --
+// the render loop wouldn't read these fields either way).
 
 inline void opl_voice_init_inert(FmOp ops[FM_NUM_OPS]) {
     for (uint8_t i = 2; i < FM_NUM_OPS; i++) {
@@ -31,7 +34,7 @@ inline void opl_voice_init_inert(FmOp ops[FM_NUM_OPS]) {
         op.fb1 = 0;
         op.fb2 = 0;
         op.in = fm_zero_bus;
-        op.out = nullptr;  // assigned harmlessly each sub-block by fm_voice_render_block(), like every other slot
+        op.out = nullptr;
         op.table = opl_wave_sine;
     }
 }

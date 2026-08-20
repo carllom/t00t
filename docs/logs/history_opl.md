@@ -421,3 +421,147 @@ One patch only so far -- FM's own hardware pass sampled 5 patches before
 settling a per-voice figure, since algorithm/feedback/LFO content varies
 the real per-block cost. More patches to follow before this closes out
 module_opl.md's Performance section.
+
+### Short-Circuiting the Four Unused Operator Slots (#82)
+
+The BELL sweep above (~114 c/f/voice against a ~34 c/f/voice scoping
+estimate) prompted a closer look at where the gap comes from. FM's own P0
+rig measured ~100.5 c/f/voice for six *real* operators (~16.75 c/f/op),
+which projects to ~33.5 c/f/voice for OPL's two real operators -- almost
+exactly the scoping estimate, and close to `114 - 4*16.75 = 47`, i.e. the
+four unused operator slots plausibly account for nearly the entire gap.
+
+The cause: `opl_voice.h` calls the same `fm_voice_render_block()` (`../fm/
+op.h`) the DX7 module uses, which unconditionally looped every one of
+`FM_NUM_OPS` (6) operator slots per sample. `patch.h`'s `OPL_ROUTING_FM`/
+`OPL_ROUTING_ADD` route slots 2-5 to scratch buses nothing ever reads, with
+`in_bus = FM_BUS_ZERO` and `inc`/`gain` permanently 0 (`opl_voice_init_inert()`)
+-- so those four operators still ran the *full* per-sample kernel (phase
+increment, table lookup at a fixed index, gain multiply, store) every tick,
+just to write a zero nobody reads.
+
+Fix: added `uint8_t num_ops` to `FmRouting` (`../fm/patch.h`), and bounded
+both of `fm_voice_render_block()`'s loops (the bus-clear loop and the
+operator-render loop) at `r.num_ops` instead of the hardcoded `FM_NUM_OPS`.
+`fm_resolve_routing()` (FM's own patch compiler) sets it to `FM_NUM_OPS`
+unconditionally -- zero behavior change for FM, since every DX7 algorithm
+is structurally six operators wide. `OPL_ROUTING_FM`/`OPL_ROUTING_ADD` set
+it to 2; their `order`/`out_bus` array entries past index 1 are now unused
+padding (left as `{0,0,0,0}` rather than the old `{2,3,4,5}`, which would
+have read as meaningful routing data it no longer is).
+
+Deliberately a field on the routing, not a template parameter or a forked
+two-operator render path: the per-sample kernels
+(`op_render`/`op_render_first`/`op_render_fb`) stay completely untouched,
+keeping the "kernel reuse, not a fork" decision (Decision Record entry 1)
+intact, and the mechanism generalizes to a future OPL3 4-operator routing
+(module_opl.md's Future/TODO) by setting `num_ops = 4` on its own literal --
+no further changes to `op.h` needed.
+
+`opl_voice_init_inert()` was left in place (still zeroes slots 2-5 at
+boot/note-on) rather than removed: with the loop bound fixed, those fields
+are simply never read again, so the zeroing is inert bookkeeping, not
+required for correctness -- but two of its three call sites
+(`render_opl.cpp`/`render_opl_patch.cpp`) hand it a stack-local `FmOp`
+array, and removing the call there would trade a few no-op field writes
+for leaving that array's unread tail uninitialized. Not worth the risk for
+no measurable benefit, since none of this runs in the per-sample path.
+
+Verified as a pure performance fix, not a behavior change: `make ENGINE=opl`
+and `make ENGINE=fm` both link clean; `render_opl`'s five patches produced
+**bit-identical WAV output** (`md5sum`) before and after the change, and
+`render_fm`'s full 128-patch bank render and `test_input_layer` both still
+pass. A fresh hardware pass against this fix (mirroring the BELL sweep
+above) is the next step to confirm the c/f/voice drop for real.
+
+### Hardware Voice-Count Sweep, Post-`num_ops` Fix (#82)
+
+Same patch, same rig, same conversion as the BELL sweep above --
+`breadboard_rp2350`, GPIO-22 `PROFILE_PIN` duty via the display's CPU load
+bar, 3401 c/f/sample budget.
+
+Patch #1 (OPL BELL), no FX:
+
+| voices | duty | cycles/frame | c/f/voice above idle |
+|---|---|---|---|
+| 0 | 0.55% | 18.7 | -- (idle) |
+| 1 | 2.55% | 86.7 | 68.0 |
+| 4 | 8.5% | 289.1 | 67.6 |
+| 8 | 16.4% | 557.8 | 67.4 |
+| 9 | 18.1% | 615.6 | 66.3 |
+
+With delay: 68.4 / 68.1 / 67.2 / 66.9 c/f/voice at 1/4/8/9 voices (idle 67.7
+c/f, unchanged from before -- expected, delay's own cost wasn't touched).
+With reverb: 55.8 / 64.1 / 65.7 / 65.5 c/f/voice (idle 294.6 c/f, also
+unchanged; the low 1v reading is plausibly duty read-out rounding at the
+low end, the same effect FM's own hardware pass noted). All three still
+converge on the same per-voice figure regardless of FX, as before.
+
+**~67 c/f/voice, down from ~114 -- a 41% cut**, consistent with the
+`num_ops` fix (previous entry) removing the four unused operators' full
+per-sample kernel cost. Delay/reverb's own fixed overhead (49.0 / 275.9
+c/f) is exactly unchanged, confirming the fix touched only the per-voice
+cost and nothing FX-related.
+
+Doesn't land at the naive ~34 c/f/voice projection (FM's P0 rig's
+kernel-only 100.5 c/f/voice for 6 ops, scaled to 2) -- that rig has "no EG,
+no LFO, no patch logic" (module_fm.md), so it never included the per-block
+overhead every real voice still pays: `opl_voice_step_envelopes()` (two
+`env_opl_step_block()`/`eg_to_gain()` calls), the pitch-ratio recompute, and
+vibrato's own gate check. The closer comparison is FM's real measured
+182 c/f/voice (6 real operators, full overhead included), scaled linearly
+to 2 operators: `182 * 2/6 = 60.7` -- measured 67.3 is ~11% above that,
+plausibly OPL's own per-block vibrato/envelope math costing a little more
+than a proportional slice of FM's pitch-EG/LFO overhead would.
+
+At 9 voices (the max) plus reverb, duty is now 26.0%, down from 38.7% before
+the fix -- meaningfully more headroom for whatever comes next (more voices,
+or a future OPL3 4-operator mode, module_opl.md's Future/TODO).
+
+Still one patch only -- the coverage caveat from the pre-fix sweep still
+applies before this closes out module_opl.md's Performance section for
+good.
+
+### Second Patch: OPL ORGAN (#82)
+
+OPL has only two fixed algorithms and no free routing, so the one thing
+in the per-sample kernel that plausibly varies cost between patches is
+feedback (`feedback > 0` routes op0 through `op_render_fb` -- `fb_mod`
+computation plus `fb1`/`fb2` history shuffle -- instead of the plain
+`op_render_first`/`op_render`). BELL (`feedback = 5`, FM chain) and ORGAN
+(`feedback = 0`, additive) bracket that axis, so a second reading on ORGAN
+alone is a reasonable stand-in for full patch coverage here, unlike FM's
+free 6-operator routing space where per-patch cost genuinely spans a wide
+range.
+
+Same rig/conversion as before. Patch #3 (OPL ORGAN), no FX:
+
+| voices | duty | cycles/frame | c/f/voice above idle |
+|---|---|---|---|
+| 0 | 0.55% | 18.7 | -- (idle) |
+| 1 | 2.20% | 74.8 | 56.1 |
+| 4 | 6.9% | 234.7 | 54.0 |
+| 8 | 13.3% | 452.4 | 54.2 |
+| 9 | 14.9% | 506.8 | 54.2 |
+
+With delay: 58.2 / 54.9 / 54.5 / 54.5 c/f/voice at 1/4/8/9 voices (idle 67.7
+c/f, unchanged from BELL's measurement). With reverb: 42.2 / 51.4 / 52.5 /
+53.1 c/f/voice (idle 294.6 c/f, also unchanged; the low 1v/4v readings are
+the same low-duty rounding effect noted before). FX fixed overhead confirmed
+identical to BELL's, again -- a third cross-check that per-voice cost is the
+only thing that moves between patches.
+
+**~54 c/f/voice for ORGAN, against ~67 for BELL** -- about 20% cheaper,
+consistent with removing one operator's `op_render_fb` overhead (~13
+c/f/voice attributable to feedback's extra per-sample arithmetic, a
+plausible cost for a shift+add plus two register moves done every sample).
+
+**Coverage conclusion**: real per-patch cost for this module lands in a
+**~54-67 c/f/voice range**, bracketed by these two patches on the one axis
+(feedback) that actually moves it -- algorithm choice (FM chain vs.
+additive) and waveform select don't touch the per-sample kernel's cost at
+all. Given OPL2's fixed two-algorithm, two-operator structure, this is
+reasonable coverage without sweeping all five patches; module_opl.md's
+Performance section states the range. At 9 voices + reverb, even BELL (the
+more expensive patch) is only 26.0% duty -- large headroom regardless of
+which patch is playing.

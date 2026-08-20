@@ -192,7 +192,7 @@ struct FmVoiceBuses {
     int32_t *out;
 };
 
-// Renders one sub-block (<= FM_BLOCK samples) of all six operators,
+// Renders one sub-block (<= FM_BLOCK samples) of `r.num_ops` operators,
 // following the routing resolved once at note-on (patch.h's FmRouting) --
 // nothing here depends on note/velocity/bend, only on `r` and each op's
 // already-set phase/inc/gain/table. `r.order` plus `r.in_bus`/`r.out_bus`/
@@ -202,10 +202,14 @@ struct FmVoiceBuses {
 // themselves. `TABLE_BITS` selects the table-width instantiation of the
 // three kernels; every operator on a given voice shares it (a mixed-width
 // voice would need per-operator dispatch, which no build variant needs).
+// `r.num_ops` bounds both loops below at FM_NUM_OPS for FM (every DX7
+// algorithm is structurally six operators wide) but lower for a routing
+// that doesn't need every slot -- OPL2's two fixed algorithms only ever
+// set two, so the per-sample kernel never runs on the other four.
 template <uint32_t TABLE_BITS>
 inline void fm_voice_render_block(FmOp ops[FM_NUM_OPS], const FmRouting &r,
                                    const FmVoiceBuses &bus, uint32_t n) {
-    for (uint8_t b = 0; b < FM_NUM_OPS; b++) {
+    for (uint8_t b = 0; b < r.num_ops; b++) {
         if (r.clear_bus_mask & (1u << b)) {
             for (uint32_t i = 0; i < n; i++) bus.mod[b][i] = 0;
         }
@@ -214,7 +218,7 @@ inline void fm_voice_render_block(FmOp ops[FM_NUM_OPS], const FmRouting &r,
         for (uint32_t i = 0; i < n; i++) bus.out[i] = 0;
     }
 
-    for (uint8_t k = 0; k < FM_NUM_OPS; k++) {
+    for (uint8_t k = 0; k < r.num_ops; k++) {
         uint8_t i = r.order[k];
         FmOp &op = ops[i];
         // Carrier vs modulator decides only which *bus* this operator writes
