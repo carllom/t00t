@@ -28,6 +28,9 @@ struct TestContext {
                               // distinct from a per-voice/per-channel one -- there is
                               // no dispatch-level "scope" concept, so this is purely
                               // a fact about what set_fx_like below chooses to write
+    int transport_hits = 0;  // bitmask -- which Transport setter(s) ran (Transport
+                              // carries no id in its InputValue, only distinct
+                              // Handlers per table entry distinguish them)
 };
 
 void set_note(TestContext &ctx, const InputValue &v) {
@@ -56,12 +59,31 @@ void set_fx_like(TestContext &ctx, const InputValue &v) {
     ctx.global_target = (int)v.scalar;
 }
 
+// Transport setters: distinct functions, not one function reading an id --
+// Transport's InputValue carries no payload beyond category+id (module-
+// global, like play/stop), so which message it was is purely a fact of
+// which table entry (and therefore which Handler) matched, the same way
+// tracker's set_start/set_continue/set_stop are three separate Handlers.
+void set_transport_start(TestContext &ctx, const InputValue &) {
+    ctx.calls++;
+    ctx.last_category = InputCategory::TRANSPORT;
+    ctx.transport_hits |= 1;
+}
+
+void set_transport_stop(TestContext &ctx, const InputValue &) {
+    ctx.calls++;
+    ctx.last_category = InputCategory::TRANSPORT;
+    ctx.transport_hits |= 2;
+}
+
 constexpr InputMapEntryT<TestContext> kTable[] = {
-    { InputCategory::NOTE,     60,  72,  0xFF, 0,   set_note },      // one-octave note range
-    { InputCategory::MODIFIER, 1,   1,   0xFF, 0,   set_modifier },  // CC1, any channel
-    { InputCategory::MODIFIER, 10,  10,  5,    0,   set_modifier },  // CC10, channel 5 only
-    { InputCategory::NOTE,     90,  90,  0xFF, 100, set_note },      // fixed velocity 100
-    { InputCategory::MODIFIER, 74,  74,  0xFF, 0,   set_fx_like },   // CC74-style, module-global, any channel
+    { InputCategory::NOTE,      60,  72,  0xFF, 0,   set_note },            // one-octave note range
+    { InputCategory::MODIFIER,  1,   1,   0xFF, 0,   set_modifier },        // CC1, any channel
+    { InputCategory::MODIFIER,  10,  10,  5,    0,   set_modifier },        // CC10, channel 5 only
+    { InputCategory::NOTE,      90,  90,  0xFF, 100, set_note },            // fixed velocity 100
+    { InputCategory::MODIFIER,  74,  74,  0xFF, 0,   set_fx_like },         // CC74-style, module-global, any channel
+    { InputCategory::TRANSPORT, 6,   6,   0xFF, 0,   set_transport_start }, // MIDI_START-like id
+    { InputCategory::TRANSPORT, 8,   8,   0xFF, 0,   set_transport_stop },  // MIDI_STOP-like id
 };
 
 bool test_dispatch_matches_category_and_id() {
@@ -164,10 +186,27 @@ bool test_module_global_dispatch() {
     return ok;
 }
 
+bool test_transport_dispatch() {
+    TestContext ctx_start, ctx_stop, ctx_unmatched;
+    InputValue value{};  // Transport carries no payload -- an empty InputValue is enough
+
+    input_dispatch(ctx_start, kTable, InputCategory::TRANSPORT, 6, value);
+    input_dispatch(ctx_stop, kTable, InputCategory::TRANSPORT, 8, value);
+    input_dispatch(ctx_unmatched, kTable, InputCategory::TRANSPORT, 7, value);  // no entry for id 7
+
+    bool ok = ctx_start.calls == 1 && ctx_start.transport_hits == 1 &&
+              ctx_stop.calls == 1 && ctx_stop.transport_hits == 2 &&
+              ctx_unmatched.calls == 0;
+    printf(ok ? "  OK: Transport dispatches by id alone, distinct Handlers per message\n"
+              : "  FAIL: Transport dispatch matched the wrong id or Handler\n");
+    return ok;
+}
+
 // --- Compile-time capability check ---
 
-constexpr InputCategory kGoodCapabilities[] = { InputCategory::NOTE, InputCategory::MODIFIER };
-constexpr InputCategory kIncompleteCapabilities[] = { InputCategory::NOTE };  // missing MODIFIER
+constexpr InputCategory kGoodCapabilities[] = { InputCategory::NOTE, InputCategory::MODIFIER,
+                                                 InputCategory::TRANSPORT };
+constexpr InputCategory kIncompleteCapabilities[] = { InputCategory::NOTE };  // missing MODIFIER/TRANSPORT
 
 static_assert(input_table_declares_capabilities(kTable, kGoodCapabilities),
               "kTable only uses NOTE/MODIFIER -- this must hold at compile time");
@@ -205,6 +244,8 @@ int main() {
     ok = test_fixed_velocity_substitution() && ok;
     printf("\n== module-global (FX-style) Handler dispatch ==\n");
     ok = test_module_global_dispatch() && ok;
+    printf("\n== Transport dispatch (no payload beyond category+id) ==\n");
+    ok = test_transport_dispatch() && ok;
     printf("\n== compile-time capability-vs-mapping-table check ==\n");
     ok = test_capability_check() && ok;
 

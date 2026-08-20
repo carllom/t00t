@@ -323,33 +323,45 @@ sources like GPIO buttons too (see below); one not yet migrated onto the
 Router keeps the older `midi_controller.cpp` name until its own migration
 ticket. Both transports route through `midi_controller_process()`, which
 parses MIDI bytes and dispatches each message -- never resolving a voice
-itself; see the Voice Allocation Interface entry below. For `subtractive`
-and `fm`, this function is a one-line call into
+itself; see the Voice Allocation Interface entry below. For `subtractive`,
+`fm`, `chip`, and `tracker`, this function is a one-line call into
 `midi_controller_process_generic()` (`src/midi/midi_controller_generic.h`),
 which is built from `src/midi/midi_dispatch.h`'s shared, module-agnostic
 generic helpers — one per MIDI message shape (`midi_dispatch_cc()`,
 `midi_dispatch_pitch_bend()`, `midi_dispatch_program_change()`,
-`midi_dispatch_note()`). A module's own `input_subsystem.cpp` shrinks to
-its `kMappingTable`, its Handlers (including voice resolution, inside its
-own NOTE Handler), and that one-line call; `groovebox` and `tracker` don't
-fit the "one voice per note" shape the generic loop assumes (see Decision
-Record) and keep their own fully independent, fully-forked
-`midi_controller_process()` for now.
+`midi_dispatch_note()`, `midi_dispatch_transport()`). A module's own
+`input_subsystem.cpp` shrinks to its `kMappingTable`, its Handlers
+(including voice resolution, inside its own NOTE Handler), and that
+one-line call; `tracker` has no `NOTE`/`MODIFIER` entries at all (no
+live-note traffic, per module_tracker.md), which is fine — an unmatched
+category/id is always a no-op, same mechanism, just an empty table region.
+`groovebox` doesn't fit the "one voice per note" shape the generic loop
+assumes for `NOTE` (see Decision Record) and keeps its own fully
+independent, fully-forked `midi_controller_process()` for now.
 
-For `subtractive`/`fm`, note on/off, **CC1 (mod wheel)**, **CC10 (pan)**,
-**pitch bend**, **CC72-75 (FX type/mix/param1/param2)**, and **Program
-Change** (patch/preset select) all route through a shared per-module
-mapping table and the generic Router (`src/input_layer.h`,
-`input_dispatch()`) — Program Change carries only its raw 0-127 program
-number, dispatched under `CONFIGURATION` with a synthetic id
-(`MIDI_CONFIG_ID_PROGRAM`, `src/midi/midi_dispatch.h`) shared across every
-module using this convention, the same way pitch bend shares a synthetic
-Modifier id. **CC0/CC32 (bank select)** stay outside the Router (neither
-needs channel/velocity matching) but are now module-agnostic, always-linked
-state (`src/midi/midi_dispatch.cpp`) rather than per-module duplicated
-arrays — a Handler that wants the currently selected bank alongside a
-Program Change reads it via `midi_channel_bank_msb()`/`_lsb()` directly
-(`subtractive`'s microKORG-numbering translator is the concrete example).
+For `subtractive`/`fm`/`chip`, note on/off, **pitch bend**, per-module CCs
+(mod wheel/pan/instrument-select/speaker-sim as applicable), **CC72-75 (FX
+type/mix/param1/param2)**, and **Program Change** (patch/preset select)
+all route through a shared per-module mapping table and the generic Router
+(`src/input_layer.h`, `input_dispatch()`) — Program Change carries only
+its raw 0-127 program number, dispatched under `CONFIGURATION` with a
+synthetic id (`MIDI_CONFIG_ID_PROGRAM`, `src/midi/midi_dispatch.h`) shared
+across every module using this convention, the same way pitch bend shares
+a synthetic Modifier id. `tracker` uses the same `CONFIGURATION`/Program
+Change path for a different purpose (seek to an order, not select a
+preset — `CONFIGURATION`'s `value.index` field means whatever a module's
+own Handler decides it means), plus **MIDI Start/Continue/Stop** dispatched
+under a new `TRANSPORT` category (`midi_dispatch_transport()`,
+`src/midi/midi_dispatch.h`) added specifically to fit it — Transport
+carries no payload beyond which message it is (module-global, like
+play/stop), so distinct Handlers per table entry (not one Handler reading
+an id) tell them apart. **CC0/CC32 (bank select)** stay outside the Router
+(neither needs channel/velocity matching) but are now module-agnostic,
+always-linked state (`src/midi/midi_dispatch.cpp`) rather than per-module
+duplicated arrays — a Handler that wants the currently selected bank
+alongside a Program Change reads it via `midi_channel_bank_msb()`/`_lsb()`
+directly (`subtractive`'s microKORG-numbering translator is the concrete
+example).
 
 GPIO buttons (VGA board only) reach the same `kMappingTable`/`set_note`
 Handler through a parallel, non-MIDI path: `controller_tick()` turns a
@@ -365,14 +377,14 @@ The dispatch mechanism above (shared vocabulary and a per-module mapping
 table, #86) started `subtractive`-only; a from-scratch redesign of the
 whole input pipeline settled a fuller vocabulary and requirement set on top
 of it without discarding the mechanism itself — see Decision Record entry 5
-— and `fm`/`chip` have since joined `subtractive` in also sharing
+— and `fm`/`chip`/`tracker` have since joined `subtractive` in also sharing
 `midi_controller_process()`'s own generic message-dispatch shape
 (`src/midi/midi_dispatch.h`), not just the Router underneath it. `speech`
 (same dynamic-allocation, one-voice-per-note shape) is expected to migrate
-onto the same generic helpers next; `groovebox`/`tracker` adopting the
-Router at all, and non-MIDI input sources beyond GPIO buttons
-(e.g. potentiometers -- `SensorEvent` already covers the shape, see
-`src/sensor_event.h`), remain open work.
+onto the same generic helpers next; `groovebox` adopting the Router at
+all, and non-MIDI input sources beyond GPIO buttons (e.g. potentiometers
+-- `SensorEvent` already covers the shape, see `src/sensor_event.h`),
+remain open work.
 
 ### Input categories
 
@@ -381,9 +393,10 @@ vocabulary a source event is classified into before reaching a module's
 mapping table. Definitions live in root `CONTEXT.md`'s "Language" section,
 the single source of truth for this vocabulary — not duplicated here, to
 avoid a second copy drifting out of sync as the vocabulary evolves.
-`subtractive`, `fm`, and `chip` are built against it via the generic
-dispatch mechanism so far; `tracker` and `groovebox` are deliberately
-excluded (see Decision Record).
+`subtractive`, `fm`, `chip`, and `tracker` (`TRANSPORT`/`CONFIGURATION`
+only, no live-note traffic) are built against it via the generic dispatch
+mechanism so far; `groovebox` is deliberately excluded (see Decision
+Record).
 
 Each module declares which categories it supports via a compile-time
 capability list, checked against its own mapping table with a
@@ -439,11 +452,22 @@ earlier version of this design assumed. Configurability is build-time only
    a shared synthetic id) for every module built against the Router, not a
    per-module choice; CC0/CC32 bank-select storage is shared, always-linked
    state a Handler reads on demand. This doesn't retract decision 4:
-   `groovebox`/`tracker` still don't fit the "one voice per note" shape
-   `midi_controller_process_generic()` assumes, but nothing stops either
-   from calling the same lower-level generic dispatch helpers (plain
-   CC/pitch-bend/Configuration/NOTE dispatch) once their own migration is
-   taken up — decided per-module, not assumed now.
+   `groovebox` still doesn't fit the "one voice per note" shape
+   `midi_controller_process_generic()` assumes for `NOTE`, but nothing
+   stops it from calling the same lower-level generic dispatch helpers
+   (plain CC/pitch-bend/Configuration/NOTE dispatch) once its own
+   migration is taken up — decided per-module, not assumed.
+7. **`tracker` migrated onto `midi_controller_process_generic()` too**,
+   despite having zero live-note traffic — its `kMappingTable` simply has
+   no `NOTE`/`MODIFIER` entries, and an unmatched category/id is already a
+   no-op by the Router's own contract, so nothing needed to change about
+   the generic loop's NOTE/CC handling to accommodate that. What the loop
+   *did* need, and gained specifically for `tracker`: generic `TRANSPORT`
+   dispatch (`midi_dispatch_transport()`, Start/Continue/Stop), the first
+   module to actually exercise that category. Program Change stays
+   `CONFIGURATION` -- `tracker`'s own Handler just means "seek to an
+   order" by it, not "select a preset," consistent with `CONFIGURATION`'s
+   `value.index` field meaning whatever a module's Handler decides.
 7. **Voice allocation moved into `set_note()` itself**, correcting a
    deviation from spec #99's own Voice Allocation Interface design that
    had been present since the original #100-104 migration: the first pass
