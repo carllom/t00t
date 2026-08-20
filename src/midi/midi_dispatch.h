@@ -1,17 +1,17 @@
 #pragma once
 
 #include "../input_layer.h"
-#include "../voice_alloc.h"
 #include <cmath>
 #include <cstdint>
 
 // Generic, module-agnostic glue between a parsed MidiEvent and the Router
 // (src/input_layer.h's input_dispatch()): turns a raw MIDI message into a
 // Shaped Input event and dispatches it against a module's own mapping
-// table. Every module's own midi_controller.cpp composes these building
-// blocks in whatever order/combination fits its own input model -- table
-// contents and Handlers stay fully module-owned, nothing here assumes a
-// particular routing shape beyond "MIDI byte in, Input event out."
+// table. Every module's own MIDI routing file (src/engines/<name>/,
+// input_subsystem.cpp once migrated) composes these building blocks in
+// whatever order/combination fits its own input model -- table contents
+// and Handlers stay fully module-owned, nothing here assumes a particular
+// routing shape beyond "MIDI byte in, Input event out."
 
 // Program Change carries no MIDI CC number of its own; every module using
 // it as a Configuration input shares this synthetic id, so the convention
@@ -77,9 +77,13 @@ inline void midi_dispatch_program_change(Context &ctx, const InputMapEntryT<Cont
     input_dispatch(ctx, table, InputCategory::CONFIGURATION, MIDI_CONFIG_ID_PROGRAM, value);
 }
 
-// Generic NOTE dispatch with an already-resolved voice -- for a module
-// whose voice for a given note doesn't come from the dynamic allocator
-// (e.g. a fixed/predetermined voice per channel).
+// Generic NOTE dispatch. Carries only the raw note/channel/velocity/edge --
+// voice resolution (dynamic `voice_alloc`, a fixed/predetermined voice, or
+// none) is never done here: it's the Voice Allocation Interface's job,
+// reached from inside a module's own NOTE Handler (never interleaved in
+// parsing/dispatch, see CONTEXT.md's "Voice Allocation Interface" entry).
+// `voice` defaults to -1 (unresolved); a Handler that resolves its own
+// voice reads `value.note` and does so itself.
 template <typename Context, uint32_t N>
 inline void midi_dispatch_note(Context &ctx, const InputMapEntryT<Context> (&table)[N],
                                 uint8_t note, uint8_t channel, uint8_t velocity,
@@ -91,42 +95,4 @@ inline void midi_dispatch_note(Context &ctx, const InputMapEntryT<Context> (&tab
     value.voice = voice;
     value.note_on = note_on;
     input_dispatch(ctx, table, InputCategory::NOTE, note, value);
-}
-
-// Standard dynamic-voice-allocation NOTE_ON: steals any voice already
-// playing this note (retrigger), allocates a fresh one, and dispatches.
-// `midi_note_voice`/`voice_held` are the caller's own per-note/per-voice
-// tracking arrays (module-owned, sized by that module's own MAX_VOICES).
-// Returns the allocated voice, or -1 if none was available (nothing
-// dispatched in that case).
-template <typename Context, uint32_t N, uint32_t MaxVoices>
-inline int8_t midi_dispatch_note_on_allocated(
-        Context &ctx, const InputMapEntryT<Context> (&table)[N],
-        uint8_t note, uint8_t channel, uint8_t velocity,
-        int8_t (&midi_note_voice)[128], bool (&voice_held)[MaxVoices]) {
-    if (midi_note_voice[note] >= 0) {
-        int8_t old = midi_note_voice[note];
-        ctx.voices[old].gate = false;
-        voice_held[old] = false;
-        voice_alloc_release(old);
-    }
-    int v = voice_alloc_allocate();
-    if (v < 0) return -1;
-    midi_note_voice[note] = (int8_t)v;
-    voice_held[v] = true;
-    midi_dispatch_note(ctx, table, note, channel, velocity, (int8_t)v, true);
-    return (int8_t)v;
-}
-
-template <typename Context, uint32_t N, uint32_t MaxVoices>
-inline void midi_dispatch_note_off_allocated(
-        Context &ctx, const InputMapEntryT<Context> (&table)[N],
-        uint8_t note, uint8_t channel,
-        int8_t (&midi_note_voice)[128], bool (&voice_held)[MaxVoices]) {
-    int8_t v = midi_note_voice[note];
-    if (v < 0) return;
-    midi_dispatch_note(ctx, table, note, channel, 0, v, false);
-    voice_held[v] = false;
-    voice_alloc_release(v);
-    midi_note_voice[note] = -1;
 }

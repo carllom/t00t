@@ -108,7 +108,7 @@ src/engines/fm/
   rig.h               standalone P0 measurement rig (no patch/EG/LFO)
   render.h            fm_render_test_tone(), shared by the device skeleton
                        and the host build
-  midi_controller.cpp note on/off, bend, pan, mod wheel, patch select
+  input_subsystem.cpp note on/off, bend, pan, mod wheel, patch select
   display.cpp         status panel: voices/CPU/note, current patch,
                        algorithm operator-role cells, per-voice multitimbral
                        grid (see Display above)
@@ -116,12 +116,13 @@ src/engines/fm/
 
 There is no `presets.h`/`VoicePreset` — FM's whole timbre is the single
 `FmPatch` pointer in `VoiceParams`, so it never needed the shared
-preset-table shape speech/chip use; `midi_controller.cpp` is its own file
-(not the shared `src/midi/midi_controller.cpp`) for the same reason. It
-does build its own `midi_controller_process()` from `src/midi/midi_dispatch.h`'s
-shared, module-agnostic generic per-MIDI-message-type dispatch helpers
-(the same ones `subtractive` composes) — only the mapping table, Handlers,
-and per-voice/per-channel state stay this module's own.
+preset-table shape speech/chip use. `input_subsystem.cpp`'s own top-level
+`midi_controller_process()` is a one-line call into
+`midi_controller_process_generic()` (`src/midi/midi_controller_generic.h`,
+built from `src/midi/midi_dispatch.h`'s shared, module-agnostic generic
+per-MIDI-message-type dispatch helpers — the same ones `subtractive`
+composes) — only the mapping table, Handlers, and per-voice/per-channel
+state stay this module's own.
 
 ### Build
 
@@ -481,9 +482,16 @@ By-Ear Pass, and the ORCH-CHIME RAM Fix".
     scratch — comparing this module's freshly-migrated controller against
     `subtractive`'s found the two nearly identical beyond Handler-local and
     generic-plumbing differences, so the per-message-type dispatch shape
-    (CC, pitch bend, Program Change, allocated NOTE_ON/OFF) moved into
-    shared functions every module composes, while the mapping table and
-    Handlers stay fully this module's own.
+    (CC, pitch bend, Program Change, NOTE) moved into shared functions
+    every module composes, while the mapping table and Handlers stay fully
+    this module's own.
+23. **Voice allocation lives inside `set_note()`, not the dispatch loop**
+    — `voice_alloc_allocate()`/`release()` are the Voice Allocation
+    Interface (CONTEXT.md), reached from a Handler; `set_note()` resolves
+    its own voice via its own `note_voice[]` lookup (steal-on-retrigger
+    included), so `midi_controller_process_generic()` needs no per-voice
+    tracking arrays and dispatches NOTE the same uniform way as every
+    other category.
 
 ## Glossary
 

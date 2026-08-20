@@ -4,11 +4,11 @@
 // render_xm_device.cpp's no-arg invocation mode (test_*() functions, an
 // aggregated `bool ok`, "ALL CHECKS PASSED"/"CHECKS FAILED").
 //
-// Deliberately does not exercise any real engine's midi_controller.cpp --
-// those pull in pico-sdk-dependent headers and stay verified on real
-// hardware, per #85's Testing Decisions. This covers only input_layer.h's
-// own mechanism: table matching, the generic mutators, and the compile-time
-// capability check.
+// Deliberately does not exercise any real engine's own MIDI routing file
+// (input_subsystem.cpp/midi_controller.cpp) -- those pull in
+// pico-sdk-dependent headers and stay verified on real hardware, per #85's
+// Testing Decisions. This covers only input_layer.h's own mechanism: table
+// matching, the generic mutators, and the compile-time capability check.
 
 #include "../../src/input_layer.h"
 

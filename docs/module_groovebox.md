@@ -208,10 +208,15 @@ Directory-per-engine, selected by CMake (`T00T_ENGINE=groovebox`), not
 `#ifdef`s on the divergences: DSP primitives (`osc/*`, `envelope.*`,
 `filter.h`, `fx/*`) are shared verbatim, and `engine.h`/`audio_engine.cpp`/
 `kit.h`/`midi_controller.cpp` are forked into `engines/groovebox/`.
-`CMakeLists.txt` picks `src/engines/${T00T_ENGINE}/midi_controller.cpp`
-wholesale if it exists for an engine, else falls back to the shared
-`src/midi/midi_controller.cpp` — there is no shared routing shell with a
-per-engine hook; the fork is the entire file. The shared `engine_base.h`
+`CMakeLists.txt` picks each engine's own MIDI routing file from
+`src/engines/${T00T_ENGINE}/` — there is no shared routing shell with a
+per-engine hook; the fork is the entire file (though `subtractive` and
+`fm`, once migrated onto the Router, renamed theirs `input_subsystem.cpp`
+and now share their parse-and-dispatch loop's *implementation* via
+`src/midi/midi_controller_generic.h`, a template each calls into with its
+own mapping table — groovebox's routing doesn't fit that shape, see
+`engine.md`'s Decision Record; groovebox's own file stays
+`midi_controller.cpp` until it migrates). The shared `engine_base.h`
 holds `MAX_VOICES`, `Waveform`, `FilterMode`, `EffectParams`, and the
 `VoiceParamBlockT`/`ParamExchangeT` templates every engine's `engine.h`
 instantiates; it does not define a shared voice-parameter base struct —

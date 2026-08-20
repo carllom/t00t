@@ -72,14 +72,17 @@ change-detected redraws only):
 - `presets.h` — `VoicePreset` struct and the 11-entry factory preset table
 - `audio_engine.cpp` — Core 1 render loop
 - `display.cpp` — Core 0 status display
+- `input_subsystem.cpp` — the Input pipeline's module-specific tail:
+  mapping table, Handlers, and Voice Allocation Interface calls, built on
+  the shared dispatch layer below
 
 Also draws on shared, non-engine-specific code: `src/controller.cpp`
 (VGA-board buttons — subtractive is the only engine that links it, see
 `CMakeLists.txt`), `src/button_shaping.h`/`src/sensor_event.h` (button
-SensorEvent → Input event Shaping), `src/midi/midi_dispatch.h`/`.cpp`
-(shared generic per-MIDI-message-type dispatch helpers and bank-select
-state, also used by `fm`), and `src/midi/midi_controller.cpp` itself (no
-engine-specific override — this file is subtractive's own controller).
+SensorEvent → Input event Shaping), and `src/midi/midi_dispatch.h`/`.cpp`/
+`midi_controller_generic.h` (shared generic per-MIDI-message-type dispatch
+helpers, bank-select state, and the full parse-and-dispatch loop — also
+used by `fm`).
 
 ### Build
 
@@ -287,6 +290,13 @@ insert adds ~1.5pp; reverb adds ~8pp. Measured on breadboard_rp2350 at
    entirely inside this module's own patch-select Handler, reading the
    bank value via `midi_channel_bank_msb()` (shared, module-agnostic
    plumbing) rather than a locally duplicated array.
+10. **Voice allocation lives inside `set_note()`, not the dispatch loop**
+    — `voice_alloc_allocate()`/`release()` are the Voice Allocation
+    Interface (CONTEXT.md), reached from a Handler, never interleaved in
+    MIDI parsing/dispatch. `set_note()` resolves its own voice via its own
+    `note_voice[]` lookup (steal-on-retrigger included); the GPIO
+    button path (`controller.cpp`) reaches the same Handler and no longer
+    pre-allocates a voice of its own.
 
 ## Glossary
 

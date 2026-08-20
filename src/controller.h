@@ -11,7 +11,6 @@ static constexpr uint32_t DEBOUNCE_THRESHOLD = 10;  // 10ms at 1ms tick
 struct ButtonState {
     uint32_t pin;
     ButtonShapingConfig shaping;  // note/channel/velocity this button plays
-    int8_t allocated_voice;
     uint8_t counter;
     bool debounced;
 };
