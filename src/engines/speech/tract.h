@@ -36,7 +36,7 @@ struct FormantTarget {
 
 // Live formant_shift / bandwidth_scale ranges (module_speech.md "MIDI Mapping":
 // both on a CC by default). Shared by the device MIDI controller
-// (midi_controller.cpp) and the host CC-sweep stability test
+// (input_subsystem.cpp) and the host CC-sweep stability test
 // (render_speech.cpp) so both use identical ranges -- picking the range in
 // one place only.
 inline constexpr float FORMANT_SHIFT_MIN = 0.7f, FORMANT_SHIFT_MAX = 1.6f;

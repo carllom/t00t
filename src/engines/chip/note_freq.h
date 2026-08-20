@@ -7,7 +7,7 @@
 
 // MIDI note <-> chip frequency-register conversion, for every chip type
 // this module builds (module_chip.md §12). Shared by Core 0
-// (midi_controller.cpp, note-on/pitch-bend) and Core 1 (the SID frame VM
+// (input_subsystem.cpp, note-on/pitch-bend) and Core 1 (the SID frame VM
 // doesn't use this directly -- it applies arpeggio/vibrato as ratios on
 // an already-converted register -- but keeping one definition avoids two
 // copies drifting).

@@ -38,10 +38,10 @@ transport control only, not note input.
 
 | Message | Function |
 |---|---|
-| MIDI Start | Seek to order 0, play |
-| MIDI Continue | Resume from wherever it stopped |
-| MIDI Stop | Stop |
-| Program Change | Seek to the order index given by the program number |
+| MIDI Start | Transport: seek to order 0, play |
+| MIDI Continue | Transport: resume from wherever it stopped |
+| MIDI Stop | Transport: stop |
+| Program Change | Configuration: seek to the order index given by the program number |
 
 ### Display (Presentation Capabilities)
 
@@ -71,7 +71,12 @@ what's audible, invisible at the ~20 ms tick rate.
   `mix_voice()`, loop wrap / ping-pong); shared verbatim with the host build
 - `audio_engine.cpp` — Core 1 entry point: consumes the tick ring, renders
   via `mixer.h`
-- `midi_controller.cpp` — MIDI transport control (see MIDI Mapping)
+- `input_subsystem.cpp` — MIDI transport control (see MIDI Mapping),
+  routed through `input_dispatch()`/the Router (`TRANSPORT`/`CONFIGURATION`
+  categories) same as every other migrated engine, via
+  `src/midi/midi_dispatch.h`/`midi_controller_generic.h`'s shared dispatch
+  layer -- `kMappingTable` has no `NOTE`/`MODIFIER` entries, since this
+  engine has no live-note traffic at all
 - `display.cpp` — Core 0 status display
 - `blob_format.h` — generated C++ mirror of the binary song-blob layout;
   source of truth is `tools/xm2t00t/blob_format.py`
@@ -521,6 +526,14 @@ Measured on `breadboard_rp2350`. Full tables: `history_tracker.md`.
     ticks of the glide starting. Deferred (#25) rather than force-fit.
 13. **Display is tile-rendered, Core-0-only, no reverse channel.** Core 0
     already holds playback position, so nothing from Core 1 is needed.
+14. **MIDI transport routes through a new `TRANSPORT` Router category**,
+    not a bespoke switch — `src/midi/midi_dispatch.h`/`midi_controller_generic.h`
+    gained generic Transport dispatch (Start/Continue/Stop) specifically to
+    fit this engine, the first module to actually need it. Program Change
+    stays `CONFIGURATION`, the same standing convention every other
+    migrated module uses, but with its own meaning here: seeking to an
+    order rather than selecting a preset — `CONFIGURATION`'s `value.index`
+    field means whatever a module's own Handler decides it means.
 
 ## Glossary
 

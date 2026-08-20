@@ -291,7 +291,7 @@ inline void fm_voice_note_on(FmOp ops[FM_NUM_OPS], const FmPatch &patch,
         // `amplitude` is VoiceParams' Q15 velocity; Dexed's ScaleVelocity
         // wants the raw MIDI 0-127 it was derived from, so it is recovered
         // here. The round trip is exact for every velocity, since Core 0
-        // built it as velocity/127 * 32767 (midi_controller.cpp).
+        // built it as velocity/127 * 32767 (input_subsystem.cpp).
         int velocity = ((int)amplitude * 127 + 16383) / 32767;
         env_dx_init(op.eg, p.eg_rate, p.eg_level,
                     dx7_note_outlevel(p, midinote, velocity),

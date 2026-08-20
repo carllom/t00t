@@ -301,7 +301,7 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
             const VoiceParams &p = vp.voices[v];
             if (p.tract == SPEECH_TRACT_LATTICE) {
                 // LPC lattice tract (module_speech.md "LPC Lattice Tract"):
-                // p.lattice_word is resolved by midi_controller.cpp's
+                // p.lattice_word is resolved by input_subsystem.cpp's
                 // KEY_PER_WORD addressing (note + Program-Change page) --
                 // pitch comes from the word's own frames, scaled by the
                 // live pitch-shift CC, not the note. Renders straight to

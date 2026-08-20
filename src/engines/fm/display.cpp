@@ -164,7 +164,7 @@ void display_task() {
         gfx_text(NOTE_VAL_X, NOTE_VAL_Y, note_padded, COL_VALUE, COL_BG, 1);
     }
 
-    // Patch + algorithm: whichever channel's Program Change/CC30 (or note-on)
+    // Patch + algorithm: whichever channel's Program Change (or note-on)
     // landed most recently. A held voice keeps the patch pointer it started
     // with even if its channel's program changes mid-note, so this row is
     // "what's selected now" for the last-touched channel, not necessarily
