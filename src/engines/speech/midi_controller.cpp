@@ -73,7 +73,6 @@
 // reasoning behind CC1/CC10/CC76 following the GM standard while CC16/
 // CC20-28 stay in the BeatStep Pro's contiguous absolute-CC block.
 
-static MidiParser midi_parser;
 static int8_t midi_note_voice[128];
 static bool   voice_held[MAX_VOICES];
 static uint8_t voice_channel[MAX_VOICES];
@@ -103,10 +102,6 @@ static uint8_t channel_preset[NUM_CHANNELS];           // CC16: last preset load
                                                          // any hardware synth's knobs-vs-preset relationship
 static bool    channel_chorus[NUM_CHANNELS];            // CC16: pr.chorus of the last preset loaded
 static bool    channel_velocity_enabled[NUM_CHANNELS];  // CC15, next-note: use received velocity vs. fixed max
-
-static MidiUiState ui_state;
-
-void midi_controller_ui_state(MidiUiState *out) { *out = ui_state; }
 
 // Bulk-loads presets[preset_id] into channel `channel`'s per-field state --
 // the same channel_* arrays CC21/22/24-27/etc. individually own, as if all

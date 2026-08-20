@@ -48,8 +48,6 @@ static constexpr uint16_t PITCH_BEND_CENTER = 8192;
 static constexpr float    PITCH_BEND_RANGE_SEMITONES = 2.0f;
 static constexpr uint8_t  NUM_CHANNELS = 16;
 
-static MidiParser midi_parser;
-static MidiUiState ui_state;
 static uint8_t s_speaker_preset_ui = SPEAKER_1702;   // module_chip.md §1: display-only mirror of
                                                        // shadow.voices[*].speaker_preset --
                                                        // not in MidiUiState, which is shared
@@ -276,5 +274,4 @@ void midi_controller_process(const uint8_t *data, uint32_t len, ParamExchange *p
     if (changed) params->commit();
 }
 
-void midi_controller_ui_state(MidiUiState *out) { *out = ui_state; }
 uint8_t chip_speaker_preset_ui() { return s_speaker_preset_ui; }
