@@ -67,19 +67,18 @@ DX7 emulator) as ground truth rather than by ear alone.
 | Pitch Bend | Folded into `phase_inc` by Core 0 before it reaches Core 1 |
 | CC1 | Mod wheel — a separate modulation source competing with the patch's own configured LFO depth (`max()`, not a multiplier — see Decision Record) |
 | CC10 | Pan |
-| CC30 | Patch select — CC alternative to Program Change, for controllers with encoder-only CC control surfaces |
 | CC72 | FX param 1 |
 | CC73 | FX wet/dry mix |
 | CC74 | FX type select |
 | CC75 | FX param 2 |
-| Program Change | Patch select — `FM_PATCHES[value % FM_PATCH_COUNT]` |
+| Program Change | Configuration: patch select — `FM_PATCHES[value % FM_PATCH_COUNT]`, always at least one entry |
 
 ### Display (Presentation Capabilities)
 
 Same chrome every engine's panel shares (title bar, VOICES dot bar, CPU load
 bar, NOTE row), plus FM-specific rows: the current patch (bank index and DX7
 voice name, for whichever channel most recently triggered a note or a
-Program Change/CC30), its algorithm as six operator-role cells
+Program Change), its algorithm as six operator-role cells
 (carrier/modulator/feedback, derived from `FmOpParams` directly — no
 algorithm number is stored anywhere at runtime), and a compact per-voice
 grid (voice, channel, patch index) covering voices 0–7, which is what makes
@@ -112,7 +111,7 @@ src/engines/fm/
   rig.h               standalone P0 measurement rig (no patch/EG/LFO)
   render.h            fm_render_test_tone(), shared by the device skeleton
                        and the host build
-  midi_controller.cpp note on/off, bend, pan, mod wheel, patch select
+  input_subsystem.cpp note on/off, bend, pan, mod wheel, patch select
   display.cpp         status panel: voices/CPU/note, current patch,
                        algorithm operator-role cells, per-voice multitimbral
                        grid (see Display above)
@@ -120,8 +119,13 @@ src/engines/fm/
 
 There is no `presets.h`/`VoicePreset` — FM's whole timbre is the single
 `FmPatch` pointer in `VoiceParams`, so it never needed the shared
-preset-table shape speech/chip use; `midi_controller.cpp` is its own file
-(not the shared `src/midi/midi_controller.cpp`) for the same reason.
+preset-table shape speech/chip use. `input_subsystem.cpp`'s own top-level
+`midi_controller_process()` is a one-line call into
+`midi_controller_process_generic()` (`src/midi/midi_controller_generic.h`,
+built from `src/midi/midi_dispatch.h`'s shared, module-agnostic generic
+per-MIDI-message-type dispatch helpers — the same ones `subtractive`
+composes) — only the mapping table, Handlers, and per-voice/per-channel
+state stay this module's own.
 
 ### Build
 
@@ -144,8 +148,8 @@ syx2patch.py dump <in.syx> [in2.syx ...]               # per-voice summary, writ
 ```
 
 Capped at 4 files (128 patches): `FM_PATCH_COUNT` indexes Program Change
-and CC30 directly, both 7-bit MIDI values, so a larger table would leave
-some patches permanently unreachable.
+directly, a 7-bit MIDI value, so a larger table would leave some patches
+permanently unreachable.
 
 Both the `.syx` input and the generated header are gitignored — real DX7
 patch data is Yamaha's commercial work, the same policy the tracker's
@@ -486,6 +490,34 @@ By-Ear Pass, and the ORCH-CHIME RAM Fix".
     doesn't fork the file. FM's own call sites instantiate both explicitly
     rather than relying on a default, so which envelope family and table a
     given build uses is visible at the call site, not implicit.
+21. **CC30 (the encoder-CC patch-select alternative) was dropped** once
+    Program Change moved onto the shared Router's `CONFIGURATION` category
+    — the two were fully duplicate logic, and standardizing every module's
+    preset selection on Program Change alone (rather than each module
+    picking its own CC/PC split) keeps that category's meaning consistent
+    across engines.
+22. **`FM_PATCHES`/`FM_PATCH_COUNT`/`FM_PATCH_NAMES` are always defined**
+    (`patch.h`), never conditionally absent — without a locally generated
+    DX7 bank they fall back to a single entry wrapping `FM_TEST_PATCH`,
+    so Program Change and the display never need to branch on whether a
+    real bank exists. `T00T_FM_HAS_PATCHES` still gates the host-render
+    tools' own real-bank-only tests (`render_fm`/`render_fm_patch`),
+    unrelated to this fallback.
+23. **`midi_controller_process()` is built from shared, module-agnostic
+    generic helpers** (`src/midi/midi_dispatch.h`), not written from
+    scratch — comparing this module's freshly-migrated controller against
+    `subtractive`'s found the two nearly identical beyond Handler-local and
+    generic-plumbing differences, so the per-message-type dispatch shape
+    (CC, pitch bend, Program Change, NOTE) moved into shared functions
+    every module composes, while the mapping table and Handlers stay fully
+    this module's own.
+24. **Voice allocation lives inside `set_note()`, not the dispatch loop**
+    — `voice_alloc_allocate()`/`release()` are the Voice Allocation
+    Interface (CONTEXT.md), reached from a Handler; `set_note()` resolves
+    its own voice via its own `note_voice[]` lookup (steal-on-retrigger
+    included), so `midi_controller_process_generic()` needs no per-voice
+    tracking arrays and dispatches NOTE the same uniform way as every
+    other category.
 
 ## Glossary
 

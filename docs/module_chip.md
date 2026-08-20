@@ -49,13 +49,12 @@ per-channel, live-pushed to every held voice on that channel.
 |---|---|
 | Note On/Off | Standard dynamic allocation |
 | Pitch Bend | Per-channel, applied to every currently-held voice |
-| CC16 | Instrument select (next note) — one combined space spanning both SID and AY instruments |
 | CC17 | Speaker simulation preset (global, applies immediately) |
 | CC72 | FX param 1 |
 | CC73 | FX wet/dry mix |
 | CC74 | FX type select |
 | CC75 | FX param 2 |
-| Program Change | Same combined instrument space as CC16 |
+| Program Change | Configuration: instrument select (next note) — one combined space spanning both SID and AY instruments |
 
 A player picks a patch, not a silicon — instrument index `< INSTRUMENT_COUNT`
 is SID, the rest is AY, but the selection is one linear list either way.
@@ -94,7 +93,12 @@ Engine (`src/engines/chip/`):
 
 - `engine.h` — `VoiceType` (`VT_SID`/`VT_AY`), `MAX_VOICES = 32`
 - `audio_engine.cpp` — per-voice dispatch, two-phase bus render, frame VM tick
-- `midi_controller.cpp` — dynamic allocation, combined instrument space, live CCs
+- `input_subsystem.cpp` — the Input pipeline's module-specific tail:
+  mapping table, Handlers, Voice Allocation Interface calls, and
+  filter-bus binding (a second, chip-specific allocator-like concern
+  resolved in the same NOTE Handler as voice allocation), built on
+  `src/midi/midi_dispatch.h`/`midi_controller_generic.h`'s shared generic
+  dispatch layer (also used by `subtractive`/`fm`)
 - `display.cpp` — LCD status
 - `instrument.h` / `instruments.h` — SID instrument format / GENERATED table
 - `ay_instrument.h` / `ay_instruments.h` — AY instrument format / hand-written table
@@ -418,6 +422,22 @@ filter saturation path): `history_chip.md`.
     scheme for the active-voice FIFO word was considered as the answer if
     it were ever wanted, but won't be built: not reachable except by the
     cheapest PSG voices, and CPU is better spent on the speaker stage.
+12. **CC16 (the BeatStep-Pro-safe encoder alternative to Program Change)
+    was dropped**, migrating onto the Core 0 input pipeline (Router,
+    `src/input_layer.h`) — the same call already made for `fm`'s CC30,
+    which had the identical rationale. Program Change alone now selects
+    the instrument, per the standing Program-Change-alone convention every
+    module on the Router follows.
+13. **Filter-bus binding lives inside `set_note()`**, resolved at the same
+    point as voice allocation — it's a second, chip-specific
+    allocator-like concern (a scarce per-channel resource, not per-voice),
+    but its lifecycle already matched voice allocation's own timing
+    (decided once per note-on, from whatever instrument is currently
+    selected); moving it into the Handler alongside `voice_alloc_allocate()`
+    didn't change when it runs, only where the code lives. Instrument
+    selection itself (Configuration) never touches the filter bus directly
+    — a channel's binding only changes on its *next* note-on, unchanged
+    from the pre-migration behavior.
 
 ## Glossary
 

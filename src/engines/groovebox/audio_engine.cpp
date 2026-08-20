@@ -331,7 +331,7 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
 
             // Gate-off edge (303 only; drums are one-shot)
             if (!p.gate && voice_gated[v]) {
-                if (p.type == VT_TB303) amp_env[v].release();
+                if (p.type == VT_TB303) amp_env[v].release(p.amp_env);
                 voice_gated[v] = false;
             } else {
                 voice_gated[v] = p.gate;

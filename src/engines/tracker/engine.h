@@ -15,8 +15,11 @@ static constexpr uint32_t FILTER_BUS_COUNT = 0;   // chip module only (module_ch
 // This engine's own VoiceParams payload, required by engine_base.h's shared
 // template shape (main.cpp instantiates a ParamExchange for every engine).
 // The tracker's real per-tick state travels through player.h's ordered
-// TickBlock ring instead -- audio_engine.cpp and midi_controller.cpp both
-// ignore their ParamExchange pointer, so nothing here is actually read or
+// TickBlock ring instead -- audio_engine.cpp ignores its ParamExchange
+// pointer entirely; input_subsystem.cpp's shared dispatch loop touches its
+// shadow/active blocks (an unavoidable part of the generic loop every
+// migrated engine shares) but never commits them, since no Handler here
+// ever sets `changed`, so nothing here is actually read or
 // written outside voice_params_default()'s initialization.
 struct VoiceParams {
     uint32_t phase_inc;  // fixed-point phase increment

@@ -1,21 +1,14 @@
 #include "controller.h"
-#include "presets.h"
+#include "midi/midi_controller.h"
 #include "voice_alloc.h"
-#include "osc/sample.h"
-#include "osc/common.h"
 #include "pico/stdlib.h"
 #include "hardware/gpio.h"
 
-// Note tables for cycling through on each keypress
-static const float notes_a[] = { 440.00f, 523.25f, 659.25f, 783.99f };  // A4 C5 E5 G5 (Am7)
-static const float notes_b[] = { 329.63f, 369.99f, 392.00f, 440.00f };  // E4 F#4 G4  A4
-static const float notes_c[] = { 523.25f, 587.33f, 659.25f, 739.99f };  // C5 D5  E5  F#5
-
 static ButtonState buttons[NUM_BUTTONS] = {
-    //  pin  preset            notes    num idx voice cnt deb
-    {   0,   PRESET_FAIRLIGHT,  notes_a, 4,  0,  -1,   0, false },
-    {   6,   PRESET_SQUARE_PWM, notes_b, 4,  0,  -1,   0, false },
-    {   11,  PRESET_SAW_FILTER, notes_c, 4,  0,  -1,   0, false },
+    //  pin  note (channel, fixed_velocity)  cnt deb
+    {   0,   { 69, 0, 100 },  0, false },  // A4 on channel 0 (FAIRLIGHT preset)
+    {   6,   { 64, 1, 100 },  0, false },  // E4 on channel 1 (SQUARE_PWM preset)
+    {   11,  { 72, 2, 100 },  0, false },  // C5 on channel 2 (SAW_FILTER preset)
 };
 
 void controller_init() {
@@ -25,8 +18,6 @@ void controller_init() {
         gpio_pull_down(buttons[i].pin);
         buttons[i].counter = 0;
         buttons[i].debounced = false;
-        buttons[i].note_index = 0;
-        buttons[i].allocated_voice = -1;
     }
 }
 
@@ -60,31 +51,13 @@ void controller_tick(ParamExchange *params) {
 
         if (new_state != b.debounced) {
             b.debounced = new_state;
-            if (new_state) {
-                // Note on: allocate a voice and cycle to next note
-                float freq = b.notes[b.note_index];
-                b.note_index = (b.note_index + 1) % b.num_notes;
 
-                int v = voice_alloc_allocate();
-                if (v >= 0) {
-                    const VoicePreset &pr = presets[b.preset_id];
-                    VoiceParams &vp = shadow.voices[v];
-                    vp.phase_inc = (pr.waveform == WAVE_SAMPLE && pr.sample)
-                        ? osc_sample_phase_inc(pr.sample, freq)
-                        : osc_phase_inc(freq);
-                    voice_apply_preset(vp, pr);
-                    vp.trigger++;
-                    vp.gate = true;
-                    b.allocated_voice = (int8_t)v;
-                }
-            } else {
-                // Note off: release the allocated voice
-                if (b.allocated_voice >= 0) {
-                    shadow.voices[b.allocated_voice].gate = false;
-                    voice_alloc_release(b.allocated_voice);
-                    b.allocated_voice = -1;
-                }
-            }
+            // Voice resolution is set_note()'s own job (the Voice
+            // Allocation Interface) -- this dispatches the same way a MIDI
+            // note-on/off would, with value.voice left unresolved.
+            SensorEvent ev = sensor_event_button(i, new_state);
+            InputValue value = shape_button_event(ev, b.shaping);
+            midi_controller_dispatch_note(shadow, b.shaping.note, value);
             changed = true;
         }
     }

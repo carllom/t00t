@@ -1,6 +1,7 @@
 #pragma once
 
 #include "engine.h"
+#include "button_shaping.h"
 #include <cstdint>
 
 // Button definitions for Pimoroni Pico VGA Demo board
@@ -9,12 +10,7 @@ static constexpr uint32_t DEBOUNCE_THRESHOLD = 10;  // 10ms at 1ms tick
 
 struct ButtonState {
     uint32_t pin;
-    uint8_t preset_id;       // index into master preset list
-    // Note cycling
-    const float *notes;
-    uint8_t num_notes;
-    uint8_t note_index;
-    int8_t allocated_voice;
+    ButtonShapingConfig shaping;  // note/channel/velocity this button plays
     uint8_t counter;
     bool debounced;
 };

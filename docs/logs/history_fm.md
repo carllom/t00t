@@ -2452,3 +2452,96 @@ compile-time constant; the envelope-glue call is still a direct,
 non-virtual function call once the template is instantiated), so no
 regression is expected, but this wasn't a hardware-gated ticket.
 
+## 8. Core 0 Input Pipeline Migration (#106)
+
+Plan: migrate `fm`'s `midi_controller.cpp` onto the Router
+(`input_dispatch()`/`InputMapEntryT`, `src/input_layer.h`) that
+`subtractive` already used, following the from-scratch input-pipeline
+redesign (map #94, spec #99, tickets #100-104) into the first of the four
+other engines plus tracker (wayfinder map #105). Free to remap fm's actual
+input controls to fit the Note/Strike/Modifier/Configuration/Clock/
+Transport vocabulary rather than porting the ad hoc, incrementally-grown
+mapping unchanged.
+
+What shipped: NOTE/MODIFIER/CONFIGURATION all route through
+`input_dispatch()` into fm's own `kMappingTable`, voice allocation
+resolved inside `set_note()` (the Voice Allocation Interface). CC30 —
+an alternate live-encoder patch-select path for controllers (the Arturia
+BeatStep Pro) whose absolute-CC encoders can't send Program Change — was
+dropped rather than kept alongside Program Change, settling a standing
+convention for the whole migration effort: preset selection is Program
+Change -> `CONFIGURATION` -> a module's own preset setter, not each module
+picking its own CC/PC split. `patch.h` reworked so `FM_PATCHES`/
+`FM_PATCH_COUNT` are always defined (a single-entry fallback without a
+generated DX7 bank), so Program Change never needs to branch on whether
+`T00T_FM_HAS_PATCHES` is set.
+
+Follow-on: comparing fm's freshly-migrated `midi_controller_process()`
+against `subtractive`'s found the two nearly identical — the remaining
+differences (a microKORG-specific Program Change decoding quirk, and
+per-module-duplicated bank-select storage) were Handler-local and
+generic-plumbing concerns respectively, not genuine routing divergence.
+This surfaced a follow-up ticket, "Generalize midi_controller_process()
+into shared dispatch helpers" (#111): `src/midi/midi_dispatch.h`/`.cpp`
+now holds the shared, module-agnostic generic per-message-type dispatch
+helpers (`midi_dispatch_cc()`, `midi_dispatch_pitch_bend()`,
+`midi_dispatch_program_change()`, `midi_dispatch_note()`) both
+`subtractive` and `fm` build their own `midi_controller_process()` from —
+retrofitted onto `subtractive` too, even though it sat outside this map's
+five destination modules.
+
+That first dispatch-layer pass still called `voice_alloc_allocate()`/
+`release()` from *inside* the generic dispatch loop, before any Handler
+ran — exactly the "interleaved inside event parsing" shape spec #99's own
+Voice Allocation Interface design ruled out, just relocated one layer up
+from the old per-module `midi_controller_process()` rather than actually
+removed. Fixed by a second follow-up, "Move voice allocation into
+set_note(); centralize MidiParser/MidiUiState" (#112): voice resolution
+is now entirely `set_note()`'s own job, via its own `note_voice[]`
+lookup (steal-on-retrigger included) — the generic loop needs no
+per-note/per-voice tracking arrays at all. Files renamed
+`input_subsystem.cpp` across every migrated engine (`CONTEXT.md` flags
+bare "Input" as too generic on its own). `MidiParser`/`MidiUiState`
+storage, and `midi_controller_ui_state()` itself, became shared `inline`
+instances (`midi_parser.h`/`midi_controller.h`) once every engine's own
+copy turned out byte-identical.
+
+### op.h Prefactor for Engine-Agnostic Kernel Reuse (#77)
+
+Part of #76 (adding an OPL2 engine): a prefactor of `op.h` so a future
+non-DX7 engine can reuse its per-sample kernel and per-block voice glue
+without forking them, with no new user-facing behavior for FM itself —
+verified by "DX7 is unaffected," not a demo.
+
+Two independent changes, both scoped by #76's own review of what the
+original OPL scoping conversation had missed:
+
+- **Per-operator waveform table.** `FmOp` gained a `table` field (a
+  pointer, not a link-time constant), and `op_render`/`op_render_first`/
+  `op_render_fb`/`fm_voice_render_block`/`fm_render_voice` were templated
+  on the table's bit width. `fm_voice_note_on()` sets every operator's
+  `table` to `fm_sine_table` — FM has only ever had the one table — so the
+  device kernel indexes the exact same 4096-entry table it always did, at
+  the same compile-time-constant phase shift, just read through a struct
+  field instead of a global name.
+- **Envelope-glue de-hardcoding.** `fm_voice_note_on()`/
+  `fm_voice_step_envelopes()`/`fm_voice_note_off()` previously called
+  `env_dx_init`/`env_dx_step_block`/`env_dx_release` and
+  `dx7_note_outlevel`/`dx7_scale_rate` directly. They're now templated on
+  an envelope-glue policy type; `env_dx.h` gained `DxEnvGlue`, bundling
+  Dexed's own note-on composition (velocity recovery, output level, key
+  scaling) behind the same three-function shape. FM's own call sites
+  (`audio_engine.cpp`, and every host tool driving `op.h` directly)
+  instantiate with `DxEnvGlue` explicitly — nothing picks it by default.
+
+No behavior changed as a result: the DX7 conformance suite
+(`fm_ctl_diff.py`, 27/27) and the full four-ROM-bank spectral/envelope
+regression against Dexed (`fm_regress.py`, all 40 bank/note/velocity
+configs) both pass with zero threshold changes, `render_fm`'s own
+self-check suite (routing, EG shape, release, pitch EG, LFO, 128-patch
+bank render) all pass, and the device (`T00T_ENGINE=fm`) build is
+unaffected. Real per-voice cycle cost was not re-measured on hardware —
+the kernel's inner loop is unchanged (the table-bit-width shift is still a
+compile-time constant; the envelope-glue call is still a direct,
+non-virtual function call once the template is instantiated), so no
+regression is expected, but this wasn't a hardware-gated ticket.
