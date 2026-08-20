@@ -269,6 +269,8 @@ structure" (breadboard board only; the LCD's own driver vocabulary lives in
 **Page**:
 One of a module's several top-level display screens, each presenting a
 different aspect of the module (e.g. a main performance view vs. an FX view).
+Refreshes at a shared 10Hz base cadence unless it overrides that rate for
+genuinely time-critical content (e.g. tracking live playback position).
 _Avoid_: "Mode" — already claimed by several unrelated concepts in this
 codebase (`FilterMode`; `SpeechMode`'s LOOP/GATED/ONESHOT playback behavior;
 groovebox's own display already has a literal `MODE` row showing DRUM-vs-303
