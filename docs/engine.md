@@ -365,12 +365,12 @@ The dispatch mechanism above (shared vocabulary and a per-module mapping
 table, #86) started `subtractive`-only; a from-scratch redesign of the
 whole input pipeline settled a fuller vocabulary and requirement set on top
 of it without discarding the mechanism itself — see Decision Record entry 5
-— and `fm` has since joined `subtractive` in also sharing
+— and `fm`/`chip` have since joined `subtractive` in also sharing
 `midi_controller_process()`'s own generic message-dispatch shape
-(`src/midi/midi_dispatch.h`), not just the Router underneath it. `chip` and
-`speech` (same dynamic-allocation, one-voice-per-note shape) are expected
-to migrate onto the same generic helpers next; `groovebox`/`tracker`
-adopting the Router at all, and non-MIDI input sources beyond GPIO buttons
+(`src/midi/midi_dispatch.h`), not just the Router underneath it. `speech`
+(same dynamic-allocation, one-voice-per-note shape) is expected to migrate
+onto the same generic helpers next; `groovebox`/`tracker` adopting the
+Router at all, and non-MIDI input sources beyond GPIO buttons
 (e.g. potentiometers -- `SensorEvent` already covers the shape, see
 `src/sensor_event.h`), remain open work.
 
@@ -381,9 +381,9 @@ vocabulary a source event is classified into before reaching a module's
 mapping table. Definitions live in root `CONTEXT.md`'s "Language" section,
 the single source of truth for this vocabulary — not duplicated here, to
 avoid a second copy drifting out of sync as the vocabulary evolves.
-`subtractive` and `fm` are built against it via the generic dispatch
-mechanism so far; `tracker` and `groovebox` are deliberately excluded (see
-Decision Record).
+`subtractive`, `fm`, and `chip` are built against it via the generic
+dispatch mechanism so far; `tracker` and `groovebox` are deliberately
+excluded (see Decision Record).
 
 Each module declares which categories it supports via a compile-time
 capability list, checked against its own mapping table with a

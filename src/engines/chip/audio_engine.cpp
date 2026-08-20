@@ -684,7 +684,7 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
             uint32_t bus_feeder[FILTER_BUS_COUNT];   // valid only where bus_hits[b] > 0
             for (uint32_t v = 0; v < MAX_VOICES; v++) {
                 // Same SID-only guard as above -- an AY voice's filter_bus
-                // is always BUS_NONE (midi_controller.cpp), so it would fall
+                // is always BUS_NONE (input_subsystem.cpp), so it would fall
                 // into the dry-mix else branch below and call SidVoice::tick()
                 // on a slot that was never a SidVoice this trigger.
                 if (!(render_mask & (1u << v)) || vp.voices[v].type != VT_SID) continue;
@@ -810,7 +810,7 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
         // own soft clip is the cone-breakup character, not that clamp.
         // Preset is a single global choice (not per-voice), but the only
         // Core0->Core1 channel is VoiceParams -- replicated identically
-        // across every voice by midi_controller.cpp on CC17, read once here
+        // across every voice by input_subsystem.cpp on CC17, read once here
         // from voice 0 rather than adding a chip-only field to the shared
         // VoiceParamBlockT (engine_base.h) for one scalar every other
         // engine would carry unused.
