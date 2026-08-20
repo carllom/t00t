@@ -301,6 +301,25 @@ boundary into two calls with different backgrounds (fill color / off color)
 already established the ST7789 has no hardware compositing ALU and this
 driver keeps no shadow framebuffer.
 
+**PercentageBar**:
+A Value bar specialized for 0–100% values (e.g. CPU load), whose fill color
+is chosen automatically from a fixed severity threshold rather than supplied
+by the caller. Otherwise the same overlay shape as Value bar.
+_Avoid_: "LoadBar" — ties the name to its one current use (CPU load) rather
+than the general 0–100%-with-auto-color shape.
+
+**ActivityGrid**:
+A Widget showing a grid of cells, one per voice or channel, filled or dim to
+indicate simple on/off activity — used where only *which* slots are active
+matters, not per-slot detail.
+
+**VoiceGrid**:
+A Widget showing a grid of per-voice cells, each carrying a short text label
+and one of three caller-assigned colors — for voice detail that doesn't
+reduce to plain on/off, unlike ActivityGrid.
+_Avoid_: "activity-grid" as a name for either ActivityGrid or VoiceGrid on
+its own — the two are independent Widgets, not variants of one grid.
+
 **Performance page**:
 The one required Page every module presents: a dense summary of most of that
 module's tweakable controls, serving as the module's default/main view.
