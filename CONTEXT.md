@@ -294,9 +294,11 @@ below).
 A Widget showing a label overlaid on a proportional fill bar, for CC-style
 continuous values (pan, FX mix, filter cutoff) — more screen-estate-compact
 than a Value row for this case, since the fill level itself carries most of
-the value's meaning. Rendered by splitting the label's text draw at the fill
-boundary into two calls with different backgrounds (fill color / off color)
-— ordinary sequential overwrites, not a boolean/compositing operation; see
+the value's meaning. The overlay is pixel-precise: the fill boundary can
+fall inside a single character's cell, so rendering it needs a lower-level
+primitive than today's whole-glyph text draw, choosing a fill- or off-
+colored background per pixel column rather than per character. Still
+ordinary sequential overwrites, not a boolean/compositing operation; see
 [docs/lcd-driver-capabilities.md](docs/lcd-driver-capabilities.md), which
 already established the ST7789 has no hardware compositing ALU and this
 driver keeps no shadow framebuffer.
