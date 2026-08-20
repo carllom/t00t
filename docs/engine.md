@@ -314,18 +314,32 @@ event queue — each input source writes the param shadow and commits directly.
   breadboard (GPIO5); off for the VGA board, where GPIO5 is SD_CLK.
 
 Both transports route through `midi_controller_process()`, which parses MIDI
-bytes, maps note on/off to voices via the allocator, and commits the shadow.
-For `subtractive`, note on/off, **CC1 (mod wheel)** → `mod_depth` (vibrato),
-**CC10 (pan)** → `pan` (live, applied to held voices immediately), **pitch
-bend** → phase-increment ratio, and **CC72-75 (FX type/mix/param1/param2)**
-→ the module-global `shadow.fx` struct all route through a shared per-module
-mapping table and a generic dispatch mechanism (`src/input_layer.h`,
-`input_dispatch()`). CC0/CC32 (bank select) are stored per-channel and
-consumed by **Program Change**, which selects a preset for future notes on
-that channel; both stay direct Core-0-local writes rather than going through
-the dispatch table, since neither needs its channel/velocity matching.
-`groovebox` and `tracker` each keep their own fully independent, fully-forked
-`midi_controller.cpp` — see Decision Record.
+bytes and dispatches each message. `subtractive` and `fm` build this
+function from `src/midi/midi_dispatch.h`'s shared, module-agnostic generic
+helpers — one per MIDI message shape (`midi_dispatch_cc()`,
+`midi_dispatch_pitch_bend()`, `midi_dispatch_program_change()`,
+`midi_dispatch_note_on_allocated()`/`_off_allocated()` for standard
+dynamic-voice-allocation note handling) — so a module's own
+`midi_controller.cpp` shrinks to its `kMappingTable`, its Handlers, and a
+thin `switch` composing whichever generic helpers its input model needs;
+`groovebox` and `tracker` don't fit that "one voice per note" shape (see
+Decision Record) and keep their own fully independent, fully-forked
+`midi_controller.cpp` for now.
+
+For `subtractive`/`fm`, note on/off, **CC1 (mod wheel)**, **CC10 (pan)**,
+**pitch bend**, **CC72-75 (FX type/mix/param1/param2)**, and **Program
+Change** (patch/preset select) all route through a shared per-module
+mapping table and the generic Router (`src/input_layer.h`,
+`input_dispatch()`) — Program Change carries only its raw 0-127 program
+number, dispatched under `CONFIGURATION` with a synthetic id
+(`MIDI_CONFIG_ID_PROGRAM`, `src/midi/midi_dispatch.h`) shared across every
+module using this convention, the same way pitch bend shares a synthetic
+Modifier id. **CC0/CC32 (bank select)** stay outside the Router (neither
+needs channel/velocity matching) but are now module-agnostic, always-linked
+state (`src/midi/midi_dispatch.cpp`) rather than per-module duplicated
+arrays — a Handler that wants the currently selected bank alongside a
+Program Change reads it via `midi_channel_bank_msb()`/`_lsb()` directly
+(`subtractive`'s microKORG-numbering translator is the concrete example).
 
 GPIO buttons (VGA board only) reach the same `kMappingTable`/`set_note`
 Handler through a parallel, non-MIDI path: `controller_tick()` turns a
@@ -338,11 +352,16 @@ bare switch has no signal for), then calls
 `src/midi/midi_controller.cpp`.
 
 The dispatch mechanism above (shared vocabulary and a per-module mapping
-table, #86) is built for `subtractive` only. A from-scratch redesign of the
+table, #86) started `subtractive`-only; a from-scratch redesign of the
 whole input pipeline settled a fuller vocabulary and requirement set on top
-of it without discarding the mechanism itself — see Decision Record entry 5.
-`groovebox`/`tracker` adopting it, and non-MIDI input sources beyond GPIO
-buttons (e.g. potentiometers -- `SensorEvent` already covers the shape, see
+of it without discarding the mechanism itself — see Decision Record entry 5
+— and `fm` has since joined `subtractive` in also sharing
+`midi_controller_process()`'s own generic message-dispatch shape
+(`src/midi/midi_dispatch.h`), not just the Router underneath it. `chip` and
+`speech` (same dynamic-allocation, one-voice-per-note shape) are expected
+to migrate onto the same generic helpers next; `groovebox`/`tracker`
+adopting the Router at all, and non-MIDI input sources beyond GPIO buttons
+(e.g. potentiometers -- `SensorEvent` already covers the shape, see
 `src/sensor_event.h`), remain open work.
 
 ### Input categories
@@ -352,7 +371,7 @@ vocabulary a source event is classified into before reaching a module's
 mapping table. Definitions live in root `CONTEXT.md`'s "Language" section,
 the single source of truth for this vocabulary — not duplicated here, to
 avoid a second copy drifting out of sync as the vocabulary evolves.
-`subtractive` is the only module built against it via the generic dispatch
+`subtractive` and `fm` are built against it via the generic dispatch
 mechanism so far; `tracker` and `groovebox` are deliberately excluded (see
 Decision Record).
 
@@ -398,3 +417,21 @@ earlier version of this design assumed. Configurability is build-time only
    Confirmed decision 4 still holds by re-examining `groovebox`/`tracker`'s
    actual routing rather than assuming it. The full settled vocabulary lives
    in `CONTEXT.md`, not here.
+6. **`midi_controller_process()` itself became shared, generic building
+   blocks** (`src/midi/midi_dispatch.h`/`.cpp`), not just the Router
+   underneath it — once `fm`'s freshly-migrated `midi_controller_process()`
+   turned out nearly identical to `subtractive`'s, the remaining
+   differences (a microKORG-specific Program-Change decoding, and
+   per-module-duplicated bank-select storage) turned out to be Handler-
+   local and generic-plumbing concerns respectively, not genuine routing
+   divergence — so they didn't reopen decision 1's "routing stays forked"
+   boundary. Program Change is now a standing convention (`CONFIGURATION`,
+   a shared synthetic id) for every module built against the Router, not a
+   per-module choice; CC0/CC32 bank-select storage is shared, always-linked
+   state a Handler reads on demand. This doesn't retract decision 4:
+   `groovebox`/`tracker` still don't fit the *allocated* NOTE_ON/OFF
+   convenience helpers (dynamic `voice_alloc`, one voice per note), but
+   nothing stops either from calling the same lower-level generic
+   dispatch helpers (plain CC/pitch-bend/Configuration dispatch, or NOTE
+   dispatch with an already-resolved voice) once their own migration is
+   taken up — decided per-module, not assumed now.

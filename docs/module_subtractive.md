@@ -76,8 +76,10 @@ change-detected redraws only):
 Also draws on shared, non-engine-specific code: `src/controller.cpp`
 (VGA-board buttons — subtractive is the only engine that links it, see
 `CMakeLists.txt`), `src/button_shaping.h`/`src/sensor_event.h` (button
-SensorEvent → Input event Shaping), and `src/midi/midi_controller.cpp`
-(no engine-specific override).
+SensorEvent → Input event Shaping), `src/midi/midi_dispatch.h`/`.cpp`
+(shared generic per-MIDI-message-type dispatch helpers and bank-select
+state, also used by `fm`), and `src/midi/midi_controller.cpp` itself (no
+engine-specific override — this file is subtractive's own controller).
 
 ### Build
 
@@ -279,6 +281,12 @@ insert adds ~1.5pp; reverb adds ~8pp. Measured on breadboard_rp2350 at
    off other than the button itself, and a fixed note keeps the button's
    Shaping config (note, channel, velocity) a plain, self-contained value
    rather than mutable per-button state threaded through the input path.
+9. **Program Change now routes through the Router** (`CONFIGURATION`,
+   `src/midi/midi_dispatch.h`'s shared synthetic id) instead of bypassing
+   the dispatch table directly — the microKORG row/col decoding stays
+   entirely inside this module's own patch-select Handler, reading the
+   bank value via `midi_channel_bank_msb()` (shared, module-agnostic
+   plumbing) rather than a locally duplicated array.
 
 ## Glossary
 

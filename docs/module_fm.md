@@ -117,7 +117,11 @@ src/engines/fm/
 There is no `presets.h`/`VoicePreset` — FM's whole timbre is the single
 `FmPatch` pointer in `VoiceParams`, so it never needed the shared
 preset-table shape speech/chip use; `midi_controller.cpp` is its own file
-(not the shared `src/midi/midi_controller.cpp`) for the same reason.
+(not the shared `src/midi/midi_controller.cpp`) for the same reason. It
+does build its own `midi_controller_process()` from `src/midi/midi_dispatch.h`'s
+shared, module-agnostic generic per-MIDI-message-type dispatch helpers
+(the same ones `subtractive` composes) — only the mapping table, Handlers,
+and per-voice/per-channel state stay this module's own.
 
 ### Build
 
@@ -472,6 +476,14 @@ By-Ear Pass, and the ORCH-CHIME RAM Fix".
     real bank exists. `T00T_FM_HAS_PATCHES` still gates the host-render
     tools' own real-bank-only tests (`render_fm`/`render_fm_patch`),
     unrelated to this fallback.
+22. **`midi_controller_process()` is built from shared, module-agnostic
+    generic helpers** (`src/midi/midi_dispatch.h`), not written from
+    scratch — comparing this module's freshly-migrated controller against
+    `subtractive`'s found the two nearly identical beyond Handler-local and
+    generic-plumbing differences, so the per-message-type dispatch shape
+    (CC, pitch bend, Program Change, allocated NOTE_ON/OFF) moved into
+    shared functions every module composes, while the mapping table and
+    Handlers stay fully this module's own.
 
 ## Glossary
 

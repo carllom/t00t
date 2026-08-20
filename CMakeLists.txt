@@ -83,6 +83,7 @@ add_executable(t00t
     ${ENGINE_VOICE_ALLOC}
     ${ENGINE_TRACKER_PLAYER}
     src/samples.cpp
+    src/midi/midi_dispatch.cpp
     ${ENGINE_MIDI_CONTROLLER}
     ${ENGINE_OPTIONAL_SOURCES}
     src/midi/usb_midi.cpp
