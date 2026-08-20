@@ -1,0 +1,316 @@
+<!doctype html>
+<!--
+  PROTOTYPE — throwaway, not production code.
+  wayfinder ticket "Header: fold Page indicator + more context into title chrome" (#120),
+  child of map "Display: shared UI components and page structure" (#115).
+
+  Three variants of the Header Widget (today: a static, identical-across-
+  modules 30px "t00t" banner, drawn once at init, never redrawn), simulated
+  pixel-accurate against the real panel: 240px width, the real font8x8_basic
+  glyph bitmap from src/wslcd/font8x8.h, gfx_text()/gfx_fill_rect() semantics
+  from src/wslcd/gfx.cpp. No board has more than one Page yet, so the
+  multi-page examples below are invented (SUBTRACTIVE, the longest module
+  name at 11 chars, is the deliberate stress case). Switch via the bar at
+  the bottom, or ?variant=A|B|C in the URL.
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<title>Header Chrome</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500&display=swap">
+<style>
+  :root {
+    --bg:        #0b0d10;
+    --surface:   #14171c;
+    --border:    #262b32;
+    --ink:       #cdd3da;
+    --ink-dim:   #838d9b;
+    --accent:    #6fa8d8;
+    --code-bg:   #1b1f26;
+    --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+    --font-sans: "IBM Plex Sans", -apple-system, "Segoe UI", sans-serif;
+  }
+  html, body { background:var(--bg); color:var(--ink); font-family:var(--font-sans); margin:0; padding:0; }
+  .wrap { display:flex; gap:32px; padding:32px; align-items:flex-start; flex-wrap:wrap; }
+  canvas { image-rendering: pixelated; image-rendering: crisp-edges; border:4px solid var(--border); border-radius:4px; background:var(--bg); }
+  .notes { max-width:520px; }
+  .notes h1 { font-family:var(--font-mono); font-weight:600; font-size:17px; letter-spacing:.02em; margin:0 0 8px; color:var(--ink); text-wrap:balance; }
+  .notes h2 { font-family:var(--font-mono); font-size:13px; color:var(--accent); margin:20px 0 6px; text-transform:uppercase; letter-spacing:.06em; }
+  .notes p, .notes li { font-size:14px; line-height:1.6; color:var(--ink-dim); }
+  .notes p b { color:var(--ink); font-weight:500; }
+  .notes code { font-family:var(--font-mono); background:var(--code-bg); color:var(--ink); padding:1px 5px; border-radius:3px; font-size:12.5px; }
+  .row-key { font-size:12px; color:var(--ink-dim); }
+  .row-key b { color:var(--ink); }
+  .switcher {
+    position: fixed; left:50%; bottom:24px; transform:translateX(-50%);
+    background:var(--surface); border:1px solid var(--border); border-radius:999px;
+    padding:8px 6px; display:flex; align-items:center; gap:12px;
+    box-shadow: 0 4px 20px rgba(0,0,0,.5); font-family:var(--font-mono); font-size:13px; z-index:10;
+  }
+  .switcher button {
+    background:var(--code-bg); color:var(--ink); border:1px solid var(--border); border-radius:999px;
+    width:32px; height:32px; cursor:pointer; font-size:16px; font-family:var(--font-mono);
+  }
+  .switcher button:hover { background:var(--border); }
+  .switcher button:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+  .switcher .label { min-width:280px; text-align:center; }
+  .switcher .label b { color:var(--accent); font-weight:500; }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <canvas id="panel" width="240" height="284" style="width:600px;height:710px"></canvas>
+  <div class="notes" id="notes"></div>
+</div>
+
+<div class="switcher">
+  <button id="prev">&larr;</button>
+  <div class="label" id="switch-label"></div>
+  <button id="next">&rarr;</button>
+</div>
+
+<script>
+// ---- exact font8x8_basic glyph data, extracted from src/wslcd/font8x8.h ----
+const FONT8X8_FIRST = 0x20;
+const FONT = [[0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00],[0x18,0x3C,0x3C,0x18,0x18,0x00,0x18,0x00],[0x36,0x36,0x00,0x00,0x00,0x00,0x00,0x00],[0x36,0x36,0x7F,0x36,0x7F,0x36,0x36,0x00],[0x0C,0x3E,0x03,0x1E,0x30,0x1F,0x0C,0x00],[0x00,0x63,0x33,0x18,0x0C,0x66,0x63,0x00],[0x1C,0x36,0x1C,0x6E,0x3B,0x33,0x6E,0x00],[0x06,0x06,0x03,0x00,0x00,0x00,0x00,0x00],[0x18,0x0C,0x06,0x06,0x06,0x0C,0x18,0x00],[0x06,0x0C,0x18,0x18,0x18,0x0C,0x06,0x00],[0x00,0x66,0x3C,0xFF,0x3C,0x66,0x00,0x00],[0x00,0x0C,0x0C,0x3F,0x0C,0x0C,0x00,0x00],[0x00,0x00,0x00,0x00,0x00,0x0C,0x0C,0x06],[0x00,0x00,0x00,0x3F,0x00,0x00,0x00,0x00],[0x00,0x00,0x00,0x00,0x00,0x0C,0x0C,0x00],[0x60,0x30,0x18,0x0C,0x06,0x03,0x01,0x00],[0x3E,0x63,0x73,0x7B,0x6F,0x67,0x3E,0x00],[0x0C,0x0E,0x0C,0x0C,0x0C,0x0C,0x3F,0x00],[0x1E,0x33,0x30,0x1C,0x06,0x33,0x3F,0x00],[0x1E,0x33,0x30,0x1C,0x30,0x33,0x1E,0x00],[0x38,0x3C,0x36,0x33,0x7F,0x30,0x78,0x00],[0x3F,0x03,0x1F,0x30,0x30,0x33,0x1E,0x00],[0x1C,0x06,0x03,0x1F,0x33,0x33,0x1E,0x00],[0x3F,0x33,0x30,0x18,0x0C,0x0C,0x0C,0x00],[0x1E,0x33,0x33,0x1E,0x33,0x33,0x1E,0x00],[0x1E,0x33,0x33,0x3E,0x30,0x18,0x0E,0x00],[0x00,0x0C,0x0C,0x00,0x00,0x0C,0x0C,0x00],[0x00,0x0C,0x0C,0x00,0x00,0x0C,0x0C,0x06],[0x18,0x0C,0x06,0x03,0x06,0x0C,0x18,0x00],[0x00,0x00,0x3F,0x00,0x00,0x3F,0x00,0x00],[0x06,0x0C,0x18,0x30,0x18,0x0C,0x06,0x00],[0x1E,0x33,0x30,0x18,0x0C,0x00,0x0C,0x00],[0x3E,0x63,0x7B,0x7B,0x7B,0x03,0x1E,0x00],[0x0C,0x1E,0x33,0x33,0x3F,0x33,0x33,0x00],[0x3F,0x66,0x66,0x3E,0x66,0x66,0x3F,0x00],[0x3C,0x66,0x03,0x03,0x03,0x66,0x3C,0x00],[0x1F,0x36,0x66,0x66,0x66,0x36,0x1F,0x00],[0x7F,0x46,0x16,0x1E,0x16,0x46,0x7F,0x00],[0x7F,0x46,0x16,0x1E,0x16,0x06,0x0F,0x00],[0x3C,0x66,0x03,0x03,0x73,0x66,0x7C,0x00],[0x33,0x33,0x33,0x3F,0x33,0x33,0x33,0x00],[0x1E,0x0C,0x0C,0x0C,0x0C,0x0C,0x1E,0x00],[0x78,0x30,0x30,0x30,0x33,0x33,0x1E,0x00],[0x67,0x66,0x36,0x1E,0x36,0x66,0x67,0x00],[0x0F,0x06,0x06,0x06,0x46,0x66,0x7F,0x00],[0x63,0x77,0x7F,0x7F,0x6B,0x63,0x63,0x00],[0x63,0x67,0x6F,0x7B,0x73,0x63,0x63,0x00],[0x1C,0x36,0x63,0x63,0x63,0x36,0x1C,0x00],[0x3F,0x66,0x66,0x3E,0x06,0x06,0x0F,0x00],[0x1E,0x33,0x33,0x33,0x3B,0x1E,0x38,0x00],[0x3F,0x66,0x66,0x3E,0x36,0x66,0x67,0x00],[0x1E,0x33,0x07,0x0E,0x38,0x33,0x1E,0x00],[0x3F,0x2D,0x0C,0x0C,0x0C,0x0C,0x1E,0x00],[0x33,0x33,0x33,0x33,0x33,0x33,0x3F,0x00],[0x33,0x33,0x33,0x33,0x33,0x1E,0x0C,0x00],[0x63,0x63,0x63,0x6B,0x7F,0x77,0x63,0x00],[0x63,0x63,0x36,0x1C,0x1C,0x36,0x63,0x00],[0x33,0x33,0x33,0x1E,0x0C,0x0C,0x1E,0x00],[0x7F,0x63,0x31,0x18,0x4C,0x66,0x7F,0x00],[0x1E,0x06,0x06,0x06,0x06,0x06,0x1E,0x00],[0x03,0x06,0x0C,0x18,0x30,0x60,0x40,0x00],[0x1E,0x18,0x18,0x18,0x18,0x18,0x1E,0x00],[0x08,0x1C,0x36,0x63,0x00,0x00,0x00,0x00],[0x00,0x00,0x00,0x00,0x00,0x00,0x00,0xFF],[0x0C,0x0C,0x18,0x00,0x00,0x00,0x00,0x00],[0x00,0x00,0x1E,0x30,0x3E,0x33,0x6E,0x00],[0x07,0x06,0x06,0x3E,0x66,0x66,0x3B,0x00],[0x00,0x00,0x1E,0x33,0x03,0x33,0x1E,0x00],[0x38,0x30,0x30,0x3e,0x33,0x33,0x6E,0x00],[0x00,0x00,0x1E,0x33,0x3f,0x03,0x1E,0x00],[0x1C,0x36,0x06,0x0f,0x06,0x06,0x0F,0x00],[0x00,0x00,0x6E,0x33,0x33,0x3E,0x30,0x1F],[0x07,0x06,0x36,0x6E,0x66,0x66,0x67,0x00],[0x0C,0x00,0x0E,0x0C,0x0C,0x0C,0x1E,0x00],[0x30,0x00,0x30,0x30,0x30,0x33,0x33,0x1E],[0x07,0x06,0x66,0x36,0x1E,0x36,0x67,0x00],[0x0E,0x0C,0x0C,0x0C,0x0C,0x0C,0x1E,0x00],[0x00,0x00,0x33,0x7F,0x7F,0x6B,0x63,0x00],[0x00,0x00,0x1F,0x33,0x33,0x33,0x33,0x00],[0x00,0x00,0x1E,0x33,0x33,0x33,0x1E,0x00],[0x00,0x00,0x3B,0x66,0x66,0x3E,0x06,0x0F],[0x00,0x00,0x6E,0x33,0x33,0x3E,0x30,0x78],[0x00,0x00,0x3B,0x6E,0x66,0x06,0x0F,0x00],[0x00,0x00,0x3E,0x03,0x1E,0x30,0x1F,0x00],[0x08,0x0C,0x3E,0x0C,0x0C,0x2C,0x18,0x00],[0x00,0x00,0x33,0x33,0x33,0x33,0x6E,0x00],[0x00,0x00,0x33,0x33,0x33,0x1E,0x0C,0x00],[0x00,0x00,0x63,0x6B,0x7F,0x7F,0x36,0x00],[0x00,0x00,0x63,0x36,0x1C,0x36,0x63,0x00],[0x00,0x00,0x33,0x33,0x33,0x3E,0x30,0x1F],[0x00,0x00,0x3F,0x19,0x0C,0x26,0x3F,0x00],[0x38,0x0C,0x0C,0x07,0x0C,0x0C,0x38,0x00],[0x18,0x18,0x18,0x00,0x18,0x18,0x18,0x00],[0x07,0x0C,0x0C,0x38,0x0C,0x0C,0x07,0x00],[0x6E,0x3B,0x00,0x00,0x00,0x00,0x00,0x00]];
+
+// ---- real per-module accent colors, from each display.cpp's COL_TITLE ----
+const MOD = {
+  CHIP:        { name: "CHIP",        col: "rgb(200,120,20)" },
+  FM:          { name: "FM",          col: "rgb(30,150,70)"  },
+  GROOVEBOX:   { name: "GROOVEBOX",   col: "rgb(160,60,30)"  },
+  OPL:         { name: "OPL",         col: "rgb(150,90,30)"  },
+  SPEECH:      { name: "SPEECH",      col: "rgb(90,30,160)"  },
+  SUBTRACTIVE: { name: "SUBTRACTIVE", col: "rgb(30,90,160)"  },
+  TRACKER:     { name: "TRACKER",     col: "rgb(30,90,160)"  },
+};
+
+const COL_BG    = "rgb(0,0,0)";
+const COL_WHITE = "rgb(255,255,255)";
+const COL_DIM   = "rgb(110,120,140)"; // matches COL_LABEL — used for off-state dots
+
+const LCD_W = 240, LCD_H = 284;
+const ctx = document.getElementById('panel').getContext('2d');
+
+function glyphOf(ch) {
+  const i = ch.charCodeAt(0) - FONT8X8_FIRST;
+  return (i >= 0 && i < FONT.length) ? FONT[i] : FONT['?'.charCodeAt(0) - FONT8X8_FIRST];
+}
+function fillRect(x, y, w, h, color) {
+  ctx.fillStyle = color;
+  ctx.fillRect(x, y, w, h);
+}
+// Mirrors gfx_text(): whole-glyph blits, clips at maxX. No overlay needed
+// here (Header text always sits on a flat background, never a fill split).
+function gfxText(x, y, s, fg, bg, scale, maxX) {
+  const gw = 8 * scale, gh = 8 * scale;
+  for (const ch of s) {
+    if (x + gw > maxX) break;
+    const glyph = glyphOf(ch);
+    fillRect(x, y, gw, gh, bg);
+    ctx.fillStyle = fg;
+    for (let gy = 0; gy < 8; gy++) {
+      const bits = glyph[gy];
+      for (let gx = 0; gx < 8; gx++) {
+        if (bits & (1 << gx)) ctx.fillRect(x + gx * scale, y + gy * scale, scale, scale);
+      }
+    }
+    x += gw;
+  }
+  return x;
+}
+function textWidth(s, scale) { return s.length * 8 * scale; }
+
+// Page indicator: small filled/dim squares — the same cell-drawing shape
+// this map's Widget catalog already uses for ActivityGrid, just smaller.
+// Right-aligned to `rightEdge`; draws nothing at all when pageCount <= 1
+// (single-page modules reclaim the width instead of showing "1 of 1").
+function drawPageDots(rightEdge, yCenter, pageCount, current, dotSize, gap) {
+  if (pageCount <= 1) return rightEdge; // nothing drawn; caller gets the space back
+  const totalW = pageCount * dotSize + (pageCount - 1) * gap;
+  let x = rightEdge - totalW;
+  const leftEdge = x;
+  for (let i = 0; i < pageCount; i++) {
+    fillRect(x, yCenter - dotSize / 2, dotSize, dotSize, i === current ? COL_WHITE : COL_DIM);
+    x += dotSize + gap;
+  }
+  return leftEdge;
+}
+
+// ---- three Header variants ----
+
+// A: one row, same 30px budget as today. No "t00t" wordmark — module name
+// (scale 2) + page dots share the row. Color alone carries the branding.
+function drawHeaderA(y, mod, page, pageCount, extra) {
+  const H = 30;
+  fillRect(0, y, LCD_W, H, mod.col);
+  const dotsLeft = pageCount > 1
+    ? drawPageDots(LCD_W - 6, y + H / 2, pageCount, page, 6, 3)
+    : LCD_W - 4;
+  let label = mod.name + (extra ? " " + extra : "");
+  const maxChars = Math.floor((dotsLeft - 8) / 16);
+  if (label.length > maxChars) label = label.slice(0, Math.max(0, maxChars));
+  gfxText(4, y + (H - 16) / 2, label, COL_WHITE, mod.col, 2, dotsLeft - 4);
+  return H;
+}
+
+// B: two rows, ~32px. Keeps a compact literal "t00t" mark + module name on
+// row 1; row 2 is dedicated to Page context (name + dots) when there's more
+// than one Page, otherwise stays empty chrome.
+function drawHeaderB(y, mod, page, pageCount, pageName) {
+  const H1 = 14, H2 = 18, H = H1 + H2;
+  fillRect(0, y, LCD_W, H, mod.col);
+  gfxText(4, y + 3, "t00t", COL_WHITE, mod.col, 1, LCD_W - 4);
+  const modW = textWidth(mod.name, 1);
+  gfxText(LCD_W - 4 - modW, y + 3, mod.name, COL_WHITE, mod.col, 1, LCD_W - 4);
+  if (pageCount > 1) {
+    const dotsLeft = drawPageDots(LCD_W - 6, y + H1 + H2 / 2, pageCount, page, 6, 3);
+    gfxText(4, y + H1 + (H2 - 16) / 2, pageName, COL_WHITE, mod.col, 2, dotsLeft - 4);
+  }
+  return H;
+}
+
+// C: one row, shorter than today (18px vs 30px) — reclaims 12px for the
+// page body. Abbreviated module name (scale 1) + dots only; no room
+// reserved for anything else by design.
+function drawHeaderC(y, mod, page, pageCount) {
+  const H = 18;
+  fillRect(0, y, LCD_W, H, mod.col);
+  const abbr = mod.name.slice(0, 4);
+  gfxText(3, y + (H - 8) / 2, abbr, COL_WHITE, mod.col, 1, LCD_W - 3);
+  if (pageCount > 1) drawPageDots(LCD_W - 4, y + H / 2, pageCount, page, 4, 2);
+  return H;
+}
+
+const variants = {
+  A: { name: "One row, same height — module + dots, no wordmark", draw: drawHeaderA },
+  B: { name: "Two rows, taller — keeps “t00t” + adds a Page row", draw: drawHeaderB },
+  C: { name: "One row, shorter — abbreviated, dots only", draw: drawHeaderC },
+};
+const order = ['A', 'B', 'C'];
+
+function caption(y, text) {
+  gfxText(4, y, text, COL_DIM, COL_BG, 1, LCD_W - 4);
+}
+
+function renderA() {
+  let y = 4;
+  caption(y, "ACCENT COLOR TEST"); y += 12;
+  for (const key of ['CHIP', 'SPEECH', 'SUBTRACTIVE']) {
+    y += drawHeaderA(y, { name: "SUBTRACTIVE", col: MOD[key].col }, 1, 3) + 3;
+  }
+  y += 6;
+  caption(y, "SINGLE PAGE (NO DOTS DRAWN)"); y += 12;
+  y += drawHeaderA(y, MOD.CHIP, 0, 1) + 4;
+  caption(y, "MULTI-PAGE, LONG NAME"); y += 12;
+  y += drawHeaderA(y, MOD.SUBTRACTIVE, 1, 3) + 8;
+  caption(y, "+ PRESET (DOESN'T FIT)"); y += 12;
+  y += drawHeaderA(y, MOD.FM, 1, 3, "SUB BASS 3") + 4;
+}
+function renderB() {
+  let y = 4;
+  caption(y, "ACCENT COLOR TEST"); y += 12;
+  for (const key of ['CHIP', 'SPEECH', 'SUBTRACTIVE']) {
+    y += drawHeaderB(y, { name: "SUBTRACTIVE", col: MOD[key].col }, 1, 3, "FX") + 3;
+  }
+  y += 6;
+  caption(y, "SINGLE PAGE (ROW 2 EMPTY)"); y += 12;
+  y += drawHeaderB(y, MOD.CHIP, 0, 1, "") + 4;
+  caption(y, "MULTI-PAGE, LONG NAME"); y += 12;
+  y += drawHeaderB(y, MOD.SUBTRACTIVE, 0, 3, "PERF") + 8;
+}
+function renderC() {
+  let y = 4;
+  caption(y, "ACCENT COLOR TEST"); y += 12;
+  for (const key of ['CHIP', 'FM', 'SPEECH', 'SUBTRACTIVE']) {
+    y += drawHeaderC(y, { name: "SUBTRACTIVE", col: MOD[key].col }, 1, 3) + 3;
+  }
+  y += 6;
+  caption(y, "SINGLE PAGE (NO DOTS DRAWN)"); y += 12;
+  y += drawHeaderC(y, MOD.CHIP, 0, 1) + 3;
+  caption(y, "MULTI-PAGE, LONG NAME"); y += 12;
+  y += drawHeaderC(y, MOD.SUBTRACTIVE, 1, 3) + 8;
+  caption(y, "18PX VS TODAY'S 30PX"); y += 12;
+  fillRect(4, y, 200, 12, "rgb(28,28,34)");
+  gfxText(6, y + 2, "extra body space", COL_DIM, "rgb(28,28,34)", 1, 240);
+}
+
+const renderers = { A: renderA, B: renderB, C: renderC };
+
+const notesHTML = {
+A: `
+  <h1>A — One row, same height</h1>
+  <p>Drops the "t00t" wordmark entirely — the per-module accent color
+  <i>is</i> the branding now, same as it already implicitly is. Module
+  name (scale 2) sits left; Page dots sit right, reusing the same small
+  filled/dim-cell shape this map's Widget catalog already defined for
+  <b>ActivityGrid</b>. Costs nothing extra: still 30px, same as today.</p>
+  <p>Single-page modules (<b>CHIP</b> row) simply don't draw dots — the
+  name gets the width back automatically, no "1 of 1" clutter.</p>
+  <p>The <b>preset stress row</b> at the bottom is a stress test, not a
+  proposal: appending a preset name forces the module name to truncate
+  ("SUB BASS 3" alone is 10 characters, more than a 3-dot header row has
+  spare width for at scale 2). Preset likely doesn't belong here — it
+  already has its own row on the Performance page today (chip's INSTR,
+  subtractive's PRESET).</p>
+`,
+B: `
+  <h1>B — Two rows, taller</h1>
+  <p>Keeps a literal, compact "t00t" mark (scale 1, top-left) plus the
+  module name on the same first row — brand identity stays explicit, not
+  just implied by color. The second row is dedicated to Page context: its
+  name, plus dots reusing the same cell shape as variant A.</p>
+  <p>Costs <b>32px total vs. today's 30px</b> — 2px more, not a large
+  jump, but it's the only variant that's ever taller than today rather
+  than equal or smaller.</p>
+  <p>Single-page modules (<b>CHIP</b> row) leave row 2 as empty chrome —
+  the full 18px goes unused rather than being reclaimed, since nothing
+  else is competing for that space in this variant's structure.</p>
+`,
+C: `
+  <h1>C — One row, shorter</h1>
+  <p>18px instead of today's 30px — <b>12px reclaimed</b> for the page
+  body (shown at the bottom, actual pixel height). Module name truncates
+  to a 4-letter abbreviation ("SUBT" for SUBTRACTIVE) at scale 1; dots
+  shrink to 4px. No room is reserved for anything beyond that, by design —
+  this variant trades completeness for space, not a compromise on the way
+  to fitting more in.</p>
+  <p>Single-page modules (<b>CHIP</b> row) don't draw dots, same as A.</p>
+  <p>Whether a 4-letter abbreviation reads clearly enough to identify the
+  module (vs. A/B's full names) is the real question this variant raises —
+  it's legible here, but only because every module in this codebase
+  happens to have a distinct first 4 letters today.</p>
+`,
+};
+
+function render(key) {
+  fillRect(0, 0, LCD_W, LCD_H, COL_BG);
+  renderers[key]();
+  document.getElementById('notes').innerHTML = notesHTML[key];
+  document.getElementById('switch-label').innerHTML =
+    key + " &mdash; <b>" + variants[key].name + "</b>";
+}
+
+function currentKey() {
+  const m = location.hash.match(/variant=([ABC])/);
+  return m ? m[1] : 'A';
+}
+function setKey(k) { location.hash = 'variant=' + k; render(k); }
+function cycle(delta) {
+  const i = order.indexOf(currentKey());
+  setKey(order[(i + delta + order.length) % order.length]);
+}
+document.getElementById('prev').onclick = () => cycle(-1);
+document.getElementById('next').onclick = () => cycle(1);
+window.addEventListener('keydown', (e) => {
+  const t = e.target;
+  if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+  if (e.key === 'ArrowLeft') cycle(-1);
+  if (e.key === 'ArrowRight') cycle(1);
+});
+window.addEventListener('hashchange', () => render(currentKey()));
+render(currentKey());
+</script>
+</body>
+</html>
