@@ -333,3 +333,33 @@ attack-curve shape gap (Future/TODO, already tolerance-widened in
 timbral and level differences a spectral scorer can see, not bugs this pass
 found or fixed. The gate's job from here is to catch a *regression* against
 these numbers, the same role the FM gate already plays.
+
+### Migrated onto the Core 0 Input Pipeline
+
+OPL was developed on its own branch while #94/#99-111 built and rolled the
+Core 0 input pipeline (Router, `src/input_layer.h`) out to every other
+engine, so merging that work in left `src/engines/opl/midi_controller.cpp`
+as the one remaining module still on the pre-Router switch-statement shape
+-- it no longer even compiled once merged, since `midi_controller.h`'s
+`ui_state`/`midi_parser` had become shared inline globals the old file's
+own local `static` copies collided with.
+
+Renamed to `input_subsystem.cpp` and rebuilt on the fm module's now-settled
+shape: a `kMappingTable`/`InputMapEntryT<VoiceParamBlock>` of NOTE/MODIFIER/
+CONFIGURATION entries, Handlers doing their own note-on voice allocation
+and CC/Program-Change unit conversion, and `midi_controller_process()`
+collapsed to a one-line call into `midi_controller_process_generic()`
+(`src/midi/midi_controller_generic.h`). Per-voice/per-channel state
+(bend ratio, pan, mod wheel, patch pointer) and pitch-bend-to-ratio
+conversion carried over unchanged, just reached through the Router instead
+of a bespoke `MIDI_CC`/`MIDI_PITCH_BEND` switch.
+
+One remap: CC16, the encoder-alternative patch select, is dropped --
+Program Change alone now selects the patch (`module_opl.md`'s MIDI Mapping
+table and Decision Record entry 8), since keeping both meant a second table
+entry routing to the exact same setter.
+
+Verified: `make ENGINE=opl` links clean, `render_opl`/`render_opl_patch`/
+`t00t_opl_ctl_dump` all still build and pass, and the other five engines
+(`fm`/`subtractive`/`chip`/`groovebox`/`speech`/`tracker`) still build clean
+after the shared header changes.

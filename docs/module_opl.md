@@ -55,7 +55,6 @@ or DAG concept, unlike the six-operator DX7 module.
 | Pitch Bend | Folded into `phase_inc` by Core 0 before it reaches Core 1 |
 | CC1 | Mod wheel — scales vibrato depth |
 | CC10 | Pan |
-| CC16 | Patch select — CC alternative to Program Change |
 | CC72 | FX param 1 |
 | CC73 | FX wet/dry mix |
 | CC74 | FX type select |
@@ -66,7 +65,7 @@ or DAG concept, unlike the six-operator DX7 module.
 
 Same chrome every engine's panel shares (title bar, VOICES dot bar, CPU load
 bar, NOTE row), plus the current patch name (for whichever channel most
-recently triggered a note or a Program Change/CC16) and a two-cell algorithm
+recently triggered a note or a Program Change) and a two-cell algorithm
 indicator (carrier vs. modulator role per operator, feedback highlighted on
 op0) — a much smaller version of the DX7 module's six-cell diagram, since
 OPL only ever has two operators and two possible algorithms.
@@ -88,7 +87,7 @@ src/engines/opl/
   opl_voice.h         note-on/step/note-off/active/render voice glue,
                        calling ../fm/op.h's kernels directly
   patches.h           hand-authored test patches, checked in
-  midi_controller.cpp note on/off, bend, pan, mod wheel, patch select
+  input_subsystem.cpp note on/off, bend, pan, mod wheel, patch select
   display.cpp         status panel: voices/CPU/note, current patch,
                        algorithm/feedback indicator (see Display above)
 ```
@@ -279,6 +278,11 @@ around ahead of time.
    since no tolerance can make a linear ramp both pass a real exponential
    curve's shape and still catch an actual rate regression — the tolerance
    is sized to do the latter, not to hide the former.
+8. **CC16 (the Program-Change-alternative encoder patch select) was
+   dropped**, migrating onto the Core 0 input pipeline (Router,
+   `src/input_layer.h`) — it routed to the exact same patch-select logic
+   Program Change already did, so keeping it would only have been a second
+   table entry for one setter. Program Change alone now selects the patch.
 
 ## Glossary
 
