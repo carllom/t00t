@@ -1,0 +1,329 @@
+<!doctype html>
+<!--
+  PROTOTYPE — throwaway, not production code.
+  wayfinder ticket "Value bar: prototype the split-text-over-fill rendering" (#117),
+  child of map "Display: shared UI components and page structure" (#115).
+
+  Three variants of a Value bar Widget (label overlaid on a proportional fill
+  bar, for CC-style values like pan/FX mix/filter cutoff), rendered against a
+  pixel-accurate software model of the real panel: 240x284 ST7789, the exact
+  font8x8_basic glyph bitmap from src/wslcd/font8x8.h, and gfx_text's real
+  per-glyph atomic-blit semantics (one (fg,bg) pair painted per whole glyph,
+  never split within one — see src/wslcd/gfx.cpp). Switch via the bar at the
+  bottom, or ?variant=A|B|C in the URL.
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<title>Value bar prototype</title>
+<style>
+  html, body { background:#111; color:#ddd; font-family: -apple-system, sans-serif; margin:0; padding:0; }
+  .wrap { display:flex; gap:32px; padding:32px; align-items:flex-start; flex-wrap:wrap; }
+  canvas { image-rendering: pixelated; image-rendering: crisp-edges; border:4px solid #333; border-radius:4px; }
+  .notes { max-width:520px; }
+  .notes h1 { font-size:18px; margin:0 0 4px; }
+  .notes h2 { font-size:14px; color:#8bd; margin:20px 0 6px; }
+  .notes p, .notes li { font-size:13px; line-height:1.5; color:#bbb; }
+  .notes code { background:#222; padding:1px 4px; border-radius:3px; font-size:12px; }
+  .row-key { font-size:12px; color:#999; }
+  .row-key b { color:#ddd; }
+  .switcher {
+    position: fixed; left:50%; bottom:24px; transform:translateX(-50%);
+    background:#222; border:1px solid #555; border-radius:999px;
+    padding:8px 6px; display:flex; align-items:center; gap:12px;
+    box-shadow: 0 4px 20px rgba(0,0,0,.5); font-size:14px; z-index:10;
+  }
+  .switcher button {
+    background:#333; color:#eee; border:1px solid #555; border-radius:999px;
+    width:32px; height:32px; cursor:pointer; font-size:16px;
+  }
+  .switcher button:hover { background:#444; }
+  .switcher .label { min-width:260px; text-align:center; }
+  .switcher .label b { color:#8bd; }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <canvas id="panel" width="240" height="284" style="width:600px;height:710px"></canvas>
+  <div class="notes" id="notes"></div>
+</div>
+
+<div class="switcher">
+  <button id="prev">&larr;</button>
+  <div class="label" id="switch-label"></div>
+  <button id="next">&rarr;</button>
+</div>
+
+<script>
+// ---- exact font8x8_basic glyph data, extracted from src/wslcd/font8x8.h ----
+const FONT8X8_FIRST = 0x20;
+const FONT = [[0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00],[0x18,0x3C,0x3C,0x18,0x18,0x00,0x18,0x00],[0x36,0x36,0x00,0x00,0x00,0x00,0x00,0x00],[0x36,0x36,0x7F,0x36,0x7F,0x36,0x36,0x00],[0x0C,0x3E,0x03,0x1E,0x30,0x1F,0x0C,0x00],[0x00,0x63,0x33,0x18,0x0C,0x66,0x63,0x00],[0x1C,0x36,0x1C,0x6E,0x3B,0x33,0x6E,0x00],[0x06,0x06,0x03,0x00,0x00,0x00,0x00,0x00],[0x18,0x0C,0x06,0x06,0x06,0x0C,0x18,0x00],[0x06,0x0C,0x18,0x18,0x18,0x0C,0x06,0x00],[0x00,0x66,0x3C,0xFF,0x3C,0x66,0x00,0x00],[0x00,0x0C,0x0C,0x3F,0x0C,0x0C,0x00,0x00],[0x00,0x00,0x00,0x00,0x00,0x0C,0x0C,0x06],[0x00,0x00,0x00,0x3F,0x00,0x00,0x00,0x00],[0x00,0x00,0x00,0x00,0x00,0x0C,0x0C,0x00],[0x60,0x30,0x18,0x0C,0x06,0x03,0x01,0x00],[0x3E,0x63,0x73,0x7B,0x6F,0x67,0x3E,0x00],[0x0C,0x0E,0x0C,0x0C,0x0C,0x0C,0x3F,0x00],[0x1E,0x33,0x30,0x1C,0x06,0x33,0x3F,0x00],[0x1E,0x33,0x30,0x1C,0x30,0x33,0x1E,0x00],[0x38,0x3C,0x36,0x33,0x7F,0x30,0x78,0x00],[0x3F,0x03,0x1F,0x30,0x30,0x33,0x1E,0x00],[0x1C,0x06,0x03,0x1F,0x33,0x33,0x1E,0x00],[0x3F,0x33,0x30,0x18,0x0C,0x0C,0x0C,0x00],[0x1E,0x33,0x33,0x1E,0x33,0x33,0x1E,0x00],[0x1E,0x33,0x33,0x3E,0x30,0x18,0x0E,0x00],[0x00,0x0C,0x0C,0x00,0x00,0x0C,0x0C,0x00],[0x00,0x0C,0x0C,0x00,0x00,0x0C,0x0C,0x06],[0x18,0x0C,0x06,0x03,0x06,0x0C,0x18,0x00],[0x00,0x00,0x3F,0x00,0x00,0x3F,0x00,0x00],[0x06,0x0C,0x18,0x30,0x18,0x0C,0x06,0x00],[0x1E,0x33,0x30,0x18,0x0C,0x00,0x0C,0x00],[0x3E,0x63,0x7B,0x7B,0x7B,0x03,0x1E,0x00],[0x0C,0x1E,0x33,0x33,0x3F,0x33,0x33,0x00],[0x3F,0x66,0x66,0x3E,0x66,0x66,0x3F,0x00],[0x3C,0x66,0x03,0x03,0x03,0x66,0x3C,0x00],[0x1F,0x36,0x66,0x66,0x66,0x36,0x1F,0x00],[0x7F,0x46,0x16,0x1E,0x16,0x46,0x7F,0x00],[0x7F,0x46,0x16,0x1E,0x16,0x06,0x0F,0x00],[0x3C,0x66,0x03,0x03,0x73,0x66,0x7C,0x00],[0x33,0x33,0x33,0x3F,0x33,0x33,0x33,0x00],[0x1E,0x0C,0x0C,0x0C,0x0C,0x0C,0x1E,0x00],[0x78,0x30,0x30,0x30,0x33,0x33,0x1E,0x00],[0x67,0x66,0x36,0x1E,0x36,0x66,0x67,0x00],[0x0F,0x06,0x06,0x06,0x46,0x66,0x7F,0x00],[0x63,0x77,0x7F,0x7F,0x6B,0x63,0x63,0x00],[0x63,0x67,0x6F,0x7B,0x73,0x63,0x63,0x00],[0x1C,0x36,0x63,0x63,0x63,0x36,0x1C,0x00],[0x3F,0x66,0x66,0x3E,0x06,0x06,0x0F,0x00],[0x1E,0x33,0x33,0x33,0x3B,0x1E,0x38,0x00],[0x3F,0x66,0x66,0x3E,0x36,0x66,0x67,0x00],[0x1E,0x33,0x07,0x0E,0x38,0x33,0x1E,0x00],[0x3F,0x2D,0x0C,0x0C,0x0C,0x0C,0x1E,0x00],[0x33,0x33,0x33,0x33,0x33,0x33,0x3F,0x00],[0x33,0x33,0x33,0x33,0x33,0x1E,0x0C,0x00],[0x63,0x63,0x63,0x6B,0x7F,0x77,0x63,0x00],[0x63,0x63,0x36,0x1C,0x1C,0x36,0x63,0x00],[0x33,0x33,0x33,0x1E,0x0C,0x0C,0x1E,0x00],[0x7F,0x63,0x31,0x18,0x4C,0x66,0x7F,0x00],[0x1E,0x06,0x06,0x06,0x06,0x06,0x1E,0x00],[0x03,0x06,0x0C,0x18,0x30,0x60,0x40,0x00],[0x1E,0x18,0x18,0x18,0x18,0x18,0x1E,0x00],[0x08,0x1C,0x36,0x63,0x00,0x00,0x00,0x00],[0x00,0x00,0x00,0x00,0x00,0x00,0x00,0xFF],[0x0C,0x0C,0x18,0x00,0x00,0x00,0x00,0x00],[0x00,0x00,0x1E,0x30,0x3E,0x33,0x6E,0x00],[0x07,0x06,0x06,0x3E,0x66,0x66,0x3B,0x00],[0x00,0x00,0x1E,0x33,0x03,0x33,0x1E,0x00],[0x38,0x30,0x30,0x3e,0x33,0x33,0x6E,0x00],[0x00,0x00,0x1E,0x33,0x3f,0x03,0x1E,0x00],[0x1C,0x36,0x06,0x0f,0x06,0x06,0x0F,0x00],[0x00,0x00,0x6E,0x33,0x33,0x3E,0x30,0x1F],[0x07,0x06,0x36,0x6E,0x66,0x66,0x67,0x00],[0x0C,0x00,0x0E,0x0C,0x0C,0x0C,0x1E,0x00],[0x30,0x00,0x30,0x30,0x30,0x33,0x33,0x1E],[0x07,0x06,0x66,0x36,0x1E,0x36,0x67,0x00],[0x0E,0x0C,0x0C,0x0C,0x0C,0x0C,0x1E,0x00],[0x00,0x00,0x33,0x7F,0x7F,0x6B,0x63,0x00],[0x00,0x00,0x1F,0x33,0x33,0x33,0x33,0x00],[0x00,0x00,0x1E,0x33,0x33,0x33,0x1E,0x00],[0x00,0x00,0x3B,0x66,0x66,0x3E,0x06,0x0F],[0x00,0x00,0x6E,0x33,0x33,0x3E,0x30,0x78],[0x00,0x00,0x3B,0x6E,0x66,0x06,0x0F,0x00],[0x00,0x00,0x3E,0x03,0x1E,0x30,0x1F,0x00],[0x08,0x0C,0x3E,0x0C,0x0C,0x2C,0x18,0x00],[0x00,0x00,0x33,0x33,0x33,0x33,0x6E,0x00],[0x00,0x00,0x33,0x33,0x33,0x1E,0x0C,0x00],[0x00,0x00,0x63,0x6B,0x7F,0x7F,0x36,0x00],[0x00,0x00,0x63,0x36,0x1C,0x36,0x63,0x00],[0x00,0x00,0x33,0x33,0x33,0x3E,0x30,0x1F],[0x00,0x00,0x3F,0x19,0x0C,0x26,0x3F,0x00],[0x38,0x0C,0x0C,0x07,0x0C,0x0C,0x38,0x00],[0x18,0x18,0x18,0x00,0x18,0x18,0x18,0x00],[0x07,0x0C,0x0C,0x38,0x0C,0x0C,0x07,0x00],[0x6E,0x3B,0x00,0x00,0x00,0x00,0x00,0x00]];
+
+// ---- palette, lifted from src/engines/chip/display.cpp's COL_* constants ----
+const COL_BG    = "rgb(0,0,0)";
+const COL_LABEL = "rgb(110,120,140)";
+const COL_VALUE = "rgb(240,240,240)";
+const COL_OFF   = "rgb(28,28,34)";
+const COL_FILL  = "rgb(70,130,180)";   // placeholder accent — not yet the
+                                        // catalog's decided Value-bar fill
+                                        // color, just distinguishable from
+                                        // LoadBar/PercentageBar's severity
+                                        // colors so this isn't mistaken for one
+
+const LCD_W = 240, LCD_H = 284;
+const ctx = document.getElementById('panel').getContext('2d');
+
+function glyphOf(ch) {
+  const i = ch.charCodeAt(0) - FONT8X8_FIRST;
+  return (i >= 0 && i < FONT.length) ? FONT[i] : FONT['?'.charCodeAt(0) - FONT8X8_FIRST];
+}
+
+function fillRect(x, y, w, h, color) {
+  ctx.fillStyle = color;
+  ctx.fillRect(x, y, w, h);
+}
+
+// Mirrors gfx_text(): one glyph at a time, each glyph gets exactly one
+// (fg,bg) pair for its whole 8*scale x 8*scale cell — no sub-glyph split.
+// Returns x just past the last drawn glyph (clips at maxX, like gfx_text
+// clips at LCD_W).
+function gfxTextQuantized(x, y, s, fg, bgOf, scale, maxX) {
+  const gw = 8 * scale, gh = 8 * scale;
+  for (const ch of s) {
+    if (x + gw > maxX) break;
+    const glyph = glyphOf(ch);
+    const bg = bgOf(x, x + gw); // variant decides bg for this whole glyph cell
+    fillRect(x, y, gw, gh, bg);
+    ctx.fillStyle = fg;
+    for (let gy = 0; gy < 8; gy++) {
+      const bits = glyph[gy];
+      for (let gx = 0; gx < 8; gx++) {
+        if (bits & (1 << gx)) ctx.fillRect(x + gx * scale, y + gy * scale, scale, scale);
+      }
+    }
+    x += gw;
+  }
+  return x;
+}
+
+// Hypothetical new primitive: per-pixel-column background inside a glyph,
+// so the fill boundary can land at any x, not just a glyph edge. This is
+// the "add a new gfx.cpp primitive" side of the question.
+function gfxTextPrecise(x, y, s, fg, bgOf, scale, maxX) {
+  const gw = 8 * scale, gh = 8 * scale;
+  for (const ch of s) {
+    if (x + gw > maxX) break;
+    const glyph = glyphOf(ch);
+    for (let gx = 0; gx < 8; gx++) {
+      const colX = x + gx * scale;
+      const bg = bgOf(colX, colX + scale);
+      for (let gy = 0; gy < 8; gy++) {
+        const bits = glyph[gy];
+        const on = bits & (1 << gx);
+        ctx.fillStyle = on ? fg : bg;
+        ctx.fillRect(colX, y + gy * scale, scale, scale);
+      }
+    }
+    x += gw;
+  }
+  return x;
+}
+
+// The plain two-rect fill LoadBar/PercentageBar already uses — pixel
+// accurate, no glyph granularity involved at all.
+function fillBar(x, y, w, h, fillFrac) {
+  const fillPx = Math.round(w * fillFrac);
+  fillRect(x, y, fillPx, h, COL_FILL);
+  fillRect(x + fillPx, y, w - fillPx, h, COL_OFF);
+}
+
+// ---- the three variants ----
+
+// A: cheap — reuses gfx_text exactly as it exists today. The fill boundary
+// snaps to whichever glyph edge it's closest to; no new primitive.
+function drawBarA(b) {
+  const { x, y, w, h, label, value, scale } = b;
+  const gw = 8 * scale;
+  const fillPx = Math.round(w * value / 100);
+  const maxChars = Math.floor(w / gw);
+  const text = label.length > maxChars
+    ? label.slice(0, maxChars)
+    : label + ' '.repeat(maxChars - label.length);
+  const endX = gfxTextQuantized(x, y, text, COL_VALUE,
+    (gx0, gx1) => (gx0 + (gx1 - gx0) / 2 < x + fillPx) ? COL_FILL : COL_OFF,
+    scale, x + w);
+  if (endX < x + w) {
+    const localFill = Math.max(0, Math.min(x + w - endX, x + fillPx - endX));
+    fillRect(endX, y, localFill, h, COL_FILL);
+    fillRect(endX + localFill, y, (x + w) - endX - localFill, h, COL_OFF);
+  }
+}
+
+// B: precise — needs the new per-pixel-column primitive. Fill boundary is
+// exact to the pixel, including inside a straddled glyph.
+function drawBarB(b) {
+  const { x, y, w, h, label, value, scale } = b;
+  const gw = 8 * scale;
+  const fillPx = Math.round(w * value / 100);
+  const maxChars = Math.floor(w / gw);
+  const text = label.length > maxChars
+    ? label.slice(0, maxChars)
+    : label + ' '.repeat(maxChars - label.length);
+  const endX = gfxTextPrecise(x, y, text, COL_VALUE,
+    (cx0, cx1) => (cx0 < x + fillPx) ? COL_FILL : COL_OFF,
+    scale, x + w);
+  if (endX < x + w) {
+    const localFill = Math.max(0, Math.min(x + w - endX, x + fillPx - endX));
+    fillRect(endX, y, localFill, h, COL_FILL);
+    fillRect(endX + localFill, y, (x + w) - endX - localFill, h, COL_OFF);
+  }
+}
+
+// C: sidesteps the whole problem — no text ever sits on the fill. Label
+// lives above as an ordinary Value row (existing primitives only); the bar
+// below is plain two-rect fill, exactly like LoadBar/PercentageBar already
+// does. Costs a second row of vertical space per value.
+function drawBarC(b) {
+  const { x, y, w, label, value, scale } = b;
+  const gw = 8 * scale, gh = 8 * scale;
+  const valStr = value + '%';
+  const maxChars = Math.floor(w / gw);
+  const labelChars = Math.max(0, maxChars - valStr.length); // reserve room for the value
+  const labelText = label.length > labelChars
+    ? label.slice(0, labelChars)
+    : label + ' '.repeat(labelChars - label.length);
+  gfxTextQuantized(x, y, labelText, COL_LABEL, () => COL_BG, scale, x + w);
+  gfxTextQuantized(x + w - valStr.length * gw, y, valStr, COL_VALUE, () => COL_BG, scale, x + w);
+  fillBar(x, y + gh + 2, w, Math.max(6, Math.round(gh * 0.4)), value / 100);
+}
+
+// ---- example bars: same set across all variants, chosen to stress the
+// open questions (mid-glyph boundary, narrow bar, label vs bar width) ----
+// Grouped by row (entries sharing a row sit side by side, same y) so each
+// variant can lay out its own row pitch — C's stacked label+bar needs
+// visibly more vertical room than A/B's single-line overlay, and reusing
+// one fixed set of y's would make that cost invisible (or make C's rows
+// collide) instead of demonstrating it.
+const rows = [
+  [{ label: "PAN",    x: 4,   w: 232, h: 16, scale: 2, value: 50 }],               // round split, wide bar
+  [{ label: "PAN",    x: 4,   w: 232, h: 16, scale: 2, value: 27 }],               // mid-glyph split, wide bar
+  [{ label: "MIX",    x: 4,   w: 112, h: 16, scale: 2, value: 65 },                // mid-glyph split, half-width bar
+   { label: "MIX",    x: 124, w: 112, h: 16, scale: 2, value: 100 }],              // fully filled
+  [{ label: "CUTOFF", x: 4,   w: 112, h: 16, scale: 2, value: 40 },                // label ~fills the whole bar width
+   { label: "CUTOFF", x: 124, w: 96,  h: 8,  scale: 1, value: 40 }],               // narrow bar, scale 1
+  [{ label: "VAL",    x: 4,   w: 232, h: 16, scale: 2, value: 0 }],                // 0%
+  [{ label: "VAL",    x: 4,   w: 232, h: 16, scale: 2, value: 100 }],              // 100%
+];
+
+// Vertical extent a row needs for a given variant, driven by its tallest
+// entry — A/B draw one line (gh); C stacks a label line + a bar beneath it.
+function rowExtent(row, key) {
+  return Math.max(...row.map(({ scale }) => {
+    const gh = 8 * scale;
+    return key === 'C' ? gh + 2 + Math.max(6, Math.round(gh * 0.4)) : gh;
+  }));
+}
+
+function layoutRows(key) {
+  let y = 26;
+  const out = [];
+  for (const row of rows) {
+    out.push(row.map((e) => ({ ...e, y })));
+    y += rowExtent(row, key) + 6;
+  }
+  return out.flat();
+}
+
+const variants = {
+  A: { name: "Glyph-quantized overlay", draw: drawBarA, fn: 'A' },
+  B: { name: "Pixel-precise overlay (new primitive)", draw: drawBarB, fn: 'B' },
+  C: { name: "No overlay — Value row above, plain bar below", draw: drawBarC, fn: 'C' },
+};
+const order = ['A', 'B', 'C'];
+
+const notesHTML = {
+A: `
+  <h1>A — Glyph-quantized overlay</h1>
+  <p>Uses <code>gfx_text()</code> exactly as it exists today — zero changes
+  to <code>src/wslcd/gfx.cpp</code>. Each glyph is one atomic blit, so it
+  can only be entirely fill-colored or entirely off-colored. The straddled
+  glyph is decided by whichever side covers &ge;50% of its cell.</p>
+  <p>The error is a <b>fixed pixel budget, not a fixed percentage</b> — up
+  to half a glyph cell at scale 2, i.e. &plusmn;8px, regardless of bar
+  width. Measured against variant B pixel-for-pixel: on the 232px PAN bars
+  (rows 1&ndash;2) it mostly lands within a pixel or two, easy to miss. On
+  the 112px MIX bar (row 3, 65%) it's a full <b>7px snap — 6% of that bar's
+  own width</b> — visible at a glance. The narrower the bar, the worse this
+  gets relative to its own size.</p>
+  <p><b>Cost:</b> free. <b>Precision:</b> quantized to character cells,
+  degrading as bar width shrinks.</p>
+`,
+B: `
+  <h1>B — Pixel-precise overlay</h1>
+  <p>Needs a new <code>gfx.cpp</code> primitive: instead of blitting a
+  whole glyph cell as one background color, it must walk 1 pixel-column
+  at a time within the glyph and choose fg/bg per column against the exact
+  fill boundary — see <code>gfxTextPrecise()</code> in this prototype's
+  source for the shape of it.</p>
+  <p><b>Row 3</b> (MIX 65%, the 112px bar) now lands exactly on the value
+  — no more 7px/6%-of-width snap — splitting the "X" of "MIX" down the
+  middle instead of rounding to its edge.</p>
+  <p><b>Cost:</b> more blit calls per glyph (worst case 8&times; the column
+  writes of A, still well within what this driver already does per glyph —
+  see <a href="../../docs/lcd-driver-capabilities.md">lcd-driver-capabilities.md</a>,
+  nothing here needs a read-back or shadow buffer). <b>Precision:</b> exact.</p>
+`,
+C: `
+  <h1>C — No overlay</h1>
+  <p>Sidesteps the glyph-granularity question entirely: the label is an
+  ordinary <b>Value row</b> above the bar (existing primitives, no new
+  code), and the bar below is a plain two-rect fill — pixel-accurate
+  already, the same shape LoadBar/PercentageBar uses today.</p>
+  <p>No mid-glyph ambiguity anywhere, because text never sits on the fill.
+  Trade-off: costs a second row of vertical space per value — this is no
+  longer more compact than Value row, which was the whole reason Value bar
+  was proposed (see <code>CONTEXT.md</code>'s Value bar entry).</p>
+  <p>The label-too-long case (<b>row 4</b>, "CUTOFF" in the 112px bar) is
+  worse here than in A/B: with only 4 characters of room next to the "40%"
+  value, "CUTOFF" truncates to "CUTO" with no separating space, reading as
+  the run-on "CUTO40%". A/B don't have this problem — their value is
+  <i>inside</i> the bar's own fill, not competing with the label for the
+  same character budget.</p>
+`,
+};
+
+function render(key) {
+  fillRect(0, 0, LCD_W, LCD_H, COL_BG);
+  gfxTextQuantized(4, 4, "VALUE BAR " + key, COL_LABEL, () => COL_BG, 2, LCD_W);
+  for (const b of layoutRows(key)) variants[key].draw(b);
+  document.getElementById('notes').innerHTML = notesHTML[key];
+  document.getElementById('switch-label').innerHTML =
+    key + " &mdash; <b>" + variants[key].name + "</b>";
+}
+
+function currentKey() {
+  const m = location.hash.match(/variant=([ABC])/);
+  return m ? m[1] : 'A';
+}
+function setKey(k) {
+  location.hash = 'variant=' + k;
+  render(k);
+}
+function cycle(delta) {
+  const i = order.indexOf(currentKey());
+  setKey(order[(i + delta + order.length) % order.length]);
+}
+document.getElementById('prev').onclick = () => cycle(-1);
+document.getElementById('next').onclick = () => cycle(1);
+window.addEventListener('keydown', (e) => {
+  const t = e.target;
+  if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+  if (e.key === 'ArrowLeft') cycle(-1);
+  if (e.key === 'ArrowRight') cycle(1);
+});
+window.addEventListener('hashchange', () => render(currentKey()));
+render(currentKey());
+</script>
+</body>
+</html>
