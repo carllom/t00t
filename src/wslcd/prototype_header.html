@@ -220,24 +220,24 @@ function drawHeaderA(y, mod, page, pageCount, extra) {
   return H;
 }
 
-// B: two rows, ~32px. Keeps a compact literal "t00t" mark + module name on
-// row 1; row 2 is dedicated to Page context (name + dots) when there's more
-// than one Page, otherwise stays empty chrome.
+// B: two rows, ~32px. No literal "t00t" mark (dropped per review — the
+// accent color already carries branding, same call as variant A) — row 1
+// is the module name alone, centered; row 2 is dedicated to Page context
+// (name + dots) when there's more than one Page, otherwise stays empty
+// chrome.
 function drawHeaderB(y, mod, page, pageCount, pageName) {
   const H1 = 14, H2 = 18, H = H1 + H2;
   const row1Y0 = 3, row1Inset = cornerInset(row1Y0);
   const row2TextY0 = H1 + (H2 - 16) / 2, row2DotY0 = H1 + H2 / 2 - 3;
   const row2LeftInset = cornerInset(row2TextY0), row2RightInset = cornerInset(row2DotY0);
   fillRect(0, y, LCD_W, H, mod.col);
-  // Row 1 sits at y0=3 — deep in the rounded zone (cornerInset(3) ≈ 17px),
-  // far more than row 1's flat 4px margin in the first pass of this
-  // prototype. That ~17px tax on both sides of a 14px-tall row is real:
-  // it's the cost this variant pays for putting anything that close to
-  // the very top edge, and it's why row 1 reads noticeably tighter than
-  // row 2 below once the correction is applied.
-  gfxText(row1Inset, y + row1Y0, "t00t", COL_WHITE, mod.col, 1, LCD_W - row1Inset);
+  // Row 1 sits at y0=3 — deep in the rounded zone (cornerInset(3) ≈ 17px)
+  // on both sides of a 14px-tall row. Dropping "t00t" means the module
+  // name no longer has to share that already-tight budget with a second
+  // string, so it can simply center in whatever room is left.
   const modW = textWidth(mod.name, 1);
-  gfxText(LCD_W - row1Inset - modW, y + row1Y0, mod.name, COL_WHITE, mod.col, 1, LCD_W - row1Inset);
+  const modX = Math.max(row1Inset, (LCD_W - modW) / 2);
+  gfxText(modX, y + row1Y0, mod.name, COL_WHITE, mod.col, 1, LCD_W - row1Inset);
   if (pageCount > 1) {
     const dotsLeft = drawPageDots(LCD_W - row2RightInset, y + H1 + H2 / 2, pageCount, page, 6, 3);
     gfxText(row2LeftInset, y + row2TextY0, pageName, COL_WHITE, mod.col, 2, dotsLeft - 4);
@@ -351,18 +351,17 @@ A: `
 `,
 B: `
   <h1>B — Two rows, taller</h1>
-  <p><b>The rounded corners hit this variant hardest.</b> Row 1's "t00t"
-  mark and module name sit at y=3 — deep in the curve, needing ~17px of
-  clearance on <i>both</i> sides of a row that's only 14px tall, not the
-  4px margin this prototype started with. The real-top-edge example above
-  (mask overlaid) shows it directly: "t00t" and the module name both sit
-  visibly inset from the corners now, on a row that has much less spare
-  width to give than it looked like before the correction. Row 2, being
-  further down, only needs ~2-4px and reads almost like the first pass.</p>
-  <p>Keeps a literal, compact "t00t" mark (scale 1, top-left) plus the
-  module name on the same first row — brand identity stays explicit, not
-  just implied by color. The second row is dedicated to Page context: its
-  name, plus dots reusing the same cell shape as variant A.</p>
+  <p><b>"t00t" dropped per review</b> — the accent color already carries
+  the branding (same call as variant A), so row 1 is just the module name,
+  centered. Freed from sharing its already-tight budget with a second
+  string, it reads noticeably calmer than the first pass.</p>
+  <p><b>The rounded corners still shape this row.</b> It sits at y=3 —
+  deep in the curve, needing ~17px of clearance on <i>both</i> sides of a
+  row that's only 14px tall. The real-top-edge example above (mask
+  overlaid) shows it directly. Row 2, being further down, only needs
+  ~2-4px and reads almost like an uncorrected row.</p>
+  <p>Row 1 is the module name alone; row 2 is dedicated to Page context —
+  its name, plus dots reusing the same cell shape as variant A.</p>
   <p>Costs <b>32px total vs. today's 30px</b> — 2px more, not a large
   jump, but it's the only variant that's ever taller than today rather
   than equal or smaller.</p>
