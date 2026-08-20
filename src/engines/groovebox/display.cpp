@@ -34,7 +34,7 @@ static const char *NOTE_NAMES[12] =
     { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
 static const char *FX_NAMES[FX_COUNT] = { "Off", "Delay", "Reverb" };
 
-static constexpr uint8_t DRUM_CHANNEL = 9;   // must match midi_controller.cpp
+static constexpr uint8_t DRUM_CHANNEL = 9;   // must match input_subsystem.cpp
 
 static void draw_val(int y, const char *raw, uint16_t fg) {
     char b[VAL_CH + 1];

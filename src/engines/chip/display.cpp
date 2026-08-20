@@ -72,7 +72,7 @@ static const char *NOTE_NAMES[12] =
 
 // Combined-space instrument name lookup (module_chip.md §12.4) -- `combined` is
 // whatever CC16/Program Change actually sent: < INSTRUMENT_COUNT is a SID
-// patch, the rest is AY's (midi_controller.cpp's own split).
+// patch, the rest is AY's (input_subsystem.cpp's own split).
 static const char *combined_instrument_name(uint8_t combined) {
     if (combined < INSTRUMENT_COUNT) return INSTRUMENT_NAMES[combined];
     uint8_t ay_idx = (uint8_t)(combined - INSTRUMENT_COUNT);

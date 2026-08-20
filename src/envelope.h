@@ -13,6 +13,14 @@ struct EnvConfig {
     float decay_coeff;    // per-sample multiplier during decay (< 1.0)
     float sustain_level;  // held level while gate is true (0.0–1.0)
     float release_coeff;  // per-sample multiplier during release (< 1.0)
+
+    // true (default): release() interrupts attack/decay immediately, from
+    // wherever `level` is -- today's only behavior. false: a release
+    // requested during attack/decay is deferred until attack/decay finish
+    // naturally, so a preset that must always sound its full attack/decay
+    // transient (e.g. a Strike-type instrument released synchronously right
+    // after allocation) can never have it truncated or swallowed.
+    bool gated_attack_decay = true;
 };
 
 // Build an EnvConfig from human-readable parameters.
@@ -27,23 +35,34 @@ EnvConfig env_config(uint16_t attack_ms, uint16_t decay_ms,
 struct Envelope {
     EnvState state;
     float level;
+    bool release_pending;  // non-gated mode: release() requested during
+                            // attack/decay, deferred until they finish
 
     void init() {
         state = ENV_IDLE;
         level = 0.0f;
+        release_pending = false;
     }
 
     // Start attack from zero (new note)
     void trigger() {
         state = ENV_ATTACK;
         level = 0.0f;
+        release_pending = false;
     }
 
-    // Transition to release from current level
-    void release() {
-        if (state != ENV_IDLE) {
-            state = ENV_RELEASE;
+    // Transition to release from current level -- immediately if
+    // cfg.gated_attack_decay (the default) or attack/decay are already
+    // behind us; otherwise deferred until attack/decay finish naturally
+    // (see advance()/advance_block()'s ENV_DECAY case).
+    void release(const EnvConfig &cfg) {
+        if (state == ENV_IDLE) return;
+        if (!cfg.gated_attack_decay && (state == ENV_ATTACK || state == ENV_DECAY)) {
+            release_pending = true;
+            return;
         }
+        state = ENV_RELEASE;
+        release_pending = false;
     }
 
     bool active() const {
@@ -64,7 +83,8 @@ struct Envelope {
                 level = cfg.sustain_level + (level - cfg.sustain_level) * cfg.decay_coeff;
                 if (level - cfg.sustain_level < 0.0001f) {
                     level = cfg.sustain_level;
-                    state = ENV_SUSTAIN;
+                    state = release_pending ? ENV_RELEASE : ENV_SUSTAIN;
+                    release_pending = false;
                 }
                 break;
             case ENV_SUSTAIN:
@@ -105,7 +125,8 @@ struct Envelope {
                 level = cfg.sustain_level + (level - cfg.sustain_level) * decay_coeff_n;
                 if (level - cfg.sustain_level < 0.0001f) {
                     level = cfg.sustain_level;
-                    state = ENV_SUSTAIN;
+                    state = release_pending ? ENV_RELEASE : ENV_SUSTAIN;
+                    release_pending = false;
                 }
                 break;
             case ENV_SUSTAIN:

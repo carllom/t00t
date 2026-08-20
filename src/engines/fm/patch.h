@@ -9,7 +9,7 @@
 // central claim, "an operator's routing IS its in/out bus pointers plus its
 // position in the processing order, both resolved once at note-on," lives
 // here. No pico-sdk dependency (plain cstdint), so this header is shared by
-// both the device engine (audio_engine.cpp/midi_controller.cpp) and the host
+// both the device engine (audio_engine.cpp/input_subsystem.cpp) and the host
 // render/test harness (tools/host_render/render_fm.cpp), matching the
 // render.h/sine_tab.h/rig.h convention already established for this engine.
 
@@ -364,3 +364,19 @@ inline constexpr FmPatch FM_TEST_PATCH = {
     /* lfo       */ { 35, 0, 0, 0, /*waveform=*/4, /*key_sync=*/true, /*pms=*/0 },
     /* pitch_eg  */ { {50, 50, 50, 50}, {50, 50, 50, 50} },
 };
+
+// Selectable-preset surface, always present regardless of whether a real
+// DX7 bank has been generated locally (tools/syx2patch.py, patches.h,
+// gitignored -- Yamaha's own commercial patch data, not something to check
+// into git history). With a real bank present (T00T_FM_HAS_PATCHES),
+// patches.h defines FM_PATCHES[]/FM_PATCH_COUNT/FM_PATCH_NAMES[] from it;
+// without one, this falls back to a single-entry array wrapping
+// FM_TEST_PATCH, so Program Change always has at least one real preset to
+// select and callers never need to branch on which case they're in.
+#ifdef T00T_FM_HAS_PATCHES
+#include "patches.h"
+#else
+enum FmPatchId : uint8_t { FMPATCH_TEST, FM_PATCH_COUNT };
+inline FmPatch FM_PATCHES[FM_PATCH_COUNT] = { FM_TEST_PATCH };
+inline constexpr const char *FM_PATCH_NAMES[FM_PATCH_COUNT] = { "TEST" };
+#endif

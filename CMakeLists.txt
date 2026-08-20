@@ -38,12 +38,24 @@ if(NOT DEFINED T00T_ENGINE)
 endif()
 message(STATUS "T00T synthesis engine: ${T00T_ENGINE}")
 
-# An engine may provide its own MIDI routing (fixed drum map, mono voices, …).
-# If it does, use it; otherwise fall back to the shared subtractive controller.
-if(EXISTS ${CMAKE_CURRENT_LIST_DIR}/src/engines/${T00T_ENGINE}/midi_controller.cpp)
-    set(ENGINE_MIDI_CONTROLLER src/engines/${T00T_ENGINE}/midi_controller.cpp)
+# Each engine provides its own MIDI routing (fixed drum map, mono voices,
+# a Router-based mapping table, …) in src/engines/<name>/ -- src/midi/ holds
+# only genuinely module-agnostic code (midi_parser.h, midi_dispatch.h/.cpp,
+# midi_controller_generic.h, the transports), never a per-engine
+# implementation of its own.
+#
+# Filename in transition: a migrated engine's file is no longer MIDI-only
+# (it's the module's whole Input subsystem tail -- mapping table, Handlers,
+# Voice Allocation Interface calls -- serving non-MIDI sources like GPIO
+# buttons too), so it's named input_subsystem.cpp; an engine not yet
+# migrated onto the Router keeps midi_controller.cpp until its own
+# migration ticket. This check is scoped entirely to the engine's own
+# directory -- not a fallback to some other engine's file -- and collapses
+# to one branch once every engine has migrated.
+if(EXISTS ${CMAKE_CURRENT_LIST_DIR}/src/engines/${T00T_ENGINE}/input_subsystem.cpp)
+    set(ENGINE_MIDI_CONTROLLER src/engines/${T00T_ENGINE}/input_subsystem.cpp)
 else()
-    set(ENGINE_MIDI_CONTROLLER src/midi/midi_controller.cpp)
+    set(ENGINE_MIDI_CONTROLLER src/engines/${T00T_ENGINE}/midi_controller.cpp)
 endif()
 
 # The VGA-board button controller (src/controller.cpp) is hardcoded to the
@@ -83,6 +95,7 @@ add_executable(t00t
     ${ENGINE_VOICE_ALLOC}
     ${ENGINE_TRACKER_PLAYER}
     src/samples.cpp
+    src/midi/midi_dispatch.cpp
     ${ENGINE_MIDI_CONTROLLER}
     ${ENGINE_OPTIONAL_SOURCES}
     src/midi/usb_midi.cpp

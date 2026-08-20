@@ -34,14 +34,15 @@ driven by MIDI notes/CCs and a basic step sequencer for the 303 part.
 
 | Message | Channel | Function |
 |---|---|---|
-| Note On/Off | 10 (drum) | Fixed note → drum voice map (below) |
-| Note On/Off | any other | TB-303: pitch, mono last-note priority; legato (overlapping notes) triggers slide |
-| Note On | 16 (pattern select) | Selects one of 3 sequencer patterns (base note 36) |
+| Note On | 10 (drum) | Note: fixed note → drum voice map (below), one-shot, no note-off — `set_note()` branches on channel to reach this path |
+| Note On/Off | any other | Note: TB-303, fixed voice, mono last-note priority; legato (overlapping notes) triggers slide |
+| Program Change | 16 (pattern select) | Configuration: selects one of 3 sequencer patterns by program number directly (0-indexed) — `channel_filter`'s exact-match on channel 16 routes it to a dedicated Handler instead of colliding with a real preset select |
 | Velocity | 303 channel | ≥96 triggers accent (deeper filter sweep, +level, +drive) |
-| MIDI Clock | — | 24 PPQN; advances the sequencer one 16th-note step every 6 pulses |
-| MIDI Start | — | Realigns the sequencer to the downbeat |
-| MIDI Stop | — | Stops the sequencer clock |
-| Program Change | — | Parsed, currently a no-op (kit switching not implemented) |
+| MIDI Clock | — | Clock: 24 PPQN; advances the sequencer one 16th-note step every 6 pulses, driving the 303 directly without a second Router pass |
+| MIDI Start | — | Transport: realigns the sequencer to the downbeat |
+| MIDI Continue | — | Transport: resumes the sequencer clock |
+| MIDI Stop | — | Transport: stops the sequencer clock |
+| Program Change | any other | Parsed, currently a no-op (kit switching not implemented) |
 | CC16 | 303 | Filter cutoff (live) |
 | CC17 | 303 | Filter resonance (live) |
 | CC18 | 303 | Filter env amount (next note) |
@@ -90,9 +91,10 @@ sequencer yet (see Future/TODO).
 - `kit.h` — `GrooveVoice` enum (the fixed voice map), `kit_808` table,
   `kit_find()`
 - `patterns.h` — sequencer step data and `seq_*` state/functions
-- `midi_controller.cpp` — full standalone MIDI routing: parser feed, CC
-  scaling, note routing, the sequencer, `commit()` (see Architecture — this
-  is not a shared shell)
+- `input_subsystem.cpp` — mapping table, Handlers, and the sequencer;
+  `midi_controller_process()` is a one-line call into
+  `midi_controller_process_generic()`, the same shared parse-and-dispatch
+  loop `subtractive`/`fm`/`chip`/`tracker` use (see Architecture)
 - `display.cpp` — Core 0 status display
 
 Also draws on two files that live at the shared top level despite being
@@ -163,7 +165,7 @@ depth, and ladder drive together, scaled by how far a note's velocity
 exceeds `ACCENT_VEL_THRESHOLD` (96). Slide blends a Core-1-only `glide_inc[]`
 value toward the target `phase_inc` (one-pole, ~20 ms time constant) when
 `p.slide` is set, snapping instantly otherwise. Mono last-note priority and
-legato are held-note-stack logic in `midi_controller.cpp`'s `play_303()`.
+legato are held-note-stack logic in `input_subsystem.cpp`'s `play_303()`.
 
 ### 808 Drum Voices
 
@@ -192,31 +194,41 @@ attack/decay/sustain and the desired release time.
 ### Sequencer
 
 A basic MIDI-clock-driven step sequencer for the 303 voice only
-(`patterns.h` + the `seq_*` state/functions in `midi_controller.cpp`). It
+(`patterns.h` + the `seq_*` state/functions in `input_subsystem.cpp`). It
 calls the same `play_303()` voice-trigger path MIDI note-on uses — no
 engine or IPC change was needed to add it. Driven by incoming MIDI Clock
 (24 PPQN, one step per 6 pulses) rather than a freestanding hardware timer;
 MIDI Start realigns it to the downbeat. Per-step flags are `SEQ_ACCENT`
 (maps to a fixed high velocity that clears the normal accent threshold) and
 `SEQ_SLIDE` (glides into the *next* step, the 303 convention). Three fixed
-patterns, selected by note-on on a dedicated pattern-select channel; no
-recording or editing.
+patterns, selected by Program Change on a dedicated pattern-select channel;
+no recording or editing.
 
 ### Code Layout
 
 Directory-per-engine, selected by CMake (`T00T_ENGINE=groovebox`), not
 `#ifdef`s on the divergences: DSP primitives (`osc/*`, `envelope.*`,
 `filter.h`, `fx/*`) are shared verbatim, and `engine.h`/`audio_engine.cpp`/
-`kit.h`/`midi_controller.cpp` are forked into `engines/groovebox/`.
-`CMakeLists.txt` picks `src/engines/${T00T_ENGINE}/midi_controller.cpp`
-wholesale if it exists for an engine, else falls back to the shared
-`src/midi/midi_controller.cpp` — there is no shared routing shell with a
-per-engine hook; the fork is the entire file. The shared `engine_base.h`
-holds `MAX_VOICES`, `Waveform`, `FilterMode`, `EffectParams`, and the
-`VoiceParamBlockT`/`ParamExchangeT` templates every engine's `engine.h`
-instantiates; it does not define a shared voice-parameter base struct —
-each engine's `VoiceParams` (including this one's) is its own from-scratch
-flat struct.
+`kit.h`/`input_subsystem.cpp` are forked into `engines/groovebox/`.
+`CMakeLists.txt` picks each engine's own MIDI routing file from
+`src/engines/${T00T_ENGINE}/` — there is no shared routing shell with a
+per-engine hook, but unlike the other forked files, `input_subsystem.cpp`'s
+routing itself is *not* forked in any deep sense any more: its
+`midi_controller_process()` is a one-line call into
+`src/midi/midi_controller_generic.h`'s `midi_controller_process_generic()`,
+the same shared parse-and-dispatch loop `subtractive`/`fm`/`chip`/`tracker`
+use. What stays this module's own are its `kMappingTable`, its Handlers
+(including `set_note()` branching on `value.channel` to decide drum-kit
+lookup vs. TB-303, and voice resolution — fixed, not dynamic `voice_alloc`
+— inside that same Handler), and the sequencer's per-channel/per-voice
+state — see `history_groovebox.md`'s Core 0 Input Pipeline Migration entry
+for how this module's routing got here (it wasn't the original shape of
+the migration). The shared
+`engine_base.h` holds `MAX_VOICES`, `Waveform`, `FilterMode`,
+`EffectParams`, and the `VoiceParamBlockT`/`ParamExchangeT` templates every
+engine's `engine.h` instantiates; it does not define a shared
+voice-parameter base struct — each engine's `VoiceParams` (including this
+one's) is its own from-scratch flat struct.
 
 ## Status and Plan
 
@@ -287,16 +299,36 @@ it.
    layouts resident in RAM plus a dispatch layer, for no benefit over a
    reflash.
 9. **No shared MIDI-controller routing shell.** Groovebox's
-   `midi_controller.cpp` is a full standalone file rather than a thin
+   `input_subsystem.cpp` is a full standalone file rather than a thin
    shared shell delegating to a per-engine routing hook — CMake selects
    whichever engine's file exists wholesale.
 10. **`voice_alloc.cpp` stays linked** even though its `allocate()`/
     `release()` are never called — its `init()`/`update()`/`active_mask()`
     telemetry is reused as-is to feed the LCD's voice-activity display.
-11. **The shared `engine_base.h` does not define a common voice-parameter
+11. **Drums, pattern-select, and pitch bend reach the Router by remapping
+    to fit the shared dispatch loop, not by carving out permanent
+    exceptions from it.** Drums dispatch as plain `Note` — `set_note()`
+    itself branches on `value.channel` to reach the kit-lookup path,
+    rather than the Router branching on category. Pattern-select is a
+    real Program Change on the pattern channel, dispatched as
+    `Configuration` like every other module's preset select
+    (`channel_filter`'s exact-match routes it to `set_pattern_select()`
+    without colliding with a real preset select). Pitch bend's
+    drum-channel exclusion lives in `set_303_bend()` itself, not the
+    process loop. MIDI Clock's Handler still drives the sequencer's own
+    Note-like 303 steps directly (`seq_play_step()` -> `play_303()`)
+    rather than re-entering the Router a second time. With all of this,
+    `midi_controller_process()` is the same one-line call into the shared
+    generic loop every other migrated module uses — an earlier design
+    routed drums as `Strike` and pattern-select as a `NOTE_ON`-shaped
+    message instead, forcing a forked process loop; see
+    `history_groovebox.md`'s Core 0 Input Pipeline Migration entry for
+    that history. `midi_dispatch_strike()` and `patterns.h`'s
+    `SEQ_PATTERN_BASE_NOTE`, orphaned by the remap, were removed.
+12. **The shared `engine_base.h` does not define a common voice-parameter
     base struct** — each engine's `VoiceParams`, including this one's,
     stays a from-scratch flat struct rather than inheriting shared fields.
-12. **The sequencer is 303-only, MIDI-clock-driven, with 3 fixed
+13. **The sequencer is 303-only, MIDI-clock-driven, with 3 fixed
     patterns and no recording/editing** — a deliberately narrow first cut
     of the eventual design.
 

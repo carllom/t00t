@@ -129,6 +129,136 @@ parses raw bytes and maps notes to voices; fed by pluggable transports:
   [module_speech.md](docs/module_speech.md) / [history_speech.md](docs/logs/history_speech.md),
   [module_tracker.md](docs/module_tracker.md) / [history_tracker.md](docs/logs/history_tracker.md).
 
+## Language
+
+Vocabulary for the Core 0 input pipeline. The category vocabulary below
+(Note/Strike/Modifier/Configuration/Clock/Transport) originates from #84; the
+mechanism vocabulary (Input pipeline, Input subsystem, Router, Input event,
+Normalization, Handler, Voice Allocation Interface) belongs to a from-scratch
+redesign effort superseding #84/#85's narrower "shared vocabulary + table
+dispatch" design — wayfinder map #94, spec #99, tickets #100-104.
+
+**Input pipeline**:
+The complete flow from a physical/transport input source to a module's own
+state: transport reception, parsing, Shaping, routing (the Router), and
+module-specific handling (the Input subsystem, which includes each module's
+own Normalization). The umbrella term for the whole redesign.
+
+**Input subsystem**:
+The module-specific tail of the Input pipeline — everything downstream of
+the Router once an Input event has been matched and handed off: Handlers
+(which perform their own Normalization), the Voice Allocation Interface, and
+any module-owned state. Distinct from the generic, module-agnostic stages
+upstream of it (parsing, Shaping, routing).
+
+**Router**:
+The generic mechanism that takes an Input event and hands it to the right
+module Handler. Source- and module-agnostic; replaces the #86-era
+`input_dispatch` as the working name (implementation shape not yet decided).
+
+**Input event**:
+A source-agnostic event the Router matches on and passes to a Handler — the
+output of Shaping, common across MIDI and non-MIDI sources. Still carries
+source-native values (e.g. a raw 0-127 MIDI velocity), not module-native
+ones — see Shaping vs. Normalization below. Replaces the #86-era
+`InputValue` as the working name.
+
+**Shaping**:
+Generic, cross-module value-adjustment that runs before the Router, in the
+input's own source-native terms (raw MIDI bytes, not a module's native
+units) — fixed-value substitution, channel filtering, range filtering. Lives
+here, not in Normalization, because a human configuring it (e.g.
+`fixed_velocity = 100`) needs to reason in source-native terms that mean the
+same thing regardless of which module is compiled in; a module-normalized
+number wouldn't have one consistent meaning across modules.
+
+**Normalization**:
+Module-specific conversion from a source-native value (raw MIDI byte, ADC
+count) to that module's own native unit (Hz, semitones, Q15, a dB value,
+...). Module-owned — lives inside the Input subsystem (typically inside a
+Handler), not a generic pre-Router pipeline stage, because only the module
+knows its own target representation.
+_Changed from_: an earlier framing (this session) that treated Normalization
+as one generic pre-Router stage. Split into Shaping (generic, pre-Router,
+source-native) + Normalization (module-owned, module-native) once a concrete
+scenario (a fixed-velocity override needing to mean "raw MIDI 100" rather
+than some module's internal amplitude scale) showed the two were being
+forced under one name.
+
+**Sensor event**:
+A source-specific parsed event from a physical, non-MIDI input — a button
+press/release, a potentiometer reading, or (if ever added) an accelerometer
+or temperature reading. Covers discrete (button-like) and continuous
+(pot-like) readings alike. Sibling to a MIDI event: both are per-source
+parsed types that Normalization turns into a common Input event.
+_Avoid_: "Controller" (MIDI already uses it for CC numbers; this codebase's
+`controller.cpp`/`controller_init()`/`controller_tick()` also already name
+the button-polling code, a third meaning) and "Input" (too generic once
+"Input event"/"Input pipeline" already claim the word at other layers).
+
+**Handler**:
+Whatever a module provides to plug into the Router. General term — a
+"setter" (a Handler that writes a param) is one kind; an implementation of
+the Voice Allocation Interface is another.
+
+**Voice Allocation Interface**:
+The contract between the voice allocator and a module, replacing today's
+direct, interleaved `voice_alloc_allocate()`/`voice_alloc_release()` calls
+inside MIDI-parsing code. Applies to both Note and Strike — both need a free
+synthesis voice; neither's allocation bookkeeping should live inside input
+parsing.
+
+**Note**:
+A pitched input: note number, velocity. Allocation-agnostic — voice
+alloc/release is a separate, composed concern reached via the Voice
+Allocation Interface, not implied by the category itself.
+_Changed from_: the #84-era definition, which bundled "implicit voice
+alloc/release" into the category itself. Decided against: decoupling
+allocation from input handling is this redesign's reason to exist, so the
+category can't presuppose the coupling being removed.
+
+**Strike**:
+A discrete, unpitched input (a drum-pad hit, a one-shot sample trigger). An
+identifying number may still be present and required (e.g. which drum/sample
+to trigger) — the defining trait is that the number, if any, is never
+interpreted as pitch. Like Note, may still reach the Voice Allocation
+Interface for a free synthesis voice; the category is about the absence of
+pitch, not about whether an identifier or allocation is involved.
+_Changed from_: "no note number, no pitch" — read literally, wrong for a
+drum-pad hit, whose MIDI note number is a required identity field (which
+drum/sample to trigger via a kit lookup), just never converted to pitch/Hz.
+Surfaced while sanity-checking against `groovebox`'s real drum-trigger code
+(`trigger_drum()`'s `kit_find(kit_808, note)`) during wayfinder ticket #98.
+_Avoid_: Trigger (already means the per-voice generation counter in
+`VoiceParams`, see `docs/engine.md`'s Trigger/Gate Signaling and issue #83 —
+using it here would mean the same word means two different things at two
+different layers).
+
+**Modifier**:
+A live, continuous input value, voice-scoped or module-global depending on
+an explicit scope/target on the call (e.g. pitch bend targets held voices;
+an FX CC is module-global).
+
+**Configuration**:
+An input that selects a preset/template. Some selected values seed initial
+Modifier values; others are immutable character choices (oscillator type,
+LFO shape).
+
+**Clock**:
+A tempo-pulse input (e.g. groovebox's 24 PPQN MIDI Clock). Distinct from
+Transport.
+
+**Transport**:
+A play/pause/stop input, first-class rather than a generic Strike.
+_Avoid confusing with_: "MIDI transport" (USB vs. UART — the byte-carrying
+layer under MIDI, see the MIDI section above). Same word, unrelated concept.
+
+**Data Exchange**:
+Parked, not decided: a possible category for opaque byte-blob store/retrieve
+of module-specific table data (curves, waveforms, patch data). Mechanically
+distinct from Configuration (bulk/bidirectional/opaque vs. scalar template
+selection). No module implements anything like this today.
+
 ## Notes / gotchas
 
 - Build output in `build/` is checked into the working tree state but is generated.
