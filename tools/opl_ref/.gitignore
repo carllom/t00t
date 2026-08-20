@@ -1,0 +1,7 @@
+# Third-party source, fetched not vendored (see fetch_nuked_opl3.sh for why).
+nuked/
+
+# Build products and renders.
+nuked_render
+nuked_dump
+out/

@@ -158,6 +158,33 @@ target_include_directories(render_fm_rig PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}/../../src
 )
 
+# Host build of src/engines/opl/opl_voice.h (issue #78): the OPL engine's
+# device-path renderer (opl_voice_note_on()/opl_render_voice()/
+# opl_voice_note_off()), same sanity-render role render_fm.cpp fills for FM.
+# Pulls in osc/sine.cpp only for pan_gains_q15's wavetable, same as render_fm.
+add_executable(render_opl
+    render_opl.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/../../src/osc/sine.cpp
+)
+target_include_directories(render_opl PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}
+    ${CMAKE_CURRENT_LIST_DIR}/../../src
+)
+
+# CLI-driven counterpart to render_opl, above: takes the same kind of
+# arguments tools/opl_ref/nuked_render.cpp does (note/velocity/gate/tail),
+# so tools/opl_compare.py and tools/opl_regress.py (issue #81) can render
+# both sides of a comparison. No patches.h presence-gate needed, same as
+# t00t_opl_ctl_dump below -- OPL's patches.h is checked in, not generated.
+add_executable(render_opl_patch
+    render_opl_patch.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/../../src/osc/sine.cpp
+)
+target_include_directories(render_opl_patch PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}
+    ${CMAKE_CURRENT_LIST_DIR}/../../src
+)
+
 # CHIP_STRICT reference-diff harness (module_chip.md §11.1). Takes the same
 # CLI as tools/sid_ref/resid_render.cpp; tools/sid_compare.py runs both and
 # scores the difference. Header-only against src/chip/, no extra .cpp inputs.
@@ -193,6 +220,17 @@ target_include_directories(render_ay PRIVATE
 # tools/ay_ref/ayumi_dump.cpp's reference dumps. Header-only.
 add_executable(t00t_ay_dump t00t_ay_dump.cpp)
 target_include_directories(t00t_ay_dump PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}
+    ${CMAKE_CURRENT_LIST_DIR}/../../src
+)
+
+# Control-plane counterpart to render_opl: exact CSV dumps of
+# src/engines/opl/patch.h / env_opl.h, diffed against
+# tools/opl_ref/nuked_dump.cpp's reference dumps by a future control-plane
+# diff script. Header-only, no patches.h presence-gate needed since OPL's
+# patches.h is checked in, not gitignored/generated.
+add_executable(t00t_opl_ctl_dump t00t_opl_ctl_dump.cpp)
+target_include_directories(t00t_opl_ctl_dump PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}
     ${CMAKE_CURRENT_LIST_DIR}/../../src
 )

@@ -125,6 +125,7 @@ parses raw bytes and maps notes to voices; fed by pluggable transports:
   [module_chip.md](docs/module_chip.md) / [history_chip.md](docs/logs/history_chip.md),
   [module_fm.md](docs/module_fm.md) / [history_fm.md](docs/logs/history_fm.md),
   [module_groovebox.md](docs/module_groovebox.md),
+  [module_opl.md](docs/module_opl.md) / [history_opl.md](docs/logs/history_opl.md),
   [module_speech.md](docs/module_speech.md) / [history_speech.md](docs/logs/history_speech.md),
   [module_tracker.md](docs/module_tracker.md) / [history_tracker.md](docs/logs/history_tracker.md).
 

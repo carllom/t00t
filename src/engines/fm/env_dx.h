@@ -339,3 +339,27 @@ inline int32_t dx7_note_outlevel(const FmOpParams &p, int midinote, int velocity
     outlevel += dx7_scale_velocity(velocity, p.vel_sensitivity);
     return outlevel < 0 ? 0 : outlevel;
 }
+
+// ---------------------------------------------------------------------------
+// op.h glue: the DX7 instantiation of its envelope-family policy.
+// ---------------------------------------------------------------------------
+
+// The envelope-glue policy op.h's fm_voice_note_on()/fm_voice_step_envelopes()/
+// fm_voice_note_off() are templated on, so those functions pick their
+// envelope family by which glue type they're called with instead of naming
+// env_dx_*/dx7_* functions directly. `init` bundles Dexed's own note-on
+// composition (output level + key level scaling + velocity into `outlevel`,
+// key rate scaling into `rate_scaling`), recovering the raw MIDI 0-127
+// velocity `dx7_scale_velocity` wants from VoiceParams' Q15 amplitude --
+// exact for every velocity, since Core 0 built it as velocity/127 * 32767
+// (midi_controller.cpp).
+struct DxEnvGlue {
+    static void init(EnvDX &eg, const FmOpParams &p, uint8_t midinote, int16_t amplitude) {
+        int velocity = ((int)amplitude * 127 + 16383) / 32767;
+        env_dx_init(eg, p.eg_rate, p.eg_level,
+                    dx7_note_outlevel(p, midinote, velocity),
+                    dx7_scale_rate(midinote, p.rate_scaling));
+    }
+    static void release(EnvDX &eg) { env_dx_release(eg); }
+    static int32_t step_block(EnvDX &eg, uint32_t n) { return env_dx_step_block(eg, n); }
+};
