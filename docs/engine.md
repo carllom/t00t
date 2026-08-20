@@ -154,20 +154,21 @@ controller_tick(params):
   voice_alloc_update()                  // drain reverse FIFO for active bitmap
   shadow = params->active()             // start from current committed truth
   poll buttons → integrator debounce → edge detect
-    on press:   v = voice_alloc_allocate();
-                value = shape_button_event(SensorEvent, button's ButtonShapingConfig)
-                value.voice = v; midi_controller_dispatch_note(shadow, note, value)
-    on release: value = shape_button_event(...); midi_controller_dispatch_note(...);
-                voice_alloc_release(v)
+    on press/release: value = shape_button_event(SensorEvent, button's ButtonShapingConfig)
+                       midi_controller_dispatch_note(shadow, note, value)
   if changed: params->commit()          // flip param double-buffer
 ```
 
 Each button's debounced edge becomes a `SensorEvent` (`src/sensor_event.h`),
-Shaped into an `InputValue` via `shape_button_event()` (`src/button_shaping.h`)
+Shaped into an `InputValue` via `shape_button_event()` (`src/button_shaping.h`
 -- supplying the button's fixed note, channel, and (on press) a fixed
-velocity a bare switch has no signal for -- then dispatched through
-`midi_controller_dispatch_note()` into `subtractive`'s shared
-`kMappingTable`/`set_note` Handler, the same one MIDI note-on/off drives.
+velocity a bare switch has no signal for, `value.voice` left unresolved),
+then dispatched through `midi_controller_dispatch_note()` into
+`subtractive`'s shared `kMappingTable`/`set_note` Handler, the same one
+MIDI note-on/off drives. `set_note()` itself is where
+`voice_alloc_allocate()`/`release()` actually get called -- never
+upstream in `controller_tick()` or the MIDI parsing/dispatch loop, see the
+Voice Allocation Interface entry below.
 
 There is no separate event queue: edges are applied straight to the shadow
 block and committed in the same tick.
@@ -313,18 +314,27 @@ event queue — each input source writes the param shadow and commits directly.
   buffer; `uart_midi_poll()` drains it each main-loop pass. Default-on for the
   breadboard (GPIO5); off for the VGA board, where GPIO5 is SD_CLK.
 
-Both transports route through `midi_controller_process()`, which parses MIDI
-bytes and dispatches each message. `subtractive` and `fm` build this
-function from `src/midi/midi_dispatch.h`'s shared, module-agnostic generic
-helpers — one per MIDI message shape (`midi_dispatch_cc()`,
+Every engine provides its own `src/engines/<name>/` MIDI routing file
+(`CMakeLists.txt` picks it by `T00T_ENGINE` — no fallback to a shared
+file; `src/midi/` holds only genuinely module-agnostic code, never a
+per-engine implementation). A migrated engine's file is named
+`input_subsystem.cpp` — it's no longer MIDI-only, serving non-MIDI
+sources like GPIO buttons too (see below); one not yet migrated onto the
+Router keeps the older `midi_controller.cpp` name until its own migration
+ticket. Both transports route through `midi_controller_process()`, which
+parses MIDI bytes and dispatches each message -- never resolving a voice
+itself; see the Voice Allocation Interface entry below. For `subtractive`
+and `fm`, this function is a one-line call into
+`midi_controller_process_generic()` (`src/midi/midi_controller_generic.h`),
+which is built from `src/midi/midi_dispatch.h`'s shared, module-agnostic
+generic helpers — one per MIDI message shape (`midi_dispatch_cc()`,
 `midi_dispatch_pitch_bend()`, `midi_dispatch_program_change()`,
-`midi_dispatch_note_on_allocated()`/`_off_allocated()` for standard
-dynamic-voice-allocation note handling) — so a module's own
-`midi_controller.cpp` shrinks to its `kMappingTable`, its Handlers, and a
-thin `switch` composing whichever generic helpers its input model needs;
-`groovebox` and `tracker` don't fit that "one voice per note" shape (see
-Decision Record) and keep their own fully independent, fully-forked
-`midi_controller.cpp` for now.
+`midi_dispatch_note()`). A module's own `input_subsystem.cpp` shrinks to
+its `kMappingTable`, its Handlers (including voice resolution, inside its
+own NOTE Handler), and that one-line call; `groovebox` and `tracker` don't
+fit the "one voice per note" shape the generic loop assumes (see Decision
+Record) and keep their own fully independent, fully-forked
+`midi_controller_process()` for now.
 
 For `subtractive`/`fm`, note on/off, **CC1 (mod wheel)**, **CC10 (pan)**,
 **pitch bend**, **CC72-75 (FX type/mix/param1/param2)**, and **Program
@@ -349,7 +359,7 @@ supplying the button's configured note, channel, and a fixed velocity a
 bare switch has no signal for), then calls
 `midi_controller_dispatch_note()`, a thin wrapper exposing
 `kMappingTable`/`input_dispatch()` to callers outside
-`src/midi/midi_controller.cpp`.
+`src/engines/subtractive/input_subsystem.cpp`.
 
 The dispatch mechanism above (shared vocabulary and a per-module mapping
 table, #86) started `subtractive`-only; a from-scratch redesign of the
@@ -429,9 +439,24 @@ earlier version of this design assumed. Configurability is build-time only
    a shared synthetic id) for every module built against the Router, not a
    per-module choice; CC0/CC32 bank-select storage is shared, always-linked
    state a Handler reads on demand. This doesn't retract decision 4:
-   `groovebox`/`tracker` still don't fit the *allocated* NOTE_ON/OFF
-   convenience helpers (dynamic `voice_alloc`, one voice per note), but
-   nothing stops either from calling the same lower-level generic
-   dispatch helpers (plain CC/pitch-bend/Configuration dispatch, or NOTE
-   dispatch with an already-resolved voice) once their own migration is
+   `groovebox`/`tracker` still don't fit the "one voice per note" shape
+   `midi_controller_process_generic()` assumes, but nothing stops either
+   from calling the same lower-level generic dispatch helpers (plain
+   CC/pitch-bend/Configuration/NOTE dispatch) once their own migration is
    taken up — decided per-module, not assumed now.
+7. **Voice allocation moved into `set_note()` itself**, correcting a
+   deviation from spec #99's own Voice Allocation Interface design that
+   had been present since the original #100-104 migration: the first pass
+   at `midi_controller_process_generic()` (decision 6) called
+   `voice_alloc_allocate()`/`release()` from *within* the generic dispatch
+   loop, before a Handler ever ran — exactly the "interleaved inside event
+   parsing" shape CONTEXT.md's Voice Allocation Interface entry and spec
+   #99 both explicitly ruled out, just relocated one layer up from the old
+   per-module `midi_controller_process()` rather than actually removed.
+   `set_note()` now resolves its own voice via its own `note_voice[]`
+   lookup (steal-on-retrigger included), so `midi_controller_process_generic()`
+   needs no per-note/per-voice tracking arrays at all — it dispatches NOTE
+   the same uniform way as every other category, `value.voice` left at -1
+   (unresolved) for the Handler to fill in. `controller.cpp`'s button path
+   was fixed the same way, dropping its own pre-allocation and
+   `ButtonState::allocated_voice` entirely.

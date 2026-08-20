@@ -1,16 +1,17 @@
 #include "midi_controller.h"
 #include "midi_parser.h"
-#include "midi_dispatch.h"
+#include "midi_controller_generic.h"
+#include "voice_alloc.h"
 #include "patch.h"
 #include "sine_tab.h"
 #include <cmath>
 
-// FM's own MIDI controller, not the shared src/midi/midi_controller.cpp:
-// this engine's VoiceParams carries a patch pointer, not a VoicePreset the
-// shared controller's presets.h shape expects. NOTE/MODIFIER/CONFIGURATION
-// input all route through midi_dispatch.h's generic helpers into this
-// file's own kMappingTable/Handlers -- the mechanism is shared, the
-// mapping and Handlers are fully this module's own.
+// FM's Input subsystem: the module-specific tail of the Input pipeline --
+// mapping table, Handlers, and the Voice Allocation Interface calls they
+// make. MIDI bytes reach it via midi_controller_process(), built from
+// midi_dispatch.h's shared, module-agnostic generic dispatch helpers
+// (src/midi/midi_controller_generic.h) -- the mechanism is shared, the
+// mapping table and Handlers are fully this module's own.
 //
 // Patch select: Program Change picks `FM_PATCHES[value.index % FM_PATCH_COUNT]`
 // (patch.h) -- always at least one entry (FM_TEST_PATCH) even without a
@@ -18,7 +19,7 @@
 // whether one exists.
 
 static MidiParser midi_parser;
-static int8_t midi_note_voice[128];
+static int8_t note_voice[128];
 
 // --- Per-voice tracking (Core 0) ---
 static uint32_t voice_base_inc[MAX_VOICES];  // unbent phase_inc, for bend scaling
@@ -73,26 +74,37 @@ static void apply_channel_mod_wheel(VoiceParamBlock &shadow, uint8_t channel) {
     }
 }
 
-// Note setter: applies a resolved note on/off edge to the shadow block.
-// Voice allocation and voice_held/midi_note_voice bookkeeping stay in
-// midi_dispatch.h's generic helpers (allocator concerns, not
-// shadow-parameter content) -- this only mutates VoiceParams and this
-// voice's own tracking.
+// Note setter: the Voice Allocation Interface -- this Handler is where
+// voice_alloc_allocate()/release() actually get called, never upstream in
+// parsing/dispatch (CONTEXT.md's "Voice Allocation Interface" entry).
+// Resolves its own voice via note_voice[], keyed by note number.
 static void set_note(VoiceParamBlock &shadow, const InputValue &value) {
     if (value.note_on) {
+        // Retrigger: steal whatever voice is already sounding this note.
+        if (note_voice[value.note] >= 0) {
+            int8_t old = note_voice[value.note];
+            shadow.voices[old].gate = false;
+            voice_held[old] = false;
+            voice_alloc_release(old);
+        }
+        int v = voice_alloc_allocate();
+        if (v < 0) return;
+        note_voice[value.note] = (int8_t)v;
+        voice_held[v] = true;
+
         float freq = 440.0f * powf(2.0f, (float)(value.note - 69) / 12.0f);
         uint32_t base = fm_phase_inc(freq);
 
-        voice_base_inc[value.voice] = base;
-        voice_channel[value.voice] = value.channel;
-        voice_program[value.voice] = channel_program[value.channel];
+        voice_base_inc[v] = base;
+        voice_channel[v] = value.channel;
+        voice_program[v] = channel_program[value.channel];
 
         ui_state.last_note = value.note;
         ui_state.last_velocity = value.velocity;
         ui_state.last_channel = value.channel;
         ui_state.program = channel_program[value.channel];
 
-        VoiceParams &vp = shadow.voices[value.voice];
+        VoiceParams &vp = shadow.voices[v];
         vp.phase_inc = (uint32_t)((float)base * channel_bend_ratio[value.channel]);
         vp.amplitude = (int16_t)(value.velocity * 258);  // 0..127 -> ~0..32766, plain amplitude scaling
         vp.pan = channel_pan[value.channel];
@@ -102,7 +114,12 @@ static void set_note(VoiceParamBlock &shadow, const InputValue &value) {
         vp.trigger++;
         vp.gate = true;
     } else {
-        shadow.voices[value.voice].gate = false;
+        int8_t v = note_voice[value.note];
+        if (v < 0) return;
+        shadow.voices[v].gate = false;
+        voice_held[v] = false;
+        voice_alloc_release(v);
+        note_voice[value.note] = -1;
     }
 }
 
@@ -186,7 +203,7 @@ static_assert(input_table_declares_capabilities(kMappingTable, kCapabilities),
 void midi_controller_init() {
     midi_parser.init();
     midi_bank_select_init();
-    for (int i = 0; i < 128; i++) midi_note_voice[i] = -1;
+    for (int i = 0; i < 128; i++) note_voice[i] = -1;
     for (uint32_t v = 0; v < MAX_VOICES; v++) voice_held[v] = false;
     for (uint8_t ch = 0; ch < NUM_CHANNELS; ch++) {
         channel_bend_ratio[ch] = 1.0f;
@@ -209,56 +226,7 @@ void midi_controller_init() {
 }
 
 void midi_controller_process(const uint8_t *data, uint32_t len, ParamExchange *params) {
-    if (len == 0) return;
-
-    bool changed = false;
-    VoiceParamBlock &shadow = params->shadow();
-    shadow = params->active();
-
-    for (uint32_t i = 0; i < len; i++) {
-        MidiEvent ev;
-        if (!midi_parser.feed(data[i], ev)) continue;
-
-        switch (ev.type) {
-            case MIDI_NOTE_ON:
-                if (midi_dispatch_note_on_allocated(shadow, kMappingTable, ev.data1, ev.channel,
-                                                     ev.data2, midi_note_voice, voice_held) >= 0) {
-                    changed = true;
-                }
-                break;
-            case MIDI_NOTE_OFF:
-                midi_dispatch_note_off_allocated(shadow, kMappingTable, ev.data1, ev.channel,
-                                                  midi_note_voice, voice_held);
-                changed = true;
-                break;
-            case MIDI_CC:
-                switch (ev.data1) {
-                    case 0:  midi_bank_select_msb(ev.channel, ev.data2); break;
-                    case 32: midi_bank_select_lsb(ev.channel, ev.data2); break;
-                    default:
-                        midi_dispatch_cc(shadow, kMappingTable, ev.channel, ev.data1, ev.data2);
-                        changed = true;
-                        break;
-                }
-                break;
-            case MIDI_PITCH_BEND: {
-                uint16_t bend14 = (uint16_t)(ev.data1 | (ev.data2 << 7));
-                midi_dispatch_pitch_bend(shadow, kMappingTable, ev.channel, bend14);
-                ui_state.bend = (int16_t)((int)bend14 - 8192);
-                ui_state.last_channel = ev.channel;
-                changed = true;
-                break;
-            }
-            case MIDI_PROGRAM_CHANGE:
-                midi_dispatch_program_change(shadow, kMappingTable, ev.channel, ev.data1);
-                break;
-            default: break;
-        }
-    }
-
-    if (changed) {
-        params->commit();
-    }
+    midi_controller_process_generic(data, len, params, midi_parser, kMappingTable, ui_state);
 }
 
 const FmPatch *fm_channel_patch(uint8_t channel) {

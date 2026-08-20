@@ -9,7 +9,7 @@
 // central claim, "an operator's routing IS its in/out bus pointers plus its
 // position in the processing order, both resolved once at note-on," lives
 // here. No pico-sdk dependency (plain cstdint), so this header is shared by
-// both the device engine (audio_engine.cpp/midi_controller.cpp) and the host
+// both the device engine (audio_engine.cpp/input_subsystem.cpp) and the host
 // render/test harness (tools/host_render/render_fm.cpp), matching the
 // render.h/sine_tab.h/rig.h convention already established for this engine.
 

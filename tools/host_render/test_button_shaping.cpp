@@ -5,9 +5,9 @@
 // functions, an aggregated `bool ok`, "ALL CHECKS PASSED"/"CHECKS FAILED").
 //
 // Deliberately dispatches against a local test table, not subtractive's
-// real kMappingTable/set_note (in src/midi/midi_controller.cpp) -- that
-// file pulls in pico-sdk-dependent headers and stays verified on real
-// hardware instead.
+// real kMappingTable/set_note (in src/engines/subtractive/input_subsystem.cpp)
+// -- that file pulls in pico-sdk-dependent headers and stays verified on
+// real hardware instead.
 
 #include "../../src/button_shaping.h"
 
@@ -105,11 +105,11 @@ bool test_channel_filtered_button_event_never_reaches_handler() {
 
 bool test_button_and_midi_sourced_events_converge() {
     // A button-sourced Input event and an equivalent MIDI-sourced one
-    // (built the way midi_controller.cpp already does today: velocity
-    // straight off the wire, resolved voice from the allocator) must
-    // produce the same Handler call for the same semantic note/channel/
-    // velocity -- proving "source-agnostic" is a property of the shape,
-    // not just of this one Shaping function.
+    // (velocity straight off the wire, an already-resolved voice standing
+    // in for whatever a real NOTE Handler's Voice Allocation Interface
+    // call would produce) must produce the same Handler call for the same
+    // semantic note/channel/velocity -- proving "source-agnostic" is a
+    // property of the shape, not just of this one Shaping function.
     TestContext ctx_button, ctx_midi;
 
     InputValue button_value = shape_button_event(sensor_event_button(0, true), kButton0);
