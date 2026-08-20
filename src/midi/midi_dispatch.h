@@ -96,3 +96,16 @@ inline void midi_dispatch_note(Context &ctx, const InputMapEntryT<Context> (&tab
     value.note_on = note_on;
     input_dispatch(ctx, table, InputCategory::NOTE, note, value);
 }
+
+// Generic Transport dispatch: play/pause/stop, no payload beyond which
+// transport message it is (Transport is module-global, not per-channel).
+// `transport_id` is the MIDI transport message type itself
+// (MIDI_START/CONTINUE/STOP, midi_parser.h) -- already a small, distinct,
+// meaningful value, reused directly as the Router's matching id rather
+// than inventing a second numbering.
+template <typename Context, uint32_t N>
+inline void midi_dispatch_transport(Context &ctx, const InputMapEntryT<Context> (&table)[N],
+                                     uint8_t transport_id) {
+    InputValue value{};
+    input_dispatch(ctx, table, InputCategory::TRANSPORT, transport_id, value);
+}

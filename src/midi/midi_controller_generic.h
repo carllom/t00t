@@ -75,6 +75,14 @@ inline void midi_controller_process_generic(
             case MIDI_PROGRAM_CHANGE:
                 midi_dispatch_program_change(shadow, table, ev.channel, ev.data1);
                 break;
+            case MIDI_START:
+            case MIDI_CONTINUE:
+            case MIDI_STOP:
+                // Transport, like Configuration above, is Core-0-local by
+                // nature (a module's own transport state, not a shadow
+                // VoiceParams write) -- no params->commit() needed for it.
+                midi_dispatch_transport(shadow, table, (uint8_t)ev.type);
+                break;
             default: break;
         }
     }
