@@ -363,3 +363,61 @@ Verified: `make ENGINE=opl` links clean, `render_opl`/`render_opl_patch`/
 `t00t_opl_ctl_dump` all still build and pass, and the other five engines
 (`fm`/`subtractive`/`chip`/`groovebox`/`speech`/`tracker`) still build clean
 after the shared header changes.
+
+### Hardware Voice-Count Sweep (#82, partial: OPL BELL only)
+
+First real hardware numbers, `breadboard_rp2350`, GPIO-22 `PROFILE_PIN`
+duty cycle read via the display's CPU load bar (`audio_engine_load()`,
+mirrors the pin directly). Same `c/f/voice = (duty - idle) / voice_count`
+convention the FM module's own hardware pass used (`history_fm.md` "F8"),
+duty converting to cycles/frame at 150 MHz / 44.1 kHz = 3401 c/f.
+
+Patch #1 (OPL BELL), no FX:
+
+| voices | duty | cycles/frame | c/f/voice above idle |
+|---|---|---|---|
+| 0 | 0.55% | 18.7 | -- (idle) |
+| 1 | 3.90% | 132.7 | 113.9 |
+| 4 | 14.0% | 476.2 | 114.4 |
+| 8 | 27.4% | 931.9 | 114.2 |
+| 9 | 30.9% | 1050.9 | 114.7 |
+
+(9v was read with 12 notes held -- `MAX_VOICES=9` caps it there.) A clean
+line, `cycles ≈ 18.7 + 114.4 × N`.
+
+Same patch with delay:
+
+| voices | duty | cycles/frame | c/f/voice above idle |
+|---|---|---|---|
+| 0 | 1.99% | 67.7 | -- (idle) |
+| 1 | 5.4% | 183.7 | 116.0 |
+| 4 | 15.4% | 523.8 | 114.0 |
+| 8 | 28.8% | 979.6 | 114.0 |
+| 9 | 32.1% | 1091.8 | 113.8 |
+
+Same patch with reverb:
+
+| voices | duty | cycles/frame | c/f/voice above idle |
+|---|---|---|---|
+| 0 | 8.66% | 294.6 | -- (idle) |
+| 1 | 12.0% | 408.2 | 113.6 |
+| 4 | 22.1% | 751.7 | 114.3 |
+| 8 | 35.4% | 1204.1 | 113.7 |
+| 9 | 38.7% | 1316.3 | 113.5 |
+
+Per-voice cost holds at ~114 c/f/voice regardless of which FX is running,
+as expected -- FX is applied once post-mix, not per voice. FX fixed
+overhead (idle-with-FX minus idle-without): delay ~49.0 c/f (1.44% duty),
+reverb ~275.9 c/f (8.11% duty) -- close to the FM module's own
+independently-measured 268.7 c/f for the same shared `reverb.h`, a
+cross-check that both are measuring the same cost.
+
+Against the original scoping estimate of ~34 c/f/voice (flagged optimistic
+there): measured is ~114 c/f/voice, about 3.4x that estimate. At 9 voices
+(the max) plus reverb, duty is still only 38.7%, so `MAX_VOICES=9` carries
+large headroom regardless.
+
+One patch only so far -- FM's own hardware pass sampled 5 patches before
+settling a per-voice figure, since algorithm/feedback/LFO content varies
+the real per-block cost. More patches to follow before this closes out
+module_opl.md's Performance section.
