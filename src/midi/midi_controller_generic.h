@@ -75,6 +75,13 @@ inline void midi_controller_process_generic(
             case MIDI_PROGRAM_CHANGE:
                 midi_dispatch_program_change(shadow, table, ev.channel, ev.data1);
                 break;
+            case MIDI_CLOCK:
+                // Always dispatched -- a module with no CLOCK entry in its
+                // table is already a no-op via the Router's own contract,
+                // same as an unmapped NOTE/MODIFIER id.
+                midi_dispatch_clock(shadow, table, 0);
+                changed = true;
+                break;
             case MIDI_START:
             case MIDI_CONTINUE:
             case MIDI_STOP:

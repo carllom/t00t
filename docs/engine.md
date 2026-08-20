@@ -324,20 +324,22 @@ Router keeps the older `midi_controller.cpp` name until its own migration
 ticket. Both transports route through `midi_controller_process()`, which
 parses MIDI bytes and dispatches each message -- never resolving a voice
 itself; see the Voice Allocation Interface entry below. For `subtractive`,
-`fm`, `chip`, and `tracker`, this function is a one-line call into
-`midi_controller_process_generic()` (`src/midi/midi_controller_generic.h`),
+`fm`, `chip`, `tracker`, and `groovebox`, this function is a one-line call
+into `midi_controller_process_generic()` (`src/midi/midi_controller_generic.h`),
 which is built from `src/midi/midi_dispatch.h`'s shared, module-agnostic
 generic helpers — one per MIDI message shape (`midi_dispatch_cc()`,
 `midi_dispatch_pitch_bend()`, `midi_dispatch_program_change()`,
-`midi_dispatch_note()`, `midi_dispatch_transport()`). A module's own
-`input_subsystem.cpp` shrinks to its `kMappingTable`, its Handlers
-(including voice resolution, inside its own NOTE Handler), and that
-one-line call; `tracker` has no `NOTE`/`MODIFIER` entries at all (no
+`midi_dispatch_note()`, `midi_dispatch_clock()`, `midi_dispatch_transport()`).
+A module's own `input_subsystem.cpp` shrinks to its `kMappingTable`, its
+Handlers (including voice resolution, inside its own NOTE Handler), and
+that one-line call; `tracker` has no `NOTE`/`MODIFIER` entries at all (no
 live-note traffic, per module_tracker.md), which is fine — an unmatched
 category/id is always a no-op, same mechanism, just an empty table region.
-`groovebox` doesn't fit the "one voice per note" shape the generic loop
-assumes for `NOTE` (see Decision Record) and keeps its own fully
-independent, fully-forked `midi_controller_process()` for now.
+`groovebox` originally didn't fit the generic loop's uniform `NOTE`
+dispatch (channel picked the category itself) and kept its own forked
+loop for a while — see Decision Record entries 9 and 10 for how that
+barrier was removed by remapping its inputs, not by changing the
+mechanism.
 
 For `subtractive`/`fm`/`chip`, note on/off, **pitch bend**, per-module CCs
 (mod wheel/pan/instrument-select/speaker-sim as applicable), **CC72-75 (FX
@@ -377,14 +379,25 @@ The dispatch mechanism above (shared vocabulary and a per-module mapping
 table, #86) started `subtractive`-only; a from-scratch redesign of the
 whole input pipeline settled a fuller vocabulary and requirement set on top
 of it without discarding the mechanism itself — see Decision Record entry 5
-— and `fm`/`chip`/`tracker` have since joined `subtractive` in also sharing
-`midi_controller_process()`'s own generic message-dispatch shape
-(`src/midi/midi_dispatch.h`), not just the Router underneath it. `speech`
-(same dynamic-allocation, one-voice-per-note shape) is expected to migrate
-onto the same generic helpers next; `groovebox` adopting the Router at
-all, and non-MIDI input sources beyond GPIO buttons (e.g. potentiometers
--- `SensorEvent` already covers the shape, see `src/sensor_event.h`),
-remain open work.
+— and `fm`/`chip`/`tracker`/`groovebox` have since joined `subtractive` in
+also sharing `midi_controller_process()`'s own generic message-dispatch
+shape (`src/midi/midi_dispatch.h`), not just the Router underneath it.
+`groovebox` reached that point last and by a different route: it composed
+`midi_dispatch.h`'s lower-level generic helpers directly in its own
+process loop for a while, because its channel-semantic routing
+(drums/pattern-select/303) picked a different category per channel, which
+the shared loop's uniform `NOTE`/`CONFIGURATION` dispatch couldn't
+express. Remapping two inputs — drums moved from `Strike` to `Note`
+(channel decides what a note means *inside* the Handler, not the loop)
+and pattern-select moved from a `NOTE_ON`-shaped message to Program
+Change/`CONFIGURATION` (matching every other module's preset-select
+convention) — removed that barrier, and adding `MIDI_CLOCK` to the shared
+loop removed the last reason to keep a fork at all (see Decision Record
+entries 9 and 10). `speech` (same dynamic-allocation, one-voice-per-note
+shape as subtractive/fm/chip) is the only module left to migrate onto the
+generic loop; non-MIDI input sources beyond GPIO buttons (e.g.
+potentiometers -- `SensorEvent` already covers the shape, see
+`src/sensor_event.h`) remain open work.
 
 ### Input categories
 
@@ -392,11 +405,15 @@ Note, Strike, Modifier, Configuration, Clock, and Transport are the category
 vocabulary a source event is classified into before reaching a module's
 mapping table. Definitions live in root `CONTEXT.md`'s "Language" section,
 the single source of truth for this vocabulary — not duplicated here, to
-avoid a second copy drifting out of sync as the vocabulary evolves.
-`subtractive`, `fm`, `chip`, and `tracker` (`TRANSPORT`/`CONFIGURATION`
-only, no live-note traffic) are built against it via the generic dispatch
-mechanism so far; `groovebox` is deliberately excluded (see Decision
-Record).
+avoid a second copy drifting out of sync as the vocabulary evolves. Every
+migrated engine (`subtractive`, `fm`, `chip`, `tracker`, `groovebox`) is
+built against it via the generic dispatch mechanism now — `groovebox` uses
+`Configuration`/`Note`/`Modifier`/`Clock`/`Transport`, the richest table so
+far, all through the same shared loop every other migrated engine uses (see
+Decision Record). `Strike` remains part of the vocabulary but currently has
+no user: `groovebox`'s drums were its original motivating case, remapped
+onto `Note` (see Decision Record entry 10) once channel-based branching
+moved from the process loop into the Handler itself.
 
 Each module declares which categories it supports via a compile-time
 capability list, checked against its own mapping table with a
@@ -427,7 +444,14 @@ earlier version of this design assumed. Configurability is build-time only
    has no note traffic at all; `groovebox`'s routing is channel-semantic
    (fixed drum/pattern-select/mono-303 map), not "one voice per note."
    Forcing either through the generic Note/Strike dispatch would recreate the
-   mismatch that sank the routing-hook design in decision 1.
+   mismatch that sank the routing-hook design in decision 1. (Both later
+   migrated onto the Router anyway, without contradicting this — see
+   decisions 8/9: what stayed excluded, at first, was the *shared loop*
+   (`midi_controller_process_generic()`'s uniform dispatch), never the
+   category vocabulary or the Router mechanism itself. `groovebox`'s
+   exclusion from the shared loop specifically was later lifted by
+   remapping its inputs rather than changing the mechanism — see decision
+   10.)
 5. **A from-scratch input-pipeline redesign superseded #84/#85, without
    discarding #86's mechanism** — a wayfinder effort (issue #94, spec #99)
    revisited the whole Core 0 input pipeline with a goal the original design
@@ -451,23 +475,14 @@ earlier version of this design assumed. Configurability is build-time only
    boundary. Program Change is now a standing convention (`CONFIGURATION`,
    a shared synthetic id) for every module built against the Router, not a
    per-module choice; CC0/CC32 bank-select storage is shared, always-linked
-   state a Handler reads on demand. This doesn't retract decision 4:
-   `groovebox` still doesn't fit the "one voice per note" shape
+   state a Handler reads on demand. At the time, this didn't retract
+   decision 4: `groovebox` still didn't fit the "one voice per note" shape
    `midi_controller_process_generic()` assumes for `NOTE`, but nothing
-   stops it from calling the same lower-level generic dispatch helpers
+   stopped it from calling the same lower-level generic dispatch helpers
    (plain CC/pitch-bend/Configuration/NOTE dispatch) once its own
-   migration is taken up — decided per-module, not assumed.
-7. **`tracker` migrated onto `midi_controller_process_generic()` too**,
-   despite having zero live-note traffic — its `kMappingTable` simply has
-   no `NOTE`/`MODIFIER` entries, and an unmatched category/id is already a
-   no-op by the Router's own contract, so nothing needed to change about
-   the generic loop's NOTE/CC handling to accommodate that. What the loop
-   *did* need, and gained specifically for `tracker`: generic `TRANSPORT`
-   dispatch (`midi_dispatch_transport()`, Start/Continue/Stop), the first
-   module to actually exercise that category. Program Change stays
-   `CONFIGURATION` -- `tracker`'s own Handler just means "seek to an
-   order" by it, not "select a preset," consistent with `CONFIGURATION`'s
-   `value.index` field meaning whatever a module's Handler decides.
+   migration was taken up — decided per-module, not assumed. (Decision 10
+   is that later per-module call, and it did retract decision 4's
+   `groovebox`-specific claim.)
 7. **Voice allocation moved into `set_note()` itself**, correcting a
    deviation from spec #99's own Voice Allocation Interface design that
    had been present since the original #100-104 migration: the first pass
@@ -484,3 +499,58 @@ earlier version of this design assumed. Configurability is build-time only
    (unresolved) for the Handler to fill in. `controller.cpp`'s button path
    was fixed the same way, dropping its own pre-allocation and
    `ButtonState::allocated_voice` entirely.
+8. **`tracker` migrated onto `midi_controller_process_generic()` too**,
+   despite having zero live-note traffic — its `kMappingTable` simply has
+   no `NOTE`/`MODIFIER` entries, and an unmatched category/id is already a
+   no-op by the Router's own contract, so nothing needed to change about
+   the generic loop's NOTE/CC handling to accommodate that. What the loop
+   *did* need, and gained specifically for `tracker`: generic `TRANSPORT`
+   dispatch (`midi_dispatch_transport()`, Start/Continue/Stop), the first
+   module to actually exercise that category. Program Change stays
+   `CONFIGURATION` -- `tracker`'s own Handler just means "seek to an
+   order" by it, not "select a preset," consistent with `CONFIGURATION`'s
+   `value.index` field meaning whatever a module's Handler decides.
+9. **`groovebox` migrated too, but never through
+   `midi_controller_process_generic()`** — its NOTE dispatch isn't uniform
+   (channel decides whether a message is `Strike` (drums, fixed kit
+   voice), `Configuration` (pattern-select, a `NOTE_ON`-shaped message
+   dispatched under a different category entirely — spec #99's own worked
+   example), or `Note` (the 303, a fixed voice, not dynamic `voice_alloc`)),
+   so it composes `src/midi/midi_dispatch.h`'s lower-level generic helpers
+   directly in its own process loop instead, exactly the escape hatch
+   decision 6 anticipated. Two more generic helpers earned their place
+   doing this: `midi_dispatch_strike()` (identical shape to
+   `midi_dispatch_note()`, tagged `Strike`) and `midi_dispatch_clock()`
+   (identical shape to `midi_dispatch_transport()`, tagged `Clock`) — both
+   mirroring an existing category's dispatch function rather than
+   inventing a new shape. MIDI Clock's Handler drives the sequencer's own
+   Note-like 303 steps directly, never re-entering the Router a second
+   time (spec #99 user story 24). At the time, this didn't retract
+   decision 4: `groovebox`'s *routing* stayed exactly as forked as it
+   always was, only the mechanism underneath it was shared. Decision 10
+   is what finally retracted it.
+10. **`groovebox` adopted `midi_controller_process_generic()` after all —
+    by remapping its inputs, not by changing the mechanism.** Two remaps
+    removed the channel-semantic barrier decisions 4/9 described: drums
+    stopped dispatching as `Strike` and now dispatch as plain `Note`, with
+    `set_note()` itself branching on `value.channel` to decide drum-kit
+    lookup vs. TB-303 (the branch moved from the process loop into the
+    Handler, where it was always going to have to live once the loop
+    became uniform); and pattern-select moved from a `NOTE_ON`-shaped
+    message read as a raw note number to a Program Change on the pattern
+    channel, dispatched under `CONFIGURATION` like every other module's
+    preset select — `channel_filter`'s exact-match (not just "any
+    channel") is what routes it to `set_pattern_select()` instead of
+    colliding with a real preset select. Pitch bend's drum-channel
+    exclusion moved the same way, from a loop-level channel check into
+    `set_303_bend()` itself. The one piece that couldn't move into a
+    remap — `MIDI_CLOCK` — was missing from
+    `midi_controller_process_generic()` itself, not from `groovebox`'s
+    routing, so it was added there directly (dispatched via
+    `midi_dispatch_clock()`, a no-op for every module with no `CLOCK`
+    table entry, same as an unmatched `NOTE`/`MODIFIER` id). With all
+    three gone, `groovebox`'s `midi_controller_process()` collapsed to the
+    same one-line call every other migrated module uses. `midi_dispatch_strike()`
+    and `patterns.h`'s `SEQ_PATTERN_BASE_NOTE` — both `groovebox`-only,
+    both now unreferenced anywhere — were removed rather than left as dead
+    code.
