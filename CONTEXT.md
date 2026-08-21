@@ -279,7 +279,16 @@ channel state) — none of which mean "which screen is showing."
 **Widget**:
 A reusable rendering unit shared across modules' Pages — e.g. a parameter
 row, a value readout, a title/breadcrumb, a meter/bar — that renders one
-piece of module state to the screen in a standard way.
+piece of module state to the screen in a standard way. A Widget may offer
+more than one **presentation** of the same value at different screen
+footprints — e.g. a full-size PercentageBar alongside a not-yet-cataloged
+compact presentation (a single colored status square, a partial-fill bar
+packing more values into fewer pixel-rows) — so a module can choose
+footprint per value under space pressure. The catalog of compact
+presentations isn't decided yet — see wayfinder ticket "Compact Widget
+variants: catalog alternate low-footprint presentations", spun off from
+"Performance page: what 'dense summary of most tweakable controls' means
+structurally".
 _Avoid_: "Component" — already used loosely in this repo's own docs/history
 for generic, non-UI reusable code pieces (e.g. `history_groovebox.md`'s
 "Existing component" table, `history_speech.md`'s "Common Component
@@ -325,10 +334,26 @@ _Avoid_: "activity-grid" as a name for either ActivityGrid or VoiceGrid on
 its own — the two are independent Widgets, not variants of one grid.
 
 **Performance page**:
-The one required Page every module presents: a dense summary of most of that
-module's tweakable controls, serving as the module's default/main view.
-Other Pages hold whatever doesn't fit there, or doesn't belong densely
-packed alongside it.
+The one required Page every module presents: a dense, per-module-curated
+summary of the values most relevant to live playing, serving as the
+module's default/main view. Other Pages hold whatever doesn't fit there, or
+doesn't belong densely packed alongside it. Not an exhaustive listing of
+every Modifier or Configuration entry (see Input pipeline vocabulary
+above): "most" is a soft target, not a mandate — a module may omit
+lower-priority values under space pressure, provided they stay reachable on
+another Page. A module's single Configuration entry (its preset/patch
+select) is commonly included too, since knowing what's loaded is itself
+performance-relevant. No numeric minimum/maximum Widget count is implied;
+density is bounded only by panel space and by which Widget presentation
+(see Widget entry above) a module picks per value. A module may also define
+a small number of preset-triggered row variants sharing the Performance
+page's slot, when its live-relevant parameter set genuinely differs by
+selected preset (e.g. speech's per-voice-model parameters) — a permitted
+mechanism, not a requirement; most modules keep one static layout. Which
+fields actually appear on chip's/fm's/etc. Performance page, and how
+they're laid out, is a separate per-module follow-up (out of scope for this
+map) — this entry fixes only the rule above, not any module's concrete
+content.
 
 **Header**:
 The top chrome region of a Page — two rows (module name; Page name plus a
