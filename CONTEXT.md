@@ -281,14 +281,12 @@ A reusable rendering unit shared across modules' Pages — e.g. a parameter
 row, a value readout, a title/breadcrumb, a meter/bar — that renders one
 piece of module state to the screen in a standard way. A Widget may offer
 more than one **presentation** of the same value at different screen
-footprints — e.g. a full-size PercentageBar alongside a not-yet-cataloged
-compact presentation (a single colored status square, a partial-fill bar
-packing more values into fewer pixel-rows) — so a module can choose
-footprint per value under space pressure. The catalog of compact
-presentations isn't decided yet — see wayfinder ticket "Compact Widget
-variants: catalog alternate low-footprint presentations", spun off from
-"Performance page: what 'dense summary of most tweakable controls' means
-structurally".
+footprints, so a module can choose footprint per value under space
+pressure — e.g. PercentageBar's full label+%+bar form alongside Resource
+bar (see below), which folds CPU load and active-voice-count into one
+compact, unlabeled header indicator. This ticket settled only that one
+concrete composite, not a general compact-form-for-every-Widget catalog —
+see Resource bar's own entry for what's decided and what isn't.
 _Avoid_: "Component" — already used loosely in this repo's own docs/history
 for generic, non-UI reusable code pieces (e.g. `history_groovebox.md`'s
 "Existing component" table, `history_speech.md`'s "Common Component
@@ -332,6 +330,37 @@ and one of three caller-assigned colors — for voice detail that doesn't
 reduce to plain on/off, unlike ActivityGrid.
 _Avoid_: "activity-grid" as a name for either ActivityGrid or VoiceGrid on
 its own — the two are independent Widgets, not variants of one grid.
+
+**Resource bar**:
+A Widget living in the Header/title-bar chrome, not a Page body row: a
+horizontal bar, background-colored backdrop showing unfilled capacity,
+fixed at a 32px maximum width regardless of a module's real `MAX_VOICES`
+(32 is the largest real value, chip/tracker; other modules scale their
+per-voice pixel width so the bar still spans the full 32px at max voice
+count — 2px/voice at 16, 4px/voice at 8, a single proportional-rounded
+fill rather than per-voice bricks for counts that don't divide evenly,
+e.g. opl's 9). Folds two independent signals into one indicator: **fill
+length** is active voices ÷ `MAX_VOICES` (magnitude only); **fill color**
+is CPU load severity, reusing PercentageBar's existing threshold (green
+under 50%, amber under 80%, red past that) — so the bar can read "CPU-
+bound" (red) at half voice usage, or "comfortable" (green) at full voice
+usage. Carries no text or label of any kind; meaning is documented off-
+device, read the way a hardware synth's LED cluster is read. This is a
+real precision trade — exact CPU% and exact voice count aren't readable
+from this Widget, only relative magnitude and load-severity color are —
+made deliberately for the Performance page, where panel space is the
+scarce resource; PercentageBar and VoiceGrid's full labeled forms remain
+available wherever that detail is actually wanted (which Pages exist
+beyond Performance, and what they contain, is a separate, still-open
+question — see Performance page and the map's "Not yet specified").
+Settled on wayfinder ticket "Compact Widget variants: catalog alternate
+low-footprint presentations" as the one concrete compact-presentation
+catalog entry this ticket resolved — superseding two more elaborate
+proposals discussed and discarded in the same session (a separate CPU
+status-square icon alongside an independent voices bar; body-row compact
+forms reusing PercentageBar's shape for voice count). Prototype (four
+variants, pixel-accurate against the real panel/font) on branch
+`prototype/compact-widgets`.
 
 **Performance page**:
 The one required Page every module presents: a dense, per-module-curated
