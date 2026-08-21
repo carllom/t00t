@@ -1,0 +1,495 @@
+<!doctype html>
+<!--
+  PROTOTYPE — throwaway, not production code.
+  wayfinder ticket "Compact Widget variants: catalog alternate low-footprint
+  presentations" (#122), child of map "Display: shared UI components and
+  page structure" (#115).
+
+  Ticket #121 introduced Widget "presentation" (full vs. compact footprint)
+  but left the actual catalog of compact presentations, and how a module
+  picks one, undecided. Three structurally different proposals below, each
+  applied to a real, live limitation already in shipped code: chip/
+  display.cpp's own comment (module_chip.md §12.4 area) says MAX_VOICES=32
+  is "too many for a full one-cell-per-voice grid on this panel", so today
+  it just shows a fixed voices-0-7 grid plus an exact text count -- "past
+  that, the VOICES count row is still exact, only the grid stops being the
+  full picture." The left canvas stages that problem directly: what
+  VoiceGrid looks like if you actually try to run it at 32 cells against
+  this panel's real 240px width. The right canvas is CPU's real
+  PercentageBar (chip's CBAR_X/Y/W/H, COL_LOAD_LO/MID/HI thresholds) for the
+  same side-by-side reason -- both are candidates for a compact form, and
+  showing them at real geometry is the point.
+
+  Switch proposals via the bar at the bottom, or ?variant=A|B|C in the URL.
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<title>Compact Widget Variants</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500&display=swap">
+<style>
+  :root {
+    --bg:        #0b0d10;
+    --surface:   #14171c;
+    --border:    #262b32;
+    --ink:       #cdd3da;
+    --ink-dim:   #838d9b;
+    --accent:    #d8a76f;
+    --code-bg:   #1b1f26;
+    --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+    --font-sans: "IBM Plex Sans", -apple-system, "Segoe UI", sans-serif;
+  }
+  html, body { background:var(--bg); color:var(--ink); font-family:var(--font-sans); margin:0; padding:0; }
+  .wrap { display:flex; gap:28px; padding:32px; padding-bottom:100px; align-items:flex-start; flex-wrap:wrap; }
+  .panels { display:flex; gap:28px; flex-wrap:wrap; }
+  .panel-block { display:flex; flex-direction:column; gap:8px; align-items:center; }
+  .panel-title { font-family:var(--font-mono); font-size:12px; color:var(--ink-dim); text-transform:uppercase; letter-spacing:.06em; }
+  canvas { image-rendering: pixelated; image-rendering: crisp-edges; border:4px solid var(--border); border-radius:4px; background:var(--bg); }
+  .notes { max-width:480px; }
+  .notes h1 { font-family:var(--font-mono); font-weight:600; font-size:17px; letter-spacing:.02em; margin:0 0 8px; color:var(--ink); text-wrap:balance; }
+  .notes h2 { font-family:var(--font-mono); font-size:13px; color:var(--accent); margin:20px 0 6px; text-transform:uppercase; letter-spacing:.06em; }
+  .notes p, .notes li { font-size:14px; line-height:1.6; color:var(--ink-dim); }
+  .notes p b { color:var(--ink); font-weight:500; }
+  .notes code { font-family:var(--font-mono); background:var(--code-bg); color:var(--ink); padding:1px 5px; border-radius:3px; font-size:12.5px; }
+  .switcher {
+    position: fixed; left:50%; bottom:24px; transform:translateX(-50%);
+    background:var(--surface); border:1px solid var(--border); border-radius:999px;
+    padding:8px 6px; display:flex; align-items:center; gap:12px;
+    box-shadow: 0 4px 20px rgba(0,0,0,.5); font-family:var(--font-mono); font-size:13px; z-index:10;
+  }
+  .switcher button {
+    background:var(--code-bg); color:var(--ink); border:1px solid var(--border); border-radius:999px;
+    width:32px; height:32px; cursor:pointer; font-size:16px; font-family:var(--font-mono);
+  }
+  .switcher button:hover { background:var(--border); }
+  .switcher button:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+  .switcher .label { min-width:340px; text-align:center; }
+  .switcher .label b { color:var(--accent); font-weight:500; }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <div class="panels">
+    <div class="panel-block">
+      <div class="panel-title">The problem — VoiceGrid @ 32 voices, real CPU bar</div>
+      <canvas id="problem" width="240" height="284" style="width:480px;height:568px"></canvas>
+    </div>
+    <div class="panel-block">
+      <div class="panel-title">Proposal — same page, compact CPU + Voices</div>
+      <canvas id="panel" width="240" height="284" style="width:480px;height:568px"></canvas>
+    </div>
+  </div>
+  <div class="notes" id="notes"></div>
+</div>
+
+<div class="switcher">
+  <button id="prev">&larr;</button>
+  <div class="label" id="switch-label"></div>
+  <button id="next">&rarr;</button>
+</div>
+
+<script>
+// ---- exact font8x8_basic glyph data, extracted from src/wslcd/font8x8.h ----
+const FONT8X8_FIRST = 0x20;
+const FONT = [[0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00],[0x18,0x3C,0x3C,0x18,0x18,0x00,0x18,0x00],[0x36,0x36,0x00,0x00,0x00,0x00,0x00,0x00],[0x36,0x36,0x7F,0x36,0x7F,0x36,0x36,0x00],[0x0C,0x3E,0x03,0x1E,0x30,0x1F,0x0C,0x00],[0x00,0x63,0x33,0x18,0x0C,0x66,0x63,0x00],[0x1C,0x36,0x1C,0x6E,0x3B,0x33,0x6E,0x00],[0x06,0x06,0x03,0x00,0x00,0x00,0x00,0x00],[0x18,0x0C,0x06,0x06,0x06,0x0C,0x18,0x00],[0x06,0x0C,0x18,0x18,0x18,0x0C,0x06,0x00],[0x00,0x66,0x3C,0xFF,0x3C,0x66,0x00,0x00],[0x00,0x0C,0x0C,0x3F,0x0C,0x0C,0x00,0x00],[0x00,0x00,0x00,0x00,0x00,0x0C,0x0C,0x06],[0x00,0x00,0x00,0x3F,0x00,0x00,0x00,0x00],[0x00,0x00,0x00,0x00,0x00,0x0C,0x0C,0x00],[0x60,0x30,0x18,0x0C,0x06,0x03,0x01,0x00],[0x3E,0x63,0x73,0x7B,0x6F,0x67,0x3E,0x00],[0x0C,0x0E,0x0C,0x0C,0x0C,0x0C,0x3F,0x00],[0x1E,0x33,0x30,0x1C,0x06,0x33,0x3F,0x00],[0x1E,0x33,0x30,0x1C,0x30,0x33,0x1E,0x00],[0x38,0x3C,0x36,0x33,0x7F,0x30,0x78,0x00],[0x3F,0x03,0x1F,0x30,0x30,0x33,0x1E,0x00],[0x1C,0x06,0x03,0x1F,0x33,0x33,0x1E,0x00],[0x3F,0x33,0x30,0x18,0x0C,0x0C,0x0C,0x00],[0x1E,0x33,0x33,0x1E,0x33,0x33,0x1E,0x00],[0x1E,0x33,0x33,0x3E,0x30,0x18,0x0E,0x00],[0x00,0x0C,0x0C,0x00,0x00,0x0C,0x0C,0x00],[0x00,0x0C,0x0C,0x00,0x00,0x0C,0x0C,0x06],[0x18,0x0C,0x06,0x03,0x06,0x0C,0x18,0x00],[0x00,0x00,0x3F,0x00,0x00,0x3F,0x00,0x00],[0x06,0x0C,0x18,0x30,0x18,0x0C,0x06,0x00],[0x1E,0x33,0x30,0x18,0x0C,0x00,0x0C,0x00],[0x3E,0x63,0x7B,0x7B,0x7B,0x03,0x1E,0x00],[0x0C,0x1E,0x33,0x33,0x3F,0x33,0x33,0x00],[0x3F,0x66,0x66,0x3E,0x66,0x66,0x3F,0x00],[0x3C,0x66,0x03,0x03,0x03,0x66,0x3C,0x00],[0x1F,0x36,0x66,0x66,0x66,0x36,0x1F,0x00],[0x7F,0x46,0x16,0x1E,0x16,0x46,0x7F,0x00],[0x7F,0x46,0x16,0x1E,0x16,0x06,0x0F,0x00],[0x3C,0x66,0x03,0x03,0x73,0x66,0x7C,0x00],[0x33,0x33,0x33,0x3F,0x33,0x33,0x33,0x00],[0x1E,0x0C,0x0C,0x0C,0x0C,0x0C,0x1E,0x00],[0x78,0x30,0x30,0x30,0x33,0x33,0x1E,0x00],[0x67,0x66,0x36,0x1E,0x36,0x66,0x67,0x00],[0x0F,0x06,0x06,0x06,0x46,0x66,0x7F,0x00],[0x63,0x77,0x7F,0x7F,0x6B,0x63,0x63,0x00],[0x63,0x67,0x6F,0x7B,0x73,0x63,0x63,0x00],[0x1C,0x36,0x63,0x63,0x63,0x36,0x1C,0x00],[0x3F,0x66,0x66,0x3E,0x06,0x06,0x0F,0x00],[0x1E,0x33,0x33,0x33,0x3B,0x1E,0x38,0x00],[0x3F,0x66,0x66,0x3E,0x36,0x66,0x67,0x00],[0x1E,0x33,0x07,0x0E,0x38,0x33,0x1E,0x00],[0x3F,0x2D,0x0C,0x0C,0x0C,0x0C,0x1E,0x00],[0x33,0x33,0x33,0x33,0x33,0x33,0x3F,0x00],[0x33,0x33,0x33,0x33,0x33,0x1E,0x0C,0x00],[0x63,0x63,0x63,0x6B,0x7F,0x77,0x63,0x00],[0x63,0x63,0x36,0x1C,0x1C,0x36,0x63,0x00],[0x33,0x33,0x33,0x1E,0x0C,0x0C,0x1E,0x00],[0x7F,0x63,0x31,0x18,0x4C,0x66,0x7F,0x00],[0x1E,0x06,0x06,0x06,0x06,0x06,0x1E,0x00],[0x03,0x06,0x0C,0x18,0x30,0x60,0x40,0x00],[0x1E,0x18,0x18,0x18,0x18,0x18,0x1E,0x00],[0x08,0x1C,0x36,0x63,0x00,0x00,0x00,0x00],[0x00,0x00,0x00,0x00,0x00,0x00,0x00,0xFF],[0x0C,0x0C,0x18,0x00,0x00,0x00,0x00,0x00],[0x00,0x00,0x1E,0x30,0x3E,0x33,0x6E,0x00],[0x07,0x06,0x06,0x3E,0x66,0x66,0x3B,0x00],[0x00,0x00,0x1E,0x33,0x03,0x33,0x1E,0x00],[0x38,0x30,0x30,0x3e,0x33,0x33,0x6E,0x00],[0x00,0x00,0x1E,0x33,0x3f,0x03,0x1E,0x00],[0x1C,0x36,0x06,0x0f,0x06,0x06,0x0F,0x00],[0x00,0x00,0x6E,0x33,0x33,0x3E,0x30,0x1F],[0x07,0x06,0x36,0x6E,0x66,0x66,0x67,0x00],[0x0C,0x00,0x0E,0x0C,0x0C,0x0C,0x1E,0x00],[0x30,0x00,0x30,0x30,0x30,0x33,0x33,0x1E],[0x07,0x06,0x66,0x36,0x1E,0x36,0x67,0x00],[0x0E,0x0C,0x0C,0x0C,0x0C,0x0C,0x1E,0x00],[0x00,0x00,0x33,0x7F,0x7F,0x6B,0x63,0x00],[0x00,0x00,0x1F,0x33,0x33,0x33,0x33,0x00],[0x00,0x00,0x1E,0x33,0x33,0x33,0x1E,0x00],[0x00,0x00,0x3B,0x66,0x66,0x3E,0x06,0x0F],[0x00,0x00,0x6E,0x33,0x33,0x3E,0x30,0x78],[0x00,0x00,0x3B,0x6E,0x66,0x06,0x0F,0x00],[0x00,0x00,0x3E,0x03,0x1E,0x30,0x1F,0x00],[0x08,0x0C,0x3E,0x0C,0x0C,0x2C,0x18,0x00],[0x00,0x00,0x33,0x33,0x33,0x33,0x6E,0x00],[0x00,0x00,0x33,0x33,0x33,0x1E,0x0C,0x00],[0x00,0x00,0x63,0x6B,0x7F,0x7F,0x36,0x00],[0x00,0x00,0x63,0x36,0x1C,0x36,0x63,0x00],[0x00,0x00,0x33,0x33,0x33,0x3E,0x30,0x1F],[0x00,0x00,0x3F,0x19,0x0C,0x26,0x3F,0x00],[0x38,0x0C,0x0C,0x07,0x0C,0x0C,0x38,0x00],[0x18,0x18,0x18,0x00,0x18,0x18,0x18,0x00],[0x07,0x0C,0x0C,0x38,0x0C,0x0C,0x07,0x00],[0x6E,0x3B,0x00,0x00,0x00,0x00,0x00,0x00]];
+
+// ---- chip module's real palette, from src/engines/chip/display.cpp ----
+const COL_BG       = "rgb(0,0,0)";
+const COL_TITLE    = "rgb(200,120,20)";   // chip's amber COL_TITLE
+const COL_LABEL    = "rgb(110,120,140)";
+const COL_VALUE    = "rgb(240,240,240)";
+const COL_OFF      = "rgb(28,28,34)";
+const COL_LOAD_LO  = "rgb(60,200,90)";
+const COL_LOAD_MID = "rgb(240,180,0)";
+const COL_LOAD_HI  = "rgb(230,60,50)";
+const COL_SND      = "rgb(60,220,90)";    // sounding fill (subtractive's COL_SND, same green family)
+const COL_WHITE    = "rgb(255,255,255)";
+
+// ---- real geometry, src/engines/chip/display.cpp ----
+const LCD_W = 240, LCD_H = 284;
+const VAL_X = 104;
+const ROW_VOICES = 36, ROW_CPU = 76, ROW_NOTE = 116;
+const CBAR_X = 4, CBAR_Y = 96, CBAR_W = 232, CBAR_H = 12;
+const VBAR_Y = 56, VBAR_H = 14, VCELL_PITCH = 15, VCELL_W = 13; // subtractive's VoiceGrid geometry, same shape chip would need if it tried a full grid
+const MAX_VOICES = 32; // chip's real MAX_VOICES
+
+function loadColor(pct) { return pct < 50 ? COL_LOAD_LO : (pct < 80 ? COL_LOAD_MID : COL_LOAD_HI); }
+
+function glyphOf(ch) {
+  const i = ch.charCodeAt(0) - FONT8X8_FIRST;
+  return (i >= 0 && i < FONT.length) ? FONT[i] : FONT['?'.charCodeAt(0) - FONT8X8_FIRST];
+}
+
+let ctx; // set per-draw call
+
+function fillRect(x, y, w, h, color) { ctx.fillStyle = color; ctx.fillRect(x, y, w, h); }
+
+// Mirrors gfx_text(): whole-glyph blits, clips at LCD_W.
+function gfxText(x, y, s, fg, bg, scale) {
+  const gw = 8 * scale, gh = 8 * scale;
+  for (const ch of s) {
+    if (x + gw > LCD_W) break;
+    const glyph = glyphOf(ch);
+    fillRect(x, y, gw, gh, bg);
+    ctx.fillStyle = fg;
+    for (let gy = 0; gy < 8; gy++) {
+      const bits = glyph[gy];
+      for (let gx = 0; gx < 8; gx++) {
+        if (bits & (1 << gx)) ctx.fillRect(x + gx * scale, y + gy * scale, scale, scale);
+      }
+    }
+    x += gw;
+  }
+  return x;
+}
+
+// mirrors draw_val(): pads/truncates to a fixed char width so re-draws clear old content.
+function drawVal(y, raw, fg, chars, x) {
+  x = x ?? VAL_X;
+  let s = raw.length > chars ? raw.slice(0, chars) : raw.padEnd(chars, ' ');
+  gfxText(x, y, s, fg, COL_BG, 2);
+}
+
+// ---- panel-corner mask: the visible glass is rounded ~30px at each
+// corner (docs/lcd-driver-capabilities.md). Not load-bearing for anything
+// drawn below row ~40, so only applied to the title bar clip.
+const CORNER_R = 30, CORNER_BUFFER = 3;
+function cornerInset(y) {
+  if (y >= CORNER_R) return 0;
+  return Math.ceil(CORNER_R - Math.sqrt(CORNER_R * CORNER_R - (CORNER_R - y) * (CORNER_R - y))) + CORNER_BUFFER;
+}
+
+function drawTitleBar() {
+  fillRect(0, 0, LCD_W, 30, COL_TITLE);
+  for (let y = 0; y < 30; y++) {
+    const inset = cornerInset(y);
+    if (inset > 0) { fillRect(0, y, inset, 1, COL_BG); fillRect(LCD_W - inset, y, inset, 1, COL_BG); }
+  }
+  gfxText((LCD_W - 96) / 2, 3, "t00t", COL_WHITE, COL_TITLE, 3);
+}
+
+// ---- the real, live problem: VoiceGrid's one-cell-per-voice shape doesn't
+// fit 32 voices in 240px (240/15 = 16 cells max per row). This mirrors
+// chip/display.cpp's own comment: it never actually tries this today --
+// the shipped code caps at GRID_VOICES=8 instead. Rendered here anyway, at
+// real VCELL_PITCH/VCELL_W, wrapped to however many rows it actually takes,
+// so the cost is visible rather than asserted.
+function drawVoiceGridOverflow(y0, activeCount) {
+  const perRow = Math.floor(LCD_W / VCELL_PITCH); // 16
+  const rows = Math.ceil(MAX_VOICES / perRow);
+  for (let v = 0; v < MAX_VOICES; v++) {
+    const col = v % perRow, row = Math.floor(v / perRow);
+    const x = col * VCELL_PITCH, y = y0 + row * (VBAR_H + 2);
+    fillRect(x, y, VCELL_W, VBAR_H, v < activeCount ? COL_SND : COL_OFF);
+  }
+  return y0 + rows * (VBAR_H + 2);
+}
+
+function drawPercentageBar(y, pct, label) {
+  const c = loadColor(pct);
+  gfxText(0, y, label, COL_LABEL, COL_BG, 2);
+  drawVal(y, pct + "%", c, 4);
+  const barY = y + 20;
+  const fill = Math.round(pct * CBAR_W / 100);
+  fillRect(CBAR_X, barY, fill, CBAR_H, c);
+  fillRect(CBAR_X + fill, barY, CBAR_W - fill, CBAR_H, COL_OFF);
+  return barY + CBAR_H;
+}
+
+// ---- "the problem" canvas: real CPU PercentageBar + VoiceGrid pushed to
+// 32 cells, unmodified from today's shapes. Same for every variant. ----
+function drawProblem(demo) {
+  fillRect(0, 0, LCD_W, LCD_H, COL_BG);
+  drawTitleBar();
+  gfxText(0, ROW_VOICES, "VOICES", COL_LABEL, COL_BG, 2);
+  drawVal(ROW_VOICES, demo.voices + "/" + MAX_VOICES, COL_VALUE, 8);
+  const afterGrid = drawVoiceGridOverflow(VBAR_Y, demo.voices);
+  drawPercentageBar(ROW_CPU + (afterGrid - VBAR_Y), demo.cpu, "CPU");
+  gfxText(0, LCD_H - 24, "2 rows, 16px over", COL_LABEL, COL_BG, 1);
+  gfxText(0, LCD_H - 14, "budget just for VOICES", COL_LABEL, COL_BG, 1);
+}
+
+// D: CPU + Voices leave the body entirely and live as unlabeled icons in
+// the title bar itself -- a status square (CPU) and a capacity bar
+// (Voices), sized and read like an LED cluster on a hardware synth panel.
+// No text anywhere; meaning lives in the manual, not on screen.
+const VOICE_BAR_MAX_PX = 32; // fixed regardless of module -- the largest
+                              // real MAX_VOICES (chip/tracker) maps 1:1
+function clusterSafeMargin(yTop, yBot) {
+  let m = 0;
+  for (let y = yTop; y < yBot; y++) m = Math.max(m, cornerInset(y));
+  return m;
+}
+function drawHeaderIcons(demo) {
+  const sqSize = 14, barH = 12, gap = 4, rightPad = 2;
+  const clusterH = Math.max(sqSize, barH);
+  const clusterTop = Math.round((30 - clusterH) / 2);
+  const margin = clusterSafeMargin(clusterTop, clusterTop + clusterH);
+  const clusterW = sqSize + gap + VOICE_BAR_MAX_PX;
+  const rightEdge = LCD_W - margin - rightPad;
+  const sqX = rightEdge - clusterW;
+  const sqY = clusterTop + Math.round((clusterH - sqSize) / 2);
+  fillRect(sqX, sqY, sqSize, sqSize, loadColor(demo.cpu));
+
+  const barX = sqX + sqSize + gap;
+  const barY = clusterTop + Math.round((clusterH - barH) / 2);
+  fillRect(barX, barY, VOICE_BAR_MAX_PX, barH, COL_BG); // empty capacity, visible against COL_TITLE
+  const filledPx = Math.round(demo.voices * VOICE_BAR_MAX_PX / MAX_VOICES);
+  fillRect(barX, barY, filledPx, barH, COL_SND);
+}
+function drawHeaderWithIcons(demo) {
+  drawTitleBar();      // title bar + corner mask + centered "t00t", unchanged
+  drawHeaderIcons(demo);
+}
+function drawVariantD(demo, y0) {
+  // CPU/Voices no longer occupy body rows at all -- NOTE starts where
+  // VOICES used to.
+  return y0;
+}
+
+// ---- variant-specific compact forms ----
+
+// A: two distinct compact shapes (status square / proportional voice bar),
+// each Widget carries a static `compact` flag chosen once when a module's
+// Page is composed -- same spirit as today's hand-fixed row layout, just
+// with a second draw path per Widget instead of a second Widget type.
+function drawVariantA(demo, y0) {
+  let y = y0;
+  gfxText(0, y, "CPU", COL_LABEL, COL_BG, 2);
+  fillRect(VAL_X, y, 16, 16, loadColor(demo.cpu));
+  drawVal(y, demo.cpu + "%", COL_VALUE, 4, VAL_X + 22);
+  y += 24;
+  gfxText(0, y, "VOICES", COL_LABEL, COL_BG, 2);
+  drawVal(y, demo.voices + "/" + MAX_VOICES, COL_VALUE, 8);
+  y += 18;
+  const frac = demo.voices / MAX_VOICES;
+  const fill = Math.round(frac * CBAR_W);
+  fillRect(CBAR_X, y, fill, 16, COL_SND);
+  fillRect(CBAR_X + fill, y, CBAR_W - fill, 16, COL_OFF);
+  return y + 16 + 8;
+}
+
+// B: three tiers (full / compact / micro). Both CPU and Voices collapse
+// into ONE shared "status strip" row at the micro tier -- a Page-level
+// `density` enum (NORMAL / DENSE) switches every eligible Widget on the
+// Page at once, not per-instance.
+function drawVariantB(demo, y0) {
+  let y = y0;
+  gfxText(0, y, "STATUS", COL_LABEL, COL_BG, 2);
+  // CPU micro: single 14x14 square.
+  fillRect(VAL_X, y + 1, 14, 14, loadColor(demo.cpu));
+  // Voices micro: 4-segment block meter, one segment per 8 voices.
+  const segX = VAL_X + 22, segW = 14, segGap = 3, segH = 14;
+  const segs = 4, activeSegs = Math.ceil(demo.voices / (MAX_VOICES / segs));
+  for (let i = 0; i < segs; i++) {
+    fillRect(segX + i * (segW + segGap), y + 1, segW, segH, i < activeSegs ? COL_SND : COL_OFF);
+  }
+  y += 24;
+  return y + 8;
+}
+
+// C: one unified shape -- both CPU and Voices are the same generalized
+// fill-bar Widget (PercentageBar, generalized from 0-100% to arbitrary
+// count/max), parameterized only by what fraction they show. No separate
+// "square" shape exists. Selection isn't a flag: the Widget's own render
+// function is handed a width budget by the layout code and decides
+// continuously (full label -> short label -> no label) based on what it's
+// given, rather than the caller picking a discrete mode.
+function drawVariantC(demo, y0) {
+  let y = y0;
+  function fillBar(label, valueText, frac, color, width) {
+    const barY = y + 16 + 2;
+    if (width >= 140) { // enough room for a label
+      gfxText(0, y, label, COL_LABEL, COL_BG, 2);
+      drawVal(y, valueText, COL_VALUE, 6);
+    } // else: label omitted entirely, only the bar draws -- self-adapting to width
+    const fill = Math.round(frac * width);
+    fillRect(CBAR_X, barY, fill, 14, color);
+    fillRect(CBAR_X + fill, barY, width - fill, 14, COL_OFF);
+    return barY + 14;
+  }
+  y = fillBar("CPU", demo.cpu + "%", demo.cpu / 100, loadColor(demo.cpu), CBAR_W) + 10;
+  y = fillBar("VOICES", demo.voices + "/" + MAX_VOICES, demo.voices / MAX_VOICES, COL_SND, CBAR_W) + 10;
+  return y;
+}
+
+const BONUS_ROWS = {
+  A: 1, // one new row fits in the freed space
+  B: 2, // status strip frees the most space in the body -- two new rows fit
+  C: 1,
+  D: 3, // CPU+Voices leave the body entirely -- most body space freed of all four
+};
+
+function drawBonusRows(y0, count) {
+  const labels = ["ENV  A:42 D:180", "LFO  2.4Hz sq", "FX   Delay 42%"];
+  let y = y0;
+  for (let i = 0; i < count; i++) {
+    gfxText(0, y, labels[i], COL_VALUE, COL_BG, 1);
+    y += 12;
+  }
+  return y;
+}
+
+function drawVariant(key, demo) {
+  fillRect(0, 0, LCD_W, LCD_H, COL_BG);
+  if (key === 'D') {
+    drawHeaderWithIcons(demo);
+  } else {
+    drawTitleBar();
+  }
+  let y;
+  if (key === 'A') y = drawVariantA(demo, ROW_VOICES);
+  else if (key === 'B') y = drawVariantB(demo, ROW_VOICES);
+  else if (key === 'C') y = drawVariantC(demo, ROW_VOICES);
+  else y = drawVariantD(demo, ROW_VOICES);
+  gfxText(0, y + 4, "NOTE", COL_LABEL, COL_BG, 2);
+  drawVal(y + 4, "C4 v100", COL_VALUE, 8);
+  drawBonusRows(y + 26, BONUS_ROWS[key]);
+}
+
+// ---- demo data: a plausible mid-session snapshot ----
+const demo = { voices: 19, cpu: 47 };
+
+const variants = {
+  A: {
+    name: "Two shapes, static per-instance flag",
+    notes: `
+      <h2>Shape</h2>
+      <p><b>CPU compact</b>: a bare 16&times;16 status square, same 3-tier
+      load-threshold color as today's PercentageBar (&lt;50 green, &lt;80
+      amber, else red) &mdash; label and text kept, bar dropped.</p>
+      <p><b>Voices compact</b>: a proportional fill bar, literally the same
+      draw shape as PercentageBar, just fed <code>voices/MAX_VOICES</code>
+      instead of a load percentage. One color (green), since voice count
+      alone isn't a danger signal the way CPU load is.</p>
+      <h2>Selection</h2>
+      <p>Each Widget instance carries a <code>compact</code> bool, set once
+      when a module's Page layout is composed &mdash; matching how row
+      positions are already hand-fixed per module today. No runtime
+      switching.</p>
+      <h2>Cost / benefit</h2>
+      <p>Frees enough vertical room for <b>one</b> new row (shown here as a
+      speculative ENV readout). Cheapest to implement: two new draw paths,
+      no new Widget concepts.</p>
+    `,
+  },
+  B: {
+    name: "Three tiers, Page-level density mode",
+    notes: `
+      <h2>Shape</h2>
+      <p>Adds a <b>micro</b> tier past compact: CPU and Voices collapse
+      into one shared "STATUS" row &mdash; CPU as a small square, Voices as
+      a 4-segment block meter (each segment = 8 of 32 voices). Structurally
+      different from A: two Widgets become one row, not two smaller rows.</p>
+      <h2>Selection</h2>
+      <p>Not per-Widget: a Page-level <code>density</code> enum
+      (<code>NORMAL</code>/<code>DENSE</code>) flips every eligible Widget
+      on the Page at once. Simpler mental model (one switch, not N), less
+      flexible (can't compact just CPU and leave Voices full).</p>
+      <h2>Cost / benefit</h2>
+      <p>Frees the most space of the three &mdash; <b>two</b> new rows fit
+      (ENV + LFO shown here). Costs the most: a new "status strip" Widget
+      shape that doesn't exist today, plus Page-level state.</p>
+    `,
+  },
+  C: {
+    name: "One unified shape, width-driven selection",
+    notes: `
+      <h2>Shape</h2>
+      <p>No separate "icon" shape at all. CPU and Voices compact forms are
+      the <b>same</b> generalized fill-bar Widget (PercentageBar widened
+      from 0&ndash;100% to arbitrary count/max) &mdash; visually consistent
+      with the rest of the UI even under space pressure, never switching to
+      a different visual language.</p>
+      <h2>Selection</h2>
+      <p>Not a flag at all: the layout code hands each Widget a width
+      budget: at full width it draws label + value + bar (see NOTE row's
+      display below); this demo's fixed CBAR_W keeps both at full width to
+      show the shape, but the render function is written to drop the label
+      first, then shrink the bar, as budget tightens &mdash; a continuum,
+      not a mode switch.</p>
+      <h2>Cost / benefit</h2>
+      <p>Frees room for <b>one</b> new row here (bar height alone doesn't
+      shrink as much as A's square). Implementation cost is in the
+      generalized fill-bar primitive and the width-query layout API, not in
+      new Widget types.</p>
+    `,
+  },
+  D: {
+    name: "Header icons, no on-device label (Carl's proposal)",
+    notes: `
+      <h2>Shape</h2>
+      <p>CPU and Voices leave the body <b>entirely</b> and live as
+      unlabeled icons in the title bar, right of the centered module name
+      &mdash; read the way an LED cluster on a hardware synth panel is
+      read: meaning lives in the manual, not on screen.</p>
+      <p><b>CPU</b>: a bare 14&times;14 square, same 3-tier load-threshold
+      color as every other variant. <b>Voices</b>: a horizontal capacity
+      bar, black background so its empty portion (unused headroom) is
+      visible, fixed at a <b>32px maximum width</b> regardless of the
+      module's real <code>MAX_VOICES</code> &mdash; chip/tracker (32) fill
+      1px/voice, subtractive/fm/groovebox (16) fill 2px/voice, speech (8)
+      fills 4px/voice, matching your spec exactly. opl's MAX_VOICES=9 gives
+      a non-whole 3.55px/voice, but the fill is one proportional-rounded
+      rect, not per-voice bricks, so that's cosmetically fine, not a real
+      edge case.</p>
+      <p>Orientation: I went <b>horizontal</b>, not vertical &mdash; the
+      title bar is only 30px tall today (and the settled-but-unbuilt
+      2-row Header spec tops out at 32px total, shared with the Page-name
+      row on multi-Page modules), so a 32px-<i>tall</i> bar risks
+      colliding with that budget. Horizontal has 240px of width to spend
+      and sits comfortably in the free space right of the centered title
+      text. Open to being wrong about this.</p>
+      <p>Placement is corner-mask-aware: the cluster's left edge is pushed
+      in by whatever the rounded-corner inset demands over the icons' own
+      y-range (see <code>clusterSafeMargin()</code>), not a hand-picked
+      number.</p>
+      <h2>Selection</h2>
+      <p>Not a per-value compactness choice at all &mdash; CPU and Voices
+      simply stop being body Widgets for any module that adopts this, full
+      stop. No flag, no mode: it's a placement decision made once, outside
+      the Widget-presentation system entirely.</p>
+      <h2>Cost / benefit</h2>
+      <p>Frees the <b>most</b> body space of all four proposals &mdash;
+      the entire former VOICES+CPU block, <b>three</b> new rows fit (ENV +
+      LFO + FX shown here). Trade: CPU% and exact voice count are no
+      longer readable at a glance anywhere on screen &mdash; only relative
+      magnitude and load-severity color survive. Worth confirming that's
+      an acceptable loss before committing.</p>
+    `,
+  },
+};
+
+const keys = Object.keys(variants);
+function currentKey() {
+  const v = new URLSearchParams(location.search).get('variant');
+  return keys.includes(v) ? v : 'A';
+}
+function setKey(k) {
+  const url = new URL(location);
+  url.searchParams.set('variant', k);
+  history.replaceState(null, '', url);
+  render();
+}
+function render() {
+  const key = currentKey();
+  ctx = document.getElementById('problem').getContext('2d');
+  drawProblem(demo);
+  ctx = document.getElementById('panel').getContext('2d');
+  drawVariant(key, demo);
+  const v = variants[key];
+  document.getElementById('switch-label').innerHTML = `<b>${key}</b> &mdash; ${v.name}`;
+  document.getElementById('notes').innerHTML = `<h1>${key} &mdash; ${v.name}</h1>${v.notes}`;
+}
+document.getElementById('prev').onclick = () => setKey(keys[(keys.indexOf(currentKey()) - 1 + keys.length) % keys.length]);
+document.getElementById('next').onclick = () => setKey(keys[(keys.indexOf(currentKey()) + 1) % keys.length]);
+window.addEventListener('keydown', (e) => {
+  if (['INPUT','TEXTAREA'].includes(document.activeElement.tagName) || document.activeElement.isContentEditable) return;
+  if (e.key === 'ArrowLeft') document.getElementById('prev').click();
+  if (e.key === 'ArrowRight') document.getElementById('next').click();
+});
+render();
+</script>
+</body>
+</html>
