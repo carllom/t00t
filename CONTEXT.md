@@ -163,6 +163,30 @@ source-native values (e.g. a raw 0-127 MIDI velocity), not module-native
 ones — see Shaping vs. Normalization below. Replaces the #86-era
 `InputValue` as the working name.
 
+**UI command**:
+A sibling to Input event, not a member of it: the parsed form of one of
+four generic, deliberately context-dependent commands — `+`/`-` (aka
+Increase/Decrease, Next/Previous) and `enter`/`exit` (aka select/yes, no).
+Still flows through the ordinary Sensor event → Shaping stages (no new
+parsing/debounce/shaping plumbing), but diverges *before* the Router —
+Router/Handler stays exclusively for dispatching Input events to
+module-owned audio-engine state, and a UI command never reaches a module
+Handler. This split is deliberate, not incidental: the Input pipeline's
+whole design point is that a module's mapping table and Handler logic stay
+"entirely my own — never forced through a shared routing hook another
+module's needs shaped" (spec #99's own user story 2), which is the
+opposite of what UI navigation needs — one identical, standardized
+behavior shared by all 7 engine modules, not seven per-module forks.
+Whatever consumes UI command must be fully optional: a board/config with
+no UI-navigation control wired (or `HAS_LCD=0`) leaves audio functionality
+completely unaffected, matching the board-conditional pattern the LCD
+itself already follows. Only one concrete meaning for these four commands
+is decided so far — see Page's entry below for Page navigation, wayfinder
+ticket "Page navigation: how a module's Pages relate and get switched,
+control-agnostic". The general command vocabulary as a reusable primitive
+across other, not-yet-designed interaction contexts (value editing,
+confirm/cancel) is intentionally left open.
+
 **Shaping**:
 Generic, cross-module value-adjustment that runs before the Router, in the
 input's own source-native terms (raw MIDI bytes, not a module's native
@@ -271,6 +295,18 @@ One of a module's several top-level display screens, each presenting a
 different aspect of the module (e.g. a main performance view vs. an FX view).
 Refreshes at a shared 10Hz base cadence unless it overrides that rate for
 genuinely time-critical content (e.g. tracking live playback position).
+Navigated by UI command's `+`/`-` (step through the module's own ordered
+Page list, wrapping at both ends) and `exit` (jump directly to the
+Performance page) — the default, fallback meaning of those commands
+whenever no more specific interaction context has claimed them, not a
+separately-entered "Page navigation mode". A shared Page/Header framework
+owns the current-Page cursor for every module — a module only declares its
+own ordered Page list, never its own navigation logic — so this behavior
+is one implementation, identical across all 7 engine modules, not a
+per-module fork. See UI command (Input pipeline vocabulary, above) for why
+this doesn't route through Router/Handler like audio-facing input does.
+Settled on wayfinder ticket "Page navigation: how a module's Pages relate
+and get switched, control-agnostic".
 _Avoid_: "Mode" — already claimed by several unrelated concepts in this
 codebase (`FilterMode`; `SpeechMode`'s LOOP/GATED/ONESHOT playback behavior;
 groovebox's own display already has a literal `MODE` row showing DRUM-vs-303
