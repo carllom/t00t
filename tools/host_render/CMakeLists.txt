@@ -279,3 +279,18 @@ target_include_directories(test_gfx PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}
     ${CMAKE_CURRENT_LIST_DIR}/../../src/wslcd
 )
+
+# Host build of src/wslcd/value_row.h (issue #128): the Value row Widget's
+# own unit tests. Header-only, but its gfx_text() calls need a real gfx.cpp
+# to link against -- reuses test_gfx's GFX_HOST_COPY (regenerated from the
+# real file on every build, see the comment above) instead of duplicating
+# that build-time copy trick.
+add_executable(test_value_row
+    test_value_row.cpp
+    ${GFX_HOST_COPY}
+)
+target_include_directories(test_value_row PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}/host_stub_lcd
+    ${CMAKE_CURRENT_LIST_DIR}
+    ${CMAKE_CURRENT_LIST_DIR}/../../src/wslcd
+)
