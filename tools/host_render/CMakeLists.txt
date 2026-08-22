@@ -234,3 +234,31 @@ target_include_directories(t00t_opl_ctl_dump PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}
     ${CMAKE_CURRENT_LIST_DIR}/../../src
 )
+
+# Host build of src/wslcd/gfx.cpp: the tile-based graphics layer's own unit
+# tests, run against host_stub_lcd/'s in-memory ST7789 stand-in instead of
+# real hardware. gfx.cpp's own #include "lcd_st7789.h" is a quote-include, and
+# the compiler always resolves that against gfx.cpp's own directory before
+# consulting any -I path -- so the stub can't shadow the real driver header
+# for a gfx.cpp compiled straight from src/wslcd/. Instead, a verbatim
+# build-time copy of gfx.cpp is compiled from a directory with no real
+# lcd_st7789.h next to it, so host_stub_lcd/ (listed first below) is what its
+# #include resolves to. The copy is regenerated from the real file on every
+# build (see DEPENDS), so it can never drift from it.
+set(GFX_HOST_COPY ${CMAKE_CURRENT_BINARY_DIR}/gfx_host_copy/gfx.cpp)
+add_custom_command(
+    OUTPUT ${GFX_HOST_COPY}
+    COMMAND ${CMAKE_COMMAND} -E copy
+            ${CMAKE_CURRENT_LIST_DIR}/../../src/wslcd/gfx.cpp
+            ${GFX_HOST_COPY}
+    DEPENDS ${CMAKE_CURRENT_LIST_DIR}/../../src/wslcd/gfx.cpp
+)
+add_executable(test_gfx
+    test_gfx.cpp
+    ${GFX_HOST_COPY}
+)
+target_include_directories(test_gfx PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}/host_stub_lcd
+    ${CMAKE_CURRENT_LIST_DIR}
+    ${CMAKE_CURRENT_LIST_DIR}/../../src/wslcd
+)
