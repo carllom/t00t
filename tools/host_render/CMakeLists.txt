@@ -37,6 +37,14 @@ target_include_directories(test_page_cursor PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}/../../src
 )
 
+# Host build of src/wslcd/refresh_cadence.h: the shared refresh-cadence
+# framework's own unit tests. Pure logic, no LCD stub dependency.
+add_executable(test_refresh_cadence test_refresh_cadence.cpp)
+target_include_directories(test_refresh_cadence PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}
+    ${CMAKE_CURRENT_LIST_DIR}/../../src
+)
+
 # Host build of src/envelope.h's non-interruptible release option (ticket
 # #100). Pulls in envelope.cpp for env_config(); no other sources needed.
 add_executable(test_envelope
