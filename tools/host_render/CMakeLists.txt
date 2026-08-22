@@ -28,6 +28,15 @@ target_include_directories(test_input_layer PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}/../../src
 )
 
+# Host build of src/wslcd/page.h (issue #126): the shared Page-navigation
+# cursor state machine's own unit tests. Pure logic, no LCD stub needed --
+# unlike test_gfx.cpp below, page.h has no gfx.cpp/lcd_st7789.h dependency.
+add_executable(test_page_cursor test_page_cursor.cpp)
+target_include_directories(test_page_cursor PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}
+    ${CMAKE_CURRENT_LIST_DIR}/../../src
+)
+
 # Host build of src/envelope.h's non-interruptible release option (ticket
 # #100). Pulls in envelope.cpp for env_config(); no other sources needed.
 add_executable(test_envelope
