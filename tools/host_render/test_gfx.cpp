@@ -78,6 +78,62 @@ bool test_text_glyph_pixels(const char *) {
     return ok;
 }
 
+// Checks gfx_text_bar()'s per-pixel-column fg/fill/off split at a given
+// fill_x (a panel x-coordinate) against the glyph bits directly -- the
+// primitive issue #129 adds so a Value bar's fill boundary can land inside
+// a single glyph's cell, not only on a glyph edge.
+bool check_text_bar_boundary(int fill_x, const char *label) {
+    lcd_stub_clear(0x0000);
+    const uint16_t fg = gfx_rgb(255, 255, 255);
+    const uint16_t fill = gfx_rgb(70, 130, 180);
+    const uint16_t off = gfx_rgb(28, 28, 34);
+    const int scale = 2;
+    const int x0 = 5, y0 = 7;
+
+    gfx_text_bar(x0, y0, "A", fg, fill, off, fill_x, scale);
+
+    const uint8_t *glyph = font8x8_basic['A' - FONT8X8_FIRST];
+    bool ok = true;
+    for (int gy = 0; gy < 8 && ok; gy++) {
+        for (int gx = 0; gx < 8 && ok; gx++) {
+            int col_x = x0 + gx * scale;
+            uint16_t bg = (col_x < fill_x) ? fill : off;
+            uint16_t want = (glyph[gy] & (1u << gx)) ? fg : bg;
+            for (int sy = 0; sy < scale && ok; sy++) {
+                for (int sx = 0; sx < scale; sx++) {
+                    int px = x0 + gx * scale + sx;
+                    int py = y0 + gy * scale + sy;
+                    uint16_t got = lcd_stub_fb[py * LCD_W + px];
+                    if (got != want) {
+                        printf("  FAIL (fill_x=%d): pixel (%d,%d) = 0x%04x, want 0x%04x\n", fill_x,
+                               px, py, got, want);
+                        ok = false;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    if (ok) {
+        printf("  OK: fill_x=%d (%s) split the glyph's columns at the expected boundary\n", fill_x,
+               label);
+    }
+    return ok;
+}
+
+bool test_text_bar_boundaries(const char *) {
+    bool ok = true;
+    // Before the glyph entirely (all-off), inside the glyph twice (once on
+    // an even column, once mid-glyph on an odd scaled column so the split
+    // doesn't just happen to land on a scale-aligned boundary), and past
+    // the glyph entirely (all-fill).
+    ok = check_text_bar_boundary(0, "before the glyph") && ok;
+    ok = check_text_bar_boundary(5 + 3 * 2, "column-aligned mid-glyph") && ok;
+    ok = check_text_bar_boundary(5 + 3 * 2 + 1, "off-column-aligned mid-glyph") && ok;
+    ok = check_text_bar_boundary(5 + 8 * 2, "past the glyph") && ok;
+    return ok;
+}
+
 }  // namespace
 
 int main() {
@@ -88,6 +144,9 @@ int main() {
 
     printf("\n== gfx_text renders the expected glyph pixels ==\n");
     ok = test_text_glyph_pixels("n/a") && ok;
+
+    printf("\n== gfx_text_bar splits a glyph's columns at fill_x, including mid-glyph ==\n");
+    ok = test_text_bar_boundaries("n/a") && ok;
 
     printf(ok ? "\nALL CHECKS PASSED\n" : "\nCHECKS FAILED\n");
     return ok ? 0 : 1;

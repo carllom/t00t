@@ -18,5 +18,16 @@ void gfx_fill_rect(int x, int y, int w, int h, uint16_t color);
 // at the right edge. Returns the x just past the drawn string.
 int gfx_text(int x, int y, const char *s, uint16_t fg, uint16_t bg, int scale);
 
+// Like gfx_text(), but for a label overlaid on a proportional fill bar
+// (issue #129): each glyph's background is chosen per pixel column rather
+// than once for the whole glyph, so `fill_x` (a panel x-coordinate, not a
+// glyph index) can land inside a single glyph's cell -- a column is drawn
+// `fill` if its x is < fill_x, `off` otherwise. Ordinary sequential draws,
+// same as gfx_text: no read-modify-write, no shadow framebuffer. Returns
+// the x just past the drawn string, so a caller can fill the remainder of
+// the bar's own width (if any) with a plain gfx_fill_rect.
+int gfx_text_bar(int x, int y, const char *s, uint16_t fg, uint16_t fill, uint16_t off,
+                  int fill_x, int scale);
+
 // Full-screen horizontal R->B gradient (bring-up eye candy).
 void gfx_gradient();

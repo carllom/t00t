@@ -294,3 +294,18 @@ target_include_directories(test_value_row PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}
     ${CMAKE_CURRENT_LIST_DIR}/../../src/wslcd
 )
+
+# Host build of src/wslcd/value_bar.h (issue #129): the Value bar Widget's
+# own unit tests. Header-only, but its gfx_text_bar()/gfx_fill_rect() calls
+# need a real gfx.cpp to link against -- reuses test_gfx's GFX_HOST_COPY
+# (regenerated from the real file on every build, see the comment above)
+# instead of duplicating that build-time copy trick.
+add_executable(test_value_bar
+    test_value_bar.cpp
+    ${GFX_HOST_COPY}
+)
+target_include_directories(test_value_bar PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}/host_stub_lcd
+    ${CMAKE_CURRENT_LIST_DIR}
+    ${CMAKE_CURRENT_LIST_DIR}/../../src/wslcd
+)
