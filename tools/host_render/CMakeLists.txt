@@ -37,6 +37,19 @@ target_include_directories(test_page_cursor PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}/../../src
 )
 
+# Host build of src/wslcd/ui_command_shaping.h and src/wslcd/ui_nav_consumer.h
+# (issue #132): the Sensor event -> Shaping -> UI-navigation consumer path
+# that drives #126's Page-cursor state machine, diverging before
+# input_dispatch()/the Router. Pure logic, no LCD stub dependency -- pulls in
+# src/button_shaping.h and src/input_layer.h only for the control-case
+# assertion that a NOTE-Shaped event *does* reach a Handler, unlike a
+# UI-command-Shaped one.
+add_executable(test_ui_nav_consumer test_ui_nav_consumer.cpp)
+target_include_directories(test_ui_nav_consumer PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}
+    ${CMAKE_CURRENT_LIST_DIR}/../../src
+)
+
 # Host build of src/wslcd/refresh_cadence.h: the shared refresh-cadence
 # framework's own unit tests. Pure logic, no LCD stub dependency.
 add_executable(test_refresh_cadence test_refresh_cadence.cpp)
