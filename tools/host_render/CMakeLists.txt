@@ -353,6 +353,21 @@ target_include_directories(test_activity_grid PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}/../../src/wslcd
 )
 
+# Host build of src/wslcd/header.h (issue #134): the Header Widget's own
+# unit tests. Header-only, but its gfx_text()/gfx_fill_rect() calls need a
+# real gfx.cpp to link against -- reuses test_gfx's GFX_HOST_COPY
+# (regenerated from the real file on every build, see the comment above)
+# instead of duplicating that build-time copy trick.
+add_executable(test_header
+    test_header.cpp
+    ${GFX_HOST_COPY}
+)
+target_include_directories(test_header PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}/host_stub_lcd
+    ${CMAKE_CURRENT_LIST_DIR}
+    ${CMAKE_CURRENT_LIST_DIR}/../../src/wslcd
+)
+
 # Host build of src/wslcd/voice_grid.h (issue #131): the VoiceGrid Widget's
 # own unit tests. Header-only, but its gfx_text() calls need a real gfx.cpp
 # to link against -- reuses test_gfx's GFX_HOST_COPY (regenerated from the
