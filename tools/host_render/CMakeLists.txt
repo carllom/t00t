@@ -324,3 +324,18 @@ target_include_directories(test_activity_grid PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}
     ${CMAKE_CURRENT_LIST_DIR}/../../src/wslcd
 )
+
+# Host build of src/wslcd/voice_grid.h (issue #131): the VoiceGrid Widget's
+# own unit tests. Header-only, but its gfx_text() calls need a real gfx.cpp
+# to link against -- reuses test_gfx's GFX_HOST_COPY (regenerated from the
+# real file on every build, see the comment above) instead of duplicating
+# that build-time copy trick.
+add_executable(test_voice_grid
+    test_voice_grid.cpp
+    ${GFX_HOST_COPY}
+)
+target_include_directories(test_voice_grid PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}/host_stub_lcd
+    ${CMAKE_CURRENT_LIST_DIR}
+    ${CMAKE_CURRENT_LIST_DIR}/../../src/wslcd
+)
