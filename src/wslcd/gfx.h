@@ -3,12 +3,33 @@
 // All colours are "wire format" (byte-swapped RGB565) produced by gfx_rgb().
 #pragma once
 
+#include <cmath>
 #include <cstdint>
 
 // Build a wire-format (byte-swapped) RGB565 colour from 8-bit components.
 static inline uint16_t gfx_rgb(uint8_t r, uint8_t g, uint8_t b) {
     uint16_t v = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3);
     return (uint16_t)((v >> 8) | (v << 8));
+}
+
+// Panel-corner clearance (docs/lcd-driver-capabilities.md): the visible
+// glass is physically rounded at all four corners, radius ~30px. For
+// content whose near edge sits `y` px from that edge, the horizontal margin
+// needed to clear the corner is `30 - sqrt(30^2 - (30-y)^2)` (0 once
+// y >= 30), ceiled to a whole pixel since a fractional inset can't stop a
+// fill short.
+static inline int gfx_corner_inset(int y) {
+    if (y >= 30) return 0;
+    double dy = 30 - y;
+    return (int)std::ceil(30.0 - std::sqrt(30.0 * 30.0 - dy * dy));
+}
+
+// The safe left/right margin for content spanning y in [y_top, y_bot):
+// gfx_corner_inset() is monotonically non-increasing as y grows away from
+// the corner, so the range's largest inset is always at its nearest edge,
+// y_top -- no need to scan the whole range.
+static inline int gfx_corner_safe_margin(int y_top, int y_bot) {
+    return y_bot > y_top ? gfx_corner_inset(y_top) : 0;
 }
 
 // Filled rectangle (visible-panel coords, clipped to the panel).
