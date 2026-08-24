@@ -309,3 +309,18 @@ target_include_directories(test_value_bar PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}
     ${CMAKE_CURRENT_LIST_DIR}/../../src/wslcd
 )
+
+# Host build of src/wslcd/activity_grid.h (issue #130): the ActivityGrid
+# Widget's own unit tests. Header-only, but its gfx_fill_rect() calls need a
+# real gfx.cpp to link against -- reuses test_gfx's GFX_HOST_COPY
+# (regenerated from the real file on every build, see the comment above)
+# instead of duplicating that build-time copy trick.
+add_executable(test_activity_grid
+    test_activity_grid.cpp
+    ${GFX_HOST_COPY}
+)
+target_include_directories(test_activity_grid PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}/host_stub_lcd
+    ${CMAKE_CURRENT_LIST_DIR}
+    ${CMAKE_CURRENT_LIST_DIR}/../../src/wslcd
+)
