@@ -104,6 +104,7 @@ add_executable(t00t
     src/wslcd/lcd_st7789.cpp
     src/wslcd/gfx.cpp
     src/engines/${T00T_ENGINE}/display.cpp
+    src/encoder_nav.cpp
 )
 
 # The selected engine directory is on the include path so `#include "engine.h"`

@@ -63,12 +63,25 @@ or DAG concept, unlike the six-operator DX7 module.
 
 ### Display (Presentation Capabilities)
 
-Same chrome every engine's panel shares (title bar, VOICES dot bar, CPU load
-bar, NOTE row), plus the current patch name (for whichever channel most
-recently triggered a note or a Program Change) and a two-cell algorithm
-indicator (carrier vs. modulator role per operator, feedback highlighted on
-op0) — a much smaller version of the DX7 module's six-cell diagram, since
-OPL only ever has two operators and two possible algorithms.
+Two Pages (`src/wslcd/page.h`/`header.h`), the shared Widget/Header/Page
+library (CONTEXT.md's Widget catalog) applied to OPL:
+
+- **Performance** (required, default): the Header's Resource bar (combined
+  active-voice/CPU indicator) plus the current preset (number + name, for
+  whichever channel most recently triggered a note or a Program Change) and
+  the three FX CCs (CC73/72/75) as compact Value bars ("FXMIX"/"FX P1"/
+  "FX P2") with FX type (CC74) as a Label ("DELAY"/"REVERB"/"OFF")
+  and the mod wheel (CC1) as a fourth Value bar ("MOD").
+- **DIAG**: the exact-value detail Resource bar deliberately sacrifices —
+  CPU% (PercentageBar), per-voice sounding activity (ActivityGrid), last
+  note/velocity/channel, and the two-cell algorithm indicator (carrier vs.
+  modulator role per operator, feedback highlighted on op0 — a much smaller
+  version of the DX7 module's six-cell diagram, since OPL only ever has two
+  operators and two possible algorithms).
+
+Reachable via the breadboard's rotary encoder (`src/encoder_nav.h`,
+docs/engine.md's "Encoder navigation" entry) where one's wired;
+Performance-only otherwise (`HAS_ENCODER=0`).
 
 ## Technical Overview
 
@@ -88,8 +101,7 @@ src/engines/opl/
                        calling ../fm/op.h's kernels directly
   patches.h           hand-authored test patches, checked in
   input_subsystem.cpp note on/off, bend, pan, mod wheel, patch select
-  display.cpp         status panel: voices/CPU/note, current patch,
-                       algorithm/feedback indicator (see Display above)
+  display.cpp         Performance + DIAG Pages (see Display above)
 ```
 
 There is no `rig.h`/measurement rig and no free-routing DAG resolver —

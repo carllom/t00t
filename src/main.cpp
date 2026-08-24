@@ -35,6 +35,13 @@
 #include "controller.h"
 #endif
 
+#ifndef HAS_ENCODER
+#define HAS_ENCODER 0
+#endif
+#if HAS_ENCODER
+#include "encoder_nav.h"
+#endif
+
 #ifndef HAS_LCD
 #define HAS_LCD 0
 #endif
@@ -142,12 +149,17 @@ int main() {
         gpio_put(PROFILE_PIN_CORE0, 0);
 #endif
 
-#if HAS_BUTTONS
-        // 1ms button poll
+#if HAS_BUTTONS || HAS_ENCODER
+        // 1ms button/encoder poll
         if (time_reached(next_tick)) {
             next_tick = delayed_by_ms(next_tick, 1);
             gpio_put(PROFILE_PIN_CORE0, 1);
+#if HAS_BUTTONS
             controller_tick(&param_exchange);
+#endif
+#if HAS_ENCODER
+            encoder_nav_tick();
+#endif
             gpio_put(PROFILE_PIN_CORE0, 0);
         }
 #endif

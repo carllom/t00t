@@ -37,6 +37,13 @@
 // --- No buttons on breadboard ---
 #define HAS_BUTTONS 0
 
+// --- Rotary encoder (page navigation): KY-040-style CLK/DT quadrature +
+//     SW push button, wired directly to spare GPIOs ---
+#define HAS_ENCODER 1
+#define ENCODER_CLK_PIN 26
+#define ENCODER_DT_PIN  27
+#define ENCODER_SW_PIN  28
+
 // --- Waveshare 1.83" 240x280 LCD (Rev2 = ST7789P) on SPI1 ---
 #define HAS_LCD 1
 #define LCD_DC_PIN   8

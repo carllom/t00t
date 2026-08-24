@@ -335,6 +335,15 @@ that want to stay generic and maximally readable (e.g. NOTE, VOICES count) —
 not being replaced outright by Value bar, which suits a different case (see
 below).
 
+**Label**:
+A Widget showing a single blank-padded string at a caller-chosen scale, no
+fixed label/value split (unlike Value row) and no proportional fill (unlike
+Value bar/PercentageBar) — for a value whose meaning doesn't reduce to a
+bar, e.g. OPL's Performance page showing FX type as text ("FX: REVERB")
+alongside its FXMIX/FX P1/FX P2 Value bars. Added applying the Widget
+library to OPL's own Performance page (first real per-module use of this
+library, `src/engines/opl/display.cpp`).
+
 **Value bar**:
 A Widget showing a label overlaid on a proportional fill bar, for CC-style
 continuous values (pan, FX mix, filter cutoff) — more screen-estate-compact

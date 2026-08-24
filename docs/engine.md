@@ -59,10 +59,14 @@ Pins differ between the two board targets. Definitions live in
 | 11 | LCD DIN | SPI1 TX (MOSI) |
 | 12 | LCD RST | Reset |
 | 13 | LCD BL | Backlight (PWM) |
+| 26 | Encoder CLK | Page-navigation rotary encoder, quadrature clock |
+| 27 | Encoder DT | Page-navigation rotary encoder, quadrature data |
+| 28 | Encoder SW | Page-navigation rotary encoder, push button |
 
-No buttons, VGA, or SD on the breadboard; control is MIDI-only. The optional
-1.83" 240×284 IPS LCD (ST7789P) is driven by Core 0 at low priority — see the
-`src/wslcd/` driver.
+No discrete buttons, VGA, or SD on the breadboard; note/CC control is
+MIDI-only, with a rotary encoder (`src/encoder_nav.h`) for LCD Page
+navigation. The optional 1.83" 240×284 IPS LCD (ST7789P) is driven by Core 0
+at low priority — see the `src/wslcd/` driver.
 
 ## Audio Buffer Flow
 
@@ -277,6 +281,24 @@ safe with ≤16 concurrent voices (gap never exceeds 128).
 Each button plays one fixed note, on its own channel. Voice is allocated on
 press, released on release. Long release (800ms) ensures multiple voices
 can be heard simultaneously.
+
+### Encoder navigation (page switching)
+
+`src/encoder_nav.h`/`.cpp` (`HAS_ENCODER`, breadboard only): a CLK/DT/SW
+rotary encoder driving `src/wslcd/page.h`'s `PageCursor` through the same
+Sensor event → Shaping → `ui_nav_consumer_feed()` path a discrete button
+would, treating a CW detent, a CCW detent, and the SW press as three
+independent synthetic buttons (mapped to `UiCommand::PLUS`/`MINUS`/`EXIT`
+respectively). Rotation is quarter-step quadrature-decoded (a transition
+table indexed by `(old_state << 2 | new_state)`) and only counted at a full
+four-quarter-step detent, matching common KY-040-style encoders' click
+spacing; SW uses the same integrator debounce as button GPIOs above.
+`UiCommand::ENTER` has no Page-navigation meaning (`page.h`), so the single
+SW button is mapped to `EXIT` — jump straight to the module's Performance
+page — the one command still useful without a second button. Polled at the
+same 1ms tick as button debounce; owns a single shared `PageCursor` (only
+one engine is ever linked per build), read by a module's `display_task()`
+via `encoder_nav_page_index()`.
 
 ## Host DSP Tooling
 

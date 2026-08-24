@@ -397,3 +397,17 @@ target_include_directories(test_resource_bar PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}
     ${CMAKE_CURRENT_LIST_DIR}/../../src/wslcd
 )
+
+# Visual preview of OPL's Performance/DIAG Page layout (src/engines/opl/
+# display.cpp) against synthetic telemetry, dumped as PPM files for
+# eyeballing before flashing real hardware -- not a unit test (no assertions,
+# no pass/fail), same GFX_HOST_COPY trick as the Widget unit tests above.
+add_executable(preview_opl_display
+    preview_opl_display.cpp
+    ${GFX_HOST_COPY}
+)
+target_include_directories(preview_opl_display PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}/host_stub_lcd
+    ${CMAKE_CURRENT_LIST_DIR}
+    ${CMAKE_CURRENT_LIST_DIR}/../../src/wslcd
+)

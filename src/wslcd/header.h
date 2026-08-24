@@ -37,6 +37,7 @@
 inline constexpr int kHeaderRow1Y = 3;
 inline constexpr int kHeaderRow1H = 14;
 inline constexpr int kHeaderRow2Y = kHeaderRow1Y + kHeaderRow1H;
+inline constexpr int kHeaderRow2H = 16;
 
 // Largest module/Page name this Widget will latch/redraw. Comfortably
 // covers the longest real module name ("SUBTRACTIVE", "GROOVEBOX") with
@@ -97,10 +98,16 @@ void header_draw_module_name(Header<N> &hdr, const char *module_name, int panel_
 }
 
 // Draws row 2 for a multi-Page module (N > 1): `page_name` (blank-padded,
-// left-aligned at x=0, scale 2, to whatever character budget fits before
-// the indicator -- computed from the space actually available (indicator_x)
-// rather than a budget fixed independent of N, so the label field shrinks
-// itself clear of the indicator instead of colliding with it at a large N)
+// left-aligned at the panel's own corner-rounding safe margin (`gfx.h`'s
+// gfx_corner_safe_margin(), same clearance rule row 1's centered text
+// relies on) at the caller's own `scale`, to whatever character budget fits
+// before the indicator -- computed from the space actually available
+// (indicator_x minus that left margin) and capped at `max_chars` (default
+// kHeaderNameMaxChars), so a caller wanting a narrower field than the
+// available space allows (e.g. to keep a short Page name from stretching
+// into a wide blank-padded block) can ask for one -- rather than a budget
+// fixed independent of N, so the label field shrinks itself clear of the
+// indicator instead of colliding with it at a large N)
 // plus a right-aligned, N-cell Page indicator with only `page_index`'s cell
 // in `indicator_on`, every other cell `indicator_off`. The indicator's
 // cells are kActivityGridCellH (14px) tall against row 2's own 16px band,
@@ -130,8 +137,8 @@ void header_draw_module_name(Header<N> &hdr, const char *module_name, int panel_
 // nothing an unconditional row-2 fill wasn't already paying for.
 template <int N>
 void header_draw_page_row(Header<N> &hdr, uint8_t page_index, const char *page_name, int panel_w,
-                           uint16_t fg, uint16_t bg, uint16_t indicator_on,
-                           uint16_t indicator_off) {
+                           uint16_t fg, uint16_t bg, uint16_t indicator_on, uint16_t indicator_off,
+                           int scale = 2, int max_chars = kHeaderNameMaxChars) {
     if (N <= 1) return;
 
     if (hdr.page_row_initialized && hdr.page_index == page_index &&
@@ -139,18 +146,20 @@ void header_draw_page_row(Header<N> &hdr, uint8_t page_index, const char *page_n
         return;
     }
 
-    int glyph_cell = 8 * 2;  // square glyph cell, scale 2 -- row 2's own band height
+    int glyph_cell = 8 * scale;  // square glyph cell, at the caller's own scale
     int indicator_x = panel_w - N * kActivityGridCellPitch;
+    int left_margin = gfx_corner_safe_margin(kHeaderRow2Y, kHeaderRow2Y + glyph_cell);
 
-    gfx_fill_rect(0, kHeaderRow2Y, panel_w, glyph_cell, bg);
+    gfx_fill_rect(0, kHeaderRow2Y, panel_w, kHeaderRow2H, bg);
 
-    int name_chars = indicator_x / glyph_cell;
+    int name_chars = (indicator_x - left_margin) / glyph_cell;
     if (name_chars < 0) name_chars = 0;
     if (name_chars > kHeaderNameMaxChars) name_chars = kHeaderNameMaxChars;
+    if (name_chars > max_chars) name_chars = max_chars;
 
     char buf[kHeaderNameMaxChars + 1];
     snprintf(buf, sizeof(buf), "%-*.*s", name_chars, name_chars, page_name);
-    gfx_text(0, kHeaderRow2Y, buf, fg, bg, 2);
+    gfx_text(left_margin, kHeaderRow2Y, buf, fg, bg, scale);
 
     bool active[N];
     for (int i = 0; i < N; i++) active[i] = (i == page_index);

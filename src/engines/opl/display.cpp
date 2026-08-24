@@ -1,6 +1,15 @@
 #include "display.h"
 #include "lcd_st7789.h"
 #include "gfx.h"
+#include "header.h"
+#include "resource_bar.h"
+#include "value_row.h"
+#include "value_bar.h"
+#include "percentage_bar.h"
+#include "activity_grid.h"
+#include "label.h"
+#include "page.h"
+#include "refresh_cadence.h"
 #include "audio_engine.h"
 #include "voice_alloc.h"
 #include "midi/midi_controller.h"
@@ -8,146 +17,217 @@
 #include "pico/time.h"
 #include <cstdio>
 
-// OPL status display (Core 0, low priority). Same chrome/status-row shape as
-// every other engine's display (VOICES/CPU/NOTE), plus the current patch
-// (name, resolved for whichever channel most recently triggered a note) and
-// a one-cell-per-operator algorithm indicator -- "F" (FM chain) or "A"
-// (additive) plus a feedback marker, since OPL only ever has two operators
-// and two possible algorithms.
+#ifndef HAS_ENCODER
+#define HAS_ENCODER 0
+#endif
+#if HAS_ENCODER
+#include "encoder_nav.h"
+#endif
 
-static const uint16_t COL_BG      = gfx_rgb(0, 0, 0);
-static const uint16_t COL_TITLE   = gfx_rgb(150, 90, 30);   // amber -- distinct from the other engines' bars
-static const uint16_t COL_LABEL   = gfx_rgb(110, 120, 140);
-static const uint16_t COL_VALUE   = gfx_rgb(240, 240, 240);
-static const uint16_t COL_SND     = gfx_rgb(60, 220, 90);
-static const uint16_t COL_OFF     = gfx_rgb(28, 28, 34);
-static const uint16_t COL_LOAD_LO = gfx_rgb(60, 200, 90);
-static const uint16_t COL_LOAD_MID = gfx_rgb(240, 180, 0);
-static const uint16_t COL_LOAD_HI = gfx_rgb(230, 60, 50);
-static const uint16_t COL_CARRIER = gfx_rgb(60, 220, 90);
+// OPL status display (Core 0, low priority): the shared Widget/Header/Page
+// library (#124) applied to OPL -- Performance page (Header's Resource bar
+// folding voices+CPU, the current preset, and FXMIX/FX P1/FX P2/FX type/MOD
+// as compact Value bars/Label) plus a DIAG page carrying the exact-value
+// detail Resource bar deliberately sacrifices (CPU%, per-voice activity,
+// last note, operator/algorithm indicator) -- reachable via the rotary
+// encoder (encoder_nav.h) where one's wired (HAS_ENCODER), Performance-only
+// otherwise.
+
+static const uint16_t COL_BG        = gfx_rgb(0, 0, 0);
+static const uint16_t COL_TITLE     = gfx_rgb(150, 90, 30);   // amber -- distinct from the other engines' bars
+static const uint16_t COL_TITLE_FG  = gfx_rgb(255, 255, 255);
+static const uint16_t COL_LABEL     = gfx_rgb(110, 120, 140);
+static const uint16_t COL_VALUE     = gfx_rgb(240, 240, 240);
+static const uint16_t COL_SND       = gfx_rgb(60, 220, 90);
+static const uint16_t COL_OFF       = gfx_rgb(28, 28, 34);
+static const uint16_t COL_FILL      = gfx_rgb(70, 130, 180);
+static const uint16_t COL_CARRIER   = gfx_rgb(60, 220, 90);
 static const uint16_t COL_MODULATOR = gfx_rgb(80, 180, 255);
-static const uint16_t COL_FEEDBACK = gfx_rgb(255, 200, 60);
+static const uint16_t COL_FEEDBACK  = gfx_rgb(255, 200, 60);
 
-static constexpr int VAL_X  = 104;
-static constexpr int VAL_CH = 12;
-static constexpr int ROW_VOICES = 36, ROW_CPU = 76, ROW_NOTE = 116;
-static constexpr int ROW_PATCH = 156;
-static constexpr int CBAR_X = 4, CBAR_Y = 96, CBAR_W = 232, CBAR_H = 12;
+static constexpr int BODY_Y0 = 36;
 
-static constexpr int VBAR_Y = 56, VCELL_PITCH = 14, VCELL_W = 12, VBAR_H = 14;
-static_assert(MAX_VOICES * VCELL_PITCH <= 240, "voice bar must fit LCD_W");
+// Performance page rows. FX type/FXMIX and FX P1/FX P2 pair up two per row
+// (scale 1's char budget leaves room side by side); MOD sits alone at half
+// width on its own row below.
+static constexpr int PRESET_Y  = BODY_Y0;
+static constexpr int FX_ROW1_Y = 60;
+static constexpr int FX_ROW2_Y = 82;
+static constexpr int MOD_Y     = 104;
+static constexpr int BAR_X = 4, BAR_X2 = 122, BAR_HALF_W = 114, BAR_H = 16;
 
-static constexpr int NOTE_VAL_X = 68, NOTE_VAL_Y = ROW_NOTE + 4, NOTE_CH = 16;
-
-static constexpr int PATCH_X = 0, PATCH_CH = 30;
-
-// Two cells: op0 then op1, colour = carrier (writes to OUT) vs modulator.
-// Feedback (op0 only, real hardware) marks op0 yellow when nonzero.
-static constexpr int ALGO_Y = 176, ALGO_CELL_PITCH = 24, ALGO_CELL_W = 20, ALGO_CELL_H = 16;
+// DIAG page rows
+static constexpr int CPU_Y    = BODY_Y0;
+static constexpr int VOICES_Y = 60;
+static constexpr int VGRID_Y  = 80;
+static constexpr int NOTE_Y   = 104;
+static constexpr int ALGO_Y   = 132;
+static constexpr int DIAG_BAR_W = 232;
+static constexpr int ALGO_CELL_PITCH = 24, ALGO_CELL_W = 20, ALGO_CELL_H = 16;
 
 static const char *NOTE_NAMES[12] =
     { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
+static const char *FX_TYPE_NAMES[3] = { "OFF", "DELAY", "REVERB" };
 
-static void draw_val(int y, const char *raw, uint16_t fg) {
-    char b[VAL_CH + 1];
-    snprintf(b, sizeof(b), "%-*.*s", VAL_CH, VAL_CH, raw);
-    gfx_text(VAL_X, y, b, fg, COL_BG, 2);
+enum { PAGE_PERFORMANCE = 0, PAGE_DIAG = 1, PAGE_COUNT = 2 };
+
+struct PresetKey {
+    uint8_t program;
+    const OplPatch *patch;
+    bool operator==(const PresetKey &o) const { return program == o.program && patch == o.patch; }
+    bool operator!=(const PresetKey &o) const { return !(*this == o); }
+};
+
+struct NoteKey {
+    uint8_t note, velocity, channel;
+    bool operator==(const NoteKey &o) const {
+        return note == o.note && velocity == o.velocity && channel == o.channel;
+    }
+    bool operator!=(const NoteKey &o) const { return !(*this == o); }
+};
+
+static Header<PAGE_COUNT> hdr;
+static ResourceBar resource_bar;
+
+static ValueRow<PresetKey> preset_row;
+static ValueBar<uint8_t> fxmix_bar, fx_p1_bar, fx_p2_bar, mod_bar;
+static Label<uint8_t> fx_type_label;
+
+static PercentageBar cpu_bar;
+static ValueRow<uint32_t> voices_row;
+static ActivityGrid<(int)MAX_VOICES> voice_grid;
+static ValueRow<NoteKey> note_row;
+static const OplPatch *last_algo_patch = nullptr;
+
+static void draw_algo_indicator(const OplPatch *patch) {
+    for (uint8_t i = 0; i < 2; i++) {
+        bool carrier = (patch->algorithm == OPL_ALGO_ADD) || (i == 1);
+        uint16_t fg = carrier ? COL_CARRIER : COL_MODULATOR;
+        uint16_t fill = (i == 0 && patch->feedback > 0) ? COL_FEEDBACK : fg;
+        int x = i * ALGO_CELL_PITCH + 2;
+        gfx_fill_rect(x, ALGO_Y, ALGO_CELL_W, ALGO_CELL_H, fill);
+        char op_label[3];
+        snprintf(op_label, sizeof(op_label), "%u", i + 1);
+        gfx_text(x + 6, ALGO_Y + 3, op_label, COL_BG, fill, 1);
+    }
 }
 
 void display_init() {
     lcd_init();
     lcd_fill(COL_BG);
-
-    gfx_fill_rect(0, 0, LCD_W, 30, COL_TITLE);
-    gfx_text((LCD_W - 96) / 2, 3, "t00t", gfx_rgb(255, 255, 255), COL_TITLE, 3);
-    gfx_text(0, ROW_VOICES, "VOICES", COL_LABEL, COL_BG, 2);
-    gfx_text(0, ROW_CPU,    "CPU",    COL_LABEL, COL_BG, 2);
-    gfx_text(0, ROW_NOTE,   "NOTE",   COL_LABEL, COL_BG, 2);
-
     lcd_set_backlight(100);
+
+#if HAS_ENCODER
+    encoder_nav_init(PAGE_COUNT, PAGE_PERFORMANCE);
+#endif
 }
 
 void display_task() {
+    static PageRefreshCadence cadence{};  // base 10Hz -- neither Page needs the faster override
     static absolute_time_t next = {0};
     if (!time_reached(next)) return;
-    next = make_timeout_time_ms(100);
+    next = make_timeout_time_ms(1000 / refresh_rate_hz(cadence));
 
-    static bool     first = true;
-    static uint32_t last_snd = 0;
-    static uint8_t  last_load = 0xFF;
-    static MidiUiState last_midi = { 0xFE, 0, 0xFF, 0, 0, 0, 0xFF, 0xFF, 0xFF, 0xFF };
-    static const OplPatch *last_patch = nullptr;
+    static bool    first = true;
+    static uint8_t last_page = 0xFF;
 
-    uint32_t snd  = voice_alloc_active_mask();
+#if HAS_ENCODER
+    uint8_t page = encoder_nav_page_index();
+#else
+    uint8_t page = PAGE_PERFORMANCE;
+#endif
+
+    header_draw_module_name(hdr, "OPL", LCD_W, COL_TITLE_FG, COL_TITLE);
+
+    uint32_t snd = voice_alloc_active_mask();
     uint8_t  load = audio_engine_load();
+    int      row1_margin = gfx_corner_safe_margin(kHeaderRow1Y, kHeaderRow1Y + kHeaderRow1H);
+    resource_bar_draw_value(resource_bar, __builtin_popcount(snd), MAX_VOICES, load,
+                             LCD_W - kResourceBarMaxPx - row1_margin,
+                             kHeaderRow1Y + (kHeaderRow1H - 8) / 2, 8, COL_BG);
+
+    header_draw_page_row(hdr, page, page == PAGE_PERFORMANCE ? "PERF" : "DIAG", LCD_W,
+                          COL_TITLE_FG, COL_TITLE, COL_TITLE_FG, COL_OFF, 1, 8);
+
+    if (first || page != last_page) {
+        gfx_fill_rect(0, BODY_Y0, LCD_W, LCD_H - BODY_Y0, COL_BG);
+        if (page == PAGE_PERFORMANCE) {
+            preset_row.initialized = false;
+            fxmix_bar.initialized = false;
+            fx_p1_bar.initialized = false;
+            fx_p2_bar.initialized = false;
+            fx_type_label.initialized = false;
+            mod_bar.initialized = false;
+        } else {
+            cpu_bar.bar.initialized = false;
+            voices_row.initialized = false;
+            voice_grid.initialized = false;
+            note_row.initialized = false;
+            last_algo_patch = nullptr;
+        }
+        last_page = page;
+    }
+
     MidiUiState m;
     midi_controller_ui_state(&m);
-
-    char buf[24];
-
-    auto draw_cell = [](int i, bool sounding) {
-        int x = i * VCELL_PITCH + 1;
-        uint16_t fill = sounding ? COL_SND : COL_OFF;
-        gfx_fill_rect(x, VBAR_Y, VCELL_W, VBAR_H, fill);
-    };
-
-    if (first || snd != last_snd) {
-        for (int i = 0; i < (int)MAX_VOICES; i++) {
-            bool s = snd & (1u << i), ws = last_snd & (1u << i);
-            if (first || s != ws) draw_cell(i, s);
-        }
-        snprintf(buf, sizeof(buf), "%d/%d", __builtin_popcount(snd), MAX_VOICES);
-        draw_val(ROW_VOICES, buf, COL_VALUE);
-        last_snd = snd;
-    }
-
-    if (first || (load > last_load ? load - last_load : last_load - load) >= 2) {
-        uint16_t c = load < 50 ? COL_LOAD_LO : (load < 80 ? COL_LOAD_MID : COL_LOAD_HI);
-        snprintf(buf, sizeof(buf), "%d%%", load);
-        draw_val(ROW_CPU, buf, c);
-        int fill = load * CBAR_W / 100;
-        gfx_fill_rect(CBAR_X, CBAR_Y, fill, CBAR_H, c);
-        gfx_fill_rect(CBAR_X + fill, CBAR_Y, CBAR_W - fill, CBAR_H, COL_OFF);
-        last_load = load;
-    }
-
-    if (first || m.last_note != last_midi.last_note || m.last_velocity != last_midi.last_velocity
-              || m.last_channel != last_midi.last_channel) {
-        if (m.last_note == 0xFF) {
-            snprintf(buf, sizeof(buf), "--");
-        } else {
-            int oct = m.last_note / 12 - 1;
-            snprintf(buf, sizeof(buf), "%s%d v%d c%d", NOTE_NAMES[m.last_note % 12], oct,
-                     m.last_velocity, m.last_channel + 1);
-        }
-        char note_padded[NOTE_CH + 1];
-        snprintf(note_padded, sizeof(note_padded), "%-*.*s", NOTE_CH, NOTE_CH, buf);
-        gfx_text(NOTE_VAL_X, NOTE_VAL_Y, note_padded, COL_VALUE, COL_BG, 1);
-    }
-
-    // Patch + algorithm: whichever channel's Program Change/CC16 (or
-    // note-on) landed most recently.
     const OplPatch *patch = opl_channel_patch(m.last_channel);
-    if (first || patch != last_patch) {
-        char raw[24];
-        snprintf(raw, sizeof(raw), "#%-3d %.10s", m.program, patch->name);
-        char padded[PATCH_CH + 1];
-        snprintf(padded, sizeof(padded), "%-*.*s", PATCH_CH, PATCH_CH, raw);
-        gfx_text(PATCH_X, ROW_PATCH, padded, COL_VALUE, COL_BG, 1);
 
-        for (uint8_t i = 0; i < 2; i++) {
-            bool carrier = (patch->algorithm == OPL_ALGO_ADD) || (i == 1);
-            uint16_t fg = carrier ? COL_CARRIER : COL_MODULATOR;
-            uint16_t fill = (i == 0 && patch->feedback > 0) ? COL_FEEDBACK : fg;
-            int x = i * ALGO_CELL_PITCH + 2;
-            gfx_fill_rect(x, ALGO_Y, ALGO_CELL_W, ALGO_CELL_H, fill);
-            char op_label[3];
-            snprintf(op_label, sizeof(op_label), "%u", i + 1);
-            gfx_text(x + 6, ALGO_Y + 3, op_label, COL_BG, fill, 1);
+    if (page == PAGE_PERFORMANCE) {
+        PresetKey preset{ m.program, patch };
+        if (!preset_row.initialized || preset_row.value != preset) {
+            char text[24];
+            snprintf(text, sizeof(text), "#%-3d %.10s", m.program, patch->name);
+            value_row_draw_value(preset_row, preset, text, 4, PRESET_Y, 28, 1, COL_VALUE, COL_BG);
         }
-        last_patch = patch;
+
+        uint8_t fx_type = m.fx_type < 3 ? m.fx_type : 0;
+        label_draw_value(fx_type_label, m.fx_type, FX_TYPE_NAMES[fx_type], BAR_X, FX_ROW1_Y, 14, 1,
+                          COL_VALUE, COL_BG);
+        value_bar_draw_value(fxmix_bar, m.fx_mix, "FXMIX", m.fx_mix / 127.0f, BAR_X2, FX_ROW1_Y,
+                              BAR_HALF_W, BAR_H, 1, COL_VALUE, COL_FILL, COL_OFF);
+
+        value_bar_draw_value(fx_p1_bar, m.fx_p1, "FX P1", m.fx_p1 / 127.0f, BAR_X, FX_ROW2_Y,
+                              BAR_HALF_W, BAR_H, 1, COL_VALUE, COL_FILL, COL_OFF);
+        value_bar_draw_value(fx_p2_bar, m.fx_p2, "FX P2", m.fx_p2 / 127.0f, BAR_X2, FX_ROW2_Y,
+                              BAR_HALF_W, BAR_H, 1, COL_VALUE, COL_FILL, COL_OFF);
+
+        value_bar_draw_value(mod_bar, m.mod, "MOD", m.mod / 127.0f, BAR_X, MOD_Y, BAR_HALF_W, BAR_H,
+                              1, COL_VALUE, COL_FILL, COL_OFF);
+    } else {
+        percentage_bar_draw_value(cpu_bar, load, "CPU", BAR_X, CPU_Y, DIAG_BAR_W, 20, 2, COL_VALUE,
+                                   COL_OFF);
+
+        uint32_t voice_count = (uint32_t)__builtin_popcount(snd);
+        if (!voices_row.initialized || voices_row.value != voice_count) {
+            char text[8];
+            snprintf(text, sizeof(text), "%lu/%d", (unsigned long)voice_count, (int)MAX_VOICES);
+            value_row_draw_value(voices_row, voice_count, text, BAR_X, VOICES_Y, 8, 2, COL_VALUE,
+                                  COL_BG);
+        }
+
+        bool active[MAX_VOICES];
+        for (uint32_t i = 0; i < MAX_VOICES; i++) active[i] = snd & (1u << i);
+        activity_grid_draw(voice_grid, active, BAR_X, VGRID_Y, kActivityGridCellPitch, COL_SND,
+                            COL_OFF);
+
+        NoteKey note{ m.last_note, m.last_velocity, m.last_channel };
+        if (!note_row.initialized || note_row.value != note) {
+            char text[20];
+            if (m.last_note == 0xFF) {
+                snprintf(text, sizeof(text), "--");
+            } else {
+                int oct = m.last_note / 12 - 1;
+                snprintf(text, sizeof(text), "%s%d v%d c%d", NOTE_NAMES[m.last_note % 12], oct,
+                         m.last_velocity, m.last_channel + 1);
+            }
+            value_row_draw_value(note_row, note, text, BAR_X, NOTE_Y, 18, 2, COL_VALUE, COL_BG);
+        }
+
+        if (patch != last_algo_patch) {
+            draw_algo_indicator(patch);
+            last_algo_patch = patch;
+        }
     }
-    last_midi = m;
 
     first = false;
 }
