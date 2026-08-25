@@ -75,14 +75,28 @@ DX7 emulator) as ground truth rather than by ear alone.
 
 ### Display (Presentation Capabilities)
 
-Same chrome every engine's panel shares (title bar, VOICES dot bar, CPU load
-bar, NOTE row), plus FM-specific rows: the current patch (bank index and DX7
-voice name, for whichever channel most recently triggered a note or a
-Program Change), its algorithm as six operator-role cells
-(carrier/modulator/feedback, derived from `FmOpParams` directly — no
-algorithm number is stored anywhere at runtime), and a compact per-voice
-grid (voice, channel, patch index) covering voices 0–7, which is what makes
-multitimbral use visible instead of assumed.
+Two Pages (`src/wslcd/page.h`/`header.h`), the shared Widget/Header/Page
+library (CONTEXT.md's Widget catalog) applied to FM — same Performance-page
+layout as OPL's own (`docs/module_opl.md`'s Display section):
+
+- **Performance** (required, default): the Header's Resource bar (combined
+  active-voice/CPU indicator) plus the current patch (bank index + DX7 voice
+  name, for whichever channel most recently triggered a note or a Program
+  Change) and the three FX CCs (CC73/72/75) as compact Value bars ("FXMIX"/
+  "FX P1"/"FX P2") with FX type (CC74) as a Label ("DELAY"/"REVERB"/"OFF")
+  and the mod wheel (CC1) as a fourth Value bar ("MOD").
+- **DIAG**: the exact-value detail Resource bar deliberately sacrifices —
+  CPU% (PercentageBar), per-voice sounding activity (ActivityGrid, one row —
+  MAX_VOICES=16 matches `kActivityGridCellsPerRow` exactly), last
+  note/velocity/channel, the six-cell operator-role indicator (carrier/
+  modulator/feedback, derived from `FmOpParams` directly — no algorithm
+  number is stored anywhere at runtime), and a compact per-voice grid
+  (voice, channel, patch index) covering voices 0–7, which is what makes
+  multitimbral use visible instead of assumed.
+
+Reachable via the breadboard's rotary encoder (`src/encoder_nav.h`,
+docs/engine.md's "Encoder navigation" entry) where one's wired;
+Performance-only otherwise (`HAS_ENCODER=0`).
 
 ## Technical Overview
 
@@ -112,9 +126,7 @@ src/engines/fm/
   render.h            fm_render_test_tone(), shared by the device skeleton
                        and the host build
   input_subsystem.cpp note on/off, bend, pan, mod wheel, patch select
-  display.cpp         status panel: voices/CPU/note, current patch,
-                       algorithm operator-role cells, per-voice multitimbral
-                       grid (see Display above)
+  display.cpp         Performance + DIAG Pages (see Display above)
 ```
 
 There is no `presets.h`/`VoicePreset` — FM's whole timbre is the single
