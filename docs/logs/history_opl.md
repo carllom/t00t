@@ -636,5 +636,43 @@ Verified on the host build (no ARM cross-toolchain in this session either):
 `render_opl` (unchanged 2-op regression, all 5 existing patches still pass)
 and a new `tools/host_render/test_opl_4op.cpp` (one synthetic patch per new
 4-op Algorithm, same bounded-audio/idle-after-release check) both pass. No
-hand-authored 4-op example patch exists in `patches.h` yet, and no hardware
-pass has measured 4-op per-voice cost -- both left as Future/TODO.
+hardware pass has measured 4-op per-voice cost yet -- left as Future/TODO.
+
+Code review of the implementation pass surfaced three real gaps the new
+`OplAlgorithm` values exposed: `opl_voice_note_on()` indexed `OPL_ROUTINGS[]`
+with no bounds check (the old FM/ADD ternary couldn't select outside the
+valid set; the new 6-value enum could, from a corrupted patch or a future
+bank converter's bad data) -- fixed with `opl_routing_for()`, a modulo-wrapped
+lookup. `display.cpp`'s DIAG algorithm indicator still assumed only the two
+original algorithms existed, so it mis-colored the op0/op1 cells for 3 of
+the 4 new connections -- fixed to read carrier/modulator role off the
+patch's own resolved `FmRouting.out_bus[]` instead of a hardcoded rule.
+`render_opl_patch.cpp`'s CSV lister labeled every non-ADD algorithm "fm" --
+fixed with a full 6-way name lookup, still within the CSV's existing
+2-op-only column shape (no 4-op patch's op2/op3 data has anywhere to go in
+that format yet -- a separate, undecided follow-up, not attempted here).
+
+### 4-Op Example Patches
+
+4 hand-authored patches added to `patches.h`, one per 4-op Algorithm,
+exercising every waveform 4-7 added this module's own OPL3/4 waveform set
+along the way (`OPL_PATCH_COUNT` 5 -> 9): **OPL4 CHAIN EP** (full serial
+chain, ws 4 on the deepest modulator) -- a classic 4-op electric-piano
+shape, three modulators in series with the one nearest the carrier decaying
+fastest so the attack's brightness peels away into a plainer sustain, the
+same shape OPL_PATCH_BELL's 2-op chain uses with two extra stages of
+harmonic development. **OPL4 DUAL SAW** (two independent 2-op FM pairs
+summed, ws 6 and ws 7) -- since OPL has no per-operator detune to beat two
+pairs against each other, the "dual" character comes from timbral contrast
+instead: a plain sine pair for a warm layer, a square-modulated
+log-sawtooth pair for a bright buzzy layer on top. **OPL4 BRASS** (op0
+additive + a 3-op chain, ws 6) -- a sine sub/body carrier with feedback
+growl, plus a square-brightened FM chain carrier for the brass edge, two
+independent carriers summed rather than one long chain. **OPL4 ORGAN PAD**
+(op0 additive + an FM pair + op3 additive, ws 5 and ws 2) -- a
+three-partial drawbar stack (mult 1/2/3) extending OPL_PATCH_ORGAN's 2-op
+additive idea to three tunable partials, near-zero decay on every operator
+so the whole chord holds at full level for as long as the note is held.
+
+All 9 patches verified via `render_opl` (bounded audio, idle within the
+release tail) on the host build.

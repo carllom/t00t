@@ -62,7 +62,9 @@ for how the 4-op extension was designed.
   real OPL2 hardware has neither
 - **Patches**: a small hand-authored set ships in the repository
   (`patches.h`), checked in directly — no bank converter exists yet (see
-  Future/TODO)
+  Future/TODO). 9 patches total: the original 5 2-op patches (LEAD, BELL,
+  BASS, ORGAN, PERC), plus 4 covering each 4-op Algorithm and exercising all
+  8 waveforms between them (CHAIN EP, DUAL SAW, BRASS, ORGAN PAD)
 - **Patch shape**: a single `OplPatch` struct serves both 2-op and 4-op
   voices — `OplOpParams op[4]` unconditionally (a 2-op patch leaves the
   upper two slots as unused padding, matching `patch.h`'s existing
@@ -150,8 +152,8 @@ actually releases the voice within a bounded tail; the practical sanity
 check available without hardware.
 
 `tools/host_render/test_opl_4op.cpp` — same check, one synthetic patch per
-4-op Algorithm (`OPL_ALGO_4OP_*`), since `patches.h` ships no 4-op example
-patches yet (Future/TODO).
+4-op Algorithm (`OPL_ALGO_4OP_*`), independent of whatever `patches.h`
+currently ships.
 
 `tools/opl_ref/` — builds [Nuked-OPL3](https://github.com/nukeykt/Nuked-OPL3)
 (fetched at a pinned SHA, never vendored — see the DX7 module's own
@@ -295,10 +297,6 @@ Voice-Count Sweep, Post-`num_ops` Fix" and "Second Patch: OPL ORGAN".
   shown. Separate display/UI work (wayfinder map "Display: shared UI
   components and page structure", issue #115), not part of the 4-op voice
   work itself (wayfinder map [4-operator OPL4-class voices for the opl engine](https://github.com/carllom/t00t/issues/136)).
-- **4-op example patches** — `patches.h` still ships only the original 5
-  2-op patches; no hand-authored 4-op patch exists yet demonstrating the 4
-  new Algorithms or the 4 new waveforms. `tools/host_render/test_opl_4op.cpp`
-  covers the engine path with synthetic test patches in the meantime.
 - **4-op hardware performance pass** — per-voice cost for a 4-op voice
   hasn't been measured on real hardware yet; Performance above still
   reflects 2-op-only numbers.
