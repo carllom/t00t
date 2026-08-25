@@ -215,6 +215,20 @@ target_include_directories(render_opl_patch PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}/../../src
 )
 
+# Host build of the 4-op OPL3/4-class Algorithms (wayfinder map
+# "4-operator OPL4-class voices for the opl engine", issue #136): sanity-
+# renders one synthetic patch per new OPL_ALGO_4OP_* connection through the
+# same device code path render_opl.cpp uses for the 2-op patches, same
+# pass/fail shape.
+add_executable(test_opl_4op
+    test_opl_4op.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/../../src/osc/sine.cpp
+)
+target_include_directories(test_opl_4op PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}
+    ${CMAKE_CURRENT_LIST_DIR}/../../src
+)
+
 # CHIP_STRICT reference-diff harness (module_chip.md §11.1). Takes the same
 # CLI as tools/sid_ref/resid_render.cpp; tools/sid_compare.py runs both and
 # scores the difference. Header-only against src/chip/, no extra .cpp inputs.

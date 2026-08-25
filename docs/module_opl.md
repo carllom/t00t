@@ -1,10 +1,11 @@
-# T00T — OPL Module (OPL2-class)
+# T00T — OPL Module (OPL2/3-class)
 
-A 2-operator phase-modulation engine targeting Yamaha OPL2 (YM3812,
-AdLib/Sound Blaster-class) feature parity. It is a *mode* — a build-time
-engine variant selected via `T00T_ENGINE=opl`. See `engine.md` for the
-shared dual-core architecture; `architecture.md` for the cross-engine
-`VoiceParams`/CMake pattern; `history_opl.md` for the development record.
+A phase-modulation engine targeting Yamaha OPL2 (YM3812, AdLib/Sound
+Blaster-class) feature parity, extended with OPL3/4-class 4-operator voices
+and full 8-waveform select. It is a *mode* — a build-time engine variant
+selected via `T00T_ENGINE=opl`. See `engine.md` for the shared dual-core
+architecture; `architecture.md` for the cross-engine `VoiceParams`/CMake
+pattern; `history_opl.md` for the development record.
 
 This module shares its per-sample operator kernel with `src/engines/fm/`
 (the DX7-class module) directly — `#include`s it rather than forking it —
@@ -15,17 +16,27 @@ covers only what's specific to OPL.
 
 ## Overview
 
-Two independently-enveloped operators per voice, one of two fixed
-algorithms (FM chain or additive) — real OPL2 hardware has no free routing
-or DAG concept, unlike the six-operator DX7 module.
+Two or four independently-enveloped operators per voice, depending on the
+patch's chosen Algorithm — one of six fixed algorithms total (2 real OPL2
+2-op algorithms, 4 real OPL3 4-op connections), a 2-op and a 4-op patch
+freely coexisting side by side. Real hardware has no free routing or DAG
+concept at either operator count, unlike the six-operator DX7 module. See
+Decision Record entries 10-12 and wayfinder map [4-operator OPL4-class voices for the opl engine](https://github.com/carllom/t00t/issues/136)
+for how the 4-op extension was designed.
 
 ### Specifications
 
 - **Voices**: `MAX_VOICES = 9` — real OPL2 hardware's own channel count
-- **Routing**: exactly two fixed algorithms (FM chain: op0 modulates op1,
-  which carries; additive: op0 and op1 both carry), each a `constexpr
-  FmRouting` literal — no runtime DAG resolution, unlike the DX7 module's
-  free 6-operator routing
+- **Routing**: 6 fixed Algorithms total, each a `constexpr FmRouting` literal
+  in `OPL_ROUTINGS[]` (patch.h), indexed directly by `OplAlgorithm` — no
+  runtime DAG resolution, unlike the DX7 module's free 6-operator routing.
+  2 are OPL2's original 2-op algorithms (FM chain: op0 modulates op1, which
+  carries; additive: op0 and op1 both carry). 4 are real OPL3's own
+  four-operator connections (full serial chain op0→op1→op2→op3; two
+  independent 2-op FM pairs summed, (op0→op1)+(op2→op3); op0 additive plus a
+  3-op chain, op0+(op1→op2→op3); op0 additive plus a 2-op pair plus op3
+  additive, op0+(op1→op2)+op3) — matching real hardware exactly rather than
+  opening the shared kernel's free 6-op DAG. See Decision Record entry 10.
 - **Envelope**: `EnvOpl`, one 4-stage log-domain instance per operator (2
   per voice), OPL-native rate/level/KSL/TL fields, sharing `EnvDX`'s own
   gain-conversion domain so no new conversion code was needed. Every stage
@@ -33,9 +44,15 @@ or DAG concept, unlike the six-operator DX7 module.
   Nuked-OPL3 (`tools/opl_ctl_diff.py`); KSL and TL are exact matches to real
   hardware's own tables — see Future/TODO for the one remaining curve-shape
   gap (attack)
-- **Waveform select**: 4 waveforms per operator (sine, half-sine,
-  full-wave-rectified, a quarter-cycle pulse), a per-operator table pointer
-  reused from FM's own per-operator table field
+- **Waveform select**: 8 waveforms per operator (OPL3/4's full set), a
+  per-operator table pointer reused from FM's own per-operator table field.
+  0-3 are OPL2's original shapes (sine, half-sine, full-wave-rectified, a
+  quarter-cycle pulse). 4-7 are OPL3/4's extension (`sin(2*theta)`
+  restricted to the cycle's first half, silent second half; its
+  rectified/always-positive counterpart; a plain square wave; a
+  per-half-cycle exponential/logarithmic sawtooth). See Decision Record
+  entry 12 for the one shape (the sawtooth) where this module's "plausible
+  approximation, not a log-ROM port" precedent needed an exception.
 - **Vibrato**: one small fixed-rate sine LFO per voice, depth scaled by the
   mod wheel — not a reuse of FM's full per-patch-configurable LFO, since
   real OPL2 hardware has one global fixed-rate vibrato, not DX7's
@@ -46,6 +63,13 @@ or DAG concept, unlike the six-operator DX7 module.
 - **Patches**: a small hand-authored set ships in the repository
   (`patches.h`), checked in directly — no bank converter exists yet (see
   Future/TODO)
+- **Patch shape**: a single `OplPatch` struct serves both 2-op and 4-op
+  voices — `OplOpParams op[4]` unconditionally (a 2-op patch leaves the
+  upper two slots as unused padding, matching `patch.h`'s existing
+  routing-literal padding convention), no separate operator-count field
+  (derived from the chosen Algorithm's own `FmRouting.num_ops`, per Decision
+  Record entry 9's existing mechanism), and a single `feedback` field
+  applying to op0 only, 2-op or 4-op alike. See Decision Record entry 11.
 
 ### MIDI Mapping (Input Capabilities)
 
@@ -74,10 +98,13 @@ library (CONTEXT.md's Widget catalog) applied to OPL:
   and the mod wheel (CC1) as a fourth Value bar ("MOD").
 - **DIAG**: the exact-value detail Resource bar deliberately sacrifices —
   CPU% (PercentageBar), per-voice sounding activity (ActivityGrid), last
-  note/velocity/channel, and the two-cell algorithm indicator (carrier vs.
-  modulator role per operator, feedback highlighted on op0 — a much smaller
-  version of the DX7 module's six-cell diagram, since OPL only ever has two
-  operators and two possible algorithms).
+  note/velocity/channel, and a two-cell algorithm indicator (carrier vs.
+  modulator role for op0/op1, feedback highlighted on op0 — a much smaller
+  version of the DX7 module's six-cell diagram). Still fixed at two cells
+  regardless of the currently-playing patch's real operator count — a 4-op
+  voice's op2/op3 aren't shown yet; extending this indicator is separate
+  display/UI work (wayfinder map "Display: shared UI components and page
+  structure", issue #115), not part of the 4-op voice work itself.
 
 Reachable via the breadboard's rotary encoder (`src/encoder_nav.h`,
 docs/engine.md's "Encoder navigation" entry) where one's wired;
@@ -93,9 +120,10 @@ src/engines/opl/
   audio_engine.cpp    audio_engine_run(): render pass, voice loop, FX insert
   opl_scale.h         OPL_TABLE_BITS -- no separate gain-domain anchor
                        (see Decision Record)
-  waveforms.h         the four OPL2 waveform tables
-  patch.h             OplOpParams/OplPatch (runtime form) + the two fixed
-                       algorithm routings, expressed as FmRouting literals
+  waveforms.h         the eight OPL3/4 waveform tables
+  patch.h             OplOpParams/OplPatch (runtime form) + the six fixed
+                       algorithm routings (OPL_ROUTINGS[]), expressed as
+                       FmRouting literals
   env_opl.h           EnvOpl, OPL's own envelope
   opl_voice.h         note-on/step/note-off/active/render voice glue,
                        calling ../fm/op.h's kernels directly
@@ -105,8 +133,10 @@ src/engines/opl/
 ```
 
 There is no `rig.h`/measurement rig and no free-routing DAG resolver —
-OPL2 has only two fixed algorithms, so there's nothing to benchmark
-topology-wise or resolve at note-on.
+real hardware has only six fixed algorithms total (2 real OPL2 2-op, 4 real
+OPL3 4-op), so there's nothing to resolve at note-on beyond an array lookup.
+No hardware pass has measured 4-op per-voice cost yet — see Performance
+below, which still reflects 2-op-only measurements.
 
 ### Build
 
@@ -118,6 +148,10 @@ Build with `make ENGINE=opl`.
 through the exact device code path to a WAV file and confirms note-off
 actually releases the voice within a bounded tail; the practical sanity
 check available without hardware.
+
+`tools/host_render/test_opl_4op.cpp` — same check, one synthetic patch per
+4-op Algorithm (`OPL_ALGO_4OP_*`), since `patches.h` ships no 4-op example
+patches yet (Future/TODO).
 
 `tools/opl_ref/` — builds [Nuked-OPL3](https://github.com/nukeykt/Nuked-OPL3)
 (fetched at a pinned SHA, never vendored — see the DX7 module's own
@@ -163,10 +197,11 @@ Every voice's `FmOp` array is still the full six-wide `FM_NUM_OPS` array,
 but `fm_voice_render_block()` (`../fm/op.h`) only loops `order[0..num_ops-1]`
 — a field on `FmRouting` each routing sets for itself, FM's own
 `fm_resolve_routing()` always to `FM_NUM_OPS` (every DX7 algorithm is
-structurally six operators wide), OPL's two fixed-algorithm literals
-(`patch.h`) to 2. Slots 2-5 of every voice's array are simply never visited
-by the per-sample kernel, not computed at zero gain and discarded — see
-Decision Record entry 9.
+structurally six operators wide), OPL's own `OPL_ROUTINGS[]` literals
+(`patch.h`) to 2 for the original OPL2 algorithms or 4 for the OPL3 4-op
+connections. Slots past `num_ops` in every voice's array are simply never
+visited by the per-sample kernel, not computed at zero gain and discarded —
+see Decision Record entries 9 and 10.
 
 ### `EnvOpl` — the OPL Envelope
 
@@ -200,18 +235,22 @@ the curve leading up to that shared domain is OPL-native.
 ### Voice Glue and Vibrato
 
 `opl_voice.h` mirrors the shape of the DX7 module's own note-on/step/
-note-off/active/render functions, but for `OplPatch`/`EnvOpl` and only two
-real operators. A patch's algorithm (FM chain or additive) selects one of
-`patch.h`'s two `constexpr FmRouting` literals; since a patch's feedback
-amount isn't compile-time, it's copied into a per-voice `FmRouting` and
-patched (`kernel[0]`/`fb_shift[0]`/`clear_bus_mask`) at note-on rather than
-baked into the literal — real hardware's single per-channel feedback
-register lives on operator 0 only.
+note-off/active/render functions, but for `OplPatch`/`EnvOpl` and a variable
+2 or 4 real operators — every function loops `i < routing.num_ops` rather
+than a hardcoded bound, so the same glue drives both operator counts. A
+patch's algorithm selects one of `patch.h`'s `OPL_ROUTINGS[]` literals; since
+a patch's feedback amount isn't compile-time, it's copied into a per-voice
+`FmRouting` and patched (`kernel[0]`/`fb_shift[0]`/`clear_bus_mask`) at
+note-on rather than baked into the literal — always operator 0, 2-op or
+4-op alike (real hardware's second Operator pair has its own feedback
+register too, but it's architecturally unwired on every 4-op connection, so
+this module doesn't model it).
 
 Vibrato is one small fixed-rate sine LFO per voice (not a reuse of the DX7
 module's full per-patch-configurable one — real OPL2 hardware has a single
 global fixed-rate vibrato, not a per-patch one), scaled by the mod wheel and
-folded into both operators' phase increment once per control block.
+folded into every real operator's phase increment (`routing.num_ops` of
+them) once per control block.
 
 ## Status and Plan
 
@@ -251,9 +290,21 @@ Voice-Count Sweep, Post-`num_ops` Fix" and "Second Patch: OPL ORGAN".
   just another round of rate-table tuning.
 - **Patch bank converter** — hand-authored patches only for now; no
   `.op2`/GENMIDI-class converter exists yet.
-- **OPL1 (sine-only subset) and OPL3 (4-operator)** — not started. The
-  per-operator waveform table pointer and OPL's own (not DX7-derived) patch
-  struct were chosen so neither forecloses either expansion.
+- **4-op display/DIAG support** — the DIAG page's algorithm indicator is
+  still fixed at two cells (op0/op1 only); a 4-op voice's op2/op3 aren't
+  shown. Separate display/UI work (wayfinder map "Display: shared UI
+  components and page structure", issue #115), not part of the 4-op voice
+  work itself (wayfinder map [4-operator OPL4-class voices for the opl engine](https://github.com/carllom/t00t/issues/136)).
+- **4-op example patches** — `patches.h` still ships only the original 5
+  2-op patches; no hand-authored 4-op patch exists yet demonstrating the 4
+  new Algorithms or the 4 new waveforms. `tools/host_render/test_opl_4op.cpp`
+  covers the engine path with synthetic test patches in the meantime.
+- **4-op hardware performance pass** — per-voice cost for a 4-op voice
+  hasn't been measured on real hardware yet; Performance above still
+  reflects 2-op-only numbers.
+- **OPL1 (sine-only subset)** — not started. The per-operator waveform table
+  pointer and OPL's own (not DX7-derived) patch struct were chosen so this
+  wasn't foreclosed by the 4-op work above.
 - **Rhythm/percussion mode** — deferred, not dropped: it needs a
   genuinely different kernel shape than the phase-accumulator-plus-table
   approach every voice here uses, so it wasn't needed to validate the
@@ -326,20 +377,85 @@ Voice-Count Sweep, Post-`num_ops` Fix" and "Second Patch: OPL ORGAN".
    in shared code the DX7 module also uses — and generalizes to a future
    4-operator OPL3 routing (Future/TODO) by setting `num_ops = 4`, with no
    further kernel changes needed.
+10. **The 4-op Algorithm set (wayfinder map [4-operator OPL4-class voices for the opl engine](https://github.com/carllom/t00t/issues/136))
+    matches real OPL3's 4 four-operator connections exactly, not the shared
+    kernel's free 6-op DAG** (which the DX7 module already demonstrates the
+    kernel supports). The goal is "any voice type a real OPL4 chip's FM
+    section can make," not a superset — matching real connections is both
+    sufficient for that and unambiguous to design against, sourced directly
+    from Nuked-OPL3 (`docs/research/opl3-4op-algorithms.md`, ticket
+    [Real OPL3 four-operator connection topologies](https://github.com/carllom/t00t/issues/138)).
+    Each connection becomes one more `FmRouting` literal in the identical
+    idiom `OPL_ROUTING_FM`/`OPL_ROUTING_ADD` already established —
+    extending entry 9's `num_ops` mechanism to `num_ops = 4` with no further
+    kernel changes, exactly as entry 9 anticipated.
+11. **`OplPatch` gains no `num_ops` field of its own, and a single
+    `feedback` field rather than one per Operator pair** (ticket
+    [OplPatch shape for 2-op vs 4-op voices](https://github.com/carllom/t00t/issues/137)).
+    Operator count is read off the chosen Algorithm's own resolved
+    `FmRouting.num_ops` (entry 9's mechanism again) rather than duplicated
+    as patch state — one source of truth, matching this module's existing
+    preference (entry 4). Feedback stays a single field, not `feedback[2]`,
+    because ticket #138's research found real OPL3 hardware's second
+    Operator pair (op2) has its own feedback register but it is never read
+    by any of the 4 real four-operator connections — architecturally a
+    no-op in every case. A `feedback[2]` field would let a patch author set
+    a value that silently does nothing; a single op0-only field matches
+    what actually affects sound and needs no new concept beyond what a 2-op
+    patch already has.
+12. **The 4 new waveforms (register indices 4-7,
+    `docs/research/opl3-8-waveforms.md`, ticket
+    [OPL3/4's full 8-waveform set](https://github.com/carllom/t00t/issues/139))
+    extend `waveforms.h`'s existing "plausible approximation, not a
+    log-ROM port" precedent for 3 of the 4 new shapes, but not the 4th.**
+    For WS4-6, reading Nuked-OPL3's `OPL3_EnvelopeCalcSin4`-`Sin6` directly
+    confirmed the chip's log-sine ROM is purely an implementation trick for
+    computing an ordinary sine or square curve cheaply in fixed point — the
+    same float-`sinf`-based approximation this module's existing 4 tables
+    already use carries over unchanged. WS7 (the logarithmic sawtooth) is
+    the exception: there the log-domain-to-linear exponential conversion
+    *is* the waveform's actual, audible geometry (a per-half-cycle ~96 dB
+    exponential decay with a hard discontinuity at wraparound), not a
+    shortcut for something simpler — a naive linear ramp would sound and
+    look qualitatively wrong, so its table must use the real exponential
+    formula (`amplitude ∝ 2^(-32*p)` per half-cycle) rather than this
+    module's usual "geometry over exact ROM values" approximation license.
 
 ## Glossary
 
 - **Operator**: one waveform generator with its own envelope and frequency
-  multiplier — two per voice, versus the DX7 module's six.
-- **Algorithm**: OPL2 has exactly two — an FM chain (one operator
-  modulates the other, which carries) and additive (both operators carry
-  independently) — versus the DX7 module's 32-plus-free-DAG routing.
+  multiplier — two per voice on OPL2-class 2-op voices, four per voice on
+  OPL3/4-class 4-op voices (see wayfinder map "4-operator OPL4-class voices"),
+  versus the DX7 module's six.
+- **Operator pair**: two Operators, the building block a 4-op voice's
+  Algorithm wires together — the unit real OPL3 hardware pairs two 2-op
+  channels from. A 2-op voice is a single Operator pair; a 4-op voice is
+  two. Real hardware gives each Operator pair its own Feedback register,
+  but see Feedback below: only the first pair's is ever wired to anything.
+  _Avoid_: "channel" — already claims a different meaning at the MIDI/voice
+  layer in this codebase.
+- **Algorithm**: one of a voice's fixed routing topologies. A 2-op voice has
+  exactly two — an FM chain (one operator modulates the other, which
+  carries) and additive (both operators carry independently). A 4-op voice
+  has exactly four — the real OPL3 four-operator connections, each wiring
+  two Operator pairs together — versus the DX7 module's 32-plus-free-DAG
+  routing.
+  _Changed from_: "OPL2 has exactly two" — broadened once 4-op voices
+  (wayfinder map "4-operator OPL4-class voices") added a second, larger
+  fixed topology set alongside OPL2's original two, matching how both the
+  DX7 module and real OPL3 documentation already use "algorithm" for a
+  chip's fixed topology set regardless of count.
 - **Carrier**: an operator whose output is audible directly.
 - **Modulator**: an operator whose output phase-modulates the other
   operator instead of being audible directly.
-- **Feedback**: operator 0's output modulating its own phase — real OPL2
-  hardware's single per-channel feedback register, unlike the DX7 module's
-  per-operator feedback field.
+- **Feedback**: operator 0's output modulating its own phase — one
+  `feedback` value per voice, 2-op or 4-op alike. Real OPL3 hardware gives
+  the second Operator pair (op2) its own feedback register too, but no real
+  four-operator connection ever reads it (verified exhaustively against
+  Nuked-OPL3's connection logic — [Real OPL3 four-operator connection topologies](https://github.com/carllom/t00t/issues/138)):
+  it's programmable but architecturally a no-op on every one of the 4
+  connections, so this module models only op0's, matching what actually
+  affects sound. Unlike the DX7 module's per-operator feedback field.
 - **EG-type**: whether an operator's envelope holds at its sustain level
   until note-off (sustain) or decays straight through it to silence on its
   own (percussive) — an OPL-native flag with no DX7 equivalent.

@@ -595,3 +595,46 @@ signatures, and fill/severity-color math were checked this way; `make
 ENGINE=opl` (build) and actual flashing/encoder feel (direction sense, poll
 rate, detent threshold) still need a real hardware pass and will likely want
 tuning once seen on the panel.
+
+### 4-Operator OPL3/4-Class Voices (wayfinder map #136)
+
+Chartered as a wayfinder map (destination: a spec for 4-op OPL3/4-class
+voices, coexisting with today's 2-op ones) rather than jumped straight into
+code, since the shape had several genuine forks -- how `OplPatch` should
+represent a variable operator count, whether to match real OPL3's four
+connections exactly or open the shared kernel's free 6-op DAG, whether
+feedback needed a second field for the second Operator pair. Two research
+tickets (reading Nuked-OPL3's `opl3.c` directly, the module's own
+ground-truth reference) settled the hardware facts: the real four-operator
+connections (`docs/research/opl3-4op-algorithms.md`) and the four waveform
+shapes OPL3/4 adds at register indices 4-7 (`docs/research/
+opl3-8-waveforms.md`) -- including the finding that op2's own feedback
+register, while present on real hardware, is never wired to anything in any
+of the four connections. A grilling ticket then settled `OplPatch`'s shape
+using that finding: `op[4]` unconditionally, no separate operator-count
+field (derived from the chosen Algorithm's own `FmRouting.num_ops`,
+generalizing the `num_ops` mechanism #82 already added), and a single
+`feedback` field rather than one per Operator pair. The map's own spec
+write-up landed in `module_opl.md` first, then a separate implementation
+pass turned it into code.
+
+Implementation: `patch.h` gained 4 new `OplAlgorithm` values and their
+`FmRouting` literals (`OPL_ROUTING_4OP_*`), collected into `OPL_ROUTINGS[]`
+indexed directly by the enum so `opl_voice_note_on()` becomes a single array
+lookup regardless of operator count. `waveforms.h` gained the 4 new
+waveform tables (ws 4-7), extending `opl_waveform_table()`'s mask from `&3`
+to `&7`. Every function in `opl_voice.h` (`note_on`/`note_off`/`active`/
+`step_envelopes`/`render`) changed from a hardcoded loop bound of 2 to
+`routing.num_ops`, and `env`/`voice_env` grew from 2 to 4 entries
+(`audio_engine.cpp`); `opl_voice_note_off()` gained a `routing` parameter
+since it can no longer assume how many operators to release. No existing
+`patches.h` patch needed touching -- `OplOpParams op[4]`'s upper two slots
+zero-initialize automatically for a 2-element brace-initializer, matching
+the existing routing-literal padding convention.
+
+Verified on the host build (no ARM cross-toolchain in this session either):
+`render_opl` (unchanged 2-op regression, all 5 existing patches still pass)
+and a new `tools/host_render/test_opl_4op.cpp` (one synthetic patch per new
+4-op Algorithm, same bounded-audio/idle-after-release check) both pass. No
+hand-authored 4-op example patch exists in `patches.h` yet, and no hardware
+pass has measured 4-op per-voice cost -- both left as Future/TODO.

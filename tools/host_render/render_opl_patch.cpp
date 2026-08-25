@@ -56,6 +56,24 @@ static void usage() {
         "  --list            print every patch's registers as CSV and exit\n");
 }
 
+// CSV columns are shaped for a 2-op patch (op0/op1 only) -- nuked_render's
+// own CLI (the comparison target this CSV feeds) has no 4-op mode to render
+// against yet, so this lister's column shape isn't extended here. The algo
+// name is still resolved for all 6 values so a future 4-op patches.h entry
+// is labeled correctly rather than silently mislabeled "fm", even though
+// its op2/op3 data has nowhere to go in this row shape yet.
+static const char *algo_name(OplAlgorithm algo) {
+    switch (algo) {
+        case OPL_ALGO_FM:             return "fm";
+        case OPL_ALGO_ADD:            return "add";
+        case OPL_ALGO_4OP_CHAIN:      return "4op_chain";
+        case OPL_ALGO_4OP_DUAL_FM:    return "4op_dual_fm";
+        case OPL_ALGO_4OP_ADD_CHAIN:  return "4op_add_chain";
+        case OPL_ALGO_4OP_ADD_FM_ADD: return "4op_add_fm_add";
+        default:                      return "unknown";
+    }
+}
+
 static void print_patch_list() {
     printf("# domain=patches cols=idx,name,mult0,ksl0,tl0,ar0,dr0,sl0,rr0,egt0,ksr0,ws0,"
            "mult1,ksl1,tl1,ar1,dr1,sl1,rr1,egt1,ksr1,ws1,feedback,algo\n");
@@ -66,7 +84,7 @@ static void print_patch_list() {
                i, p.name,
                o0.mult, o0.ksl, o0.tl, o0.ar, o0.dr, o0.sl, o0.rr, o0.egt, o0.ksr, o0.ws,
                o1.mult, o1.ksl, o1.tl, o1.ar, o1.dr, o1.sl, o1.rr, o1.egt, o1.ksr, o1.ws,
-               p.feedback, p.algorithm == OPL_ALGO_ADD ? "add" : "fm");
+               p.feedback, algo_name(p.algorithm));
     }
 }
 
@@ -106,7 +124,7 @@ int main(int argc, char **argv) {
     const OplPatch &patch = *OPL_PATCHES[a.patch];
 
     FmOp ops[FM_NUM_OPS];
-    EnvOpl env[2];
+    EnvOpl env[4];
     FmRouting routing;
     OplVibrato vib;
     opl_voice_init_inert(ops);
@@ -132,7 +150,7 @@ int main(int argc, char **argv) {
     uint32_t freed_at = 0;
     for (uint32_t done = 0; done < total_frames; ) {
         if (!released && done >= gate_frames) {
-            opl_voice_note_off(env);
+            opl_voice_note_off(env, routing);
             released = true;
         }
         uint32_t n = std::min(NATIVE_BUFFER, total_frames - done);
