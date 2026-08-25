@@ -423,3 +423,15 @@ target_include_directories(preview_fm_display PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}
     ${CMAKE_CURRENT_LIST_DIR}/../../src/wslcd
 )
+
+# Visual preview of chip's Performance/DIAG Page layout (src/engines/chip/
+# display.cpp), same shape as preview_opl_display above.
+add_executable(preview_chip_display
+    preview_chip_display.cpp
+    ${GFX_HOST_COPY}
+)
+target_include_directories(preview_chip_display PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}/host_stub_lcd
+    ${CMAKE_CURRENT_LIST_DIR}
+    ${CMAKE_CURRENT_LIST_DIR}/../../src/wslcd
+)
