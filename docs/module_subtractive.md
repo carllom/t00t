@@ -53,16 +53,28 @@ fixed to one note/channel/preset, routed through the same Shaping →
 
 ### Display (Presentation Capabilities)
 
-`breadboard_rp2350`'s optional LCD shows (`display.cpp`, ~20 Hz refresh,
-change-detected redraws only):
+Two Pages (`src/wslcd/page.h`/`header.h`), the shared Widget/Header/Page
+library (CONTEXT.md's Widget catalog) applied to subtractive — same
+Performance-page layout as OPL's/FM's/chip's own (`docs/module_opl.md` /
+`docs/module_fm.md` / `docs/module_chip.md`'s Display sections):
 
-- Per-voice dot bar (16 voices: filled = sounding, bordered = key held) plus
-  sounding count
-- CPU load (%, colour-coded bar)
-- Last note (name + octave + velocity)
-- Current preset name
-- Pitch bend and mod wheel values
-- FX type, its two params, and mix
+- **Performance** (required, default): the Header's Resource bar (combined
+  active-voice/CPU indicator) plus the current preset (number + name) and
+  the three FX CCs (CC73/72/75) as compact Value bars ("FXMIX"/"FX P1"/
+  "FX P2") with FX type (CC74) as a Label ("DELAY"/"REVERB"/"OFF") and the
+  mod wheel (CC1) as a fourth Value bar ("MOD").
+- **DIAG**: the exact-value detail Resource bar deliberately sacrifices —
+  CPU% (PercentageBar), per-voice sounding activity (ActivityGrid), and
+  last note (name + octave + velocity). No per-channel patch or algorithm
+  concept here — subtractive is a single global preset played across all
+  channels/voices — so there's no multitimbral grid or algorithm indicator
+  the way FM's/OPL's own DIAG Pages have. Pitch bend isn't shown on either
+  Page (dropped along with the old hand-rolled display, matching FM's own
+  Performance/DIAG content exactly).
+
+Reachable via the breadboard's rotary encoder (`src/encoder_nav.h`,
+docs/engine.md's "Encoder navigation" entry) where one's wired;
+Performance-only otherwise (`HAS_ENCODER=0`).
 
 ## Technical Overview
 
@@ -71,7 +83,7 @@ change-detected redraws only):
 - `engine.h` — `VoiceParams`/`ParamExchange` (via `engine_base.h`'s templates)
 - `presets.h` — `VoicePreset` struct and the 11-entry factory preset table
 - `audio_engine.cpp` — Core 1 render loop
-- `display.cpp` — Core 0 status display
+- `display.cpp` — Performance + DIAG Pages (see Display above)
 - `input_subsystem.cpp` — the Input pipeline's module-specific tail:
   mapping table, Handlers, and Voice Allocation Interface calls, built on
   the shared dispatch layer below

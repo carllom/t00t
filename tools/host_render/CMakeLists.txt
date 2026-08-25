@@ -435,3 +435,16 @@ target_include_directories(preview_chip_display PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}
     ${CMAKE_CURRENT_LIST_DIR}/../../src/wslcd
 )
+
+# Visual preview of subtractive's Performance/DIAG Page layout
+# (src/engines/subtractive/display.cpp), same shape as preview_opl_display
+# above.
+add_executable(preview_subtractive_display
+    preview_subtractive_display.cpp
+    ${GFX_HOST_COPY}
+)
+target_include_directories(preview_subtractive_display PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}/host_stub_lcd
+    ${CMAKE_CURRENT_LIST_DIR}
+    ${CMAKE_CURRENT_LIST_DIR}/../../src/wslcd
+)
