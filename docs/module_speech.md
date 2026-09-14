@@ -46,8 +46,8 @@ shimmer are all live MIDI controls) rather than just a talking clock.
   simultaneously-held voices across the stereo field with per-voice detune,
   one LPC lattice preset selecting the corpus's `KEY_PER_WORD` page 0, and
   one SAM preset selecting its own generated phrase bank's first entry
-- **Effects**: shared post-mix insert (delay or reverb) — no overdrive (see
-  Future/TODO)
+- **Effects**: shared post-mix insert (delay, reverb, phaser, flanger, or
+  chorus) — no overdrive (see Future/TODO)
 - **LPC lattice tract**: a second, sibling tract — a 10th-order all-pole
   lattice filter reusing the same glottal-pulse/LFSR-noise excitation,
   selected per voice by `VoiceParams::tract`. Renders natively at 8 kHz

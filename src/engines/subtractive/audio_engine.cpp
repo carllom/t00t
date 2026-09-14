@@ -5,6 +5,9 @@
 #include "filter.h"
 #include "fx/delay.h"
 #include "fx/reverb.h"
+#include "fx/phaser.h"
+#include "fx/flanger.h"
+#include "fx/chorus.h"
 #include "pan.h"
 #include "hardware/gpio.h"
 #include "pico/multicore.h"
@@ -55,8 +58,11 @@ static int32_t dry_r[SAMPLES_PER_BUFFER];
 static int32_t fx_buf[SAMPLES_PER_BUFFER];
 
 // Post-mix effect state (Core 1 only)
-static FxDelay  fx_delay;
-static FxReverb fx_reverb;
+static FxDelay   fx_delay;
+static FxReverb  fx_reverb;
+static FxPhaser  fx_phaser;
+static FxFlanger fx_flanger;
+static FxChorus  fx_chorus;
 static uint8_t  s_last_fx_type = 0xFF;  // detect type switch to clear buffers
 
 void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
@@ -94,6 +100,9 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
     // Clear effect buffers
     fx_delay.init();
     fx_reverb.init();
+    fx_phaser.init();
+    fx_flanger.init();
+    fx_chorus.init();
 
     while (true) {
         // Wait for DMA ISR to tell us which buffer to fill
@@ -316,24 +325,32 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
             f_half_state[v] = fhalf_cur;
         }
 
-        // Post-mix effect (delay or reverb, selected by CC74). Mono send /
-        // stereo return: downmix the stereo dry mix to mono, run the
-        // (still-mono) effect on it, then add its wet output identically to
-        // both channels — only the dry path carries per-voice pan. Clear the
-        // newly selected effect's buffer on a type switch so a stale tail
-        // can't resurface.
-        bool has_fx = (vp.fx.type == FX_DELAY || vp.fx.type == FX_REVERB);
+        // Post-mix effect (delay, reverb, phaser, flanger, or chorus,
+        // selected by CC74). Mono send / stereo return: downmix the stereo
+        // dry mix to mono, run the (still-mono) effect on it, then add its
+        // wet output identically to both channels — only the dry path
+        // carries per-voice pan. Clear the newly selected effect's buffer on
+        // a type switch so a stale tail can't resurface.
+        bool has_fx = (vp.fx.type == FX_DELAY   || vp.fx.type == FX_REVERB ||
+                       vp.fx.type == FX_PHASER  || vp.fx.type == FX_FLANGER ||
+                       vp.fx.type == FX_CHORUS);
         if (vp.fx.type != s_last_fx_type) {
-            if (vp.fx.type == FX_DELAY)       fx_delay.init();
-            else if (vp.fx.type == FX_REVERB) fx_reverb.init();
+            if (vp.fx.type == FX_DELAY)        fx_delay.init();
+            else if (vp.fx.type == FX_REVERB)  fx_reverb.init();
+            else if (vp.fx.type == FX_PHASER)  fx_phaser.init();
+            else if (vp.fx.type == FX_FLANGER) fx_flanger.init();
+            else if (vp.fx.type == FX_CHORUS)  fx_chorus.init();
             s_last_fx_type = vp.fx.type;
         }
         if (has_fx) {
             for (uint32_t i = 0; i < SAMPLES_PER_BUFFER; i++) {
                 fx_buf[i] = (dry_l[i] + dry_r[i]) >> 1;
             }
-            if (vp.fx.type == FX_DELAY) fx_delay.process(fx_buf, SAMPLES_PER_BUFFER, vp.fx);
-            else                        fx_reverb.process(fx_buf, SAMPLES_PER_BUFFER, vp.fx);
+            if (vp.fx.type == FX_DELAY)        fx_delay.process(fx_buf, SAMPLES_PER_BUFFER, vp.fx);
+            else if (vp.fx.type == FX_REVERB)  fx_reverb.process(fx_buf, SAMPLES_PER_BUFFER, vp.fx);
+            else if (vp.fx.type == FX_PHASER)  fx_phaser.process(fx_buf, SAMPLES_PER_BUFFER, vp.fx);
+            else if (vp.fx.type == FX_FLANGER) fx_flanger.process(fx_buf, SAMPLES_PER_BUFFER, vp.fx);
+            else                                fx_chorus.process(fx_buf, SAMPLES_PER_BUFFER, vp.fx);
         }
 
         // Clip, add the wet return to both channels, and interleave into stereo int16_t.

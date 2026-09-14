@@ -71,7 +71,7 @@ static const char *PRESET_NAMES[PRESET_COUNT] = {
 };
 static const char *NOTE_NAMES[12] =
     { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
-static const char *FX_TYPE_NAMES[3] = { "OFF", "DELAY", "REVERB" };
+static const char *FX_TYPE_NAMES[FX_COUNT] = { "OFF", "DELAY", "REVERB", "PHASER", "FLANGER", "CHORUS" };
 
 enum { PAGE_PERFORMANCE = 0, PAGE_DIAG = 1, PAGE_COUNT = 2 };
 
@@ -160,7 +160,7 @@ void display_task() {
                                   COL_BG);
         }
 
-        uint8_t fx_type = m.fx_type < 3 ? m.fx_type : 0;
+        uint8_t fx_type = m.fx_type < FX_COUNT ? m.fx_type : 0;
         label_draw_value(fx_type_label, m.fx_type, FX_TYPE_NAMES[fx_type], BAR_X, FX_ROW1_Y, 14, 1,
                           COL_VALUE, COL_BG);
         value_bar_draw_value(fxmix_bar, m.fx_mix, "FXMIX", m.fx_mix / 127.0f, BAR_X2, FX_ROW1_Y,
