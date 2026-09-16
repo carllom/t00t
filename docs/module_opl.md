@@ -96,7 +96,8 @@ library (CONTEXT.md's Widget catalog) applied to OPL:
   active-voice/CPU indicator) plus the current preset (number + name, for
   whichever channel most recently triggered a note or a Program Change) and
   the three FX CCs (CC73/72/75) as compact Value bars ("FXMIX"/"FX P1"/
-  "FX P2") with FX type (CC74) as a Label ("DELAY"/"REVERB"/"OFF")
+  "FX P2") with FX type (CC74) as a Label ("OFF"/"DELAY"/"REVERB"/"PHASER"/
+  "FLANGER"/"CHORUS"/"CRUSH"/"DRIVE")
   and the mod wheel (CC1) as a fourth Value bar ("MOD").
 - **DIAG**: the exact-value detail Resource bar deliberately sacrifices —
   CPU% (PercentageBar), per-voice sounding activity (ActivityGrid), last
