@@ -2,6 +2,7 @@
 
 #include "engine_base.h"   // EffectParams
 #include "fx/lfo.h"
+#include "fx/allpass_interp.h"
 #include <cstdint>
 #include <arm_acle.h>      // __ssat
 
@@ -58,15 +59,15 @@ struct FxChorus {
                                   (((int32_t)target_q8 - (int32_t)cur_delay_q8[v]) >> 4));
 
                 uint32_t int_delay = cur_delay_q8[v] >> 8;
-                int32_t  frac      = (int32_t)((cur_delay_q8[v] & 0xFF) << 7);
+                int32_t  eta       = allpass_eta_q15(cur_delay_q8[v] & 0xFF);
 
                 uint32_t r0 = (w - int_delay) & CHORUS_MASK;
                 uint32_t r1 = (r0 - 1) & CHORUS_MASK;
                 int32_t  x0 = buf[r0];
                 int32_t  x1 = buf[r1];
 
-                int32_t y = (int32_t)(((int64_t)frac * x0) >> 15) + x1 -
-                            (int32_t)(((int64_t)frac * interp_z[v]) >> 15);
+                int32_t y = (int32_t)(((int64_t)eta * x0) >> 15) + x1 -
+                            (int32_t)(((int64_t)eta * interp_z[v]) >> 15);
                 interp_z[v] = y;
                 sum += y;
             }

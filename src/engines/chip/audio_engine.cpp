@@ -841,6 +841,13 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
             else                                fx_chorus.process(fx_buf, SAMPLES_PER_BUFFER, vp.fx);
         }
 
+        // Crossfade dry/wet by the mix knob (Q15) instead of always summing
+        // full dry underneath -- fx_buf above already carries mix baked in
+        // as its own gain, so CC73=127 now means wet-only, not dry+wet
+        // (dry+near-unity-gain wet was clipping constantly at full mix,
+        // worst on the phaser's zero-delay allpass).
+        int32_t dry_scale = has_fx ? (int32_t)(127 - (int32_t)vp.fx.mix) * 258 : 32768;
+
         // Speaker sim (module_chip.md §10) sits downstream of the FX insert
         // (delay/reverb), upstream of the final safety clamp below -- its
         // own soft clip is the cone-breakup character, not that clamp.
@@ -854,8 +861,8 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
 
         int16_t *out = i2s_buffer_ptr(buffers, buf_index);
         for (uint32_t i = 0; i < SAMPLES_PER_BUFFER; i++) {
-            int32_t v = dry[i];
-            if (has_fx) v += fx_buf[i];
+            int32_t v = has_fx ? (int32_t)(((int64_t)dry_scale * dry[i]) >> 15) + fx_buf[i]
+                                : dry[i];
             // Mono, duplicated -- module_chip.md §10: the module is authentically
             // mono (no VoiceParams.pan).
             v = (int32_t)speaker.tick((float)(v >> SID_MIX_SHIFT));

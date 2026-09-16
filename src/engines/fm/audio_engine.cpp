@@ -242,13 +242,22 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
             else                                fx_chorus.process(fx_buf, SAMPLES_PER_BUFFER, vp.fx);
         }
 
+        // Crossfade dry/wet by the mix knob (Q15) instead of always summing
+        // full dry underneath -- fx_buf above already carries mix baked in
+        // as its own gain, so CC73=127 now means wet-only, not dry+wet
+        // (dry+near-unity-gain wet was clipping constantly at full mix,
+        // worst on the phaser's zero-delay allpass).
+        int32_t dry_scale = has_fx ? (int32_t)(127 - (int32_t)vp.fx.mix) * 258 : 32768;
+
         int16_t *out = i2s_buffer_ptr(buffers, buf_index);
         for (uint32_t i = 0; i < SAMPLES_PER_BUFFER; i++) {
-            int32_t l = dry_l[i];
-            int32_t r = dry_r[i];
+            int32_t l, r;
             if (has_fx) {
-                l += fx_buf[i];
-                r += fx_buf[i];
+                l = (int32_t)(((int64_t)dry_scale * dry_l[i]) >> 15) + fx_buf[i];
+                r = (int32_t)(((int64_t)dry_scale * dry_r[i]) >> 15) + fx_buf[i];
+            } else {
+                l = dry_l[i];
+                r = dry_r[i];
             }
             *out++ = (int16_t)__ssat(l, 16);
             *out++ = (int16_t)__ssat(r, 16);
