@@ -18,12 +18,13 @@ static constexpr uint32_t BUF_PERIOD_US = 1000000u * SAMPLES_PER_BUFFER / SAMPLE
 
 uint8_t audio_engine_load() { return s_load_pct; }
 
-// OPL engine: MAX_VOICES independent 2-operator voices, each
-// driven straight from VoiceParams (phase_inc = bend-scaled note frequency,
-// patch = the whole timbre, amplitude = velocity, gate = held/released) with
-// the algorithm's routing resolved once per note-on from one of patch.h's
-// two fixed literals (no runtime DAG resolution -- OPL2 has only two
-// algorithms), envelopes stepped once per control block (opl_voice.h,
+// OPL engine: MAX_VOICES independent voices, each 2-op or 4-op depending on
+// its patch's chosen Algorithm, each driven straight from VoiceParams
+// (phase_inc = bend-scaled note frequency, patch = the whole timbre,
+// amplitude = velocity, gate = held/released) with the algorithm's routing
+// resolved once per note-on from one of patch.h's six fixed OPL_ROUTINGS[]
+// literals (no runtime DAG resolution -- real hardware has only six
+// algorithms total), envelopes stepped once per control block (opl_voice.h,
 // env_opl.h), and rendered through the reused ../fm/op.h kernels. gate=false
 // releases through each operator's EG rather than cutting the voice
 // immediately, and a voice keeps rendering until its carriers' envelopes
@@ -46,7 +47,7 @@ static uint8_t  s_last_fx_type = 0xFF;
 
 // Per-voice render state (Core 1 only, never crosses ParamExchange).
 static FmOp      voice_ops[MAX_VOICES][FM_NUM_OPS];
-static EnvOpl     voice_env[MAX_VOICES][2];
+static EnvOpl     voice_env[MAX_VOICES][4];  // up to 4 real operators (routing.num_ops), 2-op or 4-op voice alike
 static FmRouting  voice_routing[MAX_VOICES];
 static OplVibrato voice_vib[MAX_VOICES];
 static uint8_t    voice_last_trigger[MAX_VOICES];
@@ -54,9 +55,10 @@ static bool       voice_gated[MAX_VOICES];  // Core 1's own gate-edge tracking, 
 
 // Shared bus scratch -- reused across every voice, sequentially, within a
 // pass. FmVoiceBuses::mod[] is fixed at FM_NUM_OPS wide (op.h), so all six
-// pointers below must be valid even though OPL's routing (num_ops = 2,
-// patch.h) only ever dereferences mod[0]/mod[1] -- bus_mod2..5 are never
-// read or written.
+// pointers below must be valid even though OPL's routing (num_ops = 2 or 4,
+// patch.h) only ever dereferences mod[0..num_ops-1] -- the unused trailing
+// bus_mod entries are never read or written for whichever voices are
+// currently 2-op.
 static int32_t bus_mod0[FM_BLOCK], bus_mod1[FM_BLOCK], bus_mod2[FM_BLOCK];
 static int32_t bus_mod3[FM_BLOCK], bus_mod4[FM_BLOCK], bus_mod5[FM_BLOCK];
 static int32_t bus_out[FM_BLOCK];
@@ -80,10 +82,10 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
         voice_last_trigger[v] = 0;  // matches VoiceParams' default trigger=0 -- a never-triggered voice must NOT look "changed"
         voice_gated[v] = false;
         opl_voice_init_inert(voice_ops[v]);
-        voice_env[v][0].ix = 4;  // idle -- a zero-initialized EnvOpl is NOT idle (stage 0 is a real stage)
-        voice_env[v][1].ix = 4;
-        voice_env[v][0].down = false;
-        voice_env[v][1].down = false;
+        for (uint32_t op = 0; op < 4; op++) {
+            voice_env[v][op].ix = 4;  // idle -- a zero-initialized EnvOpl is NOT idle (stage 0 is a real stage)
+            voice_env[v][op].down = false;
+        }
         voice_vib[v].phase = 0;
     }
 
@@ -115,13 +117,13 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
                     // same committed parameter block, so there is no later
                     // gate-off edge left to catch below -- release right
                     // away rather than leaving the voice stuck sustaining.
-                    opl_voice_note_off(voice_env[v]);
+                    opl_voice_note_off(voice_env[v], voice_routing[v]);
                 }
                 voice_last_trigger[v] = p.trigger;
                 voice_gated[v] = p.gate;
             } else if (!p.gate && voice_gated[v]) {
                 // Gate-off edge: release through the EG instead of a hard cutoff.
-                opl_voice_note_off(voice_env[v]);
+                opl_voice_note_off(voice_env[v], voice_routing[v]);
                 voice_gated[v] = false;
             } else {
                 voice_gated[v] = p.gate;

@@ -595,3 +595,84 @@ signatures, and fill/severity-color math were checked this way; `make
 ENGINE=opl` (build) and actual flashing/encoder feel (direction sense, poll
 rate, detent threshold) still need a real hardware pass and will likely want
 tuning once seen on the panel.
+
+### 4-Operator OPL3/4-Class Voices (wayfinder map #136)
+
+Chartered as a wayfinder map (destination: a spec for 4-op OPL3/4-class
+voices, coexisting with today's 2-op ones) rather than jumped straight into
+code, since the shape had several genuine forks -- how `OplPatch` should
+represent a variable operator count, whether to match real OPL3's four
+connections exactly or open the shared kernel's free 6-op DAG, whether
+feedback needed a second field for the second Operator pair. Two research
+tickets (reading Nuked-OPL3's `opl3.c` directly, the module's own
+ground-truth reference) settled the hardware facts: the real four-operator
+connections (`docs/research/opl3-4op-algorithms.md`) and the four waveform
+shapes OPL3/4 adds at register indices 4-7 (`docs/research/
+opl3-8-waveforms.md`) -- including the finding that op2's own feedback
+register, while present on real hardware, is never wired to anything in any
+of the four connections. A grilling ticket then settled `OplPatch`'s shape
+using that finding: `op[4]` unconditionally, no separate operator-count
+field (derived from the chosen Algorithm's own `FmRouting.num_ops`,
+generalizing the `num_ops` mechanism #82 already added), and a single
+`feedback` field rather than one per Operator pair. The map's own spec
+write-up landed in `module_opl.md` first, then a separate implementation
+pass turned it into code.
+
+Implementation: `patch.h` gained 4 new `OplAlgorithm` values and their
+`FmRouting` literals (`OPL_ROUTING_4OP_*`), collected into `OPL_ROUTINGS[]`
+indexed directly by the enum so `opl_voice_note_on()` becomes a single array
+lookup regardless of operator count. `waveforms.h` gained the 4 new
+waveform tables (ws 4-7), extending `opl_waveform_table()`'s mask from `&3`
+to `&7`. Every function in `opl_voice.h` (`note_on`/`note_off`/`active`/
+`step_envelopes`/`render`) changed from a hardcoded loop bound of 2 to
+`routing.num_ops`, and `env`/`voice_env` grew from 2 to 4 entries
+(`audio_engine.cpp`); `opl_voice_note_off()` gained a `routing` parameter
+since it can no longer assume how many operators to release. No existing
+`patches.h` patch needed touching -- `OplOpParams op[4]`'s upper two slots
+zero-initialize automatically for a 2-element brace-initializer, matching
+the existing routing-literal padding convention.
+
+Verified on the host build (no ARM cross-toolchain in this session either):
+`render_opl` (unchanged 2-op regression, all 5 existing patches still pass)
+and a new `tools/host_render/test_opl_4op.cpp` (one synthetic patch per new
+4-op Algorithm, same bounded-audio/idle-after-release check) both pass. No
+hardware pass has measured 4-op per-voice cost yet -- left as Future/TODO.
+
+Code review of the implementation pass surfaced three real gaps the new
+`OplAlgorithm` values exposed: `opl_voice_note_on()` indexed `OPL_ROUTINGS[]`
+with no bounds check (the old FM/ADD ternary couldn't select outside the
+valid set; the new 6-value enum could, from a corrupted patch or a future
+bank converter's bad data) -- fixed with `opl_routing_for()`, a modulo-wrapped
+lookup. `display.cpp`'s DIAG algorithm indicator still assumed only the two
+original algorithms existed, so it mis-colored the op0/op1 cells for 3 of
+the 4 new connections -- fixed to read carrier/modulator role off the
+patch's own resolved `FmRouting.out_bus[]` instead of a hardcoded rule.
+`render_opl_patch.cpp`'s CSV lister labeled every non-ADD algorithm "fm" --
+fixed with a full 6-way name lookup, still within the CSV's existing
+2-op-only column shape (no 4-op patch's op2/op3 data has anywhere to go in
+that format yet -- a separate, undecided follow-up, not attempted here).
+
+### 4-Op Example Patches
+
+4 hand-authored patches added to `patches.h`, one per 4-op Algorithm,
+exercising every waveform 4-7 added this module's own OPL3/4 waveform set
+along the way (`OPL_PATCH_COUNT` 5 -> 9): **OPL4 CHAIN EP** (full serial
+chain, ws 4 on the deepest modulator) -- a classic 4-op electric-piano
+shape, three modulators in series with the one nearest the carrier decaying
+fastest so the attack's brightness peels away into a plainer sustain, the
+same shape OPL_PATCH_BELL's 2-op chain uses with two extra stages of
+harmonic development. **OPL4 DUAL SAW** (two independent 2-op FM pairs
+summed, ws 6 and ws 7) -- since OPL has no per-operator detune to beat two
+pairs against each other, the "dual" character comes from timbral contrast
+instead: a plain sine pair for a warm layer, a square-modulated
+log-sawtooth pair for a bright buzzy layer on top. **OPL4 BRASS** (op0
+additive + a 3-op chain, ws 6) -- a sine sub/body carrier with feedback
+growl, plus a square-brightened FM chain carrier for the brass edge, two
+independent carriers summed rather than one long chain. **OPL4 ORGAN PAD**
+(op0 additive + an FM pair + op3 additive, ws 5 and ws 2) -- a
+three-partial drawbar stack (mult 1/2/3) extending OPL_PATCH_ORGAN's 2-op
+additive idea to three tunable partials, near-zero decay on every operator
+so the whole chord holds at full level for as long as the note is held.
+
+All 9 patches verified via `render_opl` (bounded audio, idle within the
+release tail) on the host build.

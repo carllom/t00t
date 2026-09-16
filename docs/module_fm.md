@@ -83,8 +83,9 @@ layout as OPL's own (`docs/module_opl.md`'s Display section):
   active-voice/CPU indicator) plus the current patch (bank index + DX7 voice
   name, for whichever channel most recently triggered a note or a Program
   Change) and the three FX CCs (CC73/72/75) as compact Value bars ("FXMIX"/
-  "FX P1"/"FX P2") with FX type (CC74) as a Label ("DELAY"/"REVERB"/"OFF")
-  and the mod wheel (CC1) as a fourth Value bar ("MOD").
+  "FX P1"/"FX P2") with FX type (CC74) as a Label ("OFF"/"DELAY"/"REVERB"/
+  "PHASER"/"FLANGER"/"CHORUS"/"CRUSH"/"DRIVE") and the mod wheel (CC1) as a
+  fourth Value bar ("MOD").
 - **DIAG**: the exact-value detail Resource bar deliberately sacrifices —
   CPU% (PercentageBar), per-voice sounding activity (ActivityGrid, one row —
   MAX_VOICES=16 matches `kActivityGridCellsPerRow` exactly), last

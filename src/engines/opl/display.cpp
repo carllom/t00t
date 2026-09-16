@@ -100,8 +100,13 @@ static ValueRow<NoteKey> note_row;
 static const OplPatch *last_algo_patch = nullptr;
 
 static void draw_algo_indicator(const OplPatch *patch) {
+    // Reads op0/op1's carrier/modulator role off the patch's own resolved
+    // routing rather than a hardcoded per-algorithm rule -- correct for a
+    // 4-op patch's first Operator pair too, not just OPL2's original two
+    // Algorithms. op2/op3 aren't shown yet (see Future/TODO).
+    const FmRouting &routing = opl_routing_for(patch->algorithm);
     for (uint8_t i = 0; i < 2; i++) {
-        bool carrier = (patch->algorithm == OPL_ALGO_ADD) || (i == 1);
+        bool carrier = routing.out_bus[i] == FM_TARGET_OUT;
         uint16_t fg = carrier ? COL_CARRIER : COL_MODULATOR;
         uint16_t fill = (i == 0 && patch->feedback > 0) ? COL_FEEDBACK : fg;
         int x = i * ALGO_CELL_PITCH + 2;

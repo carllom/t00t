@@ -74,7 +74,8 @@ bar.
   active-voice/CPU indicator) plus the currently selected instrument
   (combined SID+AY number + name) and the three FX CCs (CC73/72/75) as
   compact Value bars ("FXMIX"/"FX P1"/"FX P2") with FX type (CC74) as a
-  Label ("DELAY"/"REVERB"/"OFF") sharing FXMIX's row, and the speaker
+  Label ("OFF"/"DELAY"/"REVERB"/"PHASER"/"FLANGER"/"CHORUS"/"CRUSH"/"DRIVE")
+  sharing FXMIX's row, and the speaker
   preset (CC17) as a Label (its name, e.g. "Game Boy") in MOD's usual slot.
 - **DIAG**: the exact-value detail Resource bar deliberately sacrifices —
   CPU% (PercentageBar), per-voice sounding activity (ActivityGrid, two rows
