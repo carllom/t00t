@@ -56,6 +56,45 @@ int gfx_text(int x, int y, const char *s, uint16_t fg, uint16_t bg, int scale) {
     return x;
 }
 
+int gfx_text_bar(int x, int y, const char *s, uint16_t fg, uint16_t fill, uint16_t off,
+                  int fill_x, int scale) {
+    scale = clampi(scale, 1, MAX_SCALE);
+    int gh = 8 * scale;
+    int gw = 8 * scale;
+
+    // One glyph at a time, same as gfx_text(): render the whole glyph cell
+    // into s_glyph, then a single blit. The fill/off pick is still made per
+    // pixel column (against fill_x, a panel x-coordinate) while filling
+    // that cell -- gfx_text() picks one bg for the whole cell up front,
+    // this picks it column by column -- so the fill boundary can land
+    // inside the cell instead of only on its edge, without paying an extra
+    // lcd_set_window()/lcd_blit() SPI round trip per column.
+    while (*s) {
+        if (x + gw > LCD_W) break;
+
+        char c = *s++;
+        if (c < FONT8X8_FIRST || c > FONT8X8_LAST) c = '?';
+        const uint8_t *glyph = font8x8_basic[c - FONT8X8_FIRST];
+        for (int gx = 0; gx < 8; gx++) {
+            int col_x = x + gx * scale;
+            uint16_t bg = (col_x < fill_x) ? fill : off;
+            for (int gy = 0; gy < 8; gy++) {
+                uint8_t bits = glyph[gy];
+                uint16_t col = (bits & (1u << gx)) ? fg : bg;
+                for (int sy = 0; sy < scale; sy++) {
+                    uint16_t *dst = &s_glyph[(gy * scale + sy) * gw + gx * scale];
+                    for (int sx = 0; sx < scale; sx++) dst[sx] = col;
+                }
+            }
+        }
+
+        lcd_set_window(x, y, x + gw - 1, y + gh - 1);
+        lcd_blit(s_glyph, gw * gh);
+        x += gw;
+    }
+    return x;
+}
+
 void gfx_gradient() {
     // Diagnostic-only bring-up eye candy: reuse s_glyph's backing storage as
     // a full-width band buffer, sized to whatever height it affords.

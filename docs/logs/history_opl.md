@@ -565,3 +565,33 @@ reasonable coverage without sweeping all five patches; module_opl.md's
 Performance section states the range. At 9 voices + reverb, even BELL (the
 more expensive patch) is only 26.0% duty -- large headroom regardless of
 which patch is playing.
+
+## Performance + DIAG Pages (#115-#135's Widget/Header/Page library, first real module)
+
+OPL is the first module to apply the shared Widget/Header/Page library
+(#115-#135) in place of hand-rolled display.cpp drawing. Performance page:
+Header's Resource bar (#135, combined voice+CPU), preset (number + name),
+FXMIX/FX P1/FX P2 (CC73/72/75) as Value bars (#129), FX type (CC74) as a new
+Label Widget (added this pass -- no existing Widget was a bare scaled-text
+field), mod wheel (CC1) as a fourth Value bar. Old display.cpp's NOTE row
+and algorithm/feedback indicator moved to a second Page (DIAG), alongside
+the exact-value detail Resource bar deliberately drops (CPU% via
+PercentageBar, per-voice activity via ActivityGrid).
+
+Page navigation needed real input: the breadboard rig (`HAS_BUTTONS=0`) has
+no discrete buttons, so this pass also added `src/encoder_nav.h`/`.cpp`, a
+quadrature-decoded rotary encoder (CLK/DT/SW on GPIO 26/27/28, freshly wired
+to the breadboard) driving `PageCursor` through the existing Sensor event ->
+Shaping -> `ui_nav_consumer_feed()` path -- CW/CCW detents as PLUS/MINUS,
+SW press as EXIT (ENTER has no Page-navigation meaning, so the one physical
+button is mapped to the command that's actually useful alone). See
+docs/engine.md's "Encoder navigation" entry for the decode/debounce shape.
+
+Verified via a new host-buildable preview (`tools/host_render/
+preview_opl_display.cpp`, PPM/PNG dump of the LCD stub's framebuffer against
+synthetic telemetry) rather than on real hardware -- no ARM cross-toolchain
+was available in the session that wrote this. Layout, widget-call
+signatures, and fill/severity-color math were checked this way; `make
+ENGINE=opl` (build) and actual flashing/encoder feel (direction sense, poll
+rate, detent threshold) still need a real hardware pass and will likely want
+tuning once seen on the panel.

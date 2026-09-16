@@ -28,6 +28,36 @@ target_include_directories(test_input_layer PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}/../../src
 )
 
+# Host build of src/wslcd/page.h (issue #126): the shared Page-navigation
+# cursor state machine's own unit tests. Pure logic, no LCD stub needed --
+# unlike test_gfx.cpp below, page.h has no gfx.cpp/lcd_st7789.h dependency.
+add_executable(test_page_cursor test_page_cursor.cpp)
+target_include_directories(test_page_cursor PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}
+    ${CMAKE_CURRENT_LIST_DIR}/../../src
+)
+
+# Host build of src/wslcd/ui_command_shaping.h and src/wslcd/ui_nav_consumer.h
+# (issue #132): the Sensor event -> Shaping -> UI-navigation consumer path
+# that drives #126's Page-cursor state machine, diverging before
+# input_dispatch()/the Router. Pure logic, no LCD stub dependency -- pulls in
+# src/button_shaping.h and src/input_layer.h only for the control-case
+# assertion that a NOTE-Shaped event *does* reach a Handler, unlike a
+# UI-command-Shaped one.
+add_executable(test_ui_nav_consumer test_ui_nav_consumer.cpp)
+target_include_directories(test_ui_nav_consumer PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}
+    ${CMAKE_CURRENT_LIST_DIR}/../../src
+)
+
+# Host build of src/wslcd/refresh_cadence.h: the shared refresh-cadence
+# framework's own unit tests. Pure logic, no LCD stub dependency.
+add_executable(test_refresh_cadence test_refresh_cadence.cpp)
+target_include_directories(test_refresh_cadence PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}
+    ${CMAKE_CURRENT_LIST_DIR}/../../src
+)
+
 # Host build of src/envelope.h's non-interruptible release option (ticket
 # #100). Pulls in envelope.cpp for env_config(); no other sources needed.
 add_executable(test_envelope
@@ -233,4 +263,188 @@ add_executable(t00t_opl_ctl_dump t00t_opl_ctl_dump.cpp)
 target_include_directories(t00t_opl_ctl_dump PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}
     ${CMAKE_CURRENT_LIST_DIR}/../../src
+)
+
+# Host build of src/wslcd/gfx.cpp: the tile-based graphics layer's own unit
+# tests, run against host_stub_lcd/'s in-memory ST7789 stand-in instead of
+# real hardware. gfx.cpp's own #include "lcd_st7789.h" is a quote-include, and
+# the compiler always resolves that against gfx.cpp's own directory before
+# consulting any -I path -- so the stub can't shadow the real driver header
+# for a gfx.cpp compiled straight from src/wslcd/. Instead, a verbatim
+# build-time copy of gfx.cpp is compiled from a directory with no real
+# lcd_st7789.h next to it, so host_stub_lcd/ (listed first below) is what its
+# #include resolves to. The copy is regenerated from the real file on every
+# build (see DEPENDS), so it can never drift from it.
+set(GFX_HOST_COPY ${CMAKE_CURRENT_BINARY_DIR}/gfx_host_copy/gfx.cpp)
+add_custom_command(
+    OUTPUT ${GFX_HOST_COPY}
+    COMMAND ${CMAKE_COMMAND} -E copy
+            ${CMAKE_CURRENT_LIST_DIR}/../../src/wslcd/gfx.cpp
+            ${GFX_HOST_COPY}
+    DEPENDS ${CMAKE_CURRENT_LIST_DIR}/../../src/wslcd/gfx.cpp
+)
+add_executable(test_gfx
+    test_gfx.cpp
+    ${GFX_HOST_COPY}
+)
+target_include_directories(test_gfx PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}/host_stub_lcd
+    ${CMAKE_CURRENT_LIST_DIR}
+    ${CMAKE_CURRENT_LIST_DIR}/../../src/wslcd
+)
+
+# Host build of src/wslcd/value_row.h (issue #128): the Value row Widget's
+# own unit tests. Header-only, but its gfx_text() calls need a real gfx.cpp
+# to link against -- reuses test_gfx's GFX_HOST_COPY (regenerated from the
+# real file on every build, see the comment above) instead of duplicating
+# that build-time copy trick.
+add_executable(test_value_row
+    test_value_row.cpp
+    ${GFX_HOST_COPY}
+)
+target_include_directories(test_value_row PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}/host_stub_lcd
+    ${CMAKE_CURRENT_LIST_DIR}
+    ${CMAKE_CURRENT_LIST_DIR}/../../src/wslcd
+)
+
+# Host build of src/wslcd/value_bar.h (issue #129): the Value bar Widget's
+# own unit tests. Header-only, but its gfx_text_bar()/gfx_fill_rect() calls
+# need a real gfx.cpp to link against -- reuses test_gfx's GFX_HOST_COPY
+# (regenerated from the real file on every build, see the comment above)
+# instead of duplicating that build-time copy trick.
+add_executable(test_value_bar
+    test_value_bar.cpp
+    ${GFX_HOST_COPY}
+)
+target_include_directories(test_value_bar PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}/host_stub_lcd
+    ${CMAKE_CURRENT_LIST_DIR}
+    ${CMAKE_CURRENT_LIST_DIR}/../../src/wslcd
+)
+
+# Host build of src/wslcd/percentage_bar.h (issue #133): the PercentageBar
+# Widget's own unit tests. Header-only, but its gfx_text_bar()/gfx_fill_rect()
+# calls need a real gfx.cpp to link against -- reuses test_gfx's GFX_HOST_COPY
+# (regenerated from the real file on every build, see the comment above)
+# instead of duplicating that build-time copy trick.
+add_executable(test_percentage_bar
+    test_percentage_bar.cpp
+    ${GFX_HOST_COPY}
+)
+target_include_directories(test_percentage_bar PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}/host_stub_lcd
+    ${CMAKE_CURRENT_LIST_DIR}
+    ${CMAKE_CURRENT_LIST_DIR}/../../src/wslcd
+)
+
+# Host build of src/wslcd/activity_grid.h (issue #130): the ActivityGrid
+# Widget's own unit tests. Header-only, but its gfx_fill_rect() calls need a
+# real gfx.cpp to link against -- reuses test_gfx's GFX_HOST_COPY
+# (regenerated from the real file on every build, see the comment above)
+# instead of duplicating that build-time copy trick.
+add_executable(test_activity_grid
+    test_activity_grid.cpp
+    ${GFX_HOST_COPY}
+)
+target_include_directories(test_activity_grid PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}/host_stub_lcd
+    ${CMAKE_CURRENT_LIST_DIR}
+    ${CMAKE_CURRENT_LIST_DIR}/../../src/wslcd
+)
+
+# Host build of src/wslcd/header.h (issue #134): the Header Widget's own
+# unit tests. Header-only, but its gfx_text()/gfx_fill_rect() calls need a
+# real gfx.cpp to link against -- reuses test_gfx's GFX_HOST_COPY
+# (regenerated from the real file on every build, see the comment above)
+# instead of duplicating that build-time copy trick.
+add_executable(test_header
+    test_header.cpp
+    ${GFX_HOST_COPY}
+)
+target_include_directories(test_header PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}/host_stub_lcd
+    ${CMAKE_CURRENT_LIST_DIR}
+    ${CMAKE_CURRENT_LIST_DIR}/../../src/wslcd
+)
+
+# Host build of src/wslcd/voice_grid.h (issue #131): the VoiceGrid Widget's
+# own unit tests. Header-only, but its gfx_text() calls need a real gfx.cpp
+# to link against -- reuses test_gfx's GFX_HOST_COPY (regenerated from the
+# real file on every build, see the comment above) instead of duplicating
+# that build-time copy trick.
+add_executable(test_voice_grid
+    test_voice_grid.cpp
+    ${GFX_HOST_COPY}
+)
+target_include_directories(test_voice_grid PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}/host_stub_lcd
+    ${CMAKE_CURRENT_LIST_DIR}
+    ${CMAKE_CURRENT_LIST_DIR}/../../src/wslcd
+)
+
+# Host build of src/wslcd/resource_bar.h (issue #135): the Resource bar
+# Widget's own unit tests. Header-only, but its gfx_fill_rect() calls need a
+# real gfx.cpp to link against -- reuses test_gfx's GFX_HOST_COPY
+# (regenerated from the real file on every build, see the comment above)
+# instead of duplicating that build-time copy trick.
+add_executable(test_resource_bar
+    test_resource_bar.cpp
+    ${GFX_HOST_COPY}
+)
+target_include_directories(test_resource_bar PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}/host_stub_lcd
+    ${CMAKE_CURRENT_LIST_DIR}
+    ${CMAKE_CURRENT_LIST_DIR}/../../src/wslcd
+)
+
+# Visual preview of OPL's Performance/DIAG Page layout (src/engines/opl/
+# display.cpp) against synthetic telemetry, dumped as PPM files for
+# eyeballing before flashing real hardware -- not a unit test (no assertions,
+# no pass/fail), same GFX_HOST_COPY trick as the Widget unit tests above.
+add_executable(preview_opl_display
+    preview_opl_display.cpp
+    ${GFX_HOST_COPY}
+)
+target_include_directories(preview_opl_display PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}/host_stub_lcd
+    ${CMAKE_CURRENT_LIST_DIR}
+    ${CMAKE_CURRENT_LIST_DIR}/../../src/wslcd
+)
+
+# Visual preview of FM's Performance/DIAG Page layout (src/engines/fm/
+# display.cpp), same shape as preview_opl_display above.
+add_executable(preview_fm_display
+    preview_fm_display.cpp
+    ${GFX_HOST_COPY}
+)
+target_include_directories(preview_fm_display PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}/host_stub_lcd
+    ${CMAKE_CURRENT_LIST_DIR}
+    ${CMAKE_CURRENT_LIST_DIR}/../../src/wslcd
+)
+
+# Visual preview of chip's Performance/DIAG Page layout (src/engines/chip/
+# display.cpp), same shape as preview_opl_display above.
+add_executable(preview_chip_display
+    preview_chip_display.cpp
+    ${GFX_HOST_COPY}
+)
+target_include_directories(preview_chip_display PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}/host_stub_lcd
+    ${CMAKE_CURRENT_LIST_DIR}
+    ${CMAKE_CURRENT_LIST_DIR}/../../src/wslcd
+)
+
+# Visual preview of subtractive's Performance/DIAG Page layout
+# (src/engines/subtractive/display.cpp), same shape as preview_opl_display
+# above.
+add_executable(preview_subtractive_display
+    preview_subtractive_display.cpp
+    ${GFX_HOST_COPY}
+)
+target_include_directories(preview_subtractive_display PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}/host_stub_lcd
+    ${CMAKE_CURRENT_LIST_DIR}
+    ${CMAKE_CURRENT_LIST_DIR}/../../src/wslcd
 )

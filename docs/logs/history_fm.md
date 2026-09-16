@@ -2545,3 +2545,29 @@ the kernel's inner loop is unchanged (the table-bit-width shift is still a
 compile-time constant; the envelope-glue call is still a direct,
 non-virtual function call once the template is instantiated), so no
 regression is expected, but this wasn't a hardware-gated ticket.
+## Performance + DIAG Pages (Widget/Header/Page library)
+
+Second module (after OPL) to apply the shared Widget/Header/Page library.
+Performance page is deliberately the exact same layout OPL's own uses
+(`history_opl.md`'s "Performance + DIAG Pages" entry): Header's Resource
+bar, preset (bank index + DX7 voice name), FX type (Label) + FXMIX (Value
+bar) paired on one row, FX P1 + FX P2 paired on the next, MOD alone at half
+width below -- all at scale 1, PERF/DIAG page names capped to 8 characters
+and drawn in the header's own accent color (green, distinct from OPL's
+amber) rather than plain black, both pulled clear of the panel's rounded
+corners via `gfx_corner_safe_margin()`. FX CCs (72/73/74/75) and the mod
+wheel (CC1) are the same `MidiUiState` fields every engine already shares,
+so none of that needed adapting.
+
+DIAG carries what Performance drops, adapted for FM's own shape rather than
+copied verbatim: CPU% (PercentageBar), per-voice activity (ActivityGrid,
+one row -- MAX_VOICES=16 matches `kActivityGridCellsPerRow` exactly, no
+wrap), last note, the six-operator carrier/modulator/feedback indicator
+(vs. OPL's two-cell one), and the existing per-voice multitimbral grid
+(voices 0-7, channel/patch) carried over unchanged from the old hand-rolled
+display.cpp.
+
+Verified via `tools/host_render/preview_fm_display.cpp` (new, mirrors
+`preview_opl_display.cpp`) against synthetic telemetry, and `make
+ENGINE=fm` builds clean on the actual ARM cross-toolchain. Real hardware
+flashing/encoder feel still untested.

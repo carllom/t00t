@@ -163,6 +163,30 @@ source-native values (e.g. a raw 0-127 MIDI velocity), not module-native
 ones — see Shaping vs. Normalization below. Replaces the #86-era
 `InputValue` as the working name.
 
+**UI command**:
+A sibling to Input event, not a member of it: the parsed form of one of
+four generic, deliberately context-dependent commands — `+`/`-` (aka
+Increase/Decrease, Next/Previous) and `enter`/`exit` (aka select/yes, no).
+Still flows through the ordinary Sensor event → Shaping stages (no new
+parsing/debounce/shaping plumbing), but diverges *before* the Router —
+Router/Handler stays exclusively for dispatching Input events to
+module-owned audio-engine state, and a UI command never reaches a module
+Handler. This split is deliberate, not incidental: the Input pipeline's
+whole design point is that a module's mapping table and Handler logic stay
+"entirely my own — never forced through a shared routing hook another
+module's needs shaped" (spec #99's own user story 2), which is the
+opposite of what UI navigation needs — one identical, standardized
+behavior shared by all 7 engine modules, not seven per-module forks.
+Whatever consumes UI command must be fully optional: a board/config with
+no UI-navigation control wired (or `HAS_LCD=0`) leaves audio functionality
+completely unaffected, matching the board-conditional pattern the LCD
+itself already follows. Only one concrete meaning for these four commands
+is decided so far — see Page's entry below for Page navigation, wayfinder
+ticket "Page navigation: how a module's Pages relate and get switched,
+control-agnostic". The general command vocabulary as a reusable primitive
+across other, not-yet-designed interaction contexts (value editing,
+confirm/cancel) is intentionally left open.
+
 **Shaping**:
 Generic, cross-module value-adjustment that runs before the Router, in the
 input's own source-native terms (raw MIDI bytes, not a module's native
@@ -258,6 +282,161 @@ Parked, not decided: a possible category for opaque byte-blob store/retrieve
 of module-specific table data (curves, waveforms, patch data). Mechanically
 distinct from Configuration (bulk/bidirectional/opaque vs. scalar template
 selection). No module implements anything like this today.
+
+### Display / UI
+
+Vocabulary for standardizing shared LCD UI components and page structure
+across modules — wayfinder map "Display: shared UI components and page
+structure" (breadboard board only; the LCD's own driver vocabulary lives in
+[src/wslcd/](src/wslcd/), not here).
+
+**Page**:
+One of a module's several top-level display screens, each presenting a
+different aspect of the module (e.g. a main performance view vs. an FX view).
+Refreshes at a shared 10Hz base cadence unless it overrides that rate for
+genuinely time-critical content (e.g. tracking live playback position).
+Navigated by UI command's `+`/`-` (step through the module's own ordered
+Page list, wrapping at both ends) and `exit` (jump directly to the
+Performance page) — the default, fallback meaning of those commands
+whenever no more specific interaction context has claimed them, not a
+separately-entered "Page navigation mode". A shared Page/Header framework
+owns the current-Page cursor for every module — a module only declares its
+own ordered Page list, never its own navigation logic — so this behavior
+is one implementation, identical across all 7 engine modules, not a
+per-module fork. See UI command (Input pipeline vocabulary, above) for why
+this doesn't route through Router/Handler like audio-facing input does.
+Settled on wayfinder ticket "Page navigation: how a module's Pages relate
+and get switched, control-agnostic".
+_Avoid_: "Mode" — already claimed by several unrelated concepts in this
+codebase (`FilterMode`; `SpeechMode`'s LOOP/GATED/ONESHOT playback behavior;
+groovebox's own display already has a literal `MODE` row showing DRUM-vs-303
+channel state) — none of which mean "which screen is showing."
+
+**Widget**:
+A reusable rendering unit shared across modules' Pages — e.g. a parameter
+row, a value readout, a title/breadcrumb, a meter/bar — that renders one
+piece of module state to the screen in a standard way. A Widget may offer
+more than one **presentation** of the same value at different screen
+footprints, so a module can choose footprint per value under space
+pressure — e.g. PercentageBar's full label+%+bar form alongside Resource
+bar (see below), which folds CPU load and active-voice-count into one
+compact, unlabeled header indicator. This ticket settled only that one
+concrete composite, not a general compact-form-for-every-Widget catalog —
+see Resource bar's own entry for what's decided and what isn't.
+_Avoid_: "Component" — already used loosely in this repo's own docs/history
+for generic, non-UI reusable code pieces (e.g. `history_groovebox.md`'s
+"Existing component" table, `history_speech.md`'s "Common Component
+Extraction").
+
+**Value row**:
+A Widget showing a label plus its value as plain text (today's `draw_val`/
+`draw_label` pattern, independently hand-rolled per module). Kept for values
+that want to stay generic and maximally readable (e.g. NOTE, VOICES count) —
+not being replaced outright by Value bar, which suits a different case (see
+below).
+
+**Label**:
+A Widget showing a single blank-padded string at a caller-chosen scale, no
+fixed label/value split (unlike Value row) and no proportional fill (unlike
+Value bar/PercentageBar) — for a value whose meaning doesn't reduce to a
+bar, e.g. OPL's Performance page showing FX type as text ("FX: REVERB")
+alongside its FXMIX/FX P1/FX P2 Value bars. Added applying the Widget
+library to OPL's own Performance page (first real per-module use of this
+library, `src/engines/opl/display.cpp`).
+
+**Value bar**:
+A Widget showing a label overlaid on a proportional fill bar, for CC-style
+continuous values (pan, FX mix, filter cutoff) — more screen-estate-compact
+than a Value row for this case, since the fill level itself carries most of
+the value's meaning. The overlay is pixel-precise: the fill boundary can
+fall inside a single character's cell, so rendering it needs a lower-level
+primitive than today's whole-glyph text draw, choosing a fill- or off-
+colored background per pixel column rather than per character. Still
+ordinary sequential overwrites, not a boolean/compositing operation; see
+[docs/lcd-driver-capabilities.md](docs/lcd-driver-capabilities.md), which
+already established the ST7789 has no hardware compositing ALU and this
+driver keeps no shadow framebuffer.
+
+**PercentageBar**:
+A Value bar specialized for 0–100% values (e.g. CPU load), whose fill color
+is chosen automatically from a fixed severity threshold rather than supplied
+by the caller. Otherwise the same overlay shape as Value bar.
+_Avoid_: "LoadBar" — ties the name to its one current use (CPU load) rather
+than the general 0–100%-with-auto-color shape.
+
+**ActivityGrid**:
+A Widget showing a grid of cells, one per voice or channel, filled or dim to
+indicate simple on/off activity — used where only *which* slots are active
+matters, not per-slot detail.
+
+**VoiceGrid**:
+A Widget showing a grid of per-voice cells, each carrying a short text label
+and one of three caller-assigned colors — for voice detail that doesn't
+reduce to plain on/off, unlike ActivityGrid.
+_Avoid_: "activity-grid" as a name for either ActivityGrid or VoiceGrid on
+its own — the two are independent Widgets, not variants of one grid.
+
+**Resource bar**:
+A Widget living in the Header/title-bar chrome, not a Page body row: a
+horizontal bar, background-colored backdrop showing unfilled capacity,
+fixed at a 32px maximum width regardless of a module's real `MAX_VOICES`
+(32 is the largest real value, chip/tracker; other modules scale their
+per-voice pixel width so the bar still spans the full 32px at max voice
+count — 2px/voice at 16, 4px/voice at 8, a single proportional-rounded
+fill rather than per-voice bricks for counts that don't divide evenly,
+e.g. opl's 9). Folds two independent signals into one indicator: **fill
+length** is active voices ÷ `MAX_VOICES` (magnitude only); **fill color**
+is CPU load severity, reusing PercentageBar's existing threshold (green
+under 50%, amber under 80%, red past that) — so the bar can read "CPU-
+bound" (red) at half voice usage, or "comfortable" (green) at full voice
+usage. Carries no text or label of any kind; meaning is documented off-
+device, read the way a hardware synth's LED cluster is read. This is a
+real precision trade — exact CPU% and exact voice count aren't readable
+from this Widget, only relative magnitude and load-severity color are —
+made deliberately for the Performance page, where panel space is the
+scarce resource; PercentageBar and VoiceGrid's full labeled forms remain
+available wherever that detail is actually wanted (which Pages exist
+beyond Performance, and what they contain, is a separate, still-open
+question — see Performance page and the map's "Not yet specified").
+Settled on wayfinder ticket "Compact Widget variants: catalog alternate
+low-footprint presentations" as the one concrete compact-presentation
+catalog entry this ticket resolved — superseding two more elaborate
+proposals discussed and discarded in the same session (a separate CPU
+status-square icon alongside an independent voices bar; body-row compact
+forms reusing PercentageBar's shape for voice count). Prototype (four
+variants, pixel-accurate against the real panel/font) on branch
+`prototype/compact-widgets`.
+
+**Performance page**:
+The one required Page every module presents: a dense, per-module-curated
+summary of the values most relevant to live playing, serving as the
+module's default/main view. Other Pages hold whatever doesn't fit there, or
+doesn't belong densely packed alongside it. Not an exhaustive listing of
+every Modifier or Configuration entry (see Input pipeline vocabulary
+above): "most" is a soft target, not a mandate — a module may omit
+lower-priority values under space pressure, provided they stay reachable on
+another Page. A module's single Configuration entry (its preset/patch
+select) is commonly included too, since knowing what's loaded is itself
+performance-relevant. No numeric minimum/maximum Widget count is implied;
+density is bounded only by panel space and by which Widget presentation
+(see Widget entry above) a module picks per value. A module may also define
+a small number of preset-triggered row variants sharing the Performance
+page's slot, when its live-relevant parameter set genuinely differs by
+selected preset (e.g. speech's per-voice-model parameters) — a permitted
+mechanism, not a requirement; most modules keep one static layout. Which
+fields actually appear on chip's/fm's/etc. Performance page, and how
+they're laid out, is a separate per-module follow-up (out of scope for this
+map) — this entry fixes only the rule above, not any module's concrete
+content.
+
+**Header**:
+The top chrome region of a Page — two rows (module name; Page name plus a
+Page indicator when a module has more than one Page). No literal "t00t"
+wordmark: the per-module accent color (`COL_TITLE`) already carries the
+branding. The Page indicator is a row of small filled/dim cells, one per
+Page, reusing ActivityGrid's shape — omitted entirely for a single-Page
+module. Content stays clear of the panel's rounded corners (see
+[docs/lcd-driver-capabilities.md](docs/lcd-driver-capabilities.md)).
 
 ## Notes / gotchas
 

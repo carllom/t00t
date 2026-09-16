@@ -1675,3 +1675,34 @@ SID/AY filter bus a voice's output routes through). Resolved by placing
 `voice_alloc_allocate()`/`release()` — its lifecycle already matched
 voice allocation's own timing (bound at note-on, released at note-off),
 so relocating it changed where the code lives, not when it runs.
+
+## Performance + DIAG Pages (Widget/Header/Page library)
+
+Third module (after OPL, FM) to apply the shared Widget/Header/Page
+library. Performance page is the same layout OPL's and FM's own use
+(`history_opl.md`/`history_fm.md`'s own "Performance + DIAG Pages"
+entries): Header's Resource bar, preset (combined SID+AY instrument number
++ name), FX type (Label) + FXMIX (Value bar) paired on one row, FX P1 + FX
+P2 paired on the next -- all at scale 1, PERF/DIAG page names capped to 8
+characters and drawn in the header's own accent color rather than plain
+black, both pulled clear of the panel's rounded corners via
+`gfx_corner_safe_margin()`.
+
+Chip has no mod-wheel-style continuous modifier, so the half-width slot
+below the FX rows that OPL/FM give to MOD (a Value bar) instead shows SPKR
+-- the active speaker simulation preset (CC17) -- as a Label, same
+treatment as FX type, since a preset selection has a name, not a 0-127
+value to bar-fill.
+
+DIAG carries what Performance drops, adapted for chip's own shape: CPU%
+(PercentageBar), per-voice activity (ActivityGrid -- MAX_VOICES=32 is twice
+`kActivityGridCellsPerRow` (16), so this is the first module where the grid
+actually wraps to a second row, exercising that path in `activity_grid_draw()`
+for the first time on real content rather than just in `test_activity_grid.cpp`),
+last note, and the existing 8-voice instrument/wave-table-row grid carried
+over unchanged from the old hand-rolled display.cpp.
+
+Verified via `tools/host_render/preview_chip_display.cpp` (new, mirrors
+`preview_opl_display.cpp`/`preview_fm_display.cpp`) against synthetic
+telemetry, and `make ENGINE=chip` builds clean on the actual ARM
+cross-toolchain. Real hardware flashing/encoder feel still untested.

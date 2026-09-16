@@ -58,3 +58,36 @@ Max is measured when using all 16 voice channels.
 | Delay FX    |  2.1% |  7.3% |  7.2% |  6.6% |   -   | ~86/80/70%  | After subchunk fix (issue #12) |
 | Reverb FX   |  8.5% | 13.7% | 13.6% | 13.0% |   -   | ~94/90/81%  | After subchunk fix (issue #12) |
 | LFO(vibrato)|  0.6% |  5.9% |  5.7% |  5.1% |   -   | ~86/80/70%  | After subchunk fix (issue #12). Pitch LFO through modwheel. No FX. No measurable overhead for vibrato! |
+
+## Performance + DIAG Pages (Widget/Header/Page library)
+
+Fourth module (after OPL, FM, chip) to apply the shared Widget/Header/Page
+library, explicitly matched to FM's own Performance/DIAG content exactly
+(`history_fm.md`'s "Performance + DIAG Pages" entry): Header's Resource
+bar, preset (number + name, from the existing local `PRESET_NAMES[]` table
+-- `presets.h`'s `VoicePreset` has no name field of its own, same
+decoupled-name convention the old hand-rolled display.cpp already used),
+FX type (Label) + FXMIX (Value bar) paired on one row, FX P1 + FX P2 paired
+on the next, MOD alone at half width below -- all at scale 1, PERF/DIAG
+page names capped to 8 characters and drawn in the header's own accent
+color (blue) rather than plain black, both pulled clear of the panel's
+rounded corners via `gfx_corner_safe_margin()`.
+
+DIAG: CPU% (PercentageBar), per-voice activity (ActivityGrid, one row --
+MAX_VOICES=16 matches FM's own), last note. No multitimbral grid or
+algorithm indicator -- subtractive has neither concept (one global preset
+across all channels, no per-operator routing) -- so DIAG is just CPU/
+voices/note, same as FM's own once its multitimbral-grid and algorithm
+content are set aside. Pitch bend, previously its own row, and the old
+per-voice dot bar's separate "pressed" (bordered) vs. "sounding" (filled)
+distinction are both dropped: ActivityGrid only has one on/off state, and
+FM's own DIAG never showed bend either, so matching FM exactly means
+neither survives.
+
+Verified via `tools/host_render/preview_subtractive_display.cpp` (new,
+mirrors `preview_opl_display.cpp`/`preview_fm_display.cpp`/
+`preview_chip_display.cpp`) against synthetic telemetry, and `make
+ENGINE=subtractive` builds clean on the actual ARM cross-toolchain. Real
+hardware flashing/encoder feel still untested. `display_bringup_test()`
+(colour-bars/banner driver diagnostic, unrelated to the Performance/DIAG
+Pages) is untouched.

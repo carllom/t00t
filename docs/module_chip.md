@@ -61,17 +61,36 @@ is SID, the rest is AY, but the selection is one linear list either way.
 
 ### Display (Presentation Capabilities)
 
-Shows voices/CPU/last-note (same shape as the subtractive and speech
-displays), the active speaker preset name, the currently selected
-instrument's name, and a fixed 8-voice grid (of 32) showing each voice's
-instrument index and current wave-table row, colour-coded held vs.
-ringing-out. The grid covers voices 0–7 only — `voice_alloc` always
-allocates from voice 0 first, so this is representative up to 8-note
-polyphony; past that the voice-count row stays exact but the grid stops
-being the whole picture. Both SID and AY voices report real telemetry
-(instrument names are shown only on the one-line instrument-select row,
-not in the grid, which stays numeric — a name doesn't fit eight cells at
-once).
+Two Pages (`src/wslcd/page.h`/`header.h`), the shared Widget/Header/Page
+library (CONTEXT.md's Widget catalog) applied to chip — same
+Performance-page layout as OPL's and FM's own (`docs/module_opl.md` /
+`docs/module_fm.md`'s Display sections), except chip has no continuous
+mod-wheel-style modifier: the half-width slot below the FX rows is SPKR
+(the active speaker simulation preset, CC17 — a selection with a name, not
+a 0-127 value) shown as a Label exactly like FX type, rather than a Value
+bar.
+
+- **Performance** (required, default): the Header's Resource bar (combined
+  active-voice/CPU indicator) plus the currently selected instrument
+  (combined SID+AY number + name) and the three FX CCs (CC73/72/75) as
+  compact Value bars ("FXMIX"/"FX P1"/"FX P2") with FX type (CC74) as a
+  Label ("DELAY"/"REVERB"/"OFF") sharing FXMIX's row, and the speaker
+  preset (CC17) as a Label (its name, e.g. "Game Boy") in MOD's usual slot.
+- **DIAG**: the exact-value detail Resource bar deliberately sacrifices —
+  CPU% (PercentageBar), per-voice sounding activity (ActivityGrid, two rows
+  — MAX_VOICES=32 exceeds `kActivityGridCellsPerRow` (16), so it wraps),
+  last note/velocity, and a fixed 8-voice grid (of 32) showing each voice's
+  instrument index and current wave-table row, colour-coded held vs.
+  ringing-out. The grid covers voices 0–7 only — `voice_alloc` always
+  allocates from voice 0 first, so this is representative up to 8-note
+  polyphony; past that the voice-count row stays exact but the grid stops
+  being the whole picture. Both SID and AY voices report real telemetry
+  (instrument names are shown only on Performance's instrument row, not in
+  the grid, which stays numeric — a name doesn't fit eight cells at once).
+
+Reachable via the breadboard's rotary encoder (`src/encoder_nav.h`,
+docs/engine.md's "Encoder navigation" entry) where one's wired;
+Performance-only otherwise (`HAS_ENCODER=0`).
 
 ## Technical Overview
 
@@ -99,7 +118,7 @@ Engine (`src/engines/chip/`):
   resolved in the same NOTE Handler as voice allocation), built on
   `src/midi/midi_dispatch.h`/`midi_controller_generic.h`'s shared generic
   dispatch layer (also used by `subtractive`/`fm`)
-- `display.cpp` — LCD status
+- `display.cpp` — Performance + DIAG Pages (see Display above)
 - `instrument.h` / `instruments.h` — SID instrument format / GENERATED table
 - `ay_instrument.h` / `ay_instruments.h` — AY instrument format / hand-written table
 - `speaker_sim.h` — the output stage
