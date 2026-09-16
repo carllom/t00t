@@ -32,7 +32,7 @@ static constexpr int CBAR_X = 4, CBAR_Y = 96, CBAR_W = 232, CBAR_H = 12;
 
 static const char *NOTE_NAMES[12] =
     { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
-static const char *FX_NAMES[FX_COUNT] = { "Off", "Delay", "Reverb", "Phaser", "Flanger", "Chorus" };
+static const char *FX_NAMES[FX_COUNT] = { "Off", "Delay", "Reverb", "Phaser", "Flanger", "Chorus", "Crush", "Drive" };
 
 static constexpr uint8_t DRUM_CHANNEL = 9;   // must match input_subsystem.cpp
 

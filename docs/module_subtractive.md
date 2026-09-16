@@ -22,8 +22,9 @@ oscillator.
   duty cycle, filter cutoff) plus 1 dedicated mod-wheel vibrato LFO
 - **Filter**: 1 state-variable filter per voice (lowpass/bandpass/highpass/
   notch/off)
-- **Effects**: 1 shared post-mix insert (delay, reverb, phaser, flanger, or
-  chorus, mono send / stereo return) — global, not per-voice
+- **Effects**: 1 shared post-mix insert (delay, reverb, phaser, flanger,
+  chorus, bitcrusher, or overdrive, mono send / stereo return) — global,
+  not per-voice
 - **Presets**: 11 factory presets (3 synthesized, 8 sample-based) — see
   `presets.h`
 - No arpeggiator or step sequencer in the engine itself; the VGA board's

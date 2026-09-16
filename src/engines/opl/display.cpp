@@ -67,7 +67,7 @@ static constexpr int ALGO_CELL_PITCH = 24, ALGO_CELL_W = 20, ALGO_CELL_H = 16;
 
 static const char *NOTE_NAMES[12] =
     { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
-static const char *FX_TYPE_NAMES[FX_COUNT] = { "OFF", "DELAY", "REVERB", "PHASER", "FLANGER", "CHORUS" };
+static const char *FX_TYPE_NAMES[FX_COUNT] = { "OFF", "DELAY", "REVERB", "PHASER", "FLANGER", "CHORUS", "CRUSH", "DRIVE" };
 
 enum { PAGE_PERFORMANCE = 0, PAGE_DIAG = 1, PAGE_COUNT = 2 };
 

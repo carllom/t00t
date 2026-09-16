@@ -12,6 +12,8 @@
 #include "fx/phaser.h"
 #include "fx/flanger.h"
 #include "fx/chorus.h"
+#include "fx/bitcrusher.h"
+#include "fx/overdrive.h"
 #include "pan.h"
 #include "hardware/gpio.h"
 #include "pico/multicore.h"
@@ -56,6 +58,8 @@ static FxReverb  fx_reverb;
 static FxPhaser  fx_phaser;
 static FxFlanger fx_flanger;
 static FxChorus  fx_chorus;
+static FxBitcrusher fx_bitcrusher;
+static FxOverdrive  fx_overdrive;
 static uint8_t  s_last_fx_type = 0xFF;
 
 // Clap contour timing (computed once at init). ~10 ms between three re-strikes,
@@ -302,6 +306,8 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
     fx_phaser.init();
     fx_flanger.init();
     fx_chorus.init();
+    fx_bitcrusher.init();
+    fx_overdrive.init();
 
     while (true) {
         uint32_t buf_index = multicore_fifo_pop_blocking();
@@ -368,13 +374,16 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
         // can't leak.
         bool has_fx = (vp.fx.type == FX_DELAY   || vp.fx.type == FX_REVERB ||
                        vp.fx.type == FX_PHASER  || vp.fx.type == FX_FLANGER ||
-                       vp.fx.type == FX_CHORUS);
+                       vp.fx.type == FX_CHORUS  || vp.fx.type == FX_BITCRUSHER ||
+                       vp.fx.type == FX_OVERDRIVE);
         if (vp.fx.type != s_last_fx_type) {
             if (vp.fx.type == FX_DELAY)        fx_delay.init();
             else if (vp.fx.type == FX_REVERB)  fx_reverb.init();
             else if (vp.fx.type == FX_PHASER)  fx_phaser.init();
             else if (vp.fx.type == FX_FLANGER) fx_flanger.init();
             else if (vp.fx.type == FX_CHORUS)  fx_chorus.init();
+            else if (vp.fx.type == FX_BITCRUSHER) fx_bitcrusher.init();
+            else if (vp.fx.type == FX_OVERDRIVE)  fx_overdrive.init();
             s_last_fx_type = vp.fx.type;
         }
         if (has_fx) {
@@ -385,7 +394,9 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
             else if (vp.fx.type == FX_REVERB)  fx_reverb.process(fx_buf, SAMPLES_PER_BUFFER, vp.fx);
             else if (vp.fx.type == FX_PHASER)  fx_phaser.process(fx_buf, SAMPLES_PER_BUFFER, vp.fx);
             else if (vp.fx.type == FX_FLANGER) fx_flanger.process(fx_buf, SAMPLES_PER_BUFFER, vp.fx);
-            else                                fx_chorus.process(fx_buf, SAMPLES_PER_BUFFER, vp.fx);
+            else if (vp.fx.type == FX_CHORUS)  fx_chorus.process(fx_buf, SAMPLES_PER_BUFFER, vp.fx);
+            else if (vp.fx.type == FX_BITCRUSHER) fx_bitcrusher.process(fx_buf, SAMPLES_PER_BUFFER, vp.fx);
+            else                                   fx_overdrive.process(fx_buf, SAMPLES_PER_BUFFER, vp.fx);
         }
 
         // Crossfade dry/wet by the mix knob (Q15) instead of always summing

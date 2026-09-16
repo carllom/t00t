@@ -87,6 +87,8 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
 #include "fx/phaser.h"
 #include "fx/flanger.h"
 #include "fx/chorus.h"
+#include "fx/bitcrusher.h"
+#include "fx/overdrive.h"
 
 // FM engine (#44/#45, module_fm.md P1/P2): MAX_VOICES independent 6-operator
 // voices, each driven straight from VoiceParams (phase_inc = bend-scaled
@@ -111,6 +113,8 @@ static FxReverb  fx_reverb;
 static FxPhaser  fx_phaser;
 static FxFlanger fx_flanger;
 static FxChorus  fx_chorus;
+static FxBitcrusher fx_bitcrusher;
+static FxOverdrive  fx_overdrive;
 static uint8_t  s_last_fx_type = 0xFF;
 
 // Per-voice render state (Core 1 only, never crosses ParamExchange).
@@ -142,6 +146,8 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
     fx_phaser.init();
     fx_flanger.init();
     fx_chorus.init();
+    fx_bitcrusher.init();
+    fx_overdrive.init();
     for (uint32_t v = 0; v < MAX_VOICES; v++) {
         voice_last_trigger[v] = 0;  // matches VoiceParams' default trigger=0 -- a never-triggered voice must NOT look "changed"
         voice_routing_valid[v] = false;
@@ -222,13 +228,16 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
         // tail can't leak.
         bool has_fx = (vp.fx.type == FX_DELAY   || vp.fx.type == FX_REVERB ||
                        vp.fx.type == FX_PHASER  || vp.fx.type == FX_FLANGER ||
-                       vp.fx.type == FX_CHORUS);
+                       vp.fx.type == FX_CHORUS  || vp.fx.type == FX_BITCRUSHER ||
+                       vp.fx.type == FX_OVERDRIVE);
         if (vp.fx.type != s_last_fx_type) {
             if (vp.fx.type == FX_DELAY)        fx_delay.init();
             else if (vp.fx.type == FX_REVERB)  fx_reverb.init();
             else if (vp.fx.type == FX_PHASER)  fx_phaser.init();
             else if (vp.fx.type == FX_FLANGER) fx_flanger.init();
             else if (vp.fx.type == FX_CHORUS)  fx_chorus.init();
+            else if (vp.fx.type == FX_BITCRUSHER) fx_bitcrusher.init();
+            else if (vp.fx.type == FX_OVERDRIVE)  fx_overdrive.init();
             s_last_fx_type = vp.fx.type;
         }
         if (has_fx) {
@@ -239,7 +248,9 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
             else if (vp.fx.type == FX_REVERB)  fx_reverb.process(fx_buf, SAMPLES_PER_BUFFER, vp.fx);
             else if (vp.fx.type == FX_PHASER)  fx_phaser.process(fx_buf, SAMPLES_PER_BUFFER, vp.fx);
             else if (vp.fx.type == FX_FLANGER) fx_flanger.process(fx_buf, SAMPLES_PER_BUFFER, vp.fx);
-            else                                fx_chorus.process(fx_buf, SAMPLES_PER_BUFFER, vp.fx);
+            else if (vp.fx.type == FX_CHORUS)  fx_chorus.process(fx_buf, SAMPLES_PER_BUFFER, vp.fx);
+            else if (vp.fx.type == FX_BITCRUSHER) fx_bitcrusher.process(fx_buf, SAMPLES_PER_BUFFER, vp.fx);
+            else                                   fx_overdrive.process(fx_buf, SAMPLES_PER_BUFFER, vp.fx);
         }
 
         // Crossfade dry/wet by the mix knob (Q15) instead of always summing

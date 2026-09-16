@@ -33,8 +33,8 @@ build-phase results, measurement scorecards, and bug-discovery narrative.
 - **Speaker simulation**: an output stage (not an effect), 5 presets
   (Commodore 1702, portable TV, Game Boy, arcade cabinet, bypass) sharing
   one HP→peak→LP→soft-clip signal chain
-- **Effects**: shared post-mix insert (delay, reverb, phaser, flanger, or
-  chorus), upstream of the speaker stage
+- **Effects**: shared post-mix insert (delay, reverb, phaser, flanger,
+  chorus, bitcrusher, or overdrive), upstream of the speaker stage
 - **Instruments**: 4 SID (`ARP_LEAD`, `PWM_PLUCK`, `FILTER_PAD`,
   `VIBRATO_LEAD`) and 6 AY (`LEAD`, `BUZZ_BASS`, `NOISE_PERC`, `ARP`,
   `PLUCK`, `LEAD_YM`), hand-authored; GoatTracker `.ins` files are

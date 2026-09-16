@@ -13,6 +13,8 @@
 #include "fx/phaser.h"
 #include "fx/flanger.h"
 #include "fx/chorus.h"
+#include "fx/bitcrusher.h"
+#include "fx/overdrive.h"
 #include "hardware/gpio.h"
 #include "pico/multicore.h"
 #include "pico/time.h"
@@ -74,13 +76,17 @@ static FxPhaser fx_phaser;
 static FxFlanger fx_flanger;
 #elif CHIP_RIG_FX == 5
 static FxChorus fx_chorus;
+#elif CHIP_RIG_FX == 6
+static FxBitcrusher fx_bitcrusher;
+#elif CHIP_RIG_FX == 7
+static FxOverdrive fx_overdrive;
 #endif
 #if CHIP_RIG_FX != 0
 static int32_t fx_buf[SAMPLES_PER_BUFFER];
 // Fixed mid-range settings -- every fx/*.h effect does the same work
 // regardless of p1/p2/mix, so these values don't affect what's being
 // measured.
-static constexpr EffectType CHIP_RIG_FX_TYPE[] = { FX_OFF, FX_DELAY, FX_REVERB, FX_PHASER, FX_FLANGER, FX_CHORUS };
+static constexpr EffectType CHIP_RIG_FX_TYPE[] = { FX_OFF, FX_DELAY, FX_REVERB, FX_PHASER, FX_FLANGER, FX_CHORUS, FX_BITCRUSHER, FX_OVERDRIVE };
 static constexpr EffectParams CHIP_RIG_FX_PARAMS = {
     (uint8_t)CHIP_RIG_FX_TYPE[CHIP_RIG_FX], 100, 64, 64
 };
@@ -117,6 +123,10 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
     fx_flanger.init();
 #elif CHIP_RIG_FX == 5
     fx_chorus.init();
+#elif CHIP_RIG_FX == 6
+    fx_bitcrusher.init();
+#elif CHIP_RIG_FX == 7
+    fx_overdrive.init();
 #endif
 #if CHIP_RIG_SPEAKER
     speaker.init((float)SAMPLE_RATE);
@@ -183,8 +193,12 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
         fx_phaser.process(fx_buf, SAMPLES_PER_BUFFER, CHIP_RIG_FX_PARAMS);
 #elif CHIP_RIG_FX == 4
         fx_flanger.process(fx_buf, SAMPLES_PER_BUFFER, CHIP_RIG_FX_PARAMS);
-#else
+#elif CHIP_RIG_FX == 5
         fx_chorus.process(fx_buf, SAMPLES_PER_BUFFER, CHIP_RIG_FX_PARAMS);
+#elif CHIP_RIG_FX == 6
+        fx_bitcrusher.process(fx_buf, SAMPLES_PER_BUFFER, CHIP_RIG_FX_PARAMS);
+#else
+        fx_overdrive.process(fx_buf, SAMPLES_PER_BUFFER, CHIP_RIG_FX_PARAMS);
 #endif
         for (uint32_t i = 0; i < SAMPLES_PER_BUFFER; i++) dry_full[i] += fx_buf[i];
 #endif
@@ -312,6 +326,8 @@ static FxReverb  fx_reverb;
 static FxPhaser  fx_phaser;
 static FxFlanger fx_flanger;
 static FxChorus  fx_chorus;
+static FxBitcrusher fx_bitcrusher;
+static FxOverdrive  fx_overdrive;
 static uint8_t  s_last_fx_type = 0xFF;
 static SidSpeakerStage speaker;   // module_chip.md §10
 
@@ -551,6 +567,8 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
     fx_phaser.init();
     fx_flanger.init();
     fx_chorus.init();
+    fx_bitcrusher.init();
+    fx_overdrive.init();
     speaker.init((float)SAMPLE_RATE);
     ay_tick_scale_g = ay_tick_scale_q16(AY_CLOCK_ZX, (double)SAMPLE_RATE);
     for (uint32_t v = 0; v < MAX_VOICES; v++) {
@@ -823,13 +841,16 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
         // no stereo downmix step before the send, unlike the stereo engines.
         bool has_fx = (vp.fx.type == FX_DELAY   || vp.fx.type == FX_REVERB ||
                        vp.fx.type == FX_PHASER  || vp.fx.type == FX_FLANGER ||
-                       vp.fx.type == FX_CHORUS);
+                       vp.fx.type == FX_CHORUS  || vp.fx.type == FX_BITCRUSHER ||
+                       vp.fx.type == FX_OVERDRIVE);
         if (vp.fx.type != s_last_fx_type) {
             if (vp.fx.type == FX_DELAY)        fx_delay.init();
             else if (vp.fx.type == FX_REVERB)  fx_reverb.init();
             else if (vp.fx.type == FX_PHASER)  fx_phaser.init();
             else if (vp.fx.type == FX_FLANGER) fx_flanger.init();
             else if (vp.fx.type == FX_CHORUS)  fx_chorus.init();
+            else if (vp.fx.type == FX_BITCRUSHER) fx_bitcrusher.init();
+            else if (vp.fx.type == FX_OVERDRIVE)  fx_overdrive.init();
             s_last_fx_type = vp.fx.type;
         }
         if (has_fx) {
@@ -838,7 +859,9 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
             else if (vp.fx.type == FX_REVERB)  fx_reverb.process(fx_buf, SAMPLES_PER_BUFFER, vp.fx);
             else if (vp.fx.type == FX_PHASER)  fx_phaser.process(fx_buf, SAMPLES_PER_BUFFER, vp.fx);
             else if (vp.fx.type == FX_FLANGER) fx_flanger.process(fx_buf, SAMPLES_PER_BUFFER, vp.fx);
-            else                                fx_chorus.process(fx_buf, SAMPLES_PER_BUFFER, vp.fx);
+            else if (vp.fx.type == FX_CHORUS)  fx_chorus.process(fx_buf, SAMPLES_PER_BUFFER, vp.fx);
+            else if (vp.fx.type == FX_BITCRUSHER) fx_bitcrusher.process(fx_buf, SAMPLES_PER_BUFFER, vp.fx);
+            else                                   fx_overdrive.process(fx_buf, SAMPLES_PER_BUFFER, vp.fx);
         }
 
         // Crossfade dry/wet by the mix knob (Q15) instead of always summing
