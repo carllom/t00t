@@ -10,6 +10,11 @@
 #include "chip/ay_envelope.h"
 #include "fx/delay.h"
 #include "fx/reverb.h"
+#include "fx/phaser.h"
+#include "fx/flanger.h"
+#include "fx/chorus.h"
+#include "fx/bitcrusher.h"
+#include "fx/overdrive.h"
 #include "hardware/gpio.h"
 #include "pico/multicore.h"
 #include "pico/time.h"
@@ -65,14 +70,25 @@ static int32_t dry_full[SAMPLES_PER_BUFFER];
 static FxDelay fx_delay;
 #elif CHIP_RIG_FX == 2
 static FxReverb fx_reverb;
+#elif CHIP_RIG_FX == 3
+static FxPhaser fx_phaser;
+#elif CHIP_RIG_FX == 4
+static FxFlanger fx_flanger;
+#elif CHIP_RIG_FX == 5
+static FxChorus fx_chorus;
+#elif CHIP_RIG_FX == 6
+static FxBitcrusher fx_bitcrusher;
+#elif CHIP_RIG_FX == 7
+static FxOverdrive fx_overdrive;
 #endif
 #if CHIP_RIG_FX != 0
 static int32_t fx_buf[SAMPLES_PER_BUFFER];
-// Fixed mid-range settings -- fx/delay.h and fx/reverb.h both do the same
-// work regardless of p1/p2/mix, so these values don't affect what's being
+// Fixed mid-range settings -- every fx/*.h effect does the same work
+// regardless of p1/p2/mix, so these values don't affect what's being
 // measured.
+static constexpr EffectType CHIP_RIG_FX_TYPE[] = { FX_OFF, FX_DELAY, FX_REVERB, FX_PHASER, FX_FLANGER, FX_CHORUS, FX_BITCRUSHER, FX_OVERDRIVE };
 static constexpr EffectParams CHIP_RIG_FX_PARAMS = {
-    (uint8_t)(CHIP_RIG_FX == 1 ? FX_DELAY : FX_REVERB), 100, 64, 64
+    (uint8_t)CHIP_RIG_FX_TYPE[CHIP_RIG_FX], 100, 64, 64
 };
 #endif
 
@@ -101,6 +117,16 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
     fx_delay.init();
 #elif CHIP_RIG_FX == 2
     fx_reverb.init();
+#elif CHIP_RIG_FX == 3
+    fx_phaser.init();
+#elif CHIP_RIG_FX == 4
+    fx_flanger.init();
+#elif CHIP_RIG_FX == 5
+    fx_chorus.init();
+#elif CHIP_RIG_FX == 6
+    fx_bitcrusher.init();
+#elif CHIP_RIG_FX == 7
+    fx_overdrive.init();
 #endif
 #if CHIP_RIG_SPEAKER
     speaker.init((float)SAMPLE_RATE);
@@ -154,15 +180,25 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
         }
 
         // The insert sits upstream of the speaker sim, not after it
-        // (module_chip.md §10). Mono send / stereo return per fx/delay.h and
-        // fx/reverb.h's own contract, but this rig's output is already
-        // mono, so the wet add-back is direct.
+        // (module_chip.md §10). Mono send / stereo return per every fx/*.h
+        // effect's own contract, but this rig's output is already mono, so
+        // the wet add-back is direct.
 #if CHIP_RIG_FX != 0
         for (uint32_t i = 0; i < SAMPLES_PER_BUFFER; i++) fx_buf[i] = dry_full[i];
 #if CHIP_RIG_FX == 1
         fx_delay.process(fx_buf, SAMPLES_PER_BUFFER, CHIP_RIG_FX_PARAMS);
-#else
+#elif CHIP_RIG_FX == 2
         fx_reverb.process(fx_buf, SAMPLES_PER_BUFFER, CHIP_RIG_FX_PARAMS);
+#elif CHIP_RIG_FX == 3
+        fx_phaser.process(fx_buf, SAMPLES_PER_BUFFER, CHIP_RIG_FX_PARAMS);
+#elif CHIP_RIG_FX == 4
+        fx_flanger.process(fx_buf, SAMPLES_PER_BUFFER, CHIP_RIG_FX_PARAMS);
+#elif CHIP_RIG_FX == 5
+        fx_chorus.process(fx_buf, SAMPLES_PER_BUFFER, CHIP_RIG_FX_PARAMS);
+#elif CHIP_RIG_FX == 6
+        fx_bitcrusher.process(fx_buf, SAMPLES_PER_BUFFER, CHIP_RIG_FX_PARAMS);
+#else
+        fx_overdrive.process(fx_buf, SAMPLES_PER_BUFFER, CHIP_RIG_FX_PARAMS);
 #endif
         for (uint32_t i = 0; i < SAMPLES_PER_BUFFER; i++) dry_full[i] += fx_buf[i];
 #endif
@@ -285,8 +321,13 @@ static int32_t   bus_acc[FILTER_BUS_COUNT][CHIP_SUBBLOCK];
 
 static int32_t dry[SAMPLES_PER_BUFFER];
 static int32_t fx_buf[SAMPLES_PER_BUFFER];
-static FxDelay  fx_delay;
-static FxReverb fx_reverb;
+static FxDelay   fx_delay;
+static FxReverb  fx_reverb;
+static FxPhaser  fx_phaser;
+static FxFlanger fx_flanger;
+static FxChorus  fx_chorus;
+static FxBitcrusher fx_bitcrusher;
+static FxOverdrive  fx_overdrive;
 static uint8_t  s_last_fx_type = 0xFF;
 static SidSpeakerStage speaker;   // module_chip.md §10
 
@@ -523,6 +564,11 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
     }
     fx_delay.init();
     fx_reverb.init();
+    fx_phaser.init();
+    fx_flanger.init();
+    fx_chorus.init();
+    fx_bitcrusher.init();
+    fx_overdrive.init();
     speaker.init((float)SAMPLE_RATE);
     ay_tick_scale_g = ay_tick_scale_q16(AY_CLOCK_ZX, (double)SAMPLE_RATE);
     for (uint32_t v = 0; v < MAX_VOICES; v++) {
@@ -793,17 +839,37 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
         // every other engine's insert (engine_base.h's EffectParams). Chip's
         // render is mono already (module_chip.md has no per-voice pan), so there is
         // no stereo downmix step before the send, unlike the stereo engines.
-        bool has_fx = (vp.fx.type == FX_DELAY || vp.fx.type == FX_REVERB);
+        bool has_fx = (vp.fx.type == FX_DELAY   || vp.fx.type == FX_REVERB ||
+                       vp.fx.type == FX_PHASER  || vp.fx.type == FX_FLANGER ||
+                       vp.fx.type == FX_CHORUS  || vp.fx.type == FX_BITCRUSHER ||
+                       vp.fx.type == FX_OVERDRIVE);
         if (vp.fx.type != s_last_fx_type) {
-            if (vp.fx.type == FX_DELAY)       fx_delay.init();
-            else if (vp.fx.type == FX_REVERB) fx_reverb.init();
+            if (vp.fx.type == FX_DELAY)        fx_delay.init();
+            else if (vp.fx.type == FX_REVERB)  fx_reverb.init();
+            else if (vp.fx.type == FX_PHASER)  fx_phaser.init();
+            else if (vp.fx.type == FX_FLANGER) fx_flanger.init();
+            else if (vp.fx.type == FX_CHORUS)  fx_chorus.init();
+            else if (vp.fx.type == FX_BITCRUSHER) fx_bitcrusher.init();
+            else if (vp.fx.type == FX_OVERDRIVE)  fx_overdrive.init();
             s_last_fx_type = vp.fx.type;
         }
         if (has_fx) {
             for (uint32_t i = 0; i < SAMPLES_PER_BUFFER; i++) fx_buf[i] = dry[i];
-            if (vp.fx.type == FX_DELAY) fx_delay.process(fx_buf, SAMPLES_PER_BUFFER, vp.fx);
-            else                        fx_reverb.process(fx_buf, SAMPLES_PER_BUFFER, vp.fx);
+            if (vp.fx.type == FX_DELAY)        fx_delay.process(fx_buf, SAMPLES_PER_BUFFER, vp.fx);
+            else if (vp.fx.type == FX_REVERB)  fx_reverb.process(fx_buf, SAMPLES_PER_BUFFER, vp.fx);
+            else if (vp.fx.type == FX_PHASER)  fx_phaser.process(fx_buf, SAMPLES_PER_BUFFER, vp.fx);
+            else if (vp.fx.type == FX_FLANGER) fx_flanger.process(fx_buf, SAMPLES_PER_BUFFER, vp.fx);
+            else if (vp.fx.type == FX_CHORUS)  fx_chorus.process(fx_buf, SAMPLES_PER_BUFFER, vp.fx);
+            else if (vp.fx.type == FX_BITCRUSHER) fx_bitcrusher.process(fx_buf, SAMPLES_PER_BUFFER, vp.fx);
+            else                                   fx_overdrive.process(fx_buf, SAMPLES_PER_BUFFER, vp.fx);
         }
+
+        // Crossfade dry/wet by the mix knob (Q15) instead of always summing
+        // full dry underneath -- fx_buf above already carries mix baked in
+        // as its own gain, so CC73=127 now means wet-only, not dry+wet
+        // (dry+near-unity-gain wet was clipping constantly at full mix,
+        // worst on the phaser's zero-delay allpass).
+        int32_t dry_scale = has_fx ? (int32_t)(127 - (int32_t)vp.fx.mix) * 258 : 32768;
 
         // Speaker sim (module_chip.md §10) sits downstream of the FX insert
         // (delay/reverb), upstream of the final safety clamp below -- its
@@ -818,8 +884,8 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
 
         int16_t *out = i2s_buffer_ptr(buffers, buf_index);
         for (uint32_t i = 0; i < SAMPLES_PER_BUFFER; i++) {
-            int32_t v = dry[i];
-            if (has_fx) v += fx_buf[i];
+            int32_t v = has_fx ? (int32_t)(((int64_t)dry_scale * dry[i]) >> 15) + fx_buf[i]
+                                : dry[i];
             // Mono, duplicated -- module_chip.md §10: the module is authentically
             // mono (no VoiceParams.pan).
             v = (int32_t)speaker.tick((float)(v >> SID_MIX_SHIFT));

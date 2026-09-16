@@ -22,8 +22,9 @@ oscillator.
   duty cycle, filter cutoff) plus 1 dedicated mod-wheel vibrato LFO
 - **Filter**: 1 state-variable filter per voice (lowpass/bandpass/highpass/
   notch/off)
-- **Effects**: 1 shared post-mix insert (delay or reverb, mono send / stereo
-  return) — global, not per-voice
+- **Effects**: 1 shared post-mix insert (delay, reverb, phaser, flanger,
+  chorus, bitcrusher, or overdrive, mono send / stereo return) — global,
+  not per-voice
 - **Presets**: 11 factory presets (3 synthesized, 8 sample-based) — see
   `presets.h`
 - No arpeggiator or step sequencer in the engine itself; the VGA board's
@@ -40,7 +41,7 @@ oscillator.
 | CC10 | Pan | 0–127 | live per-voice stereo pan — subtractive is the only module that maps this CC; not stored in presets |
 | CC72 | FX Param 1 | 0–127 | delay feedback / reverb room size |
 | CC73 | FX Mix | 0–127 | wet/dry mix (global) |
-| CC74 | FX Type | 0–127 | select, splits range into the 3 FX bands |
+| CC74 | FX Type | 0–127 | select, splits range into the 6 FX bands |
 | CC75 | FX Param 2 | 0–127 | delay time / reverb damping |
 | CC0 | Bank Select MSB | 0–127 | selects the microKORG program bank, used with Program Change |
 | CC32 | Bank Select LSB | 0–127 | captured, currently unused |

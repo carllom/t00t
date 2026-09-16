@@ -46,8 +46,8 @@ shimmer are all live MIDI controls) rather than just a talking clock.
   simultaneously-held voices across the stereo field with per-voice detune,
   one LPC lattice preset selecting the corpus's `KEY_PER_WORD` page 0, and
   one SAM preset selecting its own generated phrase bank's first entry
-- **Effects**: shared post-mix insert (delay or reverb) — no overdrive (see
-  Future/TODO)
+- **Effects**: shared post-mix insert (delay, reverb, phaser, flanger,
+  chorus, bitcrusher, or overdrive)
 - **LPC lattice tract**: a second, sibling tract — a 10th-order all-pole
   lattice filter reusing the same glottal-pulse/LFSR-noise excitation,
   selected per voice by `VoiceParams::tract`. Renders natively at 8 kHz
@@ -795,10 +795,6 @@ Full measurement breakdown: `history_speech.md`.
   on it, and the groovebox's toms/congas still use their own
   pitch-envelope generator, not `res2p.h`. Open gap, not a design
   question.
-- **Overdrive effect** — deferred. Adding a real overdrive would mean
-  extending the shared `EffectType` (`engine_base.h`) and CC74's
-  band-select for every engine, not speech-specific wiring; out of scope
-  for a speech-only change.
 - **Hardware verification pending** on several already-built features: the
   preset table by ear (particularly `PRESET_ROBOT_CHORUS`'s stereo
   spread and glitch-free switching between two ordinary formant presets —

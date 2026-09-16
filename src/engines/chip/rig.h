@@ -25,7 +25,9 @@
 //   CHIP_RIG_SAT         6581 filter saturation on/off
 //   CHIP_RIG_SUBBLOCK    sub-block length                 (default 64, §7.2)
 //   CHIP_RIG_MOD         per-voice sub-oscillator mode: 0 off, 1 sync, 2 ring
-//   CHIP_RIG_FX          post-mix insert: 0 off, 1 delay, 2 reverb (§10, fx/)
+//   CHIP_RIG_FX          post-mix insert: 0 off, 1 delay, 2 reverb, 3 phaser,
+//                         4 flanger, 5 chorus, 6 bitcrusher, 7 overdrive
+//                         (§10, fx/)
 //   CHIP_RIG_SPEAKER     §10 speaker sim stage on/off, downstream of FX
 //
 // The four measurements this rig produces, and how to take them:

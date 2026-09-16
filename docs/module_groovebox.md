@@ -27,8 +27,8 @@ driven by MIDI notes/CCs and a basic step sequencer for the 303 part.
   Future/TODO
 - **Sequencer**: MIDI-clock-driven (24 PPQN), 303-only, 3 fixed preset
   patterns, no recording/editing
-- **Effects**: shared post-mix insert (delay or reverb), same as the
-  subtractive engine
+- **Effects**: shared post-mix insert (delay, reverb, phaser, flanger,
+  chorus, bitcrusher, or overdrive), same as the subtractive engine
 
 ### MIDI Mapping (Input Capabilities)
 

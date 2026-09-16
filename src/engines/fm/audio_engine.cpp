@@ -84,6 +84,11 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
 #include "op.h"
 #include "fx/delay.h"
 #include "fx/reverb.h"
+#include "fx/phaser.h"
+#include "fx/flanger.h"
+#include "fx/chorus.h"
+#include "fx/bitcrusher.h"
+#include "fx/overdrive.h"
 
 // FM engine (#44/#45, module_fm.md P1/P2): MAX_VOICES independent 6-operator
 // voices, each driven straight from VoiceParams (phase_inc = bend-scaled
@@ -103,8 +108,13 @@ static int32_t fx_buf[SAMPLES_PER_BUFFER];
 
 // Post-mix effects (Core 1 only). Linked unconditionally -- module_fm.md §2: no
 // sample-RAM pressure to protect, unlike the tracker's skeleton (#13).
-static FxDelay  fx_delay;
-static FxReverb fx_reverb;
+static FxDelay   fx_delay;
+static FxReverb  fx_reverb;
+static FxPhaser  fx_phaser;
+static FxFlanger fx_flanger;
+static FxChorus  fx_chorus;
+static FxBitcrusher fx_bitcrusher;
+static FxOverdrive  fx_overdrive;
 static uint8_t  s_last_fx_type = 0xFF;
 
 // Per-voice render state (Core 1 only, never crosses ParamExchange).
@@ -133,6 +143,11 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
     env_dx_init_tables();  // EG exp2 table -- must run before any EG step
     fx_delay.init();
     fx_reverb.init();
+    fx_phaser.init();
+    fx_flanger.init();
+    fx_chorus.init();
+    fx_bitcrusher.init();
+    fx_overdrive.init();
     for (uint32_t v = 0; v < MAX_VOICES; v++) {
         voice_last_trigger[v] = 0;  // matches VoiceParams' default trigger=0 -- a never-triggered voice must NOT look "changed"
         voice_routing_valid[v] = false;
@@ -211,27 +226,49 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
         // it, then add its wet output identically to both channels. Clear
         // the newly selected effect's buffer on a type switch so a stale
         // tail can't leak.
-        bool has_fx = (vp.fx.type == FX_DELAY || vp.fx.type == FX_REVERB);
+        bool has_fx = (vp.fx.type == FX_DELAY   || vp.fx.type == FX_REVERB ||
+                       vp.fx.type == FX_PHASER  || vp.fx.type == FX_FLANGER ||
+                       vp.fx.type == FX_CHORUS  || vp.fx.type == FX_BITCRUSHER ||
+                       vp.fx.type == FX_OVERDRIVE);
         if (vp.fx.type != s_last_fx_type) {
-            if (vp.fx.type == FX_DELAY)       fx_delay.init();
-            else if (vp.fx.type == FX_REVERB) fx_reverb.init();
+            if (vp.fx.type == FX_DELAY)        fx_delay.init();
+            else if (vp.fx.type == FX_REVERB)  fx_reverb.init();
+            else if (vp.fx.type == FX_PHASER)  fx_phaser.init();
+            else if (vp.fx.type == FX_FLANGER) fx_flanger.init();
+            else if (vp.fx.type == FX_CHORUS)  fx_chorus.init();
+            else if (vp.fx.type == FX_BITCRUSHER) fx_bitcrusher.init();
+            else if (vp.fx.type == FX_OVERDRIVE)  fx_overdrive.init();
             s_last_fx_type = vp.fx.type;
         }
         if (has_fx) {
             for (uint32_t i = 0; i < SAMPLES_PER_BUFFER; i++) {
                 fx_buf[i] = (dry_l[i] + dry_r[i]) >> 1;
             }
-            if (vp.fx.type == FX_DELAY) fx_delay.process(fx_buf, SAMPLES_PER_BUFFER, vp.fx);
-            else                        fx_reverb.process(fx_buf, SAMPLES_PER_BUFFER, vp.fx);
+            if (vp.fx.type == FX_DELAY)        fx_delay.process(fx_buf, SAMPLES_PER_BUFFER, vp.fx);
+            else if (vp.fx.type == FX_REVERB)  fx_reverb.process(fx_buf, SAMPLES_PER_BUFFER, vp.fx);
+            else if (vp.fx.type == FX_PHASER)  fx_phaser.process(fx_buf, SAMPLES_PER_BUFFER, vp.fx);
+            else if (vp.fx.type == FX_FLANGER) fx_flanger.process(fx_buf, SAMPLES_PER_BUFFER, vp.fx);
+            else if (vp.fx.type == FX_CHORUS)  fx_chorus.process(fx_buf, SAMPLES_PER_BUFFER, vp.fx);
+            else if (vp.fx.type == FX_BITCRUSHER) fx_bitcrusher.process(fx_buf, SAMPLES_PER_BUFFER, vp.fx);
+            else                                   fx_overdrive.process(fx_buf, SAMPLES_PER_BUFFER, vp.fx);
         }
+
+        // Crossfade dry/wet by the mix knob (Q15) instead of always summing
+        // full dry underneath -- fx_buf above already carries mix baked in
+        // as its own gain, so CC73=127 now means wet-only, not dry+wet
+        // (dry+near-unity-gain wet was clipping constantly at full mix,
+        // worst on the phaser's zero-delay allpass).
+        int32_t dry_scale = has_fx ? (int32_t)(127 - (int32_t)vp.fx.mix) * 258 : 32768;
 
         int16_t *out = i2s_buffer_ptr(buffers, buf_index);
         for (uint32_t i = 0; i < SAMPLES_PER_BUFFER; i++) {
-            int32_t l = dry_l[i];
-            int32_t r = dry_r[i];
+            int32_t l, r;
             if (has_fx) {
-                l += fx_buf[i];
-                r += fx_buf[i];
+                l = (int32_t)(((int64_t)dry_scale * dry_l[i]) >> 15) + fx_buf[i];
+                r = (int32_t)(((int64_t)dry_scale * dry_r[i]) >> 15) + fx_buf[i];
+            } else {
+                l = dry_l[i];
+                r = dry_r[i];
             }
             *out++ = (int16_t)__ssat(l, 16);
             *out++ = (int16_t)__ssat(r, 16);

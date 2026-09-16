@@ -77,3 +77,16 @@ cp build/t00t.uf2 /media/$USER/RPI-RP2/
 ```
 
 The Pico reboots and runs the firmware automatically.
+
+### Flashing via debug probe
+
+With a Raspberry Pi Debug Probe (or other CMSIS-DAP probe) wired to SWD, load
+the build directly with OpenOCD instead of the BOOTSEL/UF2 route:
+
+```bash
+openocd -f interface/cmsis-dap.cfg -f target/rp2350.cfg -c "program build/t00t.elf verify reset exit"
+```
+
+This uses `build/t00t.elf`, produced alongside `t00t.uf2`. Requires an
+OpenOCD build with RP2350 support (Raspberry Pi's fork, or a recent upstream
+release).
