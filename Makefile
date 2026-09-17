@@ -4,7 +4,7 @@ UF2 = $(BUILD_DIR)/t00t.uf2
 # Board selection: breadboard_rp2350 (default) or vgaboard_rp2350
 BOARD ?= breadboard_rp2350
 
-# Synthesis engine: subtractive (default), groovebox, tracker, speech, chip, fm or opl
+# Synthesis engine: subtractive (default), groovebox, tracker, speech, chip, fm, opl or wavetable
 ENGINE ?= subtractive
 
 # MIDI transport overrides: 0, 1, or "default" (use the board header's default).
@@ -87,6 +87,23 @@ CHIP_WAVE_DAC       ?= default
 CHIP_RIG_FX         ?= default
 CHIP_RIG_SPEAKER    ?= default
 
+# Wavetable/granular module measurement rig (src/engines/wavetable/rig.h,
+# module_wavetable.md) -- the next required step before MAX_PARTIALS can be
+# decided (see module_wavetable.md's Future/TODO). No effect on other
+# engines.
+#   make ENGINE=wavetable WT_PROFILE=1
+WT_PROFILE ?= 0
+
+# Wavetable rig levers, each a compile-time switch (only meaningful with
+# WT_PROFILE=1) -- same "one measurement per build" reasoning as the chip
+# rig levers above. "default" leaves rig.h's own value in place.
+#   make ENGINE=wavetable WT_PROFILE=1 WT_RIG_PARTIALS=64
+#   make ENGINE=wavetable WT_PROFILE=1 WT_RIG_MODE=0   # nearest
+#   make ENGINE=wavetable WT_PROFILE=1 WT_RIG_MODE=2   # bilinear + window
+WT_RIG_PARTIALS ?= default
+WT_RIG_BLOCK    ?= default
+WT_RIG_MODE     ?= default
+
 CMAKE_FLAGS = -DPICO_BOARD=$(BOARD) -DPICO_PLATFORM=rp2350 \
               -DMIDI_USB=$(MIDI_USB) -DMIDI_UART=$(MIDI_UART) \
               -DT00T_ENGINE=$(ENGINE) -DDMA_BUFFER_SIZE=$(DMA_BUFFER_SIZE) \
@@ -101,7 +118,9 @@ CMAKE_FLAGS = -DPICO_BOARD=$(BOARD) -DPICO_PLATFORM=rp2350 \
               -DCHIP_RIG_OVERSAMPLE=$(CHIP_RIG_OVERSAMPLE) \
               -DCHIP_RIG_SAT=$(CHIP_RIG_SAT) -DCHIP_RIG_SUBBLOCK=$(CHIP_RIG_SUBBLOCK) \
               -DCHIP_RIG_MOD=$(CHIP_RIG_MOD) -DCHIP_WAVE_DAC=$(CHIP_WAVE_DAC) \
-              -DCHIP_RIG_FX=$(CHIP_RIG_FX) -DCHIP_RIG_SPEAKER=$(CHIP_RIG_SPEAKER)
+              -DCHIP_RIG_FX=$(CHIP_RIG_FX) -DCHIP_RIG_SPEAKER=$(CHIP_RIG_SPEAKER) \
+              -DWT_PROFILE=$(WT_PROFILE) -DWT_RIG_PARTIALS=$(WT_RIG_PARTIALS) \
+              -DWT_RIG_BLOCK=$(WT_RIG_BLOCK) -DWT_RIG_MODE=$(WT_RIG_MODE)
 
 HOST_BUILD_DIR = tools/host_render/build
 

@@ -197,6 +197,21 @@ if(DEFINED CHIP_PROFILE AND NOT CHIP_PROFILE STREQUAL "0")
     target_compile_definitions(t00t PRIVATE T00T_CHIP_PROFILE=1)
 endif()
 
+# Wavetable module measurement rig override (wavetable engine only, see
+# src/engines/wavetable/rig.h/audio_engine.cpp, module_wavetable.md).
+if(DEFINED WT_PROFILE AND NOT WT_PROFILE STREQUAL "0")
+    target_compile_definitions(t00t PRIVATE T00T_WT_PROFILE=1)
+endif()
+
+# Wavetable rig levers (only meaningful with WT_PROFILE=1) — "default" leaves
+# rig.h's own #ifndef default in place, same convention as FM_RIG_*/CHIP_RIG_*
+# above.
+foreach(_lever WT_RIG_PARTIALS WT_RIG_BLOCK WT_RIG_MODE)
+    if(DEFINED ${_lever} AND NOT ${_lever} STREQUAL "default")
+        target_compile_definitions(t00t PRIVATE ${_lever}=${${_lever}})
+    endif()
+endforeach()
+
 # See ENGINE_VOICE_ALLOC above — tells main.cpp to skip the voice_alloc calls
 # it would otherwise fail to link against on the tracker build.
 if(T00T_ENGINE STREQUAL "tracker")
