@@ -46,33 +46,49 @@ Allocation) exists.
 
 ### PPG Architecture Reference
 
-Guidance for this module, gathered from two sources that partly disagree —
-where they do, this project's own byte-verified ROM extraction
-(`tools/ppg/README.md`) is trusted over the secondary summary, since it was
-confirmed **exact** against independent community research (waveform 0 and
-all 29 wavetable-index records matched a public reference byte-for-byte):
+Guidance for this module. Byte-level wave/wavetable format facts come from
+this project's own ROM extraction (`tools/ppg/README.md`), confirmed
+**exact** against independent community research (waveform 0 and all 29
+wavetable-index records matched a public reference byte-for-byte). Broader
+sound-architecture facts (voices, envelopes, filter, modulation matrix) come
+from the manufacturer's own PPG Wave 2.2 Owner's Manual and PPG Wave 2.3
+Service Manual, fetched and read directly — where a manufacturer manual
+disagrees with a secondary community summary
+([ppg.synth.net/wave22](https://ppg.synth.net/wave22/)), the manual wins.
+See `docs/research/ppg-wave-23-sound-architecture-and-data-formats.md` for
+the full source list, citations, and open questions this section
+summarizes.
 
 | | Our own ROM extraction (`tools/ppg/`) | Secondary summary ([ppg.synth.net/wave22](https://ppg.synth.net/wave22/)) |
 |---|---|---|
 | Waveform size | **64 samples**, 8-bit unsigned PCM (confirmed) | states 128 — not used, see above |
-| Waveform count | **244** (confirmed) | states "well over 2000" reachable — likely counting interpolated in-between positions, not stored waves |
+| Waveform count | **244** (confirmed) | states "well over 2000"/"over 1800" reachable — the same author's own more detailed technical note explains why: "the PPG Wave only has a set of about 250 waveforms, most of the wavetables' contents are interpolated between 2 of the waveforms... gives the marketing-hype-number" ([Seib, *PPG Wave ROM Waveforms and Wavetables*](https://www.hermannseib.com/documents/PPGWTbl.pdf)) — i.e. simple two-keyframe interpolation across every table position, the same mechanism `osc/wavetable.h` already implements, not additional distinct stored or algorithmically-synthesized waveforms |
 | Wavetable count | **29** (confirmed; matches the reference material's "27 primary + Upper Wavetable as table 28", table 29 synth-computed) | states 32 banks — not used |
 | Wavetable shape | sparse authored keyframes at specific slot positions (4-31 per table, not evenly spaced), interpolated between them across a 0-63 range | ("intermediate waveforms calculated" — consistent, no contradiction) |
+| Factory programs stored | **100** (confirmed: the owner's manual states it directly, and an independent from-scratch decode of the factory cassette data lands on the same count) | not stated |
 
-Architectural color not recoverable from the ROM dump itself (taken as
-guidance, not verified against firmware disassembly):
+Architectural color, confirmed directly from the manufacturer's own
+Owner's/Service Manuals rather than taken as unverified secondary-source
+guidance:
 
-- **8-voice polyphony**, 2 oscillators per voice (16 total) — this module
-  currently implements 1 partial per voice; see Decision Record for why
-  `MAX_VOICES` is set to 8 now while a second oscillator per voice remains
-  future work.
-- **One SSM2044 (4-pole/24 dB lowpass) filter and VCA per voice** — not a
-  shared resource across voices. This directly shaped this module's own
-  Per-Voice Filter design (see Architecture and Decision Record) away from
-  the shared-bus approach `module_chip.md`'s `FilterBus` uses.
-- Modulation sources for wave-position scanning: envelope, velocity, mod
-  wheel, aftertouch. This module currently wires only a live mod-wheel scan
-  (CC1) and the ADSR-driven filter cutoff described below.
+- **8-voice polyphony**, 2 independently-programmable oscillators per voice
+  (called Group A/Group B, 16 total) — this module currently implements 1
+  partial per voice; see Decision Record for why `MAX_VOICES` is set to 8
+  now while a second oscillator per voice remains future work.
+- **One SSM2044 (4-pole/24 dB lowpass) filter and one CEM3360 dual-VCA per
+  voice** — not a shared resource across voices, confirmed directly from the
+  Service Manual's Voice Board parts list. This directly shaped this
+  module's own Per-Voice Filter design (see Architecture and Decision
+  Record) away from the shared-bus approach `module_chip.md`'s `FilterBus`
+  uses.
+- **Wave-position modulation sources, corrected**: keyboard-tracking, LFO,
+  aftertouch, and a dedicated Envelope 1 — which drives filter cutoff and
+  wave-position simultaneously from one shared envelope shape, at
+  independently adjustable depths, not two separate envelopes. Velocity is
+  **not** a wave-position source on real hardware (only filter and
+  loudness); this corrects an earlier version of this section sourced from
+  a secondary summary. This module currently wires only a live mod-wheel
+  scan (CC1) and the ADSR-driven filter cutoff described below.
 - Phase-accumulator oscillators (20-bit accumulator, top bits select wave
   position) — architecturally the same shape `osc/wavetable.h`'s Q0.32
   accumulator already is, just wider here.
@@ -359,10 +375,14 @@ kernel does.
   measured and the basic version's sound has actually been judged
   insufficient.
 - **Per-wavetable filter cutoff/resonance and envelope amounts** — currently
-  fixed global constants, not sourced from a patch. The `Programs` cassette
-  dumps `tools/ppg/` also recovered are a candidate source once/if their
-  per-patch record layout gets reverse-engineered (`tools/ppg/README.md`'s
-  "Sound/preset data" section calls this out as unexplored).
+  fixed global constants, not sourced from a patch. The factory cassette
+  dumps `tools/ppg/` also recovered decode to fixed-size Program records
+  (51 bytes × 100 programs for Wave 2.2/2.3, 50 bytes × 102 programs for
+  Wave 2) whose full parameter list is now known
+  (`docs/research/ppg-wave-23-sound-architecture-and-data-formats.md`), but
+  the exact byte offset of each parameter within a record is still
+  unresolved — a candidate source once/if that byte layout gets pinned
+  down.
 - **Decide `MAX_PARTIALS` and design the partial pool (Two-Level
   Allocation)** — all three kernel variants are now measured
   (`history_wavetable.md`), so this is no longer blocked on a rig run; what
