@@ -8,7 +8,12 @@ Future/TODO section flags explicitly ("the per-patch record layout gets
 reverse-engineered... unexplored"). `src/engines/wavetable/` is explicitly **not** a
 PPG clone project; this is background for translating PPG-style sounds into that
 engine's own terms, not a spec to implement against. No code under `src/`, `tools/`,
-or `docs/` was changed except this file.
+or `docs/` was changed except this file, other than a later follow-up session adding
+one new analysis script, `tools/ppg/analyze_program_offsets.py` (statistical
+byte-offset fingerprinting used in the "Preset/patch record structure — byte
+offsets" section below; no decoded binary/cassette-derived data committed,
+consistent with `tools/ppg/` already being entirely gitignored — see that section
+for details).
 
 ## Primary sources
 
@@ -37,7 +42,15 @@ or `docs/` was changed except this file.
   Display / modulation-matrix page) were re-fetched and re-read a second time,
   prompted by the project owner questioning the `UW` field's source letter `U`
   against the manual's own 5-letter SOURCES list — see the Modulation sources and
-  matrix section below for what that check found.
+  matrix section below for what that check found. Re-fetched a third time in a later
+  session specifically to hunt for a factory-preset parameter appendix (see the new
+  "Preset/patch record structure — byte offsets" section below): the PDF is 36 pages
+  total (the manual's own "31 written pages" undercounts a cover page, a blank, and —
+  critically — two **unpaginated pages at the very end**, past the last numbered page
+  33, titled *"Original-presets for the PPG WAVE 2.2, September 1982"*, a
+  `PROG./KEYB./WAVET./INT./COMMENT` table for all 100 factory programs. Not used or
+  mentioned anywhere in this doc's earlier passes; directly used below as ground
+  truth to check a statistical hypothesis against.
 - **PPG Wave 2.3 Service Manual**, fetched as a PDF from
   [deepsonic.ch](https://www.deepsonic.ch/deep/docs_manuals/ppg_wave_2.3_service_manual_b.pdf)
   and read (first 10 of 38 pages: introduction, board list, block diagram, adjustment
@@ -479,6 +492,123 @@ Program-level fields `WAVETABLE`, `KEYB` mode, `KB-SPLIT` point, and the `UW`
 (upper-wavetable) flag. This is a parameter *list*, per the task's explicit fallback
 instruction, not a byte layout — the layout itself remains unresolved.
 
+### Preset/patch record structure — byte offsets (this session's addition)
+
+Follow-up pass targeting the one item the section above left open: exact byte
+offsets within the 50/51-byte Program record. `ppgwavecass-0.5.4` was fetched fresh
+from SourceForge again in this session (the "download" link serves an HTML
+interstitial to `curl`, not the tarball itself — the actual file is a signed
+`downloads.sourceforge.net/project/ppgwavecass/ppgwavecass-0.5.4.tar.gz?ts=...` URL
+embedded in that page's own HTML) and rebuilt unmodified with `gcc` (clean, no
+warnings). Analysis script kept at `tools/ppg/analyze_program_offsets.py` (script
+only — no decoded binaries or extracted records committed, per the task's explicit
+constraint and consistent with `tools/ppg/` already being entirely gitignored).
+
+**Re-decoded all three cassettes, including Wave 2 this time.** `wave22_fact.zip`
+and the 2×-upsampled `wave23_fact.zip` (same workaround as the earlier pass, same
+result: checksum OK, end-byte OK) decoded as expected. `wave20_fact.zip` — lower
+priority per the task brief, attempted only after the other two succeeded — in fact
+decoded cleanly on the **first** attempt with `ppgwave2cassdecode`, checksum and
+end-byte both OK; the earlier pass's caution about it needing extra work turned out
+unnecessary. All three again independently reproduce the `0x0400`-`0x17FF` Programs
+address range.
+
+**Independently re-derived the record period from scratch** (not re-used from the
+earlier pass's numbers): a fresh byte-match-rate autocorrelation over each decoded
+5120-byte Programs block, all strides 2-199, confirms stride 51 as the sharp peak for
+both Wave 2.2 (match rate 0.378) and Wave 2.3 (0.316), with harmonics at 102 and 153
+also elevated, exactly as the earlier pass reported; Wave 2 peaks at stride 50 (0.272,
+harmonic at 100). Same conclusion, independently reproduced.
+
+**Statistical fingerprinting of every byte offset (min/max/distinct-count/histogram,
+run via `analyze_program_offsets.py fingerprint`) against the known field list is
+mostly a negative result, and a real one, not a stalled attempt:**
+
+- No 8-consecutive-byte run stays within *any* tested narrow band (max ≤ 20, ≤ 40, or
+  even ≤ 63) anywhere in the 51-byte (Wave 2.2/2.3) or 50-byte (Wave 2) record. This
+  was the search built specifically to catch the "8 individual per-voice `SEMIT`
+  tuning offsets" anchor described as the strongest expected signature going in — it
+  was not found. In the Wave 2.3 record, not even a *single* byte offset stays within
+  the manual's own documented 0-63 front-panel display range across all 100 records
+  (Wave 2.2 has exactly one, offset 39, and it does not hold up under cross-checking
+  below). This directly contradicts the naive "1 byte = 1 raw 0-63/0-30/0-7 dial
+  value" hypothesis this pass started with — whatever most of the record's bytes
+  hold, it is not that.
+- Nibble-level and bit-level (per-bit-column "fraction of records with bit=1")
+  re-analysis of the same data found no clean 2-byte / ~12-independent-near-boolean
+  signature for the modulation-matrix switches either. The closest thing found was an
+  unexplained *structural* regularity, not a field: in the Wave 2.3 record, offsets
+  20-24 and again 44-49 each show a repeating ~3-byte value pattern with high but
+  non-universal frequency (mode value present in 58-72% of the 100 records at each of
+  those offsets, vs. single-digit-percent elsewhere) — the same sub-pattern recurring
+  at two different positions in the record. This is flagged as a real, reproducible
+  observation (re-run it and it's still there), not explained, and not force-fit to
+  any field on the known list.
+
+**One offset resolved with real confidence, cross-checked against a primary source,
+not just statistics.** The newly-found preset-table appendix (see Primary Sources
+above) gives independently-known `(PROG, KEYB, WAVETABLE)` triples for 83 of the 100
+factory programs (17 rows are blank or "reserved for WAVE-TERM demo" in the manual
+itself and were excluded). Cross-referencing this against every byte offset of the
+decoded Wave 2.2 cassette (`ppgwavecass22` output, i.e. the exact cassette this
+manual's own preset table describes) via
+`analyze_program_offsets.py presets wave22`:
+
+- **Byte offset 0's low 5 bits equal the manual's printed `WAVETABLE` value in 57 of
+  83 known programs (68.7%)** — the next-best offset anywhere in the record manages
+  only 11/83 (13.3%), and the chance rate for a 5-bit field matching one of ~24
+  distinct observed table values at random is roughly 3%. No other offset comes
+  close.
+- **The same byte's top 3 bits equal the manual's printed `KEYB` value in 69 of 83
+  (83.1%)**, and the full byte matches *both* fields simultaneously (`byte0 =
+  wavetable | (keyb << 5)`) in 54 of 83 (65.1%) — again far above the ~0.3-match
+  chance expectation for two independent fields matching simultaneously by luck.
+  Across the full 100-record set (not just the 83 cross-checkable ones), the masked
+  low-5-bit values stay entirely within `0-31` and the top-3-bit values stay within
+  `{0,1,3,4}` — a subset of the manual's documented `KEYB` `0-8` range — which is
+  itself supporting structural evidence independent of the name-matching above.
+- **This is corroborated by the manual's own worked example, not just the appendix
+  table**: p.9's walkthrough shows the display `PROG:31 WAVETABLE:24 ... KEYB:1` for
+  Program 31, and the decoded Wave 2.2 cassette's record 31, byte 0, is `0x18` = 24 —
+  an exact match on `WAVETABLE`. (`KEYB` is the one place the manual's own two
+  sources disagree with each other: p.9's display and its following prose both say
+  `KEYB:1`/"4-voice polyphonic with two sounds together," but the preset-table
+  appendix prints `KEYB: 0` for Program 31, and the decoded byte's top 3 bits are `0`
+  — agreeing with the appendix and the cassette, not the p.9 prose. Flagged rather
+  than silently resolved either way; not investigated further.)
+- **Cross-generation check**: the identical offset/mask test against the *Wave 2.3*
+  cassette (a different, later factory-program bank, not the one this Wave 2.2
+  manual's table describes) still gets 46/83 (55.4%) on `WAVETABLE` alone and 38/83
+  (45.8%) on both fields together — lower than the matching-generation number, as
+  expected for a genuinely different preset bank, but nowhere near chance, which is
+  read as evidence the `byte0 = wavetable | (keyb << 5)` packing is a real structural
+  feature of the Wave 2.2/2.3 51-byte record format itself, not an artifact of one
+  specific cassette. The same test against the *Wave 2* cassette (50-byte record,
+  known-different, older format) gets 6/83 (7.2%) — indistinguishable from chance, as
+  expected, since nothing here claims the Wave 2 record shares this layout.
+
+**Everything else on the known field list remains unresolved** — filter
+cutoff/emphasis, both ADSR-style envelopes, Envelope 3's attack/decay/amount and
+routing, the 12 modulation-matrix switch bits, suboscillator `SW`/`DETU`, the 8
+`SEMIT` tuning bytes, bender `BD`/`BI`, `KB-SPLIT`, and `UW` were all searched for by
+the methods above and none produced a signal comparable to byte offset 0's. This is
+reported as a genuine negative result, not a stopping point chosen for convenience:
+the search was systematic (every offset, every generation, three statistical lenses)
+and came up empty past the one field above.
+
+**One more, unexplained, data point**: the 20-byte trailer following the 5100 bytes
+of Program records is **byte-for-byte identical** between the Wave 2.2 and Wave 2.3
+decodes of this session (`0a3404ec04e384ed84350464846601660266035a` in both,
+independently re-decoded from two different physical cassettes) despite those two
+cassettes' actual Program contents differing throughout. The Wave 2 decode's trailer
+differs (`bdbdbdbdbd0cbdbdbdbdbdd92c35cc35cfbdbd17`) but is dominated by the same
+`0xBD` filler byte already noted for that dump's trailing empty-looking Program
+slots. A fixed, cassette-content-independent trailer value shared across two
+otherwise-different Wave 2.2/2.3 dumps is more consistent with it being a firmware
+constant (version stamp, fixed end-of-block marker, or similar) than per-program
+data — worth recording even though its exact purpose remains open (see Open
+questions).
+
 ### Cassette modulation scheme, observed directly
 
 `ppgwavedefs.h` describes the format in a source comment as "a combination of FSK
@@ -496,12 +626,41 @@ tone burst at frequency B. This session did not characterize the sync-tone/byte
 
 ## Open questions / not resolved in this pass
 
-- Exact byte offsets of individual parameters within the 50-byte (Wave 2) / 51-byte
-  (Wave 2.2/2.3) Program record — would need either a printed factory-preset
-  parameter list to diff against, or disassembly of the firmware EPROMs (`8,A,C,E`)
-  present in this same ROM zip, neither of which was attempted here.
+- **Partially resolved** (see "Preset/patch record structure — byte offsets" above):
+  byte offset 0 of the Wave 2.2/2.3 51-byte Program record is confirmed, with real
+  cross-checked confidence (68.7%/83.1%/65.1% match rates against a newly-found
+  manual preset-table appendix, far above chance, plus an exact match on the
+  manual's own p.9 worked example), to pack `WAVETABLE` (low 5 bits, 0-30) and
+  `KEYB` keyboard-mode (top 3 bits, 0-8) together as `wavetable | (keyb << 5)`. The
+  other ~30 known fields on the list — filter cutoff/emphasis, both ADSR envelopes,
+  Envelope 3, the 12 modulation-matrix bits, suboscillator `SW`/`DETU`, the 8
+  `SEMIT` bytes, bender `BD`/`BI`, `KB-SPLIT`, `UW` — were searched for
+  systematically (every remaining offset, all three cassette generations, byte/
+  nibble/bit-level statistics) and **none produced a usable signal**; this is a
+  genuine negative result, not an abandoned search. The Wave 2 50-byte record's
+  layout was not investigated at all beyond confirming its record length and that
+  offset 0 does *not* carry the same packing (6-7% match, chance-level). Firmware
+  disassembly of the `8,A,C,E` EPROMs (`tools/ppg/PPG Wave 2.3 version 6.zip`,
+  present locally, not yet attempted by any session) remains the clear next step for
+  the fields this pass couldn't pin down — the statistical approach has likely
+  reached its limit for anything past the one field resolved above.
 - The purpose of the fixed 20-byte trailer following the 100×51 (Wave 2.2/2.3) or
-  102×50 (Wave 2) program records inside the decoded 5120-byte Programs block.
+  102×50 (Wave 2) program records inside the decoded 5120-byte Programs block —
+  narrowed slightly this session: the trailer is byte-for-byte identical between two
+  independently-decoded Wave 2.2 and Wave 2.3 cassettes despite their differing
+  Program contents, suggesting a fixed firmware constant rather than per-cassette
+  data, but its actual meaning is still unknown.
+- An unexplained repeating ~3-byte value pattern recurring at two different offset
+  ranges (20-24 and 44-49) within the Wave 2.3 51-byte record, found during this
+  session's byte-offset fingerprinting, present in 58-72% of the 100 records at each
+  position but not in all of them — not resolved, not matched to any known field,
+  flagged rather than forced into the byte-offset map above.
+- A one-line discrepancy inside the owner's manual itself, noticed while
+  cross-checking Program 31 against the record: the manual's own p.9 worked example
+  (display readout and following prose) states `KEYB:1`, while the manual's own
+  preset-table appendix prints `KEYB: 0` for the same program — and the decoded
+  cassette byte agrees with the appendix, not the p.9 prose. Not investigated
+  further; noted in case it matters to a future pass.
 - Whether hard sync exists between a voice's two oscillators (Group A/B) — not
   described anywhere in the owner's manual pages read in this pass; only
   oscillator-to-suboscillator detune (within one Group) is documented.

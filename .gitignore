@@ -23,6 +23,9 @@ tools/host_render/render_fm
 tools/host_render/fm_test_tone.wav
 tools/host_render/fm_patch_test.wav
 tools/host_render/fm_patches/
-# PPG Wave cassette dumps + ROM wavetable data (tools/ppg/README.md):
-# third-party firmware content of unclear licensing, kept local for now.
-tools/ppg/
+# PPG Wave ROM/cassette dumps (tools/ppg/README.md): third-party firmware
+# content of unclear licensing, kept local for now. The project's own
+# extraction/analysis scripts and docs under tools/ppg/ are tracked normally.
+tools/ppg/*.zip
+tools/ppg/cassettes/
+tools/ppg/extract/
