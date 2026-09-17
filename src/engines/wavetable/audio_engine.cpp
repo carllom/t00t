@@ -99,12 +99,14 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
 
 #include "osc/wavetable.h"
 #include "envelope.h"
+#include "filter.h"
 
-// One wavetable partial per voice, an ADSR envelope, no filter, no LFO, no
-// partial pool -- see module_wavetable.md for what's deferred and why. The
-// amplitude chain and FX chain otherwise match every other engine's shape
-// (module_subtractive.md's Architecture section; src/engines/opl/
-// audio_engine.cpp's FX block, reused unmodified below).
+// One wavetable partial per voice, an ADSR envelope, a basic per-voice
+// lowpass filter (below), no LFO, no partial pool -- see module_wavetable.md
+// for what's deferred and why. The amplitude chain and FX chain otherwise
+// match every other engine's shape (module_subtractive.md's Architecture
+// section; src/engines/opl/audio_engine.cpp's FX block, reused unmodified
+// below).
 
 static int32_t dry_l[SAMPLES_PER_BUFFER];
 static int32_t dry_r[SAMPLES_PER_BUFFER];
@@ -126,8 +128,24 @@ static uint8_t   voice_last_trigger[MAX_VOICES];
 static bool      voice_gated[MAX_VOICES];
 
 // Fixed envelope shape for this skeleton -- no per-preset ADSR yet, same
-// deferral as filter/LFO above.
+// deferral as filter cutoff/resonance/LFO below.
 static EnvConfig s_env_cfg;
+
+// Basic per-voice lowpass filter -- module_wavetable.md's Optional Filter
+// section, revised: real PPG hardware has one SSM2044 (4-pole/24dB) filter
+// per voice, not a shared pool, and the measured per-partial cost leaves
+// enough headroom at this skeleton's MAX_VOICES=16 to give every voice its
+// own filter directly (see module_wavetable.md's Decision Record). Two
+// cascaded 2-pole SVFilter instances approximate the 4-pole slope -- a
+// deliberately basic stand-in, not a transistor-ladder model. Fixed cutoff/
+// resonance for now, same deferral as the envelope shape above; the single
+// ADSR modulates cutoff, matching subtractive's own reused-envelope
+// convention (module_subtractive.md's Architecture section).
+static SVFilter voice_filter1[MAX_VOICES];
+static SVFilter voice_filter2[MAX_VOICES];
+static constexpr int32_t FILTER_BASE_CUTOFF_HZ = 600;
+static constexpr int32_t FILTER_ENV_AMOUNT_HZ = 7000;
+static constexpr uint16_t FILTER_RESONANCE_Q15 = 6000;
 
 void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
     gpio_init(PROFILE_PIN);
@@ -148,6 +166,8 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
     for (uint32_t v = 0; v < MAX_VOICES; v++) {
         voice_phase[v] = 0;
         voice_env[v].init();
+        voice_filter1[v].init();
+        voice_filter2[v].init();
         voice_last_trigger[v] = 0;  // matches VoiceParams' default trigger=0
         voice_gated[v] = false;
     }
@@ -173,6 +193,11 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
             if (p.trigger != voice_last_trigger[v]) {
                 voice_phase[v] = 0;
                 voice_env[v].trigger();
+                // Reset filter state on retrigger for a clean attack, same
+                // reasoning as subtractive's own SVF (module_subtractive.md's
+                // Architecture section).
+                voice_filter1[v].init();
+                voice_filter2[v].init();
                 voice_last_trigger[v] = p.trigger;
                 voice_gated[v] = p.gate;
                 if (!p.gate) {
@@ -192,6 +217,7 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
 
             int32_t gain_l, gain_r;
             pan_gains_q15(p.pan, gain_l, gain_r);
+            int32_t Q_q15 = svf_compute_q(FILTER_RESONANCE_Q15);  // resonance is fixed, so this is per-voice-pass constant
 
             uint32_t phase = voice_phase[v];
             for (uint32_t i = 0; i < SAMPLES_PER_BUFFER; i++) {
@@ -200,6 +226,13 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
                 int32_t raw = wavetable_read_bilinear(*p.table, phase, p.wave_pos);
                 int32_t scaled = (raw * p.amplitude) >> 15;
                 scaled = (scaled * level) >> 15;
+
+                int32_t cutoff = FILTER_BASE_CUTOFF_HZ + ((level * FILTER_ENV_AMOUNT_HZ) >> 15);
+                if (cutoff > 18000) cutoff = 18000;
+                int16_t F_half = svf_compute_f_half(cutoff);
+                scaled = voice_filter1[v].tick(scaled, F_half, Q_q15, FILTER_LP);
+                scaled = voice_filter2[v].tick(scaled, F_half, Q_q15, FILTER_LP);
+
                 dry_l[i] += (scaled * gain_l) >> 15;
                 dry_r[i] += (scaled * gain_r) >> 15;
                 phase += p.phase_inc;

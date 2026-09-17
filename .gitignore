@@ -13,6 +13,7 @@ sam/
 src/engines/fm/patches.h
 src/engines/speech/lattice_words.h
 src/engines/speech/sam_allophones.h
+src/engines/wavetable/ppg_waves.h
 # FM reference rig (tools/fm_ref, history_fm.md) -- host-only build products
 tools/host_render/render_fm_patch
 tools/host_render/t00t_ctl_dump
@@ -22,3 +23,6 @@ tools/host_render/render_fm
 tools/host_render/fm_test_tone.wav
 tools/host_render/fm_patch_test.wav
 tools/host_render/fm_patches/
+# PPG Wave cassette dumps + ROM wavetable data (tools/ppg/README.md):
+# third-party firmware content of unclear licensing, kept local for now.
+tools/ppg/

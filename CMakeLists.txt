@@ -192,6 +192,15 @@ if(EXISTS ${CMAKE_CURRENT_LIST_DIR}/src/engines/fm/patches.h)
     target_compile_definitions(t00t PRIVATE T00T_FM_HAS_PATCHES=1)
 endif()
 
+# PPG factory wavetables (wavetable engine only): ppg_waves.h is generated
+# locally by tools/ppg/convert_ppg_waves.py from PPG Wave 2.3 ROM content
+# and gitignored -- same reasoning as T00T_FM_HAS_PATCHES above. Guarded
+# here so the build still succeeds (tables.h's procedural fallback) when
+# nobody has generated it locally yet.
+if(EXISTS ${CMAKE_CURRENT_LIST_DIR}/src/engines/wavetable/ppg_waves.h)
+    target_compile_definitions(t00t PRIVATE T00T_WT_HAS_PPG_WAVES=1)
+endif()
+
 # Chip rig override (chip engine only, see src/engines/chip/audio_engine.cpp).
 if(DEFINED CHIP_PROFILE AND NOT CHIP_PROFILE STREQUAL "0")
     target_compile_definitions(t00t PRIVATE T00T_CHIP_PROFILE=1)

@@ -188,6 +188,32 @@ target_include_directories(render_fm_rig PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}/../../src
 )
 
+# Host build of src/engines/wavetable/rig.h (module_wavetable.md): the
+# wavetable/granular module's own measurement rig, checked here for
+# correctness (real, finite, non-clipping audio through every WT_RIG_MODE)
+# before the actual cycle-count bench session -- same role render_fm_rig
+# fills for the FM module's own rig. Fully self-contained, no extra source
+# needed.
+add_executable(render_wavetable_rig render_wavetable_rig.cpp)
+target_include_directories(render_wavetable_rig PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}
+    ${CMAKE_CURRENT_LIST_DIR}/../../src
+)
+
+# Host build of tools/ppg/convert_ppg_waves.py's output
+# (src/engines/wavetable/ppg_waves.h): range-checks the generated data and
+# renders a few wave-position sweeps to WAV. Gated on the whole target,
+# not just its content, since this tool's only purpose is checking that
+# file -- git-ignored, generated locally from third-party PPG ROM content,
+# same reasoning as the FM module's patches.h gate above.
+if(EXISTS ${CMAKE_CURRENT_LIST_DIR}/../../src/engines/wavetable/ppg_waves.h)
+    add_executable(render_ppg_waves render_ppg_waves.cpp)
+    target_include_directories(render_ppg_waves PRIVATE
+        ${CMAKE_CURRENT_LIST_DIR}
+        ${CMAKE_CURRENT_LIST_DIR}/../../src
+    )
+endif()
+
 # Host build of src/engines/opl/opl_voice.h (issue #78): the OPL engine's
 # device-path renderer (opl_voice_note_on()/opl_render_voice()/
 # opl_voice_note_off()), same sanity-render role render_fm.cpp fills for FM.

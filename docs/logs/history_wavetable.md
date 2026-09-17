@@ -133,3 +133,100 @@ skeleton's current `MAX_VOICES=16` (one partial per voice, no pool) sits
 comfortably inside even the most expensive measured kernel's unfiltered
 ceiling (~33 partials, bilinear+window with reverb reserved), with room to
 grow once a partial pool exists to make use of the headroom.
+
+### Real PPG Wave Data + Per-Voice Filter
+
+Following explicit direction to use the real PPG factory wave/wavetable
+data already recovered under `tools/ppg/` (see that directory's own
+README) and to take PPG Wave 2.2/2.3's hardware architecture as design
+guidance rather than a spec to follow literally.
+
+Fetched a secondary architecture summary
+([ppg.synth.net/wave22](https://ppg.synth.net/wave22/)) and cross-checked
+it against this repo's own byte-exact ROM extraction. Where they disagreed
+on wave/table structure (128 vs. 64 samples/waveform, "well over 2000"
+waves vs. 244, 32 banks vs. 29 tables), trusted the extraction — it had
+already been confirmed byte-for-byte against independent community
+research, the secondary source hadn't. Kept the secondary source only for
+architectural color the ROM dump can't answer: 8-voice polyphony, 2
+oscillators/voice, one SSM2044 (4-pole/24 dB) filter+VCA per voice (not
+shared), and the wave-position modulation source list (EG/velocity/mod
+wheel/aftertouch). Recorded as module_wavetable.md's new "PPG Architecture
+Reference" section.
+
+**Converter**: `tools/ppg/convert_ppg_waves.py` reads
+`extract/w23_waves.bin` (244 x 64-byte waveforms) and
+`extract/w23_wavetables.json` (29 tables' sparse authored keyframe lists,
+confirmed every table starts at slot 0 and ends at slot 0x3C) and emits
+`src/engines/wavetable/ppg_waves.h` — waveforms converted to signed 16-bit
+(`(byte-128)<<8`), and each table's keyframe list pre-expanded to a full
+64-entry `WaveTableIndexEntry` array (linear interpolation between
+authored slots, held flat past the last one) at *conversion* time, not on
+device. Output is gitignored (added to `.gitignore` alongside the FM
+module's `patches.h`) since it's derived from third-party ROM content.
+Wavetable 13's two out-of-range waveform references (244/245, a known
+EVU-expansion-board quirk per `tools/ppg/README.md`) are clamped to the
+last real waveform (243) with a printed warning, rather than silently
+reading out of bounds or dropping the table.
+
+**Bug caught by the host correctness tool, not by inspection**: the first
+version of `osc/wavetable.h` had `WT_TABLE_SIZE = 128` (an arbitrary
+pre-real-data guess), but real PPG waveforms are 64 samples. Wiring the
+converted data straight into a new host tool
+(`tools/host_render/render_ppg_waves.cpp` — range-checks every generated
+table's wave indices, then renders a few real tables' wave-position sweeps
+to WAV) segfaulted immediately: the read kernels compute each waveform's
+stride as `wave * WT_TABLE_SIZE`, so at the wrong table size every read
+past waveform 0 landed outside the 244-waveform array. Fixed by changing
+`WT_TABLE_BITS` from 7 to 6 (64 samples), which needed no other code
+change — the read kernels' instruction count doesn't depend on table size,
+only a mask/shift constant does, so the existing hardware-measured
+per-partial costs (37.6/14.8/43.0 c/f) still apply unchanged. This is
+exactly the kind of error the "verify the conversion before wiring it into
+a real engine" step exists to catch before it reaches hardware, not after.
+
+**Wave sharing across tables required no engine change.** Real PPG tables
+reuse the same underlying waveform across multiple wavetables (e.g.
+waveform 101 appears in several), which doesn't fit `tables.h`'s original
+per-table-own-keyframe-buffer shape. Turned out unnecessary to change:
+`osc/wavetable.h`'s read functions already just index
+`keyframes[wave * WT_TABLE_SIZE + i]`, so pointing every real-PPG
+`WaveTable.keyframes` at one shared 244-waveform pool (`ppg_wave_data`)
+and letting each table's index entries hold absolute pool indices (exactly
+what the ROM format already encodes) worked with the primitive completely
+unmodified — confirms the earlier design choice (module_wavetable.md's
+Decision Record entry 2/7) generalized further than originally scoped for.
+
+**Per-voice filter**: two `src/filter.h` `SVFilter` instances per voice,
+ticked in series, approximating the SSM2044's 4-pole slope from two
+2-pole passes -- deliberately basic, not a ladder model. Fixed cutoff/
+resonance constants; the existing ADSR also drives cutoff, same
+"one envelope, two destinations" shape subtractive's own filter uses.
+Filter state resets on retrigger. This directly reverses
+module_wavetable.md's original Decision Record entry 6 (a chip-style
+shared `FilterBus`) once the real hardware architecture (filter+VCA per
+voice, not shared) and the voice-count math both pointed the same
+direction — see entry 12.
+
+**`MAX_VOICES` reduced from 16 to 8**, matching real PPG polyphony
+exactly. The measured *bare partial* costs alone would support far more
+voices, but the filtered per-voice chassis (partial + envelope + two SVF
+passes) has no hardware measurement yet. Estimated budget math: 8 voices
+lands around ~39% of Core 1 (comfortable margin even if the filter
+estimate is low); 16 voices would land around ~79% (no margin, and
+unverified). Chose the number with headroom rather than ship an unmeasured
+combination at the higher voice count — see module_wavetable.md's Decision
+Record entry 13.
+
+**Verified**: `render_ppg_waves` and `render_wavetable_rig` both pass on
+the host build after the table-size fix; the full host_render suite still
+builds clean. `make ENGINE=wavetable` (real engine, real PPG data, filter
+included) and `make ENGINE=wavetable WT_PROFILE=1` (rig) both build clean
+against the real `arm-none-eabi-gcc` toolchain, zero warnings, `t00t.uf2`
+produced (91.8 KB flash / 203.5 KB SRAM `.bss` at `MAX_VOICES=8`, well
+inside both the flash and SRAM budgets). Confirmed `subtractive` and `fm`
+still build unaffected.
+
+**Not yet done**: no hardware measurement of the combined filtered
+per-voice chassis (module_wavetable.md's top Future/TODO item) -- the
+8-voice choice above is a conservative estimate, not a confirmed number.

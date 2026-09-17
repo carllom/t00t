@@ -1,18 +1,24 @@
 # T00T — Wavetable/Granular Module
 
-**Status: skeleton + measurement rig implemented, all three interpolation
-modes measured on hardware.** `src/engines/wavetable/` (a minimal
-MIDI-driven engine: one wavetable partial per voice, ADSR, no filter, no
-LFO, no partial pool) and `osc/wavetable.h` (the shared read primitive) both
-exist and build. The measurement rig (`rig.h`,
+**Status: skeleton implemented, playing real PPG Wave 2.3 factory waveforms,
+with a basic per-voice filter; all three partial-kernel interpolation modes
+measured on hardware, the full filtered chassis not yet measured.**
+`src/engines/wavetable/` (a minimal MIDI-driven engine: one wavetable
+partial per voice, ADSR, a basic 2×-cascaded lowpass filter, no LFO, no
+partial pool) and `osc/wavetable.h` (the shared read primitive) both exist
+and build. `tools/ppg/convert_ppg_waves.py` converts the real PPG Wave 2.3
+ROM data already recovered under `tools/ppg/` into the engine's native
+format — see PPG Architecture Reference below and `history_wavetable.md`
+for the conversion/integration record. The measurement rig (`rig.h`,
 `tools/host_render/render_wavetable_rig.cpp`) passes its host correctness
 check, and hardware passes measured all three `WT_RIG_MODE` kernels:
 **~14.8 c/f/partial** (nearest), **~37.6** (bilinear), **~43.0**
-(bilinear+window) — see Status and Plan and `history_wavetable.md` for the
-full sweeps. Still open: `MAX_PARTIALS` itself isn't decided (it also
-depends on the still-unbuilt partial pool and optional filter), and
-`WT_RIG_BLOCK` alternatives are unmeasured. See `engine.md` for the shared
-dual-core architecture this module builds on.
+(bilinear+window) — see Status and Plan. Still open: the *combined*
+per-voice cost (partial + envelope + filter) is unmeasured, which is why
+`MAX_VOICES` is set conservatively to 8 (matching real PPG polyphony)
+rather than pushed to the partial-kernel ceiling those numbers alone would
+suggest — see Decision Record. See `engine.md` for the shared dual-core
+architecture this module builds on.
 
 ## Overview
 
@@ -31,19 +37,65 @@ Priority order: voice/partial count and modulation depth first,
 multitimbrality last (see Decision Record entry 1 for why this settles the
 module-boundary question).
 
+Design intent (per the initial bluesky discussion): match the PPG Wave
+2.2/2.3 *sound* as an initial target, not its architecture or limitations
+to the letter — real factory waves and a PPG-scale voice/filter budget
+first, with room for wave sequencing, granular use, and other wavetable
+functionality PPG hardware never had, once the partial pool (Two-Level
+Allocation) exists.
+
+### PPG Architecture Reference
+
+Guidance for this module, gathered from two sources that partly disagree —
+where they do, this project's own byte-verified ROM extraction
+(`tools/ppg/README.md`) is trusted over the secondary summary, since it was
+confirmed **exact** against independent community research (waveform 0 and
+all 29 wavetable-index records matched a public reference byte-for-byte):
+
+| | Our own ROM extraction (`tools/ppg/`) | Secondary summary ([ppg.synth.net/wave22](https://ppg.synth.net/wave22/)) |
+|---|---|---|
+| Waveform size | **64 samples**, 8-bit unsigned PCM (confirmed) | states 128 — not used, see above |
+| Waveform count | **244** (confirmed) | states "well over 2000" reachable — likely counting interpolated in-between positions, not stored waves |
+| Wavetable count | **29** (confirmed; matches the reference material's "27 primary + Upper Wavetable as table 28", table 29 synth-computed) | states 32 banks — not used |
+| Wavetable shape | sparse authored keyframes at specific slot positions (4-31 per table, not evenly spaced), interpolated between them across a 0-63 range | ("intermediate waveforms calculated" — consistent, no contradiction) |
+
+Architectural color not recoverable from the ROM dump itself (taken as
+guidance, not verified against firmware disassembly):
+
+- **8-voice polyphony**, 2 oscillators per voice (16 total) — this module
+  currently implements 1 partial per voice; see Decision Record for why
+  `MAX_VOICES` is set to 8 now while a second oscillator per voice remains
+  future work.
+- **One SSM2044 (4-pole/24 dB lowpass) filter and VCA per voice** — not a
+  shared resource across voices. This directly shaped this module's own
+  Per-Voice Filter design (see Architecture and Decision Record) away from
+  the shared-bus approach `module_chip.md`'s `FilterBus` uses.
+- Modulation sources for wave-position scanning: envelope, velocity, mod
+  wheel, aftertouch. This module currently wires only a live mod-wheel scan
+  (CC1) and the ADSR-driven filter cutoff described below.
+- Phase-accumulator oscillators (20-bit accumulator, top bits select wave
+  position) — architecturally the same shape `osc/wavetable.h`'s Q0.32
+  accumulator already is, just wider here.
+
 ### Specifications
 
-- **Voices**: 16 (`MAX_VOICES`), dynamically allocated, one wavetable
-  partial per voice — the skeleton's actual state today. A real partial pool
-  (`MAX_PARTIALS` shared across voices, see Two-Level Allocation) is future
-  work; its size isn't decided until the measurement rig runs on hardware.
-- **Wave source**: PPG-style single-cycle wavetables — 8 authored keyframe
-  waves per table plus a 64-entry interpolation index, read-time blended
-  (see Wave Storage and Memory). Two built-in tables ship today
-  (`src/engines/wavetable/tables.h`), procedurally generated (band-limited
-  additive), not authored/ROM data.
+- **Voices**: 8 (`MAX_VOICES`), matching real PPG Wave 2.2/2.3 polyphony,
+  dynamically allocated, one wavetable partial per voice — a real partial
+  pool (`MAX_PARTIALS` shared across voices, see Two-Level Allocation) is
+  future work.
+- **Wave source**: real PPG Wave 2.3 factory data when
+  `tools/ppg/convert_ppg_waves.py` has been run locally (gitignored output,
+  see Source Layout) — 244 waveforms, 64 samples each, forming 29
+  wavetables with their authored (not evenly-spaced) keyframe positions
+  baked in at conversion time. Falls back to 2 procedurally-generated
+  band-limited-additive tables (`src/engines/wavetable/tables.h`) when the
+  PPG data hasn't been generated.
 - **Envelope**: 1 ADSR per voice, fixed shape (no per-preset ADSR yet).
-- **Filter**: none yet — deferred, see Optional Filter.
+- **Filter**: 1 per voice (not shared), two cascaded 2-pole SVFs
+  approximating the PPG's SSM2044's 4-pole/24 dB slope — a deliberately
+  basic stand-in, not a transistor-ladder model. Fixed cutoff/resonance for
+  now; the ADSR modulates cutoff, matching subtractive's own
+  reused-envelope convention. See Per-Voice Filter and Decision Record.
 - **Effects**: 1 shared post-mix insert (delay, reverb, phaser, flanger,
   chorus, bitcrusher, or overdrive), identical shape to every other module's
   chain (`engine.md`'s Effects section).
@@ -85,12 +137,21 @@ other module's Performance page shape.
   speech module's resonator (`engine.md`'s Host DSP Tooling section).
 - `src/engines/wavetable/` — the module: `engine.h`
   (`VoiceParams`/`ParamExchange`, per the `engine_base.h` template every
-  module instantiates), `tables.h` (the built-in wavetable bank),
-  `audio_engine.cpp` (Core 1 render loop, and the measurement rig build
-  behind `WT_PROFILE`, same one-file idiom as `chip`'s
-  `T00T_CHIP_PROFILE`), `rig.h` (the measurement rig itself),
-  `input_subsystem.cpp`, `display.cpp`. No partial pool yet (Two-Level
-  Allocation is future work).
+  module instantiates), `tables.h` (the wavetable bank — real PPG data or
+  the procedural fallback, see Specifications), `ppg_waves.h` (**gitignored**
+  — generated locally by `tools/ppg/convert_ppg_waves.py`, not checked in;
+  third-party PPG ROM content, same reasoning as the FM module's
+  `patches.h`), `audio_engine.cpp` (Core 1 render loop, the per-voice
+  filter, and the measurement rig build behind `WT_PROFILE`, same one-file
+  idiom as `chip`'s `T00T_CHIP_PROFILE`), `rig.h` (the measurement rig
+  itself), `input_subsystem.cpp`, `display.cpp`. No partial pool yet
+  (Two-Level Allocation is future work).
+- `tools/ppg/` — PPG Wave 2/2.2/2.3 ROM dumps, cassette dumps, and
+  extraction tooling (`tools/ppg/README.md`), plus this module's own
+  `convert_ppg_waves.py` (reads `extract/w23_waves.bin` +
+  `extract/w23_wavetables.json`, writes `src/engines/wavetable/ppg_waves.h`)
+  — gitignored in full (third-party ROM/cassette content), see that
+  README for provenance and format details.
 
 ### Build
 
@@ -105,6 +166,15 @@ non-clipping output before anyone straps a scope to it (mirrors
 `render_fm_rig.cpp`'s role for the FM module's own rig). Passing this rig's
 correctness check is not a performance result — see Status and Plan for
 what's still needed.
+
+`tools/ppg/convert_ppg_waves.py` — converts `tools/ppg/extract/`'s already-
+recovered PPG Wave 2.3 ROM data into `ppg_waves.h` (see Source Layout);
+`tools/host_render/render_ppg_waves.cpp` range-checks the converted data
+and renders a few real wavetables' wave-position sweeps to WAV as a
+listening aid, the same "verify the conversion before wiring it into a
+real engine" step `xm2t00t`'s and the FM module's own converters take —
+only builds when `ppg_waves.h` has actually been generated (CMake `EXISTS`
+gate, `tools/host_render/CMakeLists.txt`).
 
 ## Architecture
 
@@ -174,13 +244,23 @@ Two formats, not one, each fitted to its own read pattern:
 
 ### Wave Storage and Memory
 
-A wavetable stores 8–16 authored keyframe waves plus a 64-entry
-`(wave_a, wave_b, blend)` index table (~128 B), rather than 64 full waves —
-interpolated between keyframes at *read* time. This is free: the kernel
-already pays for a wave-position lerp on every sample, so blending between
-two stored keyframes instead of reading one directly adds no new cost. At
-roughly 2 KB/table (assuming ~128-sample single-cycle waves), dozens of
-tables fit resident in SRAM.
+A wavetable stores a handful of authored keyframe waves — real PPG data
+has 4–31 per table, at their own authored (not evenly-spaced) slot
+positions — plus a 64-entry `(wave_a, wave_b, blend)` index table (~192 B),
+rather than one full wave per index entry: interpolated between keyframes
+at *read* time. This is free: the kernel already pays for a wave-position
+lerp on every sample, so blending between two stored keyframes instead of
+reading one directly adds no new cost. `osc/wavetable.h`'s `WT_TABLE_SIZE`
+is 64 samples (`WT_TABLE_BITS = 6`), matching the real PPG ROM waveform
+size exactly (see PPG Architecture Reference) rather than an arbitrary
+choice; a keyframe is 128 B at that size. `WaveTable.keyframes` doesn't
+have to be a small per-table buffer — the real PPG data uses one big shared
+pool (all 244 waveforms) with each table's index entries holding absolute
+indices into it, since many tables reuse the same underlying waveform.
+`osc/wavetable.h`'s read functions already index `keyframes[wave *
+WT_TABLE_SIZE + i]` regardless of whether `wave` means "this table's own
+small keyframe set" or "an absolute index into a shared pool" — no engine
+change was needed to support real PPG data's sharing.
 
 Grain source material follows the tracker module's own constraint
 (`module_tracker.md`'s Memory Strategy section): PCM data must be SRAM-
@@ -195,17 +275,30 @@ engine-overridable constant rather than a fixed global.
 
 No mipmaps: see Decision Record entry 5.
 
-### Optional Filter
+### Per-Voice Filter
 
-Per-partial filtering is not proposed. If a voice-level filter is wanted at
-all, it should follow the chip module's own `FilterBus` precedent
-(`module_chip.md`'s Filter Buses section) — a small typed pool voices bind
-into, with a bind-or-degrade-to-unfiltered policy — rather than every
-partial paying subtractive's per-voice SVF cost. A filter is specifically
-what makes a voice's cost land in subtractive's ~170–200 c/f range instead
-of the tracker's ~31 c/f; keeping it an optional, bounded-size pool caps
-worst-case cost by construction the same way chip's design already does,
-instead of letting it depend on how many partials happen to be sounding.
+Implemented, revising this section's earlier shared-bus proposal (see
+Decision Record entry 12): real PPG hardware gives every voice its own
+SSM2044 filter and VCA (PPG Architecture Reference above), not a shared
+pool, and at `MAX_VOICES = 8` the arithmetic supports doing the same thing
+directly rather than reaching for chip's `FilterBus` compromise. Two
+`SVFilter` (`src/filter.h`, subtractive's own SID-style 2-pole SVF, reused
+unmodified) instances per voice, ticked in series, approximate the
+SSM2044's 4-pole/24 dB slope — a deliberately basic stand-in, not a
+transistor-ladder model or an exact match to the chip's own saturation/
+self-oscillation character. Filter state resets on note retrigger for a
+clean attack, matching subtractive's own SVF convention. Cutoff and
+resonance are fixed constants for now (`FILTER_BASE_CUTOFF_HZ`,
+`FILTER_RESONANCE_Q15`, `audio_engine.cpp`); the same ADSR that drives
+amplitude also modulates cutoff by a fixed amount
+(`FILTER_ENV_AMOUNT_HZ`), the same "one envelope, two destinations"
+convention subtractive's own filter uses.
+
+Cost is not yet measured for the combined per-voice chassis (partial +
+envelope + two filter passes) — only the bare partial kernel has hardware
+numbers (Status and Plan). This is why `MAX_VOICES` was set to 8 rather
+than pushed toward the unfiltered partial-kernel ceiling those numbers
+alone would suggest (Decision Record entry 13's budget math).
 
 ## Status and Plan
 
@@ -221,7 +314,7 @@ full sweeps and regressions):
 | Wavetable, bilinear (phase × wave-position) | **~37.6** (measured) | `WT_RIG_MODE=1` — 4 taps, 3 lerps |
 | Grain (bilinear fetch + window lookup) | **~43.0** (measured) | `WT_RIG_MODE=2` — window costs only ~5.4 c/f more than plain bilinear |
 | Per-voice chassis (envelope, mix, pitch, no filter) | ~20 (est.) | Accumulate already lives in the partial itself; not separately measured |
-| Per-voice filter bus (if bound) | ~50–60 (est.) | Subtractive's own SVF cost, per `module_subtractive.md`; not yet built |
+| Per-voice filter, 2× cascaded SVF (now built) | ~100–120 (est.) | 2× subtractive's own single-SVF cost (`module_subtractive.md`'s ~50–60); the combined chassis+filter+partial total is not yet measured together |
 
 Fixed per-buffer overhead measured at 18.7–22.4 c/f across all three modes
 — genuine per-buffer cost (buffer clear, GPIO toggle, FIFO push), not
@@ -237,16 +330,39 @@ At the same ≤50%-of-Core-1 target `module_tracker.md`/`module_fm.md` used
 | Bilinear+window | ~39 | ~33 |
 
 All three comfortably exceed the ~28–40 planning estimate this table
-originally carried. Engaging a voice-level filter bus (still unbuilt) would
-fall back to something like ~8 filtered voices at 2 partials each, per the
-unmeasured filter-bus estimate above. For scale, `MAX_VOICES` across
-existing modules ranges 8 (speech) to 32 (chip/tracker) — the skeleton's
-own `MAX_VOICES=16` sits comfortably inside even the most expensive
-measured kernel's ceiling, with room to grow once a partial pool exists to
-make use of the headroom.
+originally carried, *for the bare partial kernel*. With the per-voice
+filter now built (Per-Voice Filter above) and using bilinear partials: 8
+voices × (~37.6 partial + ~20 chassis + ~110 for two filter passes) ≈ 1340
+c/f (~39% of budget), comfortably under the ≤50% target with margin for
+FX. The same math at `MAX_VOICES = 16` lands around 2680 c/f (~79%) — this
+is the arithmetic Decision Record entry 13 uses to justify 8 over 16, and
+it's still an estimate: none of the chassis or filter numbers above have
+an actual hardware measurement behind them yet, only the bare partial-read
+kernel does.
 
 ### Future / TODO
 
+- **Measure the combined per-voice chassis on hardware** (partial +
+  envelope + two filter passes, `MAX_VOICES = 8`, real PPG data loaded) —
+  the estimate in Performance above (~39% of budget) is not yet confirmed;
+  this is the next concrete hardware pass, more urgent than the partial-pool
+  design below since it validates whether `MAX_VOICES = 8` has the margin
+  Decision Record entry 13 assumes.
+- **A second oscillator per voice** — real PPG hardware has 2 per voice;
+  this module has 1. Needs its own design pass (a second `wave_pos`/`table`/
+  `phase` per voice, an oscillator mix or sync control), not a trivial
+  VoiceParams addition, and should wait for the chassis measurement above
+  since it roughly doubles the partial-read cost per voice.
+- **A true SSM2044-style filter** (saturation, self-oscillation character)
+  — the current 2×-cascaded SVF is a deliberately basic stand-in (Per-Voice
+  Filter above); only worth revisiting once the rest of the chassis is
+  measured and the basic version's sound has actually been judged
+  insufficient.
+- **Per-wavetable filter cutoff/resonance and envelope amounts** — currently
+  fixed global constants, not sourced from a patch. The `Programs` cassette
+  dumps `tools/ppg/` also recovered are a candidate source once/if their
+  per-patch record layout gets reverse-engineered (`tools/ppg/README.md`'s
+  "Sound/preset data" section calls this out as unexplored).
 - **Decide `MAX_PARTIALS` and design the partial pool (Two-Level
   Allocation)** — all three kernel variants are now measured
   (`history_wavetable.md`), so this is no longer blocked on a rig run; what
@@ -317,11 +433,11 @@ make use of the headroom.
    pool, bind-or-degrade-to-unfiltered). This bounds worst-case per-voice
    cost by construction, the same way chip's design already does, instead
    of letting it scale with however many partials happen to be active.
-7. **Wave tables store 8–16 authored keyframes plus a 64-entry blend
-   index, not 64 full waves.** The kernel already pays for a wave-position
-   lerp on every sample regardless, so blending between two stored
-   keyframes at read time instead of reading one full wave directly is
-   free — see Wave Storage and Memory.
+7. **Wave tables store a handful of authored keyframes plus a 64-entry
+   blend index, not 64 full waves.** The kernel already pays for a
+   wave-position lerp on every sample regardless, so blending between two
+   stored keyframes at read time instead of reading one full wave directly
+   is free — see Wave Storage and Memory.
 8. **The skeleton repurposes CC1 (mod wheel) as a live wave-position scan**,
    not a vibrato depth — this skeleton has no LFO yet, and a continuous
    wave-position sweep is this module's own PPG-style analogue of what
@@ -331,6 +447,46 @@ make use of the headroom.
    engine already carries, `pan.h`) rather than written fresh — none of
    that is wavetable-specific, and duplicating it would only risk drift
    from the versions every other module already exercises.
+10. **Real PPG Wave 2.3 ROM data is the primary wave source, converted
+    offline and gitignored, not checked in.** `tools/ppg/convert_ppg_waves.py`
+    reads the already-recovered ROM extraction (`tools/ppg/README.md`) and
+    bakes both the waveform samples and each table's keyframe → 64-position
+    interpolation into a generated header (`ppg_waves.h`) — the device
+    never runs that expansion, matching `xm2t00t`'s "precompute at
+    conversion time" idiom (`module_tracker.md`'s Song Blob Format
+    section). Gitignored for the same reason the FM module's `patches.h`
+    is: third-party commercial ROM content, not something to check into
+    git history. `tables.h` falls back to procedural tables when it hasn't
+    been generated (same `EXISTS`-gated-macro convention as
+    `T00T_FM_HAS_PATCHES`).
+11. **`WT_TABLE_SIZE` was changed from an arbitrary 128 samples to 64**,
+    matching real PPG ROM waveforms exactly, once real data was available
+    to check against — the original 128 was a guess made before any real
+    wave data existed. The read kernels' instruction count is unaffected
+    (`WT_TABLE_SIZE` only changes a mask/shift constant, not the number of
+    taps or lerps), so this didn't need to invalidate the hardware
+    measurements taken at the old size.
+12. **The Per-Voice Filter (SSM2044-style) is a true per-voice filter, not
+    a shared bus — superseding entry 6 above.** Entry 6 proposed a
+    `FilterBus`-style shared pool specifically to bound worst-case cost.
+    Real PPG hardware gives every voice its own filter and VCA (PPG
+    Architecture Reference), and `MAX_VOICES = 8` (entry 13) keeps the
+    arithmetic comfortable for doing the same thing directly (Performance
+    above) — so the cost-bounding problem entry 6 solved for doesn't apply
+    at this voice count, and matching real hardware's actual topology is
+    both simpler and more faithful to the stated goal of matching the PPG
+    sound. The shared-bus approach remains available if a future, larger
+    `MAX_VOICES` ever needs it.
+13. **`MAX_VOICES` is 8, matching real PPG Wave 2.2/2.3 polyphony, not 16.**
+    The measured partial-kernel numbers alone (Performance) would support
+    far more than 16 voices unfiltered, but the *filtered* per-voice cost
+    (partial + envelope + two SVF passes) has no hardware measurement yet
+    — only estimated. At 8 voices the estimated total (~39% of budget)
+    comfortably clears the ≤50% target other modules use even if the
+    filter estimate is somewhat low; at 16 voices the same estimate
+    (~79%) would not, and shipping that specific combination unmeasured
+    was the risk this decision avoids. Revisit once the combined chassis is
+    actually measured (Future/TODO).
 
 ## Glossary
 
