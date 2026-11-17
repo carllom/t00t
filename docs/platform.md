@@ -189,7 +189,7 @@ as % of the 5.805 ms buffer period, idle (0) / 4 / 16 voices.
 | Voice headroom at `MAX_VOICES` = 16 | FM | 16 fit, 31.3% spare | TBD (#159) | no loss |
 | Core 0 cook time per Patch | subtractive | n/a | not measured | TBD |
 | Core 0 cook time per Patch | FM | n/a | TBD (#159) | TBD |
-| Parameter change → audible latency | all | n/a | not measured; by design 1–2 buffers (#149) | ≤ 1 block (≈5.8 ms) + transport |
+| Parameter change → audible latency | all | n/a | subtractive: no delay audible on parameter edits or Patch changes (by ear, not timed); by design 1–2 buffers | ≤ 1 block (≈5.8 ms) + transport |
 
 ### Memory
 

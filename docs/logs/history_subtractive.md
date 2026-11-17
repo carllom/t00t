@@ -314,5 +314,7 @@ request, so #150 or later).
   loads being re-done inside the per-sample loop rather than hoisted, and
   code layout changes in flash (XIP cache). Next step: compare the
   generated inner loop of `sub_render_buffer()` before (9db7327) and now.
-- **Not measured:** Core 0 cook time per Patch and parameter-change-to-
-  audible latency (by design one to two buffers, #149).
+- **Latency, by ear:** no delay audible on parameter edits or Patch
+  changes. Not timed; by design an edit lands one to two buffers later
+  (≈5.8–11.6 ms, #149).
+- **Not measured:** Core 0 cook time per Patch.
