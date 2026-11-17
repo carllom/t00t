@@ -138,6 +138,11 @@ if(DEFINED DMA_BUFFER_SIZE AND NOT DMA_BUFFER_SIZE STREQUAL "default")
     target_compile_definitions(t00t PRIVATE T00T_SAMPLES_PER_BUFFER=${DMA_BUFFER_SIZE})
 endif()
 
+# Patch-platform cook-time measurement (src/patch/profile.h).
+if(DEFINED PATCH_PROFILE AND NOT PATCH_PROFILE STREQUAL "0")
+    target_compile_definitions(t00t PRIVATE T00T_PATCH_PROFILE=1)
+endif()
+
 # #31 profiling rig override (speech engine only, see engine.h/audio_engine.cpp).
 if(DEFINED SPEECH_PROFILE AND NOT SPEECH_PROFILE STREQUAL "0")
     target_compile_definitions(t00t PRIVATE T00T_SPEECH_PROFILE=1)

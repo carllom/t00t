@@ -4,6 +4,7 @@
 #include "midi/nrpn.h"
 #include "module_id.h"
 #include "part_slot.h"
+#include "profile.h"
 #include "stored_format.h"
 #include <cstdint>
 
@@ -39,14 +40,16 @@ public:
 
     PatchLoadResult load(uint8_t part, const StoredPatchRef &stored) {
         if (part >= kPartCount) return PatchLoadResult::NO_SUCH_PATCH;
+        PATCH_PROFILE_START(load_start);
         Edit &e = edit_[part];
         PatchLoadResult r = patch_decode(stored.data, stored.len, Module::kModuleId,
                                          Module::kDescriptors, e.values, e.name);
         if (r != PatchLoadResult::OK) return r;
         e.load_id++;
-        Module::cook(e.values, e.cooked);
+        cook(e);
         e.pending = true;
         publish(part);
+        PATCH_PROFILE_RECORD(load, load_start);
         return r;
     }
 
@@ -54,12 +57,14 @@ public:
     // publish the re-cooked patch. Unknown parts or IDs are ignored.
     void set_param(uint8_t part, uint32_t id, int32_t value) {
         if (part >= kPartCount || id >= kParamCount) return;
+        PATCH_PROFILE_START(edit_start);
         const ParamDescriptor &d = Module::kDescriptors[id];
         Edit &e = edit_[part];
         e.values[id] = value < d.min ? d.min : (value > d.max ? d.max : value);
-        Module::cook(e.values, e.cooked);
+        cook(e);
         e.pending = true;
         publish(part);
+        PATCH_PROFILE_RECORD(edit, edit_start);
     }
 
     // A Control Change on `part`'s channel: NRPN (number = parameter ID,
@@ -109,6 +114,14 @@ public:
     const char *name(uint8_t part) const { return edit_[part].name; }
 
 private:
+    struct Edit;
+
+    void cook(Edit &e) {
+        PATCH_PROFILE_START(cook_start);
+        Module::cook(e.values, e.cooked);
+        PATCH_PROFILE_RECORD(cook, cook_start);
+    }
+
     void publish(uint8_t part) {
         Edit &e = edit_[part];
         if (slots_[part].try_publish(e.cooked, e.load_id)) e.pending = false;

@@ -23,6 +23,12 @@ DMA_BUFFER_SIZE ?= default
 #   make ENGINE=speech SPEECH_PROFILE=1
 SPEECH_PROFILE ?= 0
 
+# Patch-platform cook-time measurement (src/patch/profile.h): counts Core 0
+# cycles around cook / load / edit into a global for the debug probe to
+# read. No effect on audio.
+#   make PATCH_PROFILE=1
+PATCH_PROFILE ?= 0
+
 # #42 rig: replaces the FM engine's normal test-tone build with the
 # stripped N-voice x 6-operator mixer (src/engines/fm/rig.h). No effect on
 # other engines. See history_fm.md "FM P0 Rig (#42)".
@@ -91,6 +97,7 @@ CMAKE_FLAGS = -DPICO_BOARD=$(BOARD) -DPICO_PLATFORM=rp2350 \
               -DMIDI_USB=$(MIDI_USB) -DMIDI_UART=$(MIDI_UART) \
               -DT00T_ENGINE=$(ENGINE) -DDMA_BUFFER_SIZE=$(DMA_BUFFER_SIZE) \
               -DSPEECH_PROFILE=$(SPEECH_PROFILE) -DFM_PROFILE=$(FM_PROFILE) \
+              -DPATCH_PROFILE=$(PATCH_PROFILE) \
               -DFM_RIG_VOICES=$(FM_RIG_VOICES) -DFM_RIG_BLOCK=$(FM_RIG_BLOCK) \
               -DFM_RIG_TABLE_BITS=$(FM_RIG_TABLE_BITS) -DFM_RIG_INTERLEAVE=$(FM_RIG_INTERLEAVE) \
               -DFM_RIG_NOT_IN_FLASH=$(FM_RIG_NOT_IN_FLASH) -DFM_RIG_SMULWB=$(FM_RIG_SMULWB) \

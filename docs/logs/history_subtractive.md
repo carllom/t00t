@@ -347,3 +347,24 @@ request, so #150 or later).
   time than the pre-platform baseline at 16 voices, 27.3% of the buffer
   spare. The patch-derived work moved to Core 0 (SVF Q, LFO increment,
   float → Q15 conversions) now shows, no longer masked by the reloads.
+
+### Core 0 cook time (2026-11-17)
+
+Measured with `make PATCH_PROFILE=1` (`src/patch/profile.h`): the M33 DWT
+cycle counter around `Module::cook()` (cook), `PatchPlatformT::load()`
+(decode + cook + publish) and `set_param()` (cook + publish), last and
+largest count kept in a global read through the debug probe. Effects off
+(CC76/CC73), no notes held, 150 MHz. Program Changes and CC/NRPN edits sent
+over USB with `amidi`; the normal build was flashed back afterwards.
+
+| | Warm (back-to-back) | Isolated (last of spaced-out events) | Largest seen |
+|---|---:|---:|---:|
+| Cook | 151–255 cycles (1.0–1.7 µs) | 1,289 cycles (8.6 µs) | 3,082 cycles (20.5 µs) |
+| Program Change: decode + cook + publish | 486 cycles (3.2 µs) | 4,904 cycles (32.7 µs) | 8,890 cycles (59 µs) |
+| Parameter edit: cook + publish | 316 cycles (2.1 µs) | — | 4,976 cycles (33 µs) |
+
+- The spread is the XIP flash cache: the cook path runs from flash, and
+  between spaced-out events the display and the rest of the main loop evict
+  it; "largest seen" includes the 16 loads at boot.
+- Even cold, a Patch load costs about 1% of a 5.8 ms buffer period on
+  Core 0, so cooking needs no incremental scheme for subtractive.
