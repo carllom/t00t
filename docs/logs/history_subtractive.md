@@ -318,3 +318,32 @@ request, so #150 or later).
   changes. Not timed; by design an edit lands one to two buffers later
   (≈5.8–11.6 ms, #149).
 - **Not measured:** Core 0 cook time per Patch.
+
+### Regression found and fixed (2026-11-17)
+
+- **Cause.** Comparing the compiled per-sample loop of `sub_render_buffer()`
+  at 9db7327 (pre-platform) with the patch-platform build: the old loop
+  kept the voice's `VoiceParams` pointer in a register and loaded fields
+  straight off it. The new loop reads from two structs per voice (the
+  note's `VoiceParams`/`note_on` and the Part's live fields), the extra
+  pointer pushed both onto the stack, and every sample reloaded a pointer
+  and then the field: sample pointer, amplitude, duty cycle and the
+  sample-end check, about four extra loads per sample per voice.
+- **Fix.** The per-voice constants the per-sample loop reads (waveform,
+  sample pointer, filter mode, amplitude, duty) are copied to locals before
+  it. Output is bit-identical (render goldens unchanged).
+- **Re-measured**, same method:
+
+| Voices | Baseline (#146) | Before fix | After fix |
+|---:|---:|---:|---:|
+| 0 (idle) | 0.57% | 0.58% | 0.57% |
+| 1 | 6.0% | 6.05% | 5.4% |
+| 2 | 11.3% | 11.4% | 10.2% |
+| 4 | 22.1% | 22.3% | 19.8% |
+| 8 | 43.7% | 44.1% | 39.1% |
+| 16 (full) | 81.4% | 82.5% | 72.7% |
+
+- **Gate: passes.** About 4.5% per voice against 5.05%: 10.7% less Core 1
+  time than the pre-platform baseline at 16 voices, 27.3% of the buffer
+  spare. The patch-derived work moved to Core 0 (SVF Q, LFO increment,
+  float → Q15 conversions) now shows, no longer masked by the reloads.

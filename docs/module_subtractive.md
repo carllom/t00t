@@ -322,7 +322,7 @@ Filter state (lp, bp) reset to 0 on voice trigger for clean attacks.
 
 ### Performance
 
-Idle ~0.6%. One voice ~5–6% (more with LFO and filter both active). Delay
+Idle ~0.6%. One voice ~4.5–5.5% (more with LFO and filter both active). Delay
 insert adds ~1.5pp; reverb adds ~8pp. Measured on breadboard_rp2350 at
 44.1 kHz / 150 MHz. Full measurement history: `history_subtractive.md`.
 

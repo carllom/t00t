@@ -230,6 +230,15 @@ inline void sub_render_buffer(SubRenderState &s, const VoiceParamBlock &vp, int1
         const int16_t lfo_pitch_q15 = c.lfo_pitch_q15;
         const int16_t lfo_pwm_q15 = c.lfo_pwm_q15;
         const int16_t lfo_filt_hz = c.lfo_filt_hz;  // Hz, signed
+
+        // Per-voice constants the per-sample loop reads, copied to locals:
+        // read through `p`/`note_on`/`c` there, they cost a pointer reload
+        // from the stack plus the field load on every sample.
+        const Waveform waveform = note_on.waveform;
+        const SampleDef *const sample_def = (waveform == WAVE_SAMPLE) ? note_on.sample : nullptr;
+        const FilterMode filter_mode = note_on.filter_mode;
+        const int32_t amplitude = p.amplitude;
+        const uint16_t duty_cycle = c.duty_cycle;
         const int32_t filt_q = c.filter_q;
 
         // Dedicated mod-wheel vibrato LFO increment
@@ -307,25 +316,25 @@ inline void sub_render_buffer(SubRenderState &s, const VoiceParamBlock &vp, int1
                 int32_t lfo_val = (int32_t)lfo_ramp;
 
                 // LFO → duty cycle (PWM): offset duty_cycle
-                uint16_t eff_duty = c.duty_cycle;
+                uint16_t eff_duty = duty_cycle;
                 if (lfo_pwm_q15 > 0) {
                     int32_t pwm_mod = (lfo_val * lfo_pwm_q15) >> 15;
-                    int32_t d = (int32_t)c.duty_cycle + pwm_mod;
+                    int32_t d = (int32_t)duty_cycle + pwm_mod;
                     if (d < 1) d = 1;
                     if (d > 1022) d = 1022;
                     eff_duty = (uint16_t)d;
                 }
 
                 int32_t sample;
-                if (note_on.waveform == WAVE_SAMPLE && note_on.sample) {
-                    sample = osc_sample_play(note_on.sample, phase);
+                if (sample_def) {
+                    sample = osc_sample_play(sample_def, phase);
                 } else {
-                    sample = osc_sample(note_on.waveform, phase, eff_duty, s.noise_lfsr[v], eff_phase_inc);
+                    sample = osc_sample(waveform, phase, eff_duty, s.noise_lfsr[v], eff_phase_inc);
                 }
 
                 // Amplitude chain: oscillator × velocity × envelope
                 int32_t level = (int32_t)(env_ramp * 32767.0f);
-                int32_t scaled = (sample * p.amplitude) >> 15;
+                int32_t scaled = (sample * amplitude) >> 15;
                 scaled = (scaled * level) >> 15;
 
                 // LFO → amplitude (tremolo)
@@ -338,7 +347,7 @@ inline void sub_render_buffer(SubRenderState &s, const VoiceParamBlock &vp, int1
                 // constant, the two-pass integration itself per-sample
                 if (has_filter) {
                     int16_t filt_f = (int16_t)fhalf_ramp;
-                    scaled = s.filter[v].tick(scaled, filt_f, filt_q, note_on.filter_mode);
+                    scaled = s.filter[v].tick(scaled, filt_f, filt_q, filter_mode);
                 }
 
                 s.dry_l[blk + i] += (int32_t)(((int64_t)scaled * gain_l) >> 15);
@@ -347,8 +356,8 @@ inline void sub_render_buffer(SubRenderState &s, const VoiceParamBlock &vp, int1
                 phase += eff_phase_inc;
 
                 // Handle sample loop/end
-                if (note_on.waveform == WAVE_SAMPLE && note_on.sample) {
-                    if (!osc_sample_advance_phase(note_on.sample, phase)) {
+                if (sample_def) {
+                    if (!osc_sample_advance_phase(sample_def, phase)) {
                         sample_ended = true;  // non-looped sample ended
                         break;
                     }
