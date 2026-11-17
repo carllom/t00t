@@ -462,3 +462,24 @@ target_include_directories(preview_subtractive_display PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}
     ${CMAKE_CURRENT_LIST_DIR}/../../src/wslcd
 )
+
+# Render-equivalence check for the subtractive engine (issue #148): renders
+# every factory patch through the device render path
+# (src/engines/subtractive/render.h) and compares hashes with
+# golden/subtractive_render.txt. host_stub_pico/ stands in for the two
+# pico-sdk/ARM headers that path includes (hardware/sync.h, arm_acle.h) and
+# must come first so it shadows them.
+add_executable(render_subtractive
+    render_subtractive.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/../../src/osc/sine.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/../../src/envelope.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/../../src/samples.cpp
+)
+target_include_directories(render_subtractive PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}/host_stub_pico
+    ${CMAKE_CURRENT_LIST_DIR}
+    ${CMAKE_CURRENT_LIST_DIR}/../../src/engines/subtractive
+    ${CMAKE_CURRENT_LIST_DIR}/../../src
+)
+target_compile_definitions(render_subtractive PRIVATE
+    T00T_SUBTRACTIVE_GOLDEN="${CMAKE_CURRENT_LIST_DIR}/golden/subtractive_render.txt")

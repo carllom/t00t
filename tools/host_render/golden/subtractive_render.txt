@@ -1,0 +1,13 @@
+# subtractive render-equivalence golden: <patch index> <FNV-1a 64 of int16 stereo>
+# note script: C4 vel 100 at buffer 0, G4 vel 127 at buffer 40, release at 120, 300 buffers
+0 d0a1738fc86e1321
+1 0d8b2e35d8d698d1
+2 30fb5199cc1f9205
+3 8fa4ad8ea5676bd5
+4 134953ac45834531
+5 bf1d792c53cd3ffd
+6 a0cbc0930b524e51
+7 ed1d613642af1151
+8 970c633fe19b2711
+9 a129e6f7f2c655e5
+10 4a2a47d126be103d
