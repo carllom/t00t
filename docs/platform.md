@@ -132,12 +132,16 @@ ticket, with the measurement narrative in the module's history log.
 
 ### CPU
 
+Baseline load (method in each module's history log): one patch (subtractive Fairlight,
+FM E.ORGAN 1), FX off, 0 / 1 / 2 / 4 / 8 / 16 notes held. Core 1 figures are GPIO 22 duty
+as % of the 5.805 ms buffer period, idle (0) / 4 / 16 voices.
+
 | Quantity | Module | Baseline (#146) | Cooked path | Target |
 |---|---|---|---|---|
-| Core 1 time per 256-sample buffer, defined load | subtractive | TBD | TBD (#152) | ≤ baseline |
-| Core 1 time per 256-sample buffer, defined load | FM | TBD | TBD (#159) | ≤ baseline |
-| Voice headroom (max voices before underrun) | subtractive | TBD | TBD (#152) | no loss |
-| Voice headroom (max voices before underrun) | FM | TBD | TBD (#159) | no loss |
+| Core 1 duty per buffer, idle / 4 / 16 voices | subtractive | 0.57 / 22.1 / 81.4% | TBD (#152) | ≤ baseline |
+| Core 1 duty per buffer, idle / 4 / 16 voices | FM | 0.76 / 19.0 / 68.7% | TBD (#159) | ≤ baseline |
+| Voice headroom at `MAX_VOICES` = 16 | subtractive | 16 fit, 18.6% spare | TBD (#152) | no loss |
+| Voice headroom at `MAX_VOICES` = 16 | FM | 16 fit, 31.3% spare | TBD (#159) | no loss |
 | Core 0 cook time per Patch | subtractive | n/a | TBD (#152) | TBD |
 | Core 0 cook time per Patch | FM | n/a | TBD (#159) | TBD |
 | Parameter change → audible latency | all | n/a | TBD (#152) | ≤ 1 block (≈5.8 ms) + transport |

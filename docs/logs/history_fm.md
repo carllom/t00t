@@ -2571,3 +2571,31 @@ Verified via `tools/host_render/preview_fm_display.cpp` (new, mirrors
 `preview_opl_display.cpp`) against synthetic telemetry, and `make
 ENGINE=fm` builds clean on the actual ARM cross-toolchain. Real hardware
 flashing/encoder feel still untested.
+
+## Patch-platform baseline (#146, 2026-11-17)
+
+Pre-platform reference for the patch platform's "no regression" gate
+([platform.md](../platform.md), #145). Later gates (#159) repeat this exact
+method on the cooked path and compare.
+
+**Method.** Breadboard rig, firmware at `ccd4ff2` (pre-platform; kernel reads
+a `const FmPatch *` from the generated `patches.h`, routing resolved on Core 1
+at note-on). GPIO 22 profiling pin, high while Core 1 renders a buffer;
+read as the scope-averaged duty % of the 256-sample buffer period (5.805 ms at 44.1 kHz).
+Patch: E.ORGAN 1 (patch 16, `FMPATCH_E_ORGAN_1`, DX7 ROM1A). FX off. N notes
+held and sustained at full velocity, N = 0, 1, 2, 4, 8, 16 (`MAX_VOICES` =
+16); only the count of simultaneous voices matters, not which notes.
+
+| Voices | Duty | Core 1 time / buffer |
+|---:|---:|---:|
+| 0 (idle) | 0.76% | 44 µs |
+| 1 | 5.4% | 313 µs |
+| 2 | 9.9% | 575 µs |
+| 4 | 19.0% | 1103 µs |
+| 8 | 37.0% | 2148 µs |
+| 16 (full) | 68.7% | 3988 µs |
+
+Linear in voice count: ≈4.25% (≈247 µs) per voice. All 16 voices fit, with
+31.3% of the buffer period to spare.
+
+FX-on baseline not measured; FX off is the reference for now.
