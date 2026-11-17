@@ -28,10 +28,14 @@
 // whichever engine.h the caller included first -- fine for a per-engine
 // input_subsystem.cpp, not for midi_dispatch.cpp's own module-agnostic,
 // always-linked bank-select state, which has no such engine in scope.
+//
+// `on_sysex`, if given, receives each complete SysEx message (the bytes
+// between F0 and F7); without it SysEx is ignored.
 template <typename VoiceParams, uint32_t N>
 inline void midi_controller_process_generic(
         const uint8_t *data, uint32_t len, ParamExchangeT<VoiceParams> *params,
-        const InputMapEntryT<VoiceParamBlockT<VoiceParams>> (&table)[N]) {
+        const InputMapEntryT<VoiceParamBlockT<VoiceParams>> (&table)[N],
+        void (*on_sysex)(const uint8_t *msg, uint32_t len) = nullptr) {
     if (len == 0) return;
 
     bool changed = false;
@@ -89,6 +93,9 @@ inline void midi_controller_process_generic(
                 // nature (a module's own transport state, not a shadow
                 // VoiceParams write) -- no params->commit() needed for it.
                 midi_dispatch_transport(shadow, table, (uint8_t)ev.type);
+                break;
+            case MIDI_SYSEX:
+                if (on_sysex) on_sysex(midi_parser.sysex(), midi_parser.sysex_len());
                 break;
             default: break;
         }

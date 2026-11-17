@@ -335,6 +335,14 @@ event queue — each input source writes the param shadow and commits directly.
 - **DIN/UART MIDI** (`MIDI_UART`): UART1 RX at 31250 baud. An IRQ fills a ring
   buffer; `uart_midi_poll()` drains it each main-loop pass. Default-on for the
   breadboard (GPIO5); off for the VGA board, where GPIO5 is SD_CLK.
+- **Parsing**: each transport has its own `MidiParser` (`midi_parser.h`'s
+  `MidiParsers`, selected by the transport before it hands bytes on), so a
+  message split across reads isn't corrupted by the other transport's
+  bytes. The parser also assembles SysEx (F0…F7, bounded at 256 bytes) and
+  hands it to a module's handler through `midi_controller_process_generic()`'s
+  optional `on_sysex`.
+- **MIDI out** (`midi_out.h`): SysEx replies only, queued and sent over USB
+  from `usb_midi_task()`; the DIN port is receive-only.
 
 Every engine provides its own `src/engines/<name>/` MIDI routing file
 (`CMakeLists.txt` picks it by `T00T_ENGINE` — no fallback to a shared

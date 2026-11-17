@@ -38,6 +38,7 @@ public:
     }
 
     PatchLoadResult load(uint8_t part, const StoredPatchRef &stored) {
+        if (part >= kPartCount) return PatchLoadResult::NO_SUCH_PATCH;
         Edit &e = edit_[part];
         PatchLoadResult r = patch_decode(stored.data, stored.len, Module::kModuleId,
                                          Module::kDescriptors, e.values, e.name);
@@ -94,6 +95,15 @@ public:
     // load, not on edits. Notes carry it so Core 1 knows which Patch they
     // belong to (receiver.h).
     uint16_t load_id(uint8_t part) const { return edit_[part].load_id; }
+
+    // Encode `part`'s Edit buffer as a stored Patch into `out`; returns the
+    // byte count, or 0 if `cap` is too small or `part` out of range.
+    uint32_t encode_edit_buffer(uint8_t part, uint8_t *out, uint32_t cap) const {
+        if (part >= kPartCount) return 0;
+        const Edit &e = edit_[part];
+        return patch_encode(Module::kModuleId, Module::kSchemaVersion, e.name, Module::kDescriptors,
+                            e.values, out, cap);
+    }
 
     // Name of the Patch in `part`'s Edit buffer.
     const char *name(uint8_t part) const { return edit_[part].name; }

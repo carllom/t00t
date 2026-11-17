@@ -14,6 +14,9 @@ enum MidiMsgType : uint8_t {
     MIDI_START    = 6,  // 0xFA
     MIDI_CONTINUE = 7,  // 0xFB
     MIDI_STOP     = 8,  // 0xFC
+    // System Exclusive, F0 ... F7, assembled: the bytes between F0 and F7
+    // are in MidiParser::sysex()/sysex_len() until the next feed().
+    MIDI_SYSEX    = 9,
 };
 
 // Generic 2-data-byte event. Field meaning depends on type:
@@ -21,6 +24,7 @@ enum MidiMsgType : uint8_t {
 //   CC               : data1 = controller, data2 = value
 //   PITCH_BEND       : data1 = LSB,        data2 = MSB (14-bit = (data2<<7)|data1)
 //   PROGRAM_CHANGE   : data1 = program,    data2 = 0
+//   SYSEX            : unused -- see MidiParser::sysex()
 struct MidiEvent {
     MidiMsgType type;
     uint8_t channel;
@@ -28,19 +32,35 @@ struct MidiEvent {
     uint8_t data2;
 };
 
+// Longest SysEx message kept, counting the bytes between F0 and F7; a longer
+// one is discarded whole.
+static constexpr uint32_t MIDI_SYSEX_MAX = 256;
+
 // Transport-agnostic MIDI byte-stream parser.
 // Handles running status and system real-time pass-through.
 // Feeds from USB MIDI stream or UART — same byte format.
-// Emits note on/off, CC, pitch bend, and program change events.
+// Emits note on/off, CC, pitch bend, program change and SysEx events.
 struct MidiParser {
     uint8_t status;    // current running status byte
     uint8_t data[2];   // data byte accumulator
     uint8_t count;     // data bytes received so far
 
+    bool in_sysex;       // between F0 and its end
+    bool sysex_overflow; // the current SysEx outgrew sysex_buf, so it's dropped
+    uint32_t sysex_count;
+    uint8_t sysex_buf[MIDI_SYSEX_MAX];
+
     void init() {
         status = 0;
         count = 0;
+        in_sysex = false;
+        sysex_overflow = false;
+        sysex_count = 0;
     }
+
+    // The SysEx message a MIDI_SYSEX event reported, without F0/F7.
+    const uint8_t *sysex() const { return sysex_buf; }
+    uint32_t sysex_len() const { return sysex_count; }
 
     // Number of data bytes expected for a channel voice status byte
     static uint8_t expected_data(uint8_t s) {
@@ -64,7 +84,33 @@ struct MidiParser {
             }
         }
 
-        // System common (0xF0-0xF7): cancel running status
+        // SysEx: F0 starts one, F7 completes it. Any other status byte
+        // abandons an unfinished one and is then handled as usual.
+        if (byte == 0xF0) {
+            in_sysex = true;
+            sysex_overflow = false;
+            sysex_count = 0;
+            status = 0;
+            count = 0;
+            return false;
+        }
+        if (byte == 0xF7) {
+            bool complete = in_sysex && !sysex_overflow;
+            in_sysex = false;
+            status = 0;
+            count = 0;
+            if (!complete) return false;
+            out = { MIDI_SYSEX, 0, 0, 0 };
+            return true;
+        }
+        if (byte & 0x80) in_sysex = false;
+        if (in_sysex) {
+            if (sysex_count < MIDI_SYSEX_MAX) sysex_buf[sysex_count++] = byte;
+            else sysex_overflow = true;
+            return false;
+        }
+
+        // Other system common (0xF1-0xF6): cancel running status
         if (byte >= 0xF0) {
             status = 0;
             count = 0;
@@ -115,8 +161,30 @@ struct MidiParser {
     }
 };
 
-// Shared instance: only one engine is ever linked at a time, and MIDI_USB
-// and MIDI_UART both feed their bytes through midi_controller_process()
-// regardless of transport, so no module needs (or gets to keep) a private
-// copy of its own.
-inline MidiParser midi_parser;
+// Where bytes come from. Each source has its own parser, so a message (a
+// SysEx above all) split across reads isn't corrupted by bytes from the
+// other transport arriving in between.
+enum MidiSource : uint8_t { MIDI_SOURCE_USB, MIDI_SOURCE_UART, MIDI_SOURCE_COUNT };
+
+// One parser per source, fed through whichever the transport selected.
+struct MidiParsers {
+    MidiParser by_source[MIDI_SOURCE_COUNT];
+    uint8_t active = 0;
+
+    void init() {
+        for (MidiParser &p : by_source) p.init();
+        active = 0;
+    }
+    // Called by a transport before it hands its bytes on.
+    void select(MidiSource source) { active = source; }
+
+    bool feed(uint8_t byte, MidiEvent &out) { return by_source[active].feed(byte, out); }
+    const uint8_t *sysex() const { return by_source[active].sysex(); }
+    uint32_t sysex_len() const { return by_source[active].sysex_len(); }
+};
+
+// Shared instance -- the set of per-source parsers: only one engine is ever
+// linked at a time, and MIDI_USB and MIDI_UART both feed their bytes through
+// midi_controller_process() after select(), so no module needs (or gets to
+// keep) a private copy of its own.
+inline MidiParsers midi_parser;

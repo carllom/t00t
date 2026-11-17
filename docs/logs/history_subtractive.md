@@ -230,3 +230,29 @@ Subtractive becomes the patch platform's tracer bullet (spec #145,
   cooked patch 36 B, slot 84 B (× 16 = 1.3 KB), Core 0 platform state
   1.8 KB, Core 1 Part receivers and per-voice state 1.7 KB, `VoiceParams`
   24 B (+8 B for the note-on fields and load ID).
+
+## SysEx core protocol (#150, 2026-11-17)
+
+- **Parser.** `MidiParser` assembles SysEx (F0…F7) into a 256-byte buffer
+  and emits `MIDI_SYSEX`; over-length messages are dropped whole, a status
+  byte inside one abandons it and is then parsed normally, and real-time
+  bytes pass through. Each transport now has its own parser
+  (`MidiParsers`, behind the old `midi_parser` name so no engine changed):
+  USB and DIN used to share one, so a message split across reads could be
+  corrupted by the other transport's bytes.
+- **Protocol** (`src/patch/sysex.h`): `F0 7D 54 <cmd> … F7` with identify
+  (01/02), parameter change (10, exact int21 value, not scaled like NRPN),
+  edit-buffer request (20) and dump (21, packed stored Patch, both
+  directions — a received dump is a load, so held notes stay on their old
+  Patch). Ranges 30–3F, 40–4F and 60–7F are reserved for store/banks,
+  descriptor dump and Data Exchange.
+- **MIDI out.** `midi_out_send()` queues replies (512-byte ring) and
+  `usb_midi_task()` drains them through `tud_midi_stream_write()`. DIN has
+  no TX, so requests over DIN are answered over USB.
+- **Tests.** `test_sysex` drives the generic MIDI loop with the real
+  subtractive module against `golden/sysex_subtractive.txt`, which
+  `tools/sysex_vectors.py` writes with its own framing/packing code:
+  assembly with real-time bytes inside, over-length/interrupted/foreign
+  SysEx, USB and DIN interleaved, identify, parameter change (positive and
+  negative), request/dump round trip, foreign-module and malformed dumps.
+  The FM build was checked to compile against the parser changes.

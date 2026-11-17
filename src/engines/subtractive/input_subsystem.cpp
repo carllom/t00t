@@ -6,6 +6,8 @@
 #include "factory_bank.h"
 #include "patch/platform.h"
 #include "patch/platform_task.h"
+#include "patch/sysex.h"
+#include "midi/midi_out.h"
 #include <cmath>
 
 // subtractive's Input subsystem: the module-specific tail of the Input
@@ -282,6 +284,11 @@ void midi_controller_init() {
     ui_state.fx_p2 = 36;
 }
 
+// SysEx: the t00t editor protocol (patch/sysex.h), replies over USB.
+static void on_sysex(const uint8_t *msg, uint32_t len) {
+    patch_sysex_handle(platform, msg, len, midi_out_send);
+}
+
 void midi_controller_process(const uint8_t *data, uint32_t len, ParamExchange *params) {
-    midi_controller_process_generic(data, len, params, kMappingTable);
+    midi_controller_process_generic(data, len, params, kMappingTable, on_sysex);
 }

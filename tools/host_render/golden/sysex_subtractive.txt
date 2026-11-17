@@ -1,0 +1,13 @@
+# t00t SysEx golden vectors, subtractive module -- written by tools/sysex_vectors.py
+# <name> <bytes in hex, F0 ... F7>
+identify_request F0 7D 54 01 F7
+identify_reply F0 7D 54 02 01 01 01 10 0C 00 F7
+param_change_cutoff_1234_part0 F0 7D 54 10 00 09 00 52 09 00 F7
+param_change_env_cutoff_minus500_part3 F0 7D 54 10 03 0B 00 0C 7C 7F F7
+edit_buffer_request_part0 F0 7D 54 20 00 F7
+edit_buffer_request_part1 F0 7D 54 20 01 F7
+edit_buffer_dump_fairlite_part0 F0 7D 54 21 00 00 54 30 50 54 01 01 46 00 61 69 72 6C 69 74 65 00 00 00 00 00 00 00 00 00 00 15 00 07 00 00 02 00 00 00 00 00 00 00 00 40 00 50 46 01 7C 01 00 02 3E 10 65 F7
+edit_buffer_dump_saw_flt_part1 F0 7D 54 21 01 00 54 30 50 54 01 01 53 00 61 77 2D 46 6C 74 00 00 00 00 00 00 00 00 00 00 00 15 00 06 00 00 02 01 48 00 00 00 00 00 00 50 00 20 4E 01 34 00 40 00 5D 50 46 F7
+edit_buffer_dump_fm_module_part1 F0 7D 54 21 01 00 54 30 50 54 03 01 53 00 61 77 2D 46 6C 74 00 00 00 00 00 00 00 00 00 00 00 15 00 06 00 00 02 01 48 00 00 00 00 00 00 50 00 20 4E 01 34 00 40 00 5D 50 46 F7
+edit_buffer_dump_truncated_part1 F0 7D 54 21 01 00 54 30 50 54 01 01 53 00 61 77 2D 46 6C 74 00 00 00 00 00 00 00 00 00 00 00 15 00 06 00 00 02 01 48 00 00 00 00 00 00 50 00 20 4E 01 34 00 40 00 5D F7
+edit_buffer_dump_malformed_part1 F0 7D 54 21 01 00 F7

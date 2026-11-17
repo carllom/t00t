@@ -507,3 +507,21 @@ target_include_directories(gen_subtractive_bank PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}/../../src/engines/subtractive
     ${CMAKE_CURRENT_LIST_DIR}/../../src
 )
+
+# Host test for the t00t SysEx protocol (src/patch/sysex.h) at the platform
+# seam: MIDI bytes through the shared parse-and-dispatch loop, replies and
+# cooked commits out, against golden/sysex_subtractive.txt (written by
+# tools/sysex_vectors.py). Runs the real subtractive module.
+add_executable(test_sysex
+    test_sysex.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/../../src/samples.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/../../src/midi/midi_dispatch.cpp
+)
+target_include_directories(test_sysex PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}/host_stub_pico
+    ${CMAKE_CURRENT_LIST_DIR}
+    ${CMAKE_CURRENT_LIST_DIR}/../../src/engines/subtractive
+    ${CMAKE_CURRENT_LIST_DIR}/../../src
+)
+target_compile_definitions(test_sysex PRIVATE
+    T00T_SYSEX_GOLDEN="${CMAKE_CURRENT_LIST_DIR}/golden/sysex_subtractive.txt")

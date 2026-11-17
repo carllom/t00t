@@ -112,6 +112,9 @@ parses raw bytes and maps notes to voices; fed by pluggable transports:
   only (stdio disabled).
 - **UART/DIN MIDI** — [src/midi/uart_midi.cpp](src/midi/uart_midi.cpp), UART1 RX on GPIO 5
   (pin 7), 31250 baud, via optocoupler.
+- **SysEx** is assembled per transport; modules on the patch platform speak the t00t
+  SysEx protocol ([src/patch/sysex.h](src/patch/sysex.h), [docs/platform.md](docs/platform.md)).
+  Replies (MIDI out) go over USB only — DIN is receive-only.
 
 ## Docs
 

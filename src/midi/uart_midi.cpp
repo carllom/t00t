@@ -1,5 +1,6 @@
 #include "uart_midi.h"
 #include "midi_controller.h"
+#include "midi_parser.h"
 #include "hardware/uart.h"
 #include "hardware/irq.h"
 #include "hardware/gpio.h"
@@ -61,6 +62,7 @@ void uart_midi_poll(ParamExchange *params) {
     ring_tail = tail;
 
     if (n > 0) {
+        midi_parser.select(MIDI_SOURCE_UART);
         midi_controller_process(buf, n, params);
     }
 }

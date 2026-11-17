@@ -98,9 +98,28 @@ channels. This is proven by measurement (the P0 gates), not estimate.
   Part's latest cook (published or not) into the note at note-on, together with the Patch's
   load ID, so a note always gets every edit made before it and its pitch maths always
   matches its note-on fields.
-- SysEx under manufacturer ID `0x7D` plus a t00t sub-ID: identify, descriptor dump, parameter
-  change, edit-buffer request/dump, store-to-slot, bank dump, and a reserved range for Data
-  Exchange. Processed on Core 0 into Edit buffers — the same path NRPN/CC takes.
+- SysEx (`src/patch/sysex.h`), processed on Core 0 into Edit buffers — the same path NRPN/CC
+  takes. Every message is `F0 7D 54 <command> <body> F7`: `0x7D` is the non-commercial
+  manufacturer ID, `0x54` ('T') the t00t sub-ID.
+
+  | Command | Message | Body |
+  |---|---|---|
+  | `01` | identify request | — |
+  | `02` | identify reply | module ID, schema version, protocol version, Part count, parameter count (2 × 7 bits, LSB first) |
+  | `10` | parameter change | Part, parameter ID (2 × 7 bits, LSB first), value (int21) |
+  | `20` | edit-buffer request | Part |
+  | `21` | edit-buffer dump (both directions) | Part, stored Patch (packed) |
+  | `30`–`3F` | *reserved:* store and banks | |
+  | `40`–`4F` | *reserved:* descriptor dump | |
+  | `60`–`7F` | *reserved:* Data Exchange transfers | |
+
+  int21 is two's complement over three 7-bit bytes, least significant first. Packed data
+  carries 8-bit bytes in groups of up to 7, each group led by a byte holding their high bits.
+  Unknown commands, malformed messages and other manufacturers' SysEx are ignored; a dump of
+  another module's Patch is rejected. The parser assembles F0…F7 into a 256-byte buffer per
+  transport (a longer message is discarded whole; real-time bytes inside pass through).
+  Replies go out over USB-MIDI only. Golden byte vectors:
+  `tools/host_render/golden/sysex_subtractive.txt`, written by `tools/sysex_vectors.py`.
 
 ### Host editor
 
@@ -194,19 +213,18 @@ Existing pieces the platform builds on, and how.
 1. **Bank Select range split.** Proposed: MSB 0–63 factory banks, 64–127 user banks, leaving
    room for several factory banks per module (e.g. DX7 ROM1–ROM4). Undecided: whether LSB is
    used at all, and what an MSB pointing at an empty bank does (ignore vs load init Patch).
-2. **MIDI out.** No transmit path exists today: USB-MIDI only reads, and the breadboard DIN
-   port is wired RX-only. SysEx replies (identify, dumps) need a USB TX path; DIN replies need
-   a MIDI-out circuit and a free UART TX pin. Is USB-only reply acceptable for the editor?
-3. **t00t SysEx sub-ID and message numbering**, including the reserved Data Exchange range.
-4. **Parts per Multi** for each module (FM 4–8? groovebox = one bass + one drum Part).
-5. **Slot sizes and region size.** Patch and Multi slot sizes per module, how many slots fit
+2. **MIDI out over DIN.** Replies go out over USB-MIDI only, since the DIN port is wired
+   RX-only; requests arriving over DIN are answered over USB too. DIN replies would need a
+   MIDI-out circuit and a free UART TX pin.
+3. **Parts per Multi** for each module (FM 4–8? groovebox = one bass + one drum Part).
+4. **Slot sizes and region size.** Patch and Multi slot sizes per module, how many slots fit
    a 4 KB sector, and the total reserved region at the end of the 4 MB flash.
-6. **Shipping DX7 factory banks.** FM's `.syx` inputs and generated `patches.h` are
+5. **Shipping DX7 factory banks.** FM's `.syx` inputs and generated `patches.h` are
    gitignored today; factory banks generated from them can't ship in the repo. Does FM ship
    with a project-authored factory bank, and leave DX7 ROMs to user import?
-7. **Store glitch length.** How long audio is muted during a sector erase/program, and
+6. **Store glitch length.** How long audio is muted during a sector erase/program, and
    whether that is acceptable mid-performance.
-8. **Cook budget for FM.** Whether a full FM Patch cook fits Core 0's control-rate budget
+7. **Cook budget for FM.** Whether a full FM Patch cook fits Core 0's control-rate budget
    while MIDI and the display are busy, or needs to be incremental per parameter.
 
 ## Decision record
@@ -222,6 +240,9 @@ Existing pieces the platform builds on, and how.
 - **No Program Change for Multis.** A stray Program Change must never swap the whole setup.
 - **Engine structs are never stored.** The stored format survives engine refactors; only
   cooking produces engine structs.
+- **SysEx sub-ID `0x54` ('T') under the non-commercial manufacturer ID `0x7D`**, with
+  commands grouped in ranges so store/banks, descriptor dump and Data Exchange can be added
+  without renumbering.
 - **Host tools over runtime complexity.** Format conversion and import (DX7 `.syx`, OPL
   `.sbi`/`.bnk`) stay in host tools and the editor; runtime SysEx carries only the stored
   format.
