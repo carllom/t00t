@@ -284,3 +284,35 @@ Subtractive becomes the patch platform's tracer bullet (spec #145,
   sends it ahead of the dump's next message. `sysex_descriptor_dump_fits()`
   also rejects at compile time what the encoding can't carry: non-ASCII or
   over-127-character strings, more than 127 labels, values outside int21.
+
+## Patch-platform gate: cooked path (#152, 2026-11-17)
+
+Same method as the #146 baseline (breadboard, GPIO 22 scope-averaged duty,
+Fairlite, FX off — set over USB with CC76/CC73 — N sustained full-velocity
+notes). Firmware: the patch-platform build (it answered the SysEx identify
+request, so #150 or later).
+
+| Voices | Baseline (#146) | Cooked path | Change |
+|---:|---:|---:|---:|
+| 0 (idle) | 0.57% | 0.58% | +0.01 pp |
+| 1 | 6.0% | 6.05% | +0.05 pp |
+| 2 | 11.3% | 11.4% | +0.1 pp |
+| 4 | 22.1% | 22.3% | +0.2 pp |
+| 8 | 43.7% | 44.1% | +0.4 pp |
+| 16 (full) | 81.4% | 82.5% | +1.1 pp |
+
+- **Gate: not met, by a small margin.** The cost grows with voice count —
+  about 5.10% per voice against 5.05% (≈ +3 µs per voice per buffer, +1.4%
+  at 16 voices) — so it's per-voice render work, not the fixed per-buffer
+  slot checks (idle moved by only 0.01 pp). All 16 voices still fit, with
+  17.5% of the buffer spare against 18.6%.
+- **Cause: not yet established.** The cooked path removed per-voice work
+  (SVF Q, LFO increment, float → Q15 conversions), so the extra cost is in
+  how the kernel reaches its data: live fields are read through a per-voice
+  reference that picks the Part's patch or the voice's frozen copy, and
+  note-on fields come from the voice's `VoiceParams`. Candidates: those
+  loads being re-done inside the per-sample loop rather than hoisted, and
+  code layout changes in flash (XIP cache). Next step: compare the
+  generated inner loop of `sub_render_buffer()` before (9db7327) and now.
+- **Not measured:** Core 0 cook time per Patch and parameter-change-to-
+  audible latency (by design one to two buffers, #149).

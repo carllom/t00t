@@ -183,13 +183,13 @@ as % of the 5.805 ms buffer period, idle (0) / 4 / 16 voices.
 
 | Quantity | Module | Baseline (#146) | Cooked path | Target |
 |---|---|---|---|---|
-| Core 1 duty per buffer, idle / 4 / 16 voices | subtractive | 0.57 / 22.1 / 81.4% | TBD (#152) | ≤ baseline |
+| Core 1 duty per buffer, idle / 4 / 16 voices | subtractive | 0.57 / 22.1 / 81.4% | 0.58 / 22.3 / 82.5% (#152): +1.4% at 16 voices, cause open | ≤ baseline |
 | Core 1 duty per buffer, idle / 4 / 16 voices | FM | 0.76 / 19.0 / 68.7% | TBD (#159) | ≤ baseline |
-| Voice headroom at `MAX_VOICES` = 16 | subtractive | 16 fit, 18.6% spare | TBD (#152) | no loss |
+| Voice headroom at `MAX_VOICES` = 16 | subtractive | 16 fit, 18.6% spare | 16 fit, 17.5% spare (#152) | no loss |
 | Voice headroom at `MAX_VOICES` = 16 | FM | 16 fit, 31.3% spare | TBD (#159) | no loss |
-| Core 0 cook time per Patch | subtractive | n/a | TBD (#152) | TBD |
+| Core 0 cook time per Patch | subtractive | n/a | not measured | TBD |
 | Core 0 cook time per Patch | FM | n/a | TBD (#159) | TBD |
-| Parameter change → audible latency | all | n/a | TBD (#152) | ≤ 1 block (≈5.8 ms) + transport |
+| Parameter change → audible latency | all | n/a | not measured; by design 1–2 buffers (#149) | ≤ 1 block (≈5.8 ms) + transport |
 
 ### Memory
 
