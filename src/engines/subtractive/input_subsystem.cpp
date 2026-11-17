@@ -35,7 +35,13 @@ const char *sub_part_patch_name(uint8_t part) {
     return part < SUB_PART_COUNT ? platform.name(part) : "";
 }
 
-void patch_platform_task() { platform.task(); }
+// SysEx: the t00t editor protocol (patch/sysex.h), replies over USB.
+static PatchSysExT<SubtractiveModule> sysex(platform, midi_out_send);
+
+void patch_platform_task() {
+    platform.task();
+    sysex.task();
+}
 
 // --- Per-channel state (16 MIDI channels) ---
 // Default MIDI channel → factory Patch (channels beyond the list fall back
@@ -284,10 +290,7 @@ void midi_controller_init() {
     ui_state.fx_p2 = 36;
 }
 
-// SysEx: the t00t editor protocol (patch/sysex.h), replies over USB.
-static void on_sysex(const uint8_t *msg, uint32_t len) {
-    patch_sysex_handle(platform, msg, len, midi_out_send);
-}
+static void on_sysex(const uint8_t *msg, uint32_t len) { sysex.handle(msg, len); }
 
 void midi_controller_process(const uint8_t *data, uint32_t len, ParamExchange *params) {
     midi_controller_process_generic(data, len, params, kMappingTable, on_sysex);

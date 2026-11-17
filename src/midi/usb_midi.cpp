@@ -14,14 +14,15 @@ static uint8_t tx[TX_SIZE];
 static uint32_t tx_head = 0;  // next byte to write
 static uint32_t tx_tail = 0;  // next byte to send
 
-void midi_out_send(const uint8_t *data, uint32_t len) {
-    if (!tud_midi_mounted()) return;
+bool midi_out_send(const uint8_t *data, uint32_t len) {
+    if (!tud_midi_mounted()) return true;
     uint32_t used = (tx_head - tx_tail) & (TX_SIZE - 1);
-    if (len >= TX_SIZE - used) return;
+    if (len >= TX_SIZE - used) return false;
     for (uint32_t i = 0; i < len; i++) {
         tx[tx_head] = data[i];
         tx_head = (tx_head + 1) & (TX_SIZE - 1);
     }
+    return true;
 }
 
 static void usb_midi_flush() {

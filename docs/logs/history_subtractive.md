@@ -256,3 +256,31 @@ Subtractive becomes the patch platform's tracer bullet (spec #145,
   SysEx, USB and DIN interleaved, identify, parameter change (positive and
   negative), request/dump round trip, foreign-module and malformed dumps.
   The FM build was checked to compile against the parser changes.
+
+## Descriptor dump over SysEx (#151, 2026-11-17)
+
+- **Dump.** `40` requests it; the device answers table begin (`41`), one
+  descriptor message (`42`) per parameter, a labels message (`43`) after
+  each labelled ENUM parameter, for the module table then the common
+  table, then dump end (`44`). Subtractive's whole dump is 775 bytes.
+- **Common table** (`src/patch/common.h`, decided with the author): FX
+  type, mix, P1, P2 — described, but still set through each module's FX
+  CCs until the Multi (#155) holds them.
+- **Value labels** (decided with the author): `ParamDescriptor` gained an
+  optional label list, checked against the range by
+  `descriptor_table_valid()`; WAVE, SAMPLE, FILTER and FX TYPE carry them.
+- **Chunked and paced.** One message per descriptor, each checked at
+  compile time to fit `MIDI_SYSEX_MAX`. `PatchSysExT` (the SysEx handler,
+  now an object holding the dump's progress) sends the next message only
+  when `midi_out_send()` — now returning false when the USB TX queue is
+  full — accepts it, and `patch_platform_task()` resumes it each pass.
+  DIN has no TX; the same backpressure would pace a DIN out.
+- **Tests.** `test_sysex`: the dump matches the golden vector (from
+  `tools/sysex_vectors.py`, which states the expected tables literally);
+  through a 100-byte-per-pass queue it arrives whole and in order over
+  several passes and then stops; identify is answered while a dump waits.
+- **Review fixes.** A reply (identify, edit-buffer dump) that found the
+  queue full mid-dump was silently dropped; `PatchSysExT` now holds it and
+  sends it ahead of the dump's next message. `sysex_descriptor_dump_fits()`
+  also rejects at compile time what the encoding can't carry: non-ASCII or
+  over-127-character strings, more than 127 labels, values outside int21.

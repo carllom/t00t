@@ -110,10 +110,25 @@ channels. This is proven by measurement (the P0 gates), not estimate.
   | `20` | edit-buffer request | Part |
   | `21` | edit-buffer dump (both directions) | Part, stored Patch (packed) |
   | `30`–`3F` | *reserved:* store and banks | |
-  | `40`–`4F` | *reserved:* descriptor dump | |
+  | `40` | descriptor dump request | — |
+  | `41` | descriptor table begin | table, descriptor count (2 × 7 bits) |
+  | `42` | descriptor | table, ID, min, max, default (int21 each), unit, curve, class, flags (bit 0 quick edit), default CC (`7F` = none), name, group |
+  | `43` | descriptor labels | table, ID, label count, labels (ENUM parameters with labels, right after their descriptor) |
+  | `44` | descriptor dump end | — |
+  | `45`–`4F` | *reserved:* more descriptor messages | |
   | `60`–`7F` | *reserved:* Data Exchange transfers | |
 
-  int21 is two's complement over three 7-bit bytes, least significant first. Packed data
+  A descriptor dump sends table 0 (the module's) then table 1 (the common components',
+  `src/patch/common.h`: FX type/mix/P1/P2 today, described but still set through each module's
+  FX CCs until the Multi holds them). It is chunked — one message per descriptor, each within
+  `MIDI_SYSEX_MAX`, checked at compile time — and paced by backpressure: the next message goes
+  out only when the outgoing queue has room, so a slower transport (a future DIN out) would
+  pace it the same way. Other SysEx is handled while a dump is in progress; a reply that
+  finds the queue full is held and sent before the dump continues. Strings are a
+  length byte then 7-bit ASCII; unit, curve and class codes are the `descriptor.h` enum values.
+
+  int21 is two's complement over three 7-bit bytes, least significant first. IDs and counts are
+  2 × 7 bits, least significant first. Packed data
   carries 8-bit bytes in groups of up to 7, each group led by a byte holding their high bits.
   Unknown commands, malformed messages and other manufacturers' SysEx are ignored; a dump of
   another module's Patch is rejected. The parser assembles F0…F7 into a 256-byte buffer per

@@ -8,7 +8,8 @@ independent of the firmware's (src/patch/sysex.h), so a test comparing
 against the file this writes (tools/host_render/test_sysex.cpp) doesn't
 check the codec against itself.
 
-Message layout: F0 7D 54 <command> <body> F7. 8-bit data (stored Patches)
+Message layout: F0 7D 54 <command> <body> F7. Strings are a length byte
+then 7-bit ASCII. 8-bit data (stored Patches)
 is packed 7 bytes per 8: a byte holding the seven high bits (bit i = byte
 i), then the seven bytes with their high bit cleared. Integers are 21-bit
 two's complement, 7 bits per byte, least significant first.
@@ -26,6 +27,48 @@ IDENTIFY_REPLY = 0x02
 PARAM_CHANGE = 0x10
 EDIT_BUFFER_REQUEST = 0x20
 EDIT_BUFFER_DUMP = 0x21
+DESCRIPTOR_DUMP_REQUEST = 0x40
+DESCRIPTOR_TABLE_BEGIN = 0x41
+DESCRIPTOR = 0x42
+DESCRIPTOR_LABELS = 0x43
+DESCRIPTOR_DUMP_END = 0x44
+
+TABLE_MODULE = 0
+TABLE_COMMON = 1
+NO_CC = 0x7F
+
+# Descriptor field codes (src/patch/descriptor.h).
+UNIT = {"NONE": 0, "ENUM": 1, "HZ": 2, "CENTI_HZ": 3, "PERMILLE": 4}
+CURVE = {"LINEAR": 0, "EXPONENTIAL": 1}
+CLASS = {"LIVE": 0, "NOTE_ON": 1, "DATA_EXCHANGE": 2}
+
+# The tables as an editor should see them: (name, group, min, max, default,
+# unit, curve, class, quick-edit, default CC or None, labels or None).
+SUBTRACTIVE_DESCRIPTORS = [
+    ("WAVE", "OSC", 0, 7, 6, "ENUM", "LINEAR", "NOTE_ON", True, None,
+     ["SINE", "SQUARE", "TRI", "SAW", "NOISE", "SQR-BLEP", "SAW-BLEP", "SAMPLE"]),
+    ("SAMPLE", "OSC", 0, 8, 0, "ENUM", "LINEAR", "NOTE_ON", False, None,
+     ["SARARR1", "MARIMBA", "LOWSTR5", "AH2", "ARR", "RRR", "SITAR2", "ZITHER2", "ELECPIAN"]),
+    ("DUTY", "OSC", 0, 1023, 512, "NONE", "LINEAR", "LIVE", False, None, None),
+    ("LFO RATE", "LFO", 0, 2000, 0, "CENTI_HZ", "EXPONENTIAL", "LIVE", True, 12, None),
+    ("LFO>AMP", "LFO", 0, 1000, 0, "PERMILLE", "LINEAR", "LIVE", False, None, None),
+    ("LFO>PTCH", "LFO", 0, 1000, 0, "PERMILLE", "LINEAR", "LIVE", False, None, None),
+    ("LFO>PWM", "LFO", 0, 1000, 0, "PERMILLE", "LINEAR", "LIVE", False, None, None),
+    ("LFO>CUT", "LFO", -18000, 18000, 0, "HZ", "LINEAR", "LIVE", False, None, None),
+    ("FILTER", "FILTER", 0, 4, 0, "ENUM", "LINEAR", "NOTE_ON", False, None,
+     ["OFF", "LP", "BP", "HP", "NOTCH"]),
+    ("CUTOFF", "FILTER", 20, 18000, 8000, "HZ", "EXPONENTIAL", "LIVE", True, 74, None),
+    ("RESO", "FILTER", 0, 32767, 0, "NONE", "LINEAR", "LIVE", True, 71, None),
+    ("ENV>CUT", "FILTER", -18000, 18000, 0, "HZ", "LINEAR", "LIVE", True, 79, None),
+]
+
+COMMON_DESCRIPTORS = [
+    ("FX TYPE", "FX", 0, 7, 1, "ENUM", "LINEAR", "LIVE", False, None,
+     ["OFF", "DELAY", "REVERB", "PHASER", "FLANGER", "CHORUS", "CRUSH", "DRIVE"]),
+    ("FX MIX", "FX", 0, 127, 0, "NONE", "LINEAR", "LIVE", False, None, None),
+    ("FX P1", "FX", 0, 127, 55, "NONE", "LINEAR", "LIVE", False, None, None),
+    ("FX P2", "FX", 0, 127, 36, "NONE", "LINEAR", "LIVE", False, None, None),
+]
 
 # Subtractive module facts (src/engines/subtractive/patch.h).
 MODULE_SUBTRACTIVE = 1
@@ -54,6 +97,29 @@ def pack7(data):
 def int21(value):
     v = value & ((1 << 21) - 1)
     return [v & 0x7F, (v >> 7) & 0x7F, (v >> 14) & 0x7F]
+
+
+def text7(s):
+    return [len(s), *s.encode("ascii")]
+
+
+def id14(i):
+    return [i & 0x7F, i >> 7]
+
+
+def descriptor_dump():
+    out = []
+    for table, descs in ((TABLE_MODULE, SUBTRACTIVE_DESCRIPTORS), (TABLE_COMMON, COMMON_DESCRIPTORS)):
+        out += frame(DESCRIPTOR_TABLE_BEGIN, [table, *id14(len(descs))])
+        for i, (name, group, lo, hi, default, unit, curve, cls, quick, cc, labels) in enumerate(descs):
+            out += frame(DESCRIPTOR, [table, *id14(i), *int21(lo), *int21(hi), *int21(default),
+                                      UNIT[unit], CURVE[curve], CLASS[cls], 1 if quick else 0,
+                                      NO_CC if cc is None else cc, *text7(name), *text7(group)])
+            if labels:
+                out += frame(DESCRIPTOR_LABELS, [table, *id14(i), len(labels),
+                                                 *[b for label in labels for b in text7(label)]])
+    out += frame(DESCRIPTOR_DUMP_END)
+    return out
 
 
 def factory_patches(header_path):
@@ -90,6 +156,11 @@ def vectors(patches):
         ("edit_buffer_dump_truncated_part1", frame(EDIT_BUFFER_DUMP, [1, *pack7(saw_flt[:-2])])),
         # A high-bits byte with no data after it: malformed, must be ignored.
         ("edit_buffer_dump_malformed_part1", frame(EDIT_BUFFER_DUMP, [1, 0x00])),
+        ("descriptor_dump_request", frame(DESCRIPTOR_DUMP_REQUEST)),
+        # The device's whole answer, every message F0 ... F7 in order: for the
+        # module table then the common table, table begin, then each
+        # descriptor followed by its labels if it has any; then dump end.
+        ("descriptor_dump", descriptor_dump()),
     ]
 
 

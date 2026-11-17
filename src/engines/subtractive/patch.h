@@ -7,6 +7,7 @@
 #include "samples.h"
 #include "patch/descriptor.h"
 #include "patch/module_id.h"
+#include "patch/common.h"
 #include "patch/part_slot.h"
 #include <cmath>
 #include <cstdint>
@@ -41,6 +42,18 @@ inline const SampleDef *const kSubSamples[] = {
 };
 static constexpr uint32_t SUB_SAMPLE_COUNT = sizeof(kSubSamples) / sizeof(kSubSamples[0]);
 
+// Value labels for the ENUM parameters, in value order.
+inline constexpr const char *kSubWaveLabels[] = {
+    "SINE", "SQUARE", "TRI", "SAW", "NOISE", "SQR-BLEP", "SAW-BLEP", "SAMPLE",
+};
+inline constexpr const char *kSubSampleLabels[] = {
+    "SARARR1", "MARIMBA", "LOWSTR5", "AH2", "ARR", "RRR", "SITAR2", "ZITHER2", "ELECPIAN",
+};
+inline constexpr const char *kSubFilterLabels[] = { "OFF", "LP", "BP", "HP", "NOTCH" };
+static_assert(sizeof(kSubWaveLabels) / sizeof(kSubWaveLabels[0]) == WAVE_SAMPLE + 1, "a label per Waveform");
+static_assert(sizeof(kSubSampleLabels) / sizeof(kSubSampleLabels[0]) == SUB_SAMPLE_COUNT, "a label per sample");
+static_assert(sizeof(kSubFilterLabels) / sizeof(kSubFilterLabels[0]) == FILTER_NOTCH + 1, "a label per FilterMode");
+
 // Engine-native constants for one Patch: everything the render loop derives
 // from the Patch rather than from the note, computed once on Core 0. Split
 // by Parameter class: `note_on` (SubNoteOnCooked, engine.h) is copied into
@@ -67,6 +80,8 @@ struct SubCookedPatch {
     SubLiveCooked live;
 };
 
+static_assert(kFxTypeCount == FX_COUNT, "a common FX TYPE label per EffectType");
+
 // Cooked-patch slots, one per Part, shared between Core 0 (publishes) and
 // Core 1 (consumes once per buffer). Defined by the Input subsystem.
 extern PartSlotT<SubCookedPatch> sub_part_slots[SUB_PART_COUNT];
@@ -79,15 +94,18 @@ struct SubtractiveModule {
 
     static constexpr ParamDescriptor kDescriptors[SUB_P_COUNT] = {
         // id                name       group     min      max    default unit                 curve                    class                    quick  cc
-        { SUB_P_WAVEFORM,    "WAVE",    "OSC",    0,       WAVE_SAMPLE, WAVE_SAW_BLEP, ParamUnit::ENUM, ParamCurve::LINEAR, ParamClass::NOTE_ON, true,  kNoDefaultCc },
-        { SUB_P_SAMPLE,      "SAMPLE",  "OSC",    0,       SUB_SAMPLE_COUNT - 1, 0, ParamUnit::ENUM,  ParamCurve::LINEAR,      ParamClass::NOTE_ON, false, kNoDefaultCc },
+        { SUB_P_WAVEFORM,    "WAVE",    "OSC",    0,       WAVE_SAMPLE, WAVE_SAW_BLEP, ParamUnit::ENUM, ParamCurve::LINEAR, ParamClass::NOTE_ON, true,  kNoDefaultCc,
+          kSubWaveLabels, WAVE_SAMPLE + 1 },
+        { SUB_P_SAMPLE,      "SAMPLE",  "OSC",    0,       SUB_SAMPLE_COUNT - 1, 0, ParamUnit::ENUM,  ParamCurve::LINEAR,      ParamClass::NOTE_ON, false, kNoDefaultCc,
+          kSubSampleLabels, SUB_SAMPLE_COUNT },
         { SUB_P_DUTY,        "DUTY",    "OSC",    0,       1023,  512,    ParamUnit::NONE,     ParamCurve::LINEAR,      ParamClass::LIVE,    false, kNoDefaultCc },
         { SUB_P_LFO_RATE,    "LFO RATE", "LFO",   0,       2000,  0,      ParamUnit::CENTI_HZ, ParamCurve::EXPONENTIAL, ParamClass::LIVE,    true,  12 },
         { SUB_P_LFO_AMP,     "LFO>AMP", "LFO",    0,       1000,  0,      ParamUnit::PERMILLE, ParamCurve::LINEAR,      ParamClass::LIVE,    false, kNoDefaultCc },
         { SUB_P_LFO_PITCH,   "LFO>PTCH", "LFO",   0,       1000,  0,      ParamUnit::PERMILLE, ParamCurve::LINEAR,      ParamClass::LIVE,    false, kNoDefaultCc },
         { SUB_P_LFO_PWM,     "LFO>PWM", "LFO",    0,       1000,  0,      ParamUnit::PERMILLE, ParamCurve::LINEAR,      ParamClass::LIVE,    false, kNoDefaultCc },
         { SUB_P_LFO_CUTOFF,  "LFO>CUT", "LFO",   -18000,   18000, 0,      ParamUnit::HZ,       ParamCurve::LINEAR,      ParamClass::LIVE,    false, kNoDefaultCc },
-        { SUB_P_FILTER_MODE, "FILTER",  "FILTER", 0,       FILTER_NOTCH, FILTER_OFF, ParamUnit::ENUM, ParamCurve::LINEAR, ParamClass::NOTE_ON, false, kNoDefaultCc },
+        { SUB_P_FILTER_MODE, "FILTER",  "FILTER", 0,       FILTER_NOTCH, FILTER_OFF, ParamUnit::ENUM, ParamCurve::LINEAR, ParamClass::NOTE_ON, false, kNoDefaultCc,
+          kSubFilterLabels, FILTER_NOTCH + 1 },
         { SUB_P_CUTOFF,      "CUTOFF",  "FILTER", 20,      18000, 8000,   ParamUnit::HZ,       ParamCurve::EXPONENTIAL, ParamClass::LIVE,    true,  74 },
         { SUB_P_RESONANCE,   "RESO",    "FILTER", 0,       32767, 0,      ParamUnit::NONE,     ParamCurve::LINEAR,      ParamClass::LIVE,    true,  71 },
         { SUB_P_ENV_CUTOFF,  "ENV>CUT", "FILTER", -18000,  18000, 0,      ParamUnit::HZ,       ParamCurve::LINEAR,      ParamClass::LIVE,    true,  79 },

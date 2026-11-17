@@ -74,9 +74,21 @@ PatchPlatformT<SubtractiveModule> g_platform(sub_part_slots, kSubFactoryBank, kS
 int g_notes_on = 0;
 Bytes g_sent;
 
+// The outgoing queue: unlimited unless a test sets a byte budget, standing in
+// for a TX queue that only drains between Core 0 passes.
+int64_t g_out_budget = -1;
+
 void set_note(VoiceParamBlock &, const InputValue &v) { if (v.note_on) g_notes_on++; }
-void capture(const uint8_t *data, uint32_t len) { g_sent.insert(g_sent.end(), data, data + len); }
-void on_sysex(const uint8_t *data, uint32_t len) { patch_sysex_handle(g_platform, data, len, capture); }
+bool capture(const uint8_t *data, uint32_t len) {
+    if (g_out_budget >= 0) {
+        if ((int64_t)len > g_out_budget) return false;
+        g_out_budget -= len;
+    }
+    g_sent.insert(g_sent.end(), data, data + len);
+    return true;
+}
+PatchSysExT<SubtractiveModule> g_sysex(g_platform, capture);
+void on_sysex(const uint8_t *data, uint32_t len) { g_sysex.handle(data, len); }
 
 constexpr InputMapEntryT<VoiceParamBlock> kTable[] = {
     { InputCategory::NOTE, 0, 127, 0xFF, 0, set_note },
@@ -95,10 +107,29 @@ void reset() {
     g_px.init();
     g_notes_on = 0;
     g_sent.clear();
+    g_out_budget = -1;
+    g_sysex.task();  // finish any dump a previous test left running
+    g_sent.clear();
     for (uint8_t p = 0; p < SUB_PART_COUNT; p++) g_platform.load_factory(p, 0);
     SubCookedPatch drain;
     for (auto &s : sub_part_slots) s.consume(drain);
 }
+
+// Descriptor tables the dump can't carry are rejected at compile time.
+constexpr ParamDescriptor kNonAscii[] = {
+    { 0, "CUT" "\xC3\x96" "FF", "G", 0, 1, 0, ParamUnit::NONE, ParamCurve::LINEAR, ParamClass::LIVE, false, kNoDefaultCc },
+};
+constexpr ParamDescriptor kLongName[] = {
+    { 0, "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "G", 0, 1, 0, ParamUnit::NONE, ParamCurve::LINEAR, ParamClass::LIVE, false, kNoDefaultCc },
+};
+constexpr ParamDescriptor kHugeRange[] = {
+    { 0, "X", "G", 0, 0x200000, 0, ParamUnit::NONE, ParamCurve::LINEAR, ParamClass::LIVE, false, kNoDefaultCc },
+};
+static_assert(sysex_descriptor_dump_fits(SubtractiveModule::kDescriptors), "subtractive's table can be dumped");
+static_assert(!sysex_descriptor_dump_fits(kNonAscii), "a non-ASCII name is rejected");
+static_assert(!sysex_descriptor_dump_fits(kLongName), "a name over 127 characters is rejected");
+static_assert(!sysex_descriptor_dump_fits(kHugeRange), "a value outside int21 is rejected");
 
 // --- Tests ---
 
@@ -216,6 +247,51 @@ void test_dump_for_another_module_is_rejected() {
     check(!sub_part_slots[1].consume(got), "a dump shorter than its Patch header says is rejected");
 }
 
+void test_descriptor_dump_sends_both_tables() {
+    reset();
+    feed(MIDI_SOURCE_USB, vec("descriptor_dump_request"));
+    g_sysex.task();
+    check(g_sent == vec("descriptor_dump"),
+          "descriptor dump: module table, common table, labels, end -- one message per descriptor");
+}
+
+void test_descriptor_dump_is_paced_by_the_outgoing_queue() {
+    reset();
+    // Room for 100 bytes per Core 0 pass, about two descriptor messages.
+    g_out_budget = 100;
+    feed(MIDI_SOURCE_USB, vec("descriptor_dump_request"));
+    int passes = 0;
+    while (g_sent.size() < vec("descriptor_dump").size() && passes < 100) {
+        g_out_budget = 100;
+        g_sysex.task();
+        passes++;
+    }
+    check(g_sent == vec("descriptor_dump"), "a dump through a small queue arrives whole, in order");
+    check(passes > 5, "spread over several passes");
+
+    g_out_budget = -1;
+    size_t before = g_sent.size();
+    g_sysex.task();
+    check(g_sent.size() == before, "and stops once complete");
+}
+
+void test_other_sysex_is_answered_during_a_dump() {
+    reset();
+    g_out_budget = 0;  // the queue is full: the dump stalls...
+    feed(MIDI_SOURCE_USB, vec("descriptor_dump_request"));
+    feed(MIDI_SOURCE_USB, vec("identify_request"));  // ...and so does the identify reply
+    check(g_sent.empty(), "nothing goes out while the queue is full");
+
+    g_out_budget = -1;
+    g_sysex.task();
+    const Bytes &reply = vec("identify_reply");
+    const Bytes &dump = vec("descriptor_dump");
+    check(g_sent.size() == reply.size() + dump.size() &&
+          Bytes(g_sent.begin(), g_sent.begin() + reply.size()) == reply &&
+          Bytes(g_sent.begin() + reply.size(), g_sent.end()) == dump,
+          "once there's room the held-back identify reply goes first, then the whole dump");
+}
+
 }  // namespace
 
 int main() {
@@ -229,6 +305,9 @@ int main() {
     test_edit_buffer_request_answers_with_a_dump();
     test_edit_buffer_dump_loads_into_the_part();
     test_dump_for_another_module_is_rejected();
+    test_descriptor_dump_sends_both_tables();
+    test_descriptor_dump_is_paced_by_the_outgoing_queue();
+    test_other_sysex_is_answered_during_a_dump();
     printf(g_ok ? "ALL CHECKS PASSED\n" : "CHECKS FAILED\n");
     return g_ok ? 0 : 1;
 }

@@ -9,6 +9,9 @@
 // the device UI and the editor. Read only by Core 0, the UI and SysEx --
 // never by the render loop.
 
+// The numeric values of ParamClass, ParamUnit and ParamCurve go out in the
+// SysEx descriptor dump, so they are permanent: append only.
+
 // How an edit to a parameter reaches sound.
 enum class ParamClass : uint8_t {
     LIVE,           // applies to already-sounding notes
@@ -45,6 +48,8 @@ struct ParamDescriptor {
     ParamClass cls;
     bool quick_edit;      // shown on the Quick-edit Page
     uint8_t default_cc;   // kNoDefaultCc = none
+    const char *const *labels = nullptr;  // ENUM: one per value from min, or none
+    uint8_t label_count = 0;
 };
 
 // Stored width in bytes: values are stored as (value - min), so the range,
@@ -97,6 +102,7 @@ constexpr bool descriptor_table_valid(const ParamDescriptor (&table)[N]) {
         if (d.id != i) return false;
         if (d.min > d.max || d.def < d.min || d.def > d.max) return false;
         if ((int64_t)d.max - (int64_t)d.min > 0xFFFF) return false;
+        if (d.labels && (d.unit != ParamUnit::ENUM || d.label_count != d.max - d.min + 1)) return false;
         if (d.default_cc == kNoDefaultCc) continue;
         if (d.default_cc > 127 || cc_reserved(d.default_cc)) return false;
         if (descriptor_find_cc(table, d.default_cc) != i) return false;  // claimed twice

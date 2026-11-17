@@ -49,7 +49,7 @@ oscillator.
 | CC71 | Resonance | 0–127 | Patch RESO, scaled onto its range; live |
 | CC79 | Env → Cutoff | 0–127 | Patch ENV>CUT, scaled onto ±18000 Hz; live |
 | CC12 | LFO Rate | 0–127 | Patch LFO RATE, scaled onto 0–20 Hz; live |
-| SysEx | t00t protocol | F0 7D 54 … F7 | identify, exact parameter change, edit-buffer request/dump per Part (`docs/platform.md`); replies over USB |
+| SysEx | t00t protocol | F0 7D 54 … F7 | identify, exact parameter change, edit-buffer request/dump per Part, descriptor dump (with value labels for WAVE, SAMPLE, FILTER) (`docs/platform.md`); replies over USB |
 | NRPN (CC99/98 + CC6/38) | any Patch parameter | 14-bit | NRPN number = parameter ID (`patch.h`); Data Entry 0–16383 scaled onto the parameter's range (MSB alone reaches full scale, LSB refines); live parameters reach sounding notes, note-on ones the next note |
 | CC0 | Bank Select MSB | 0–127 | selects the microKORG program bank, used with Program Change |
 | CC32 | Bank Select LSB | 0–127 | captured, currently unused |
