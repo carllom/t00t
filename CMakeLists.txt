@@ -206,6 +206,12 @@ if(T00T_ENGINE STREQUAL "tracker")
     target_compile_definitions(t00t PRIVATE HAS_TRACKER_PLAYER=1)
 endif()
 
+# Engines migrated onto the patch platform (docs/platform.md) -- tells
+# main.cpp to run the platform's Core 0 task each pass.
+if(T00T_ENGINE STREQUAL "subtractive")
+    target_compile_definitions(t00t PRIVATE HAS_PATCH_PLATFORM=1)
+endif()
+
 target_link_libraries(t00t
     pico_stdlib
     pico_audio_i2s

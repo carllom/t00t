@@ -1,6 +1,7 @@
 #pragma once
 
 #include "engine.h"
+#include "patch.h"
 #include "osc/oscillator.h"
 #include "osc/sample.h"
 #include "envelope.h"
@@ -21,7 +22,7 @@
 // Core 1's audio_engine_run() and the host renderers, so both run the same
 // code.
 
-// Mod-wheel vibrato: dedicated LFO, independent of the preset LFO.
+// Mod-wheel vibrato: dedicated LFO, independent of the Patch's LFO.
 static constexpr float   MOD_VIBRATO_HZ = 5.0f;
 static constexpr int16_t MOD_VIBRATO_MAX_Q15 = 960;  // ~±50 cents at full mod
 
@@ -39,6 +40,19 @@ static_assert(SAMPLES_PER_BUFFER % SUBBLOCK == 0,
 // Render-side state, owned solely by whoever calls sub_render_buffer()
 // (Core 1 on the device).
 struct SubRenderState {
+    // Each Part's current and previous cooked patch with their generation
+    // tags (refreshed by sub_render_take_patch()), and each voice's own copy,
+    // taken when its note starts so a later Patch change never alters a
+    // sounding note. A note committed just before its Part was republished
+    // carries the previous patch's tag; keeping one previous patch is enough
+    // because the slot can't publish again until this side has taken the
+    // newest one.
+    SubCookedPatch part_patch[SUB_PART_COUNT];
+    SubCookedPatch part_prev_patch[SUB_PART_COUNT];
+    uint8_t part_tag[SUB_PART_COUNT];
+    uint8_t part_prev_tag[SUB_PART_COUNT];
+    SubCookedPatch voice_patch[MAX_VOICES];
+
     // Per-voice runtime state
     uint32_t voice_phase[MAX_VOICES];
     float    lfo_phase[MAX_VOICES];
@@ -83,7 +97,14 @@ inline void sub_render_init(SubRenderState &s) {
     s.decay_coeff_sub   = powf(s.env_cfg.decay_coeff,   (float)SUBBLOCK);
     s.release_coeff_sub = powf(s.env_cfg.release_coeff, (float)SUBBLOCK);
 
+    for (uint32_t p = 0; p < SUB_PART_COUNT; p++) {
+        s.part_patch[p] = SubCookedPatch{};
+        s.part_prev_patch[p] = SubCookedPatch{};
+        s.part_tag[p] = 0;
+        s.part_prev_tag[p] = 0;
+    }
     for (uint32_t v = 0; v < MAX_VOICES; v++) {
+        s.voice_patch[v] = SubCookedPatch{};
         s.voice_phase[v] = 0;
         s.lfo_phase[v] = 0.0f;
         s.mod_lfo_phase[v] = 0.0f;
@@ -106,6 +127,19 @@ inline void sub_render_init(SubRenderState &s) {
     s.last_fx_type = 0xFF;
 }
 
+// Take `part`'s newest cooked patch from its slot, if one was published.
+// Call once per Part before each sub_render_buffer(), after latching the
+// voice block.
+inline void sub_render_take_patch(SubRenderState &s, uint32_t part, PartSlotT<SubCookedPatch> &slot) {
+    SubCookedPatch fresh;
+    uint32_t generation;
+    if (!slot.consume(fresh, &generation)) return;
+    s.part_prev_patch[part] = s.part_patch[part];
+    s.part_prev_tag[part] = s.part_tag[part];
+    s.part_patch[part] = fresh;
+    s.part_tag[part] = (uint8_t)generation;
+}
+
 // Bitmap of voices whose envelope is still sounding.
 inline uint32_t sub_render_active_mask(const SubRenderState &s) {
     uint32_t bitmap = 0;
@@ -115,8 +149,8 @@ inline uint32_t sub_render_active_mask(const SubRenderState &s) {
     return bitmap;
 }
 
-// Render one buffer from `vp` into `out` (SAMPLES_PER_BUFFER interleaved
-// stereo int16 frames).
+// Render one buffer from `vp` and `s.part_patch` into `out`
+// (SAMPLES_PER_BUFFER interleaved stereo int16 frames).
 inline void sub_render_buffer(SubRenderState &s, const VoiceParamBlock &vp, int16_t *out) {
     // Clear the stereo dry mix
     for (uint32_t i = 0; i < SAMPLES_PER_BUFFER; i++) {
@@ -127,10 +161,14 @@ inline void sub_render_buffer(SubRenderState &s, const VoiceParamBlock &vp, int1
     // Render all voices
     for (uint32_t v = 0; v < MAX_VOICES; v++) {
         const VoiceParams &p = vp.voices[v];
+        const SubCookedPatch &c = s.voice_patch[v];
 
         // Detect new note (trigger changed)
         if (p.trigger != s.last_trigger[v]) {
             s.last_trigger[v] = p.trigger;
+            const uint32_t part = p.part < SUB_PART_COUNT ? p.part : 0;
+            s.voice_patch[v] = (p.patch_tag == s.part_prev_tag[part] && p.patch_tag != s.part_tag[part])
+                ? s.part_prev_patch[part] : s.part_patch[part];
             s.voice_phase[v] = 0;
             s.lfo_phase[v] = 0.0f;
             s.mod_lfo_phase[v] = 0.0f;
@@ -139,8 +177,7 @@ inline void sub_render_buffer(SubRenderState &s, const VoiceParamBlock &vp, int1
             // (envelope and LFO are both 0 at trigger, so no mod applies
             // yet) so the first sub-block doesn't glide from a stale
             // coefficient left over from a previous note.
-            s.f_half_state[v] = (p.filter_mode != FILTER_OFF)
-                ? (float)svf_compute_f_half((int32_t)p.filter_cutoff) : 0.0f;
+            s.f_half_state[v] = c.f_half_seed;
             s.noise_lfsr[v] = 0xACE1u;
             s.envelope[v].trigger();
             s.filter[v].init();  // clean filter state on new note
@@ -170,30 +207,20 @@ inline void sub_render_buffer(SubRenderState &s, const VoiceParamBlock &vp, int1
         uint32_t phase = s.voice_phase[v];
         float lfo_ph = s.lfo_phase[v];
         float mod_ph = s.mod_lfo_phase[v];
-        bool has_lfo = (p.lfo_rate != 0.0f);
+        bool has_lfo = c.has_lfo;
         bool has_mod = (p.mod_depth > 0);
-        bool has_filter = (p.filter_mode != FILTER_OFF);
+        bool has_filter = (c.filter_mode != FILTER_OFF);
 
-        // Pre-compute LFO phase increment per sample
-        float lfo_phase_inc = 0.0f;
-        if (has_lfo) {
-            lfo_phase_inc = p.lfo_rate / (float)SAMPLE_RATE;
-        }
+        // Patch-derived constants come cooked (patch.h)
+        const float lfo_phase_inc = c.lfo_phase_inc;
+        const int16_t lfo_depth_q15 = c.lfo_depth_q15;
+        const int16_t lfo_pitch_q15 = c.lfo_pitch_q15;
+        const int16_t lfo_pwm_q15 = c.lfo_pwm_q15;
+        const int16_t lfo_filt_hz = c.lfo_filt_hz;  // Hz, signed
+        const int32_t filt_q = c.filter_q;
 
         // Dedicated mod-wheel vibrato LFO increment
         const float mod_phase_inc = MOD_VIBRATO_HZ / (float)SAMPLE_RATE;
-
-        // Pre-convert float LFO depths to Q15 integers for inner loop
-        int16_t lfo_depth_q15 = (int16_t)(p.lfo_depth * 32767.0f);
-        int16_t lfo_pitch_q15 = (int16_t)(p.lfo_pitch_depth * 32767.0f);
-        int16_t lfo_pwm_q15 = (int16_t)(p.lfo_pwm_depth * 512.0f);
-        int16_t lfo_filt_hz = (int16_t)(p.lfo_filter_depth);  // Hz, signed
-
-        // Pre-compute filter Q (constant across buffer)
-        int32_t filt_q = 0;
-        if (has_filter) {
-            filt_q = svf_compute_q(p.filter_resonance);
-        }
 
         // Pre-compute this voice's stereo pan gains (constant across buffer)
         int32_t gain_l, gain_r;
@@ -249,9 +276,9 @@ inline void sub_render_buffer(SubRenderState &s, const VoiceParamBlock &vp, int1
             float fhalf_target = fhalf_cur;
             if (has_filter) {
                 int32_t level_target_q15 = (int32_t)(env_target * 32767.0f);
-                int32_t cutoff = (int32_t)p.filter_cutoff;
-                if (p.filter_env_amount != 0) {
-                    cutoff += (level_target_q15 * (int32_t)p.filter_env_amount) >> 15;
+                int32_t cutoff = (int32_t)c.filter_cutoff;
+                if (c.filter_env_amount != 0) {
+                    cutoff += (level_target_q15 * (int32_t)c.filter_env_amount) >> 15;
                 }
                 if (lfo_filt_hz != 0) {
                     cutoff += (lfo_target_i * lfo_filt_hz) >> 15;
@@ -267,20 +294,20 @@ inline void sub_render_buffer(SubRenderState &s, const VoiceParamBlock &vp, int1
                 int32_t lfo_val = (int32_t)lfo_ramp;
 
                 // LFO → duty cycle (PWM): offset duty_cycle
-                uint16_t eff_duty = p.duty_cycle;
+                uint16_t eff_duty = c.duty_cycle;
                 if (lfo_pwm_q15 > 0) {
                     int32_t pwm_mod = (lfo_val * lfo_pwm_q15) >> 15;
-                    int32_t d = (int32_t)p.duty_cycle + pwm_mod;
+                    int32_t d = (int32_t)c.duty_cycle + pwm_mod;
                     if (d < 1) d = 1;
                     if (d > 1022) d = 1022;
                     eff_duty = (uint16_t)d;
                 }
 
                 int32_t sample;
-                if (p.waveform == WAVE_SAMPLE && p.sample) {
-                    sample = osc_sample_play(p.sample, phase);
+                if (c.waveform == WAVE_SAMPLE && c.sample) {
+                    sample = osc_sample_play(c.sample, phase);
                 } else {
-                    sample = osc_sample(p.waveform, phase, eff_duty, s.noise_lfsr[v], eff_phase_inc);
+                    sample = osc_sample(c.waveform, phase, eff_duty, s.noise_lfsr[v], eff_phase_inc);
                 }
 
                 // Amplitude chain: oscillator × velocity × envelope
@@ -298,7 +325,7 @@ inline void sub_render_buffer(SubRenderState &s, const VoiceParamBlock &vp, int1
                 // constant, the two-pass integration itself per-sample
                 if (has_filter) {
                     int16_t filt_f = (int16_t)fhalf_ramp;
-                    scaled = s.filter[v].tick(scaled, filt_f, filt_q, p.filter_mode);
+                    scaled = s.filter[v].tick(scaled, filt_f, filt_q, c.filter_mode);
                 }
 
                 s.dry_l[blk + i] += (int32_t)(((int64_t)scaled * gain_l) >> 15);
@@ -307,8 +334,8 @@ inline void sub_render_buffer(SubRenderState &s, const VoiceParamBlock &vp, int1
                 phase += eff_phase_inc;
 
                 // Handle sample loop/end
-                if (p.waveform == WAVE_SAMPLE && p.sample) {
-                    if (!osc_sample_advance_phase(p.sample, phase)) {
+                if (c.waveform == WAVE_SAMPLE && c.sample) {
+                    if (!osc_sample_advance_phase(c.sample, phase)) {
                         sample_ended = true;  // non-looped sample ended
                         break;
                     }
@@ -362,11 +389,9 @@ inline void sub_render_buffer(SubRenderState &s, const VoiceParamBlock &vp, int1
         else                                   s.fx_overdrive.process(s.fx_buf, SAMPLES_PER_BUFFER, vp.fx);
     }
 
-    // Crossfade dry/wet by the mix knob (Q15) instead of always summing
-    // full dry underneath -- fx_buf above already carries mix baked in
-    // as its own gain, so CC73=127 now means wet-only, not dry+wet
-    // (dry+near-unity-gain wet was clipping constantly at full mix,
-    // worst on the phaser's zero-delay allpass).
+    // Crossfade dry/wet by the mix knob (Q15) rather than summing full dry
+    // underneath -- fx_buf above already carries mix as its own gain, so
+    // CC73=127 is wet-only; dry plus near-unity wet would clip at full mix.
     int32_t dry_scale = has_fx ? (int32_t)(127 - (int32_t)vp.fx.mix) * 258 : 32768;
 
     // Clip, add the wet return to both channels, and interleave into stereo int16_t.

@@ -2,9 +2,10 @@
 #include "midi_parser.h"
 #include "midi_controller_generic.h"
 #include "voice_alloc.h"
-#include "presets.h"
-#include "osc/common.h"
-#include "osc/sample.h"
+#include "patch.h"
+#include "factory_bank.h"
+#include "patch/platform.h"
+#include "patch/platform_task.h"
 #include <cmath>
 
 // subtractive's Input subsystem: the module-specific tail of the Input
@@ -24,25 +25,36 @@ static uint32_t voice_base_inc[MAX_VOICES];  // unbent phase_inc, for bend scali
 static uint8_t  voice_channel[MAX_VOICES];   // owning MIDI channel
 static bool     voice_held[MAX_VOICES];      // true between note-on and note-off
 
+// --- Patch platform: one Part per MIDI channel (Part N = channel N) ---
+PartSlotT<SubCookedPatch> sub_part_slots[SUB_PART_COUNT];
+static PatchPlatformT<SubtractiveModule> platform(sub_part_slots, kSubFactoryBank, kSubFactoryCount);
+
+const char *sub_part_patch_name(uint8_t part) {
+    return part < SUB_PART_COUNT ? platform.name(part) : "";
+}
+
+void patch_platform_task() { platform.task(); }
+
 // --- Per-channel state (16 MIDI channels) ---
-// Default MIDI channel → preset mapping (channels beyond the list fall back
-// to the last entry). Program change overrides channel_program[] at runtime.
-static const uint8_t channel_preset[] = {
-    PRESET_FAIRLIGHT,   // Ch 1
-    PRESET_SQUARE_PWM,  // Ch 2
-    PRESET_SAW_FILTER,  // Ch 3
+// Default MIDI channel → factory Patch (channels beyond the list fall back
+// to the last entry). Program Change loads another one at runtime.
+static const uint8_t channel_default_patch[] = {
+    0,  // Ch 1: Fairlite
+    1,  // Ch 2: Sq-PWM
+    2,  // Ch 3: Saw-Flt
 };
-static constexpr uint8_t NUM_CHANNEL_PRESETS = sizeof(channel_preset) / sizeof(channel_preset[0]);
+static constexpr uint8_t NUM_CHANNEL_DEFAULTS = sizeof(channel_default_patch) / sizeof(channel_default_patch[0]);
 
 static constexpr uint8_t NUM_CHANNELS = 16;
+static_assert(NUM_CHANNELS == SUB_PART_COUNT, "one Part per MIDI channel");
 
-static uint8_t channel_program[NUM_CHANNELS];   // current preset index per channel
+static uint8_t channel_patch[NUM_CHANNELS];   // factory Patch index loaded in each channel's Part
 static float   channel_bend_ratio[NUM_CHANNELS]; // phase_inc multiplier (1.0 = centered)
 static int16_t channel_mod[NUM_CHANNELS];        // mod-wheel vibrato depth, Q15
 static int16_t channel_pan[NUM_CHANNELS];        // CC10 pan, Q15 (-32768=L .. 0=center .. 32767=R)
 
-static uint8_t default_preset_for_channel(uint8_t ch) {
-    return ch < NUM_CHANNEL_PRESETS ? channel_preset[ch] : channel_preset[NUM_CHANNEL_PRESETS - 1];
+static uint8_t default_patch_for_channel(uint8_t ch) {
+    return ch < NUM_CHANNEL_DEFAULTS ? channel_default_patch[ch] : channel_default_patch[NUM_CHANNEL_DEFAULTS - 1];
 }
 
 // microKORG program numbering: the program-change value's tens digit is the row
@@ -95,8 +107,7 @@ static void apply_channel_pan(VoiceParamBlock &shadow, uint8_t channel) {
 // it has to run before any native-unit scaling); note is also an identity
 // (Strike needs it to pick a sound, not just Note to compute a pitch), so
 // it's not something to "normalize" away. The freq/amplitude math below is
-// this setter's own normalization step, same as voice_apply_preset() already
-// being setter-owned.
+// this setter's own normalization step.
 static void set_note(VoiceParamBlock &shadow, const InputValue &value) {
     if (value.note_on) {
         // Retrigger: steal whatever voice is already sounding this note.
@@ -111,11 +122,9 @@ static void set_note(VoiceParamBlock &shadow, const InputValue &value) {
         note_voice[value.note] = (int8_t)v;
         voice_held[v] = true;
 
-        const VoicePreset &pr = presets[channel_program[value.channel]];
-        float freq = 440.0f * powf(2.0f, (float)(value.note - 69) / 12.0f);
-        uint32_t base = (pr.waveform == WAVE_SAMPLE && pr.sample)
-            ? osc_sample_phase_inc(pr.sample, freq)
-            : osc_phase_inc(freq);
+        // The Part's sound reaches Core 1 as its cooked patch; only the
+        // note's own pitch depends on it here (sample vs oscillator rate).
+        uint32_t base = sub_note_phase_inc(platform.cooked(value.channel), value.note);
 
         voice_base_inc[v] = base;
         voice_channel[v] = value.channel;
@@ -123,16 +132,11 @@ static void set_note(VoiceParamBlock &shadow, const InputValue &value) {
         ui_state.last_note = value.note;
         ui_state.last_velocity = value.velocity;
         ui_state.last_channel = value.channel;
-        ui_state.program = channel_program[value.channel];
+        ui_state.program = channel_patch[value.channel];
 
-        VoiceParams &vp = shadow.voices[v];
-        voice_apply_preset(vp, pr);
-        vp.phase_inc = (uint32_t)((float)base * channel_bend_ratio[value.channel]);
-        vp.amplitude = (int16_t)(value.velocity * 258);  // override with velocity
-        vp.mod_depth = channel_mod[value.channel];
-        vp.pan = channel_pan[value.channel];
-        vp.trigger++;
-        vp.gate = true;
+        sub_note_start(shadow.voices[v], value.channel, (uint8_t)platform.cooked_generation(value.channel),
+                       base, channel_bend_ratio[value.channel],
+                       value.velocity, channel_mod[value.channel], channel_pan[value.channel]);
     } else {
         int8_t v = note_voice[value.note];
         if (v < 0) return;
@@ -193,12 +197,15 @@ static void set_fx_p2(VoiceParamBlock &shadow, const InputValue &value) {
 // (row = tens digit, col = ones digit) plus the bank value CC0 stored --
 // midi_channel_bank_msb() is shared, module-agnostic plumbing (midi_dispatch.h);
 // what a bank+program pair means is entirely this Handler's own business.
-// Affects future notes only.
+// Loads the factory Patch into the channel's Part; sounding notes keep the
+// Patch they started with.
 static void set_patch(VoiceParamBlock &, const InputValue &value) {
     int slot = microkorg_slot(midi_channel_bank_msb(value.channel), value.index);
-    if (slot >= 0) {
-        channel_program[value.channel] = (uint8_t)(slot % PRESET_COUNT);
-        ui_state.program = channel_program[value.channel];
+    if (slot < 0) return;
+    uint8_t index = (uint8_t)(slot % kSubFactoryCount);
+    if (platform.load_factory(value.channel, index) == PatchLoadResult::OK) {
+        channel_patch[value.channel] = index;
+        ui_state.program = index;
         ui_state.last_channel = value.channel;
     }
 }
@@ -235,7 +242,8 @@ void midi_controller_init() {
     for (int i = 0; i < 128; i++) note_voice[i] = -1;
     for (uint32_t v = 0; v < MAX_VOICES; v++) voice_held[v] = false;
     for (uint8_t ch = 0; ch < NUM_CHANNELS; ch++) {
-        channel_program[ch] = default_preset_for_channel(ch);
+        channel_patch[ch] = default_patch_for_channel(ch);
+        platform.load_factory(ch, channel_patch[ch]);
         channel_bend_ratio[ch] = 1.0f;
         channel_mod[ch] = 0;
         channel_pan[ch] = 0;
@@ -243,7 +251,7 @@ void midi_controller_init() {
     ui_state.last_note = 0xFF;
     ui_state.last_velocity = 0;
     ui_state.last_channel = 0;
-    ui_state.program = default_preset_for_channel(0);
+    ui_state.program = default_patch_for_channel(0);
     ui_state.bend = 0;
     ui_state.mod = 0;
     // Match ParamExchange::init() fx defaults (delay, dry, p1=55, p2=36≈300 ms).

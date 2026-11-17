@@ -463,7 +463,7 @@ target_include_directories(preview_subtractive_display PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}/../../src/wslcd
 )
 
-# Render-equivalence check for the subtractive engine (issue #148): renders
+# Render-equivalence check for the subtractive engine: renders
 # every factory patch through the device render path
 # (src/engines/subtractive/render.h) and compares hashes with
 # golden/subtractive_render.txt. host_stub_pico/ stands in for the two
@@ -483,3 +483,27 @@ target_include_directories(render_subtractive PRIVATE
 )
 target_compile_definitions(render_subtractive PRIVATE
     T00T_SUBTRACTIVE_GOLDEN="${CMAKE_CURRENT_LIST_DIR}/golden/subtractive_render.txt")
+
+# Host test for the patch platform core (src/patch/), at the
+# platform seam: raw MIDI bytes in, cooked-slot commits observed through a
+# stub module. Header-only, module-agnostic -- no engine, no pico-sdk.
+add_executable(test_patch_platform test_patch_platform.cpp)
+target_include_directories(test_patch_platform PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}
+    ${CMAKE_CURRENT_LIST_DIR}/../../src
+)
+
+# Subtractive factory-bank generator: converts the const preset
+# tables in src/engines/subtractive/presets.h into factory_bank.h, stored-
+# format Patches, checking the conversion is lossless. `--check <file>`
+# verifies the checked-in header is up to date.
+add_executable(gen_subtractive_bank
+    gen_subtractive_bank.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/../../src/samples.cpp
+)
+target_include_directories(gen_subtractive_bank PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}/host_stub_pico
+    ${CMAKE_CURRENT_LIST_DIR}
+    ${CMAKE_CURRENT_LIST_DIR}/../../src/engines/subtractive
+    ${CMAKE_CURRENT_LIST_DIR}/../../src
+)

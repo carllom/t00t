@@ -13,7 +13,7 @@
 #include "audio_engine.h"
 #include "voice_alloc.h"
 #include "midi/midi_controller.h"
-#include "presets.h"
+#include "patch.h"
 #include "pico/time.h"
 #include <cstdio>
 
@@ -65,10 +65,6 @@ static constexpr int VGRID_Y   = 80;
 static constexpr int NOTE_Y    = 104;
 static constexpr int DIAG_BAR_W = 232;
 
-static const char *PRESET_NAMES[PRESET_COUNT] = {
-    "Fairlite", "Sq-PWM", "Saw-Flt", "Marimba", "LowStr5", "VoiceAh", "VoiceArr", "VoiceRrr",
-    "Sitar2", "Zither2", "ElecPian",
-};
 static const char *NOTE_NAMES[12] =
     { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
 static const char *FX_TYPE_NAMES[FX_COUNT] = { "OFF", "DELAY", "REVERB", "PHASER", "FLANGER", "CHORUS", "CRUSH", "DRIVE" };
@@ -153,7 +149,7 @@ void display_task() {
 
     if (page == PAGE_PERFORMANCE) {
         if (!preset_row.initialized || preset_row.value != m.program) {
-            const char *name = m.program < PRESET_COUNT ? PRESET_NAMES[m.program] : "?";
+            const char *name = sub_part_patch_name(m.last_channel);
             char text[24];
             snprintf(text, sizeof(text), "#%-3d %.10s", m.program, name);
             value_row_draw_value(preset_row, m.program, text, 4, PRESET_Y, 28, 1, COL_VALUE,

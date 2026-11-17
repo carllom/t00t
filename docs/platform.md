@@ -151,9 +151,9 @@ as % of the 5.805 ms buffer period, idle (0) / 4 / 16 voices.
 | Item | Where | Size | Notes |
 |---|---|---|---|
 | Descriptor tables (module + shared) | flash | TBD | `constexpr`, never touched by Core 1 |
-| Factory banks | flash | TBD | compiled in |
-| Cooked slot × 2 per Part | SRAM | TBD | × N Parts per module |
-| Edit buffer per Part + Multi | SRAM | TBD | Descriptor-domain values |
+| Factory banks | flash | subtractive: 11 × 45 B | compiled in |
+| Cooked slot × 2 per Part | SRAM | subtractive: 88 B/slot × 16 = 1.4 KB | plus Core 1's own per-Part (current + previous) and per-voice copies, 1.9 KB |
+| Edit buffer per Part + Multi | SRAM | subtractive: 2.6 KB platform state (16 Parts) | Descriptor-domain values, name, cooked copy |
 | SysEx assembly buffer | SRAM | TBD | bounded; over-length messages discarded |
 | User-bank region | flash (end) | TBD | e.g. 128 Patches + 32 Multis per module, 4 KB sectors |
 

@@ -118,3 +118,60 @@ Linear in voice count: ≈5.05% (≈293 µs) per voice. All 16 voices fit, with
 18.6% of the buffer period to spare.
 
 FX-on baseline not measured; FX off is the reference for now.
+
+## Patch-platform tracer (#148, 2026-11-17)
+
+Subtractive becomes the patch platform's tracer bullet (spec #145,
+[platform.md](../platform.md)): its sounds are now data.
+
+- **Render kernel extracted first.** The per-buffer render moved out of
+  `audio_engine.cpp` into host-buildable `render.h` with no behaviour
+  change (commit `9db7327`), and `render_subtractive` captured golden
+  hashes of every const-table preset through it (C4 vel 100, G4 vel 127
+  from buffer 40, release at buffer 120, 300 buffers, default FX). That
+  golden is the "sound unchanged" reference for the migration.
+- **Descriptors and stored format.** 12 parameters (`patch.h`):
+  waveform, sample, duty, LFO rate (centi-Hz), LFO → amp/pitch/PWM
+  (per mille), LFO → cutoff (Hz), filter mode, cutoff, resonance, env →
+  cutoff. Waveform, sample and filter mode are note-on class; the rest
+  live (live editing itself comes with #149). No default CCs yet — CC74,
+  the usual cutoff CC, is FX type here. The preset `amplitude` field was
+  dropped: velocity always overwrote it.
+- **Factory bank.** `gen_subtractive_bank` converts `presets.h` into
+  `factory_bank.h` (11 Patches, 45 bytes each). It cross-checks that
+  cooking the converted values reproduces exactly the constants the old
+  render derived from each preset per buffer, so the bank can't be lossy.
+- **Cook and Part slots.** 16 Parts, one per MIDI channel. Program
+  Change decodes a factory Patch into the Part's Edit buffer, cooks it
+  (sample pointer, LFO phase increment, Q15 depths, SVF Q and seed
+  F_half) and publishes it through a `PartSlotT` handshake: Core 0 only
+  writes the spare buffer once Core 1 has acknowledged the last publish,
+  otherwise it keeps the patch pending and `patch_platform_task()` retries
+  each main-loop pass. Core 0's note-on maths uses the last *published*
+  patch, so it agrees with what Core 1 plays. Core 1 latches the voice
+  block, takes new cooked patches, then renders; a voice copies its Part's
+  cooked patch at note-on. Program Change still affects only later notes.
+- **Note ↔ patch generation tag** (found in review): a note-on committed
+  while patch A was current, followed within the same buffer by a Program
+  Change publishing B, made the note start on B with a pitch computed for A
+  (wrong pitch whenever the sample changes). Each note now carries the low
+  byte of the slot generation Core 0 used, and Core 1 keeps each Part's
+  current and previous cooked patch and starts the note on the matching
+  one. One previous patch suffices: the slot can't publish again until
+  Core 1 has taken the newest. `render_subtractive` checks this case.
+- **All parameters fixed per note for now.** The whole cooked patch is
+  copied per voice, so live-class parameters don't yet reach sounding
+  notes; nothing can change one mid-note until live editing (#149), which
+  will have voices read live fields from the Part.
+- **Moved off Core 1:** per-voice-per-buffer `svf_compute_q()`, the LFO
+  phase-increment divide and four float → Q15 conversions now happen once
+  per cook; added: 16 slot checks per buffer and one 40-byte copy per note
+  start. Hardware cost is measured by #152.
+- **Memory:** Core 0 platform state 2.6 KB, 16 slots 1.4 KB, Core 1
+  per-Part (current + previous) and per-voice cooked copies 1.9 KB (SRAM); factory bank ~0.5 KB
+  (flash).
+- **Tests.** `test_patch_platform` (stub module, MIDI bytes in → cooked
+  commits out: Part routing, older-schema defaults, module-ID rejection,
+  back-to-back publishes, Core 0 view, encoder bytes) and
+  `render_subtractive`: all 11 factory Patches through stored format →
+  cook → slot → render match the pre-platform golden bit-exactly.

@@ -49,6 +49,15 @@
 #include "wslcd/display.h"
 #endif
 
+// Engines on the patch platform (docs/platform.md) run its Core 0 task each
+// pass. Other engines leave this at the default 0.
+#ifndef HAS_PATCH_PLATFORM
+#define HAS_PATCH_PLATFORM 0
+#endif
+#if HAS_PATCH_PLATFORM
+#include "patch/platform_task.h"
+#endif
+
 // The tracker engine's Core 0 player task (#18) -- song load, TickBlock
 // ring, transport. Other engines leave this at the default 0.
 #ifndef HAS_TRACKER_PLAYER
@@ -146,6 +155,12 @@ int main() {
 #if MIDI_UART
         gpio_put(PROFILE_PIN_CORE0, 1);
         uart_midi_poll(&param_exchange);
+        gpio_put(PROFILE_PIN_CORE0, 0);
+#endif
+
+#if HAS_PATCH_PLATFORM
+        gpio_put(PROFILE_PIN_CORE0, 1);
+        patch_platform_task();
         gpio_put(PROFILE_PIN_CORE0, 0);
 #endif
 

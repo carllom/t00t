@@ -72,9 +72,11 @@ counter; Core 1 detects a change to (re)start a note.
   (type + 3 raw 0–127 values; each effect maps them to its own scale). Delay = 128 KB int16
   feedback line ([delay.h](src/fx/delay.h)); reverb = float Freeverb, 8 comb + 4 allpass,
   ~50 KB ([reverb.h](src/fx/reverb.h)) on the M33 FPU. Buffers clear on a type switch.
-- **Presets** ([src/presets.h](src/presets.h)): `VoicePreset` describes a sound; master
-  `presets[]` array is the single source of truth, referenced by index. Currently Fairlight
-  sample, square PWM, saw filter.
+- **Patches** (subtractive): stored-format Patches in a compiled-in factory bank
+  ([factory_bank.h](src/engines/subtractive/factory_bank.h)), generated from the
+  `VoicePreset` tables in [presets.h](src/engines/subtractive/presets.h) by a host tool;
+  Core 0 cooks each Part's Patch for Core 1 — see [docs/platform.md](docs/platform.md).
+  The other modules still use compiled-in const preset/patch tables.
 
 ## Display (LCD)
 

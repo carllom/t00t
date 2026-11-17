@@ -3,10 +3,13 @@
 #include "engine.h"
 #include "samples.h"
 
-// Reusable voice configuration — shared by buttons, MIDI channels, etc.
+// Authoring source for the subtractive factory bank: the device never reads
+// this file. tools/host_render/gen_subtractive_bank.cpp converts it into
+// factory_bank.h (stored-format Patches); edit here and regenerate.
+//
 // Describes *what* a voice sounds like, not the per-note runtime state.
 struct VoicePreset {
-    int16_t amplitude;       // base amplitude (0–32767). MIDI may scale by velocity.
+    int16_t amplitude;       // unused: the note's velocity sets amplitude
     Waveform waveform;
     uint16_t duty_cycle;     // square wave duty (0–1023, 512 = 50%)
     float lfo_rate;          // LFO Hz (0 = off)
@@ -21,27 +24,7 @@ struct VoicePreset {
     const SampleDef *sample;   // nullptr for non-sample waveforms
 };
 
-// Apply a voice preset to VoiceParams (does not touch phase_inc, trigger, gate)
-inline void voice_apply_preset(VoiceParams &vp, const VoicePreset &pr) {
-    vp.amplitude = pr.amplitude;
-    vp.waveform = pr.waveform;
-    vp.duty_cycle = pr.duty_cycle;
-    vp.lfo_rate = pr.lfo_rate;
-    vp.lfo_depth = pr.lfo_depth;
-    vp.lfo_pitch_depth = pr.lfo_pitch_depth;
-    vp.lfo_pwm_depth = pr.lfo_pwm_depth;
-    vp.filter_mode = pr.filter_mode;
-    vp.filter_cutoff = pr.filter_cutoff;
-    vp.filter_resonance = pr.filter_resonance;
-    vp.filter_env_amount = pr.filter_env_amount;
-    vp.lfo_filter_depth = pr.lfo_filter_depth;
-    vp.sample = pr.sample;
-    vp.mod_depth = 0;  // mod-wheel vibrato is a live control, off by default
-    vp.pan = 0;         // pan (CC10) is a live control, centered by default
-}
-
-// Master preset list — single source of truth for all voice configurations.
-// Buttons, MIDI channels, sequences, etc. reference presets by index.
+// Preset list, in factory-bank order.
 
 enum PresetId : uint8_t {
     PRESET_FAIRLIGHT,   // 0: Fairlight CMI sample, LP filter
@@ -74,4 +57,10 @@ static const VoicePreset presets[PRESET_COUNT] = {
     { 10000, WAVE_SAMPLE,      512, 0.0f, 0.0f, 0.0f, 0.0f, FILTER_OFF, 1000, 0, 0, 0.0f, &sitar2_sample },   // PRESET_SITAR2
     { 10000, WAVE_SAMPLE,      512, 0.0f, 0.0f, 0.0f, 0.0f, FILTER_OFF, 1000, 0, 0, 0.0f, &zither2_sample },  // PRESET_ZITHER2
     { 10000, WAVE_SAMPLE,      512, 0.0f, 0.0f, 0.0f, 0.0f, FILTER_OFF, 1000, 0, 0, 0.0f, &elecpian_sample }, // PRESET_ELECPIAN
+};
+
+// Patch names, stored in each factory Patch (at most kPatchNameLen chars).
+static const char *const preset_names[PRESET_COUNT] = {
+    "Fairlite", "Sq-PWM", "Saw-Flt", "Marimba", "LowStr5", "VoiceAh", "VoiceArr", "VoiceRrr",
+    "Sitar2", "Zither2", "ElecPian",
 };

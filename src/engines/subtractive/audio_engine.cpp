@@ -3,6 +3,7 @@
 #include "hardware/gpio.h"
 #include "pico/multicore.h"
 #include "pico/time.h"
+#include <atomic>
 
 // --- Telemetry for the Core 0 UI (published by Core 1) ---
 static volatile uint8_t s_load_pct = 0;
@@ -32,7 +33,17 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
         gpio_put(PROFILE_PIN, 1);
         uint32_t t_start = time_us_32();
 
-        sub_render_buffer(render_state, params->active(), i2s_buffer_ptr(buffers, buf_index));
+        // Latch the voice block before taking new cooked patches: Core 0
+        // publishes a Part's patch before committing the notes that use it,
+        // so every note seen here finds its patch as the Part's current or
+        // previous one (render.h).
+        const VoiceParamBlock &vp = params->active();
+        std::atomic_thread_fence(std::memory_order_acquire);
+        for (uint32_t p = 0; p < SUB_PART_COUNT; p++) {
+            sub_render_take_patch(render_state, p, sub_part_slots[p]);
+        }
+
+        sub_render_buffer(render_state, vp, i2s_buffer_ptr(buffers, buf_index));
 
         uint32_t busy_us = time_us_32() - t_start;
         gpio_put(PROFILE_PIN, 0);
