@@ -30,14 +30,15 @@ enum Waveform : uint8_t { WAVE_SINE, WAVE_SQUARE, WAVE_TRIANGLE, WAVE_SAW, WAVE_
 
 enum FilterMode : uint8_t { FILTER_OFF, FILTER_LP, FILTER_BP, FILTER_HP, FILTER_NOTCH };
 
-// Effect selector. CC74 picks the type; the same three knobs (CC72/73/75) then
-// drive whichever effect is active.
+// Effect selector. A CC picks the type (CC74; CC76 on subtractive, where
+// CC74 is cutoff); the same three knobs (CC72/73/75) then drive whichever
+// effect is active.
 enum EffectType : uint8_t { FX_OFF, FX_DELAY, FX_REVERB, FX_PHASER, FX_FLANGER, FX_CHORUS, FX_BITCRUSHER, FX_OVERDRIVE, FX_COUNT };
 
 // Global effect parameters. Written by Core 0, read by Core 1. The three params
 // are raw 0..127 controller values; each effect maps them to its own scale.
 struct EffectParams {
-    uint8_t type;   // EffectType (CC74)
+    uint8_t type;   // EffectType (FX type CC)
     uint8_t mix;    // CC73: wet/dry — 0 = dry, 127 = full wet
     uint8_t p1;     // CC72: delay feedback / reverb room size / phaser+flanger+chorus rate /
                     //       bitcrusher bit depth / overdrive drive

@@ -2,6 +2,7 @@
 
 #include "engine.h"
 #include "patch.h"
+#include "patch/receiver.h"
 #include "osc/oscillator.h"
 #include "osc/sample.h"
 #include "envelope.h"
@@ -40,18 +41,17 @@ static_assert(SAMPLES_PER_BUFFER % SUBBLOCK == 0,
 // Render-side state, owned solely by whoever calls sub_render_buffer()
 // (Core 1 on the device).
 struct SubRenderState {
-    // Each Part's current and previous cooked patch with their generation
-    // tags (refreshed by sub_render_take_patch()), and each voice's own copy,
-    // taken when its note starts so a later Patch change never alters a
-    // sounding note. A note committed just before its Part was republished
-    // carries the previous patch's tag; keeping one previous patch is enough
-    // because the slot can't publish again until this side has taken the
-    // newest one.
-    SubCookedPatch part_patch[SUB_PART_COUNT];
-    SubCookedPatch part_prev_patch[SUB_PART_COUNT];
-    uint8_t part_tag[SUB_PART_COUNT];
-    uint8_t part_prev_tag[SUB_PART_COUNT];
-    SubCookedPatch voice_patch[MAX_VOICES];
+    // Each Part's cooked patch, refreshed before each buffer by
+    // sub_render_take_patch(). A voice's note-on fields arrive in its own
+    // VoiceParams; it reads the live fields from its Part every buffer while
+    // the Part holds the Patch load the note belongs to. Once the Part holds
+    // another Patch, the voice is detached onto a frozen copy of its old
+    // Patch's live fields and finishes on them.
+    PartReceiverT<SubCookedPatch> part[SUB_PART_COUNT];
+    SubLiveCooked voice_live[MAX_VOICES];   // used while voice_detached
+    uint8_t voice_part[MAX_VOICES];
+    uint16_t voice_load[MAX_VOICES];
+    bool voice_detached[MAX_VOICES];
 
     // Per-voice runtime state
     uint32_t voice_phase[MAX_VOICES];
@@ -97,14 +97,12 @@ inline void sub_render_init(SubRenderState &s) {
     s.decay_coeff_sub   = powf(s.env_cfg.decay_coeff,   (float)SUBBLOCK);
     s.release_coeff_sub = powf(s.env_cfg.release_coeff, (float)SUBBLOCK);
 
-    for (uint32_t p = 0; p < SUB_PART_COUNT; p++) {
-        s.part_patch[p] = SubCookedPatch{};
-        s.part_prev_patch[p] = SubCookedPatch{};
-        s.part_tag[p] = 0;
-        s.part_prev_tag[p] = 0;
-    }
+    for (uint32_t p = 0; p < SUB_PART_COUNT; p++) s.part[p] = PartReceiverT<SubCookedPatch>{};
     for (uint32_t v = 0; v < MAX_VOICES; v++) {
-        s.voice_patch[v] = SubCookedPatch{};
+        s.voice_live[v] = SubLiveCooked{};
+        s.voice_part[v] = 0;
+        s.voice_load[v] = 0;
+        s.voice_detached[v] = false;
         s.voice_phase[v] = 0;
         s.lfo_phase[v] = 0.0f;
         s.mod_lfo_phase[v] = 0.0f;
@@ -131,13 +129,18 @@ inline void sub_render_init(SubRenderState &s) {
 // Call once per Part before each sub_render_buffer(), after latching the
 // voice block.
 inline void sub_render_take_patch(SubRenderState &s, uint32_t part, PartSlotT<SubCookedPatch> &slot) {
-    SubCookedPatch fresh;
-    uint32_t generation;
-    if (!slot.consume(fresh, &generation)) return;
-    s.part_prev_patch[part] = s.part_patch[part];
-    s.part_prev_tag[part] = s.part_tag[part];
-    s.part_patch[part] = fresh;
-    s.part_tag[part] = (uint8_t)generation;
+    if (s.part[part].take(slot) != PartTake::LOAD) return;
+    const PartReceiverT<SubCookedPatch> &rx = s.part[part];
+    const SubLiveCooked &old_live = rx.previous().live;
+    for (uint32_t v = 0; v < MAX_VOICES; v++) {
+        // A note on the newly arrived load (started while it was still
+        // pending) stays attached.
+        if (s.voice_part[v] == part && !s.voice_detached[v] && s.envelope[v].active() &&
+            s.voice_load[v] != rx.load_id()) {
+            s.voice_live[v] = old_live;
+            s.voice_detached[v] = true;
+        }
+    }
 }
 
 // Bitmap of voices whose envelope is still sounding.
@@ -149,7 +152,7 @@ inline uint32_t sub_render_active_mask(const SubRenderState &s) {
     return bitmap;
 }
 
-// Render one buffer from `vp` and `s.part_patch` into `out`
+// Render one buffer from `vp` and `s.part` into `out`
 // (SAMPLES_PER_BUFFER interleaved stereo int16 frames).
 inline void sub_render_buffer(SubRenderState &s, const VoiceParamBlock &vp, int16_t *out) {
     // Clear the stereo dry mix
@@ -161,14 +164,22 @@ inline void sub_render_buffer(SubRenderState &s, const VoiceParamBlock &vp, int1
     // Render all voices
     for (uint32_t v = 0; v < MAX_VOICES; v++) {
         const VoiceParams &p = vp.voices[v];
-        const SubCookedPatch &c = s.voice_patch[v];
+        const uint8_t part_index = p.part < SUB_PART_COUNT ? p.part : 0;
+        const PartReceiverT<SubCookedPatch> &part = s.part[part_index];
+        const SubNoteOnCooked &note_on = p.note_on;
 
         // Detect new note (trigger changed)
         if (p.trigger != s.last_trigger[v]) {
             s.last_trigger[v] = p.trigger;
-            const uint32_t part = p.part < SUB_PART_COUNT ? p.part : 0;
-            s.voice_patch[v] = (p.patch_tag == s.part_prev_tag[part] && p.patch_tag != s.part_tag[part])
-                ? s.part_prev_patch[part] : s.part_patch[part];
+            // A note committed just before its Part took another Patch
+            // belongs to the previous load: it starts detached on that
+            // Patch's live fields. Otherwise it follows the Part.
+            const bool on_previous = p.load_id != part.load_id() && p.load_id == part.previous_load_id();
+            const SubLiveCooked &start_live = on_previous ? part.previous().live : part.current().live;
+            s.voice_part[v] = part_index;
+            s.voice_load[v] = p.load_id;
+            s.voice_detached[v] = on_previous;
+            s.voice_live[v] = start_live;
             s.voice_phase[v] = 0;
             s.lfo_phase[v] = 0.0f;
             s.mod_lfo_phase[v] = 0.0f;
@@ -177,7 +188,7 @@ inline void sub_render_buffer(SubRenderState &s, const VoiceParamBlock &vp, int1
             // (envelope and LFO are both 0 at trigger, so no mod applies
             // yet) so the first sub-block doesn't glide from a stale
             // coefficient left over from a previous note.
-            s.f_half_state[v] = c.f_half_seed;
+            s.f_half_state[v] = (note_on.filter_mode != FILTER_OFF) ? start_live.f_half_seed : 0.0f;
             s.noise_lfsr[v] = 0xACE1u;
             s.envelope[v].trigger();
             s.filter[v].init();  // clean filter state on new note
@@ -195,6 +206,8 @@ inline void sub_render_buffer(SubRenderState &s, const VoiceParamBlock &vp, int1
         // Skip silent voices
         if (!s.envelope[v].active()) continue;
 
+        const SubLiveCooked &c = s.voice_detached[v] ? s.voice_live[v] : part.current().live;
+
         // Render in sub-blocks (see the SUBBLOCK comment above): LFO
         // value, envelope level, and the SVF F_half coefficient are each
         // computed once per sub-block and linearly ramped across it.
@@ -209,9 +222,9 @@ inline void sub_render_buffer(SubRenderState &s, const VoiceParamBlock &vp, int1
         float mod_ph = s.mod_lfo_phase[v];
         bool has_lfo = c.has_lfo;
         bool has_mod = (p.mod_depth > 0);
-        bool has_filter = (c.filter_mode != FILTER_OFF);
+        bool has_filter = (note_on.filter_mode != FILTER_OFF);
 
-        // Patch-derived constants come cooked (patch.h)
+        // Patch-derived constants come cooked (patch.h), live ones from the Part
         const float lfo_phase_inc = c.lfo_phase_inc;
         const int16_t lfo_depth_q15 = c.lfo_depth_q15;
         const int16_t lfo_pitch_q15 = c.lfo_pitch_q15;
@@ -304,10 +317,10 @@ inline void sub_render_buffer(SubRenderState &s, const VoiceParamBlock &vp, int1
                 }
 
                 int32_t sample;
-                if (c.waveform == WAVE_SAMPLE && c.sample) {
-                    sample = osc_sample_play(c.sample, phase);
+                if (note_on.waveform == WAVE_SAMPLE && note_on.sample) {
+                    sample = osc_sample_play(note_on.sample, phase);
                 } else {
-                    sample = osc_sample(c.waveform, phase, eff_duty, s.noise_lfsr[v], eff_phase_inc);
+                    sample = osc_sample(note_on.waveform, phase, eff_duty, s.noise_lfsr[v], eff_phase_inc);
                 }
 
                 // Amplitude chain: oscillator × velocity × envelope
@@ -325,7 +338,7 @@ inline void sub_render_buffer(SubRenderState &s, const VoiceParamBlock &vp, int1
                 // constant, the two-pass integration itself per-sample
                 if (has_filter) {
                     int16_t filt_f = (int16_t)fhalf_ramp;
-                    scaled = s.filter[v].tick(scaled, filt_f, filt_q, c.filter_mode);
+                    scaled = s.filter[v].tick(scaled, filt_f, filt_q, note_on.filter_mode);
                 }
 
                 s.dry_l[blk + i] += (int32_t)(((int64_t)scaled * gain_l) >> 15);
@@ -334,8 +347,8 @@ inline void sub_render_buffer(SubRenderState &s, const VoiceParamBlock &vp, int1
                 phase += eff_phase_inc;
 
                 // Handle sample loop/end
-                if (c.waveform == WAVE_SAMPLE && c.sample) {
-                    if (!osc_sample_advance_phase(c.sample, phase)) {
+                if (note_on.waveform == WAVE_SAMPLE && note_on.sample) {
+                    if (!osc_sample_advance_phase(note_on.sample, phase)) {
                         sample_ended = true;  // non-looped sample ended
                         break;
                     }
@@ -357,7 +370,7 @@ inline void sub_render_buffer(SubRenderState &s, const VoiceParamBlock &vp, int1
     }
 
     // Post-mix effect (delay, reverb, phaser, flanger, or chorus,
-    // selected by CC74). Mono send / stereo return: downmix the stereo
+    // selected by CC76). Mono send / stereo return: downmix the stereo
     // dry mix to mono, run the (still-mono) effect on it, then add its
     // wet output identically to both channels — only the dry path
     // carries per-voice pan. Clear the newly selected effect's buffer on

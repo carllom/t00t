@@ -1,6 +1,7 @@
 #pragma once
 
 #include "descriptor.h"
+#include "midi/nrpn.h"
 #include "module_id.h"
 #include "part_slot.h"
 #include "stored_format.h"
@@ -41,10 +42,39 @@ public:
         PatchLoadResult r = patch_decode(stored.data, stored.len, Module::kModuleId,
                                          Module::kDescriptors, e.values, e.name);
         if (r != PatchLoadResult::OK) return r;
+        e.load_id++;
         Module::cook(e.values, e.cooked);
         e.pending = true;
         publish(part);
         return r;
+    }
+
+    // Set one parameter in `part`'s Edit buffer (clamped to its range) and
+    // publish the re-cooked patch. Unknown parts or IDs are ignored.
+    void set_param(uint8_t part, uint32_t id, int32_t value) {
+        if (part >= kPartCount || id >= kParamCount) return;
+        const ParamDescriptor &d = Module::kDescriptors[id];
+        Edit &e = edit_[part];
+        e.values[id] = value < d.min ? d.min : (value > d.max ? d.max : value);
+        Module::cook(e.values, e.cooked);
+        e.pending = true;
+        publish(part);
+    }
+
+    // A Control Change on `part`'s channel: NRPN (number = parameter ID,
+    // 14-bit value scaled onto the range) or a descriptor's default CC
+    // (7-bit value scaled onto the range). Any other CC is ignored.
+    void midi_cc(uint8_t part, uint8_t cc, uint8_t value) {
+        if (part >= kPartCount) return;
+        if (NrpnDecoder::is_nrpn_cc(cc)) {
+            uint16_t id, value14;
+            if (nrpn_[part].feed(cc, value, id, value14) && id < kParamCount) {
+                set_param(part, id, param_value_from_14bit(Module::kDescriptors[id], value14));
+            }
+            return;
+        }
+        const uint32_t id = descriptor_find_cc(Module::kDescriptors, cc);
+        if (id < kParamCount) set_param(part, id, param_value_from_7bit(Module::kDescriptors[id], value));
     }
 
     // Core 0, once per main-loop pass: publish any cooked patch a Part's
@@ -55,13 +85,15 @@ public:
         }
     }
 
-    // The cooked patch Core 1 renders `part` with from its next buffer on --
-    // the last one published, not a newer one still waiting in the Edit
-    // buffer -- so Core 0's note-on maths agrees with what Core 1 plays.
-    const Cooked &cooked(uint8_t part) const { return published_[part]; }
+    // The latest cook of `part`'s Edit buffer, published or still pending.
+    // A note started now takes its note-on fields from here, so it gets
+    // every edit made before it even while Core 1 is a buffer behind.
+    const Cooked &cooked(uint8_t part) const { return edit_[part].cooked; }
 
-    // The slot generation of cooked(part), for tagging state derived from it.
-    uint32_t cooked_generation(uint8_t part) const { return published_gen_[part]; }
+    // Identifies the Patch load `part`'s Edit buffer holds: changes on every
+    // load, not on edits. Notes carry it so Core 1 knows which Patch they
+    // belong to (receiver.h).
+    uint16_t load_id(uint8_t part) const { return edit_[part].load_id; }
 
     // Name of the Patch in `part`'s Edit buffer.
     const char *name(uint8_t part) const { return edit_[part].name; }
@@ -69,16 +101,14 @@ public:
 private:
     void publish(uint8_t part) {
         Edit &e = edit_[part];
-        if (slots_[part].try_publish(e.cooked, &published_gen_[part])) {
-            e.pending = false;
-            published_[part] = e.cooked;
-        }
+        if (slots_[part].try_publish(e.cooked, e.load_id)) e.pending = false;
     }
 
     struct Edit {
         int32_t values[kParamCount];
         char name[kPatchNameLen + 1];
         Cooked cooked;
+        uint16_t load_id;  // changes on every load, not on edits
         bool pending;
     };
 
@@ -86,6 +116,5 @@ private:
     const StoredPatchRef *factory_;
     uint32_t factory_count_;
     Edit edit_[kPartCount]{};
-    Cooked published_[kPartCount]{};
-    uint32_t published_gen_[kPartCount]{};
+    NrpnDecoder nrpn_[kPartCount]{};
 };

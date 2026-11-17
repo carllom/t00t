@@ -122,9 +122,10 @@ static void set_note(VoiceParamBlock &shadow, const InputValue &value) {
         note_voice[value.note] = (int8_t)v;
         voice_held[v] = true;
 
-        // The Part's sound reaches Core 1 as its cooked patch; only the
-        // note's own pitch depends on it here (sample vs oscillator rate).
-        uint32_t base = sub_note_phase_inc(platform.cooked(value.channel), value.note);
+        // The note takes its note-on fields, and its pitch (sample vs
+        // oscillator rate), from the Part's latest cook.
+        const SubCookedPatch &patch = platform.cooked(value.channel);
+        uint32_t base = sub_note_phase_inc(patch, value.note);
 
         voice_base_inc[v] = base;
         voice_channel[v] = value.channel;
@@ -134,7 +135,7 @@ static void set_note(VoiceParamBlock &shadow, const InputValue &value) {
         ui_state.last_channel = value.channel;
         ui_state.program = channel_patch[value.channel];
 
-        sub_note_start(shadow.voices[v], value.channel, (uint8_t)platform.cooked_generation(value.channel),
+        sub_note_start(shadow.voices[v], value.channel, patch, platform.load_id(value.channel),
                        base, channel_bend_ratio[value.channel],
                        value.velocity, channel_mod[value.channel], channel_pan[value.channel]);
     } else {
@@ -193,6 +194,12 @@ static void set_fx_p2(VoiceParamBlock &shadow, const InputValue &value) {
     ui_state.fx_p2 = shadow.fx.p2;
 }
 
+// Every CC not claimed above: NRPN parameter edits and the descriptors'
+// default CCs, applied to the channel's Part Edit buffer (patch.h).
+static void set_param_cc(VoiceParamBlock &, const InputValue &value) {
+    platform.midi_cc(value.channel, value.id, (uint8_t)value.scalar);
+}
+
 // Patch select: Program Change, translated through microKORG numbering
 // (row = tens digit, col = ones digit) plus the bank value CC0 stored --
 // midi_channel_bank_msb() is shared, module-agnostic plumbing (midi_dispatch.h);
@@ -224,13 +231,27 @@ static constexpr InputMapEntryT<VoiceParamBlock> kMappingTable[] = {
     { InputCategory::MODIFIER,      MIDI_MOD_ID_PITCH_BEND, MIDI_MOD_ID_PITCH_BEND, 0xFF, 0,   set_pitch_bend },
     { InputCategory::MODIFIER,      72,                 72,                 0xFF,     0,       set_fx_p1 },       // CC72: FX param 1
     { InputCategory::MODIFIER,      73,                 73,                 0xFF,     0,       set_fx_mix },      // CC73: FX wet/dry mix
-    { InputCategory::MODIFIER,      74,                 74,                 0xFF,     0,       set_fx_type },     // CC74: FX type select
     { InputCategory::MODIFIER,      75,                 75,                 0xFF,     0,       set_fx_p2 },       // CC75: FX param 2
+    { InputCategory::MODIFIER,      76,                 76,                 0xFF,     0,       set_fx_type },     // CC76: FX type select
+    { InputCategory::MODIFIER,      0,                  127,                0xFF,     0,       set_param_cc },    // any other CC: NRPN / descriptor default CCs
     { InputCategory::CONFIGURATION, MIDI_CONFIG_ID_PROGRAM, MIDI_CONFIG_ID_PROGRAM, 0xFF, 0,   set_patch },       // Program Change: patch select
 };
 
 static_assert(input_table_declares_capabilities(kMappingTable, kCapabilities),
               "subtractive mapping table entry uses an InputCategory not in kCapabilities");
+
+// A descriptor default CC that an explicit entry above also claims would
+// never reach the platform.
+constexpr bool default_ccs_reachable() {
+    for (const auto &e : kMappingTable) {
+        if (e.category != InputCategory::MODIFIER || e.setter == set_param_cc) continue;
+        for (uint32_t cc = e.id_low; cc <= e.id_high; cc++) {
+            if (descriptor_uses_cc(SubtractiveModule::kDescriptors, (uint8_t)cc)) return false;
+        }
+    }
+    return true;
+}
+static_assert(default_ccs_reachable(), "a descriptor default CC is shadowed by an explicit mapping entry");
 
 void midi_controller_dispatch_note(VoiceParamBlock &shadow, uint8_t note, const InputValue &value) {
     input_dispatch(shadow, kMappingTable, InputCategory::NOTE, note, value);

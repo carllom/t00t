@@ -66,7 +66,7 @@ counter; Core 1 detects a change to (re)start a note.
 - **Modulation**: per-preset LFO → amplitude (tremolo) / pitch (vibrato) / PWM / filter cutoff;
   plus a dedicated mod-wheel vibrato LFO (5 Hz) independent of the preset LFO.
 - **Effects** ([src/fx/](src/fx/)): one global post-mix insert on Core 1 (fixed cost),
-  selectable by **CC74** (range split into bands): **Off / Delay / Reverb**. The same three
+  selectable by **CC74** (CC76 on subtractive, where CC74 is cutoff; range split into bands): **Off / Delay / Reverb**. The same three
   knobs drive whichever is active — **CC73 = mix**, **CC72 = feedback/room-size**,
   **CC75 = time/damping**. Params ride the `ParamExchange` block as `EffectParams`
   (type + 3 raw 0–127 values; each effect maps them to its own scale). Delay = 128 KB int16

@@ -175,3 +175,58 @@ Subtractive becomes the patch platform's tracer bullet (spec #145,
   back-to-back publishes, Core 0 view, encoder bytes) and
   `render_subtractive`: all 11 factory Patches through stored format →
   cook → slot → render match the pre-platform golden bit-exactly.
+
+## Live editing over NRPN (#149, 2026-11-17)
+
+- **NRPN and default CCs.** A catch-all mapping entry after the explicit
+  ones hands every other CC to `PatchPlatformT::midi_cc()`: NRPN
+  (CC99/98 select = parameter ID, CC6/38 data) or a descriptor default CC
+  sets one value in the channel's Part Edit buffer, then Core 0 re-cooks
+  and publishes. Data is scaled onto the parameter's range; a Data Entry
+  MSB alone is bit-replicated so 7-bit controllers reach full scale.
+  Default CCs, microKORG-numbered where possible: CUTOFF CC74, RESO CC71,
+  ENV>CUT CC79, LFO RATE CC12. FX type moved from CC74 to CC76 on
+  subtractive only (the other modules keep CC74 until they migrate).
+  `InputValue` gained `id`, the matched source id, so a range entry knows
+  which CC it got.
+- **Live vs note-on.** `SubCookedPatch` splits into `note_on` (waveform,
+  sample, filter mode) and `live`. Voices copy `note_on` at note start and
+  read `live` from their Part (`PartReceiverT`, now generic in
+  `src/patch/receiver.h`) every buffer. Live fields no longer depend on
+  note-on ones: SVF Q and seed F_half are cooked unconditionally.
+- **Program Change on held notes** (decided with the author): held notes
+  keep their old Patch. Slot publishes carry a load ID that changes on a
+  Patch load but not on an edit; when Core 1 takes a new load it copies the
+  old live fields into that Part's sounding voices, which then ignore the
+  Part. A note tagged with a previous patch of a different load starts
+  detached too.
+- **Coalescing.** A burst of edits within one buffer: the slot publishes
+  the first, Core 0's main-loop task publishes the latest on its next
+  pass, so change-to-audible latency is one to two buffers.
+- **Tests.** `test_patch_platform` adds NRPN selection/scaling/LSB
+  refinement, default CCs, module Handler precedence, deselection and
+  unknown IDs, coalescing, live vs note-on through stub voices, load vs
+  edit, and compile-time default-CC rules. `render_subtractive` adds:
+  every parameter cooks into its class's group; a live CUTOFF edit changes
+  the sounding note from the next buffer; a note-on WAVE edit doesn't; a
+  Program Change mid-note leaves it alone, as does a later edit of the new
+  Patch. The factory goldens still match.
+- **Review fix: note-on fields move into `VoiceParams`.** The #148
+  generation tag broke down once edits stream: with the slot busy, a
+  note-on edit waits as pending, and a note started right after it was
+  tagged with — and so played — the older published patch for its whole
+  length (every 14-bit NRPN hit this: MSB published, LSB pending). A narrow
+  race could also leave a tag matching neither patch Core 1 keeps. Now
+  Core 0 copies the note-on fields (8 bytes) and the Patch load ID from the
+  Edit buffer's latest cook into the note's `VoiceParams`, and
+  `PatchPlatformT::cooked()` is that latest cook rather than the last
+  published one. Tags and slot generations are gone; Core 1 uses the load
+  ID only to decide which sounding notes follow the Part's live fields.
+  `NrpnDecoder` also resets the Data Entry MSB when a parameter is
+  selected. `render_subtractive` adds "a note right after a queued note-on
+  edit plays the edited Patch".
+- **Memory**, measured with the Cortex-M33 toolchain (the #148 figures
+  above came from the 64-bit host and overstate pointer-holding structs):
+  cooked patch 36 B, slot 84 B (× 16 = 1.3 KB), Core 0 platform state
+  1.8 KB, Core 1 Part receivers and per-voice state 1.7 KB, `VoiceParams`
+  24 B (+8 B for the note-on fields and load ID).

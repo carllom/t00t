@@ -46,6 +46,9 @@ struct InputValue {
     bool note_on = false;    // NOTE/STRIKE: true = onset edge, false = release edge
     float scalar = 0.0f;     // MODIFIER: normalized native-unit value
     uint8_t index = 0;       // CONFIGURATION: selected index/program
+    uint8_t id = 0;          // the source id the event was matched on (e.g. the CC
+                             // number), set by input_dispatch() -- for a setter
+                             // whose table entry covers a range of ids
 };
 
 // One entry in a module's compile-time mapping table: an id range tagged
@@ -103,6 +106,7 @@ inline void input_dispatch(Context &ctx, const InputMapEntryT<Context> (&table)[
         if (!id_in_range(source_id, entry.id_low, entry.id_high)) continue;
         if (!channel_allowed(value.channel, entry.channel_filter)) continue;
         value.velocity = apply_fixed_velocity(value.velocity, entry.fixed_velocity);
+        value.id = source_id;
         entry.setter(ctx, value);
         return;
     }

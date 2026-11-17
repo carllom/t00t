@@ -86,7 +86,18 @@ channels. This is proven by measurement (the P0 gates), not estimate.
   bank. Both are Configuration inputs in the Input pipeline. Multis are selected only from the
   device UI or SysEx.
 - Every parameter is addressable by NRPN = parameter ID; a Descriptor may also carry a
-  default CC. Descriptor-driven mapping replaces per-module mapping tables where it fits.
+  default CC. Descriptor-driven mapping replaces per-module mapping tables where it fits:
+  a module's explicit mapping entries come first, and one catch-all entry hands every other
+  CC to the platform. NRPN data (14-bit) and default-CC values (7-bit) are scaled linearly
+  onto the parameter's range; a Data Entry MSB alone is bit-replicated so 7-bit controllers
+  reach full scale. Exact values travel by SysEx.
+- An edit reaches sounding notes only while their Part still holds the Patch they started
+  on: a Program Change leaves held notes on their old Patch (publishes carry a load ID so
+  Core 1 can tell a new Patch from an edit).
+- Note-on fields reach a voice through its per-note parameters: Core 0 copies them from the
+  Part's latest cook (published or not) into the note at note-on, together with the Patch's
+  load ID, so a note always gets every edit made before it and its pitch maths always
+  matches its note-on fields.
 - SysEx under manufacturer ID `0x7D` plus a t00t sub-ID: identify, descriptor dump, parameter
   change, edit-buffer request/dump, store-to-slot, bank dump, and a reserved range for Data
   Exchange. Processed on Core 0 into Edit buffers — the same path NRPN/CC takes.
@@ -152,8 +163,8 @@ as % of the 5.805 ms buffer period, idle (0) / 4 / 16 voices.
 |---|---|---|---|
 | Descriptor tables (module + shared) | flash | TBD | `constexpr`, never touched by Core 1 |
 | Factory banks | flash | subtractive: 11 × 45 B | compiled in |
-| Cooked slot × 2 per Part | SRAM | subtractive: 88 B/slot × 16 = 1.4 KB | plus Core 1's own per-Part (current + previous) and per-voice copies, 1.9 KB |
-| Edit buffer per Part + Multi | SRAM | subtractive: 2.6 KB platform state (16 Parts) | Descriptor-domain values, name, cooked copy |
+| Cooked slot × 2 per Part | SRAM | subtractive: 84 B/slot × 16 = 1.3 KB | plus Core 1's own per-Part (current + previous) and per-voice state, 1.7 KB |
+| Edit buffer per Part + Multi | SRAM | subtractive: 1.8 KB platform state (16 Parts) | Descriptor-domain values, name, cooked copy, NRPN state |
 | SysEx assembly buffer | SRAM | TBD | bounded; over-length messages discarded |
 | User-bank region | flash (end) | TBD | e.g. 128 Patches + 32 Multis per module, 4 KB sectors |
 

@@ -36,7 +36,7 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
         // Latch the voice block before taking new cooked patches: Core 0
         // publishes a Part's patch before committing the notes that use it,
         // so every note seen here finds its patch as the Part's current or
-        // previous one (render.h).
+        // previous one (patch/receiver.h).
         const VoiceParamBlock &vp = params->active();
         std::atomic_thread_fence(std::memory_order_acquire);
         for (uint32_t p = 0; p < SUB_PART_COUNT; p++) {

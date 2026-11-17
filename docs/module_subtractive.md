@@ -43,8 +43,13 @@ oscillator.
 | CC10 | Pan | 0–127 | live per-voice stereo pan — subtractive is the only module that maps this CC; not stored in Patches |
 | CC72 | FX Param 1 | 0–127 | delay feedback / reverb room size |
 | CC73 | FX Mix | 0–127 | wet/dry mix (global) |
-| CC74 | FX Type | 0–127 | select, splits range into the 6 FX bands |
 | CC75 | FX Param 2 | 0–127 | delay time / reverb damping |
+| CC76 | FX Type | 0–127 | select, splits range into the FX bands (CC74 in the other modules) |
+| CC74 | Cutoff | 0–127 | Patch CUTOFF, scaled onto 20–18000 Hz; live |
+| CC71 | Resonance | 0–127 | Patch RESO, scaled onto its range; live |
+| CC79 | Env → Cutoff | 0–127 | Patch ENV>CUT, scaled onto ±18000 Hz; live |
+| CC12 | LFO Rate | 0–127 | Patch LFO RATE, scaled onto 0–20 Hz; live |
+| NRPN (CC99/98 + CC6/38) | any Patch parameter | 14-bit | NRPN number = parameter ID (`patch.h`); Data Entry 0–16383 scaled onto the parameter's range (MSB alone reaches full scale, LSB refines); live parameters reach sounding notes, note-on ones the next note |
 | CC0 | Bank Select MSB | 0–127 | selects the microKORG program bank, used with Program Change |
 | CC32 | Bank Select LSB | 0–127 | captured, currently unused |
 | Program Change | — | 0–127 | microKORG numbering (tens digit = row, ones digit = column) mapped to one of the 11 factory Patches, loaded into the channel's Part; sounding notes keep the Patch they started with |
@@ -65,7 +70,7 @@ Performance-page layout as OPL's/FM's/chip's own (`docs/module_opl.md` /
   active-voice/CPU indicator) plus the last-played channel's Patch
   (factory number + name) and
   the three FX CCs (CC73/72/75) as compact Value bars ("FXMIX"/"FX P1"/
-  "FX P2") with FX type (CC74) as a Label ("OFF"/"DELAY"/"REVERB"/"PHASER"/
+  "FX P2") with FX type (CC76) as a Label ("OFF"/"DELAY"/"REVERB"/"PHASER"/
   "FLANGER"/"CHORUS"/"CRUSH"/"DRIVE") and the mod wheel (CC1) as a fourth
   Value bar ("MOD").
 - **DIAG**: the exact-value detail Resource bar deliberately sacrifices —
@@ -132,12 +137,28 @@ Both build with `make host`.
 ### Patches and cooking
 
 A Patch is 12 Descriptor values (`patch.h`'s table). Program Change
-decodes a factory Patch into the channel's Part Edit buffer, cooks it on
-Core 0 into a `SubCookedPatch` — sample pointer, LFO phase increment, Q15
+decodes a factory Patch into the channel's Part Edit buffer; NRPN and the
+default CCs change single values in it. After either, Core 0 cooks the Edit
+buffer into a `SubCookedPatch` — sample pointer, LFO phase increment, Q15
 LFO depths, SVF Q and seed coefficient — and publishes it to the Part's
-slot. At the start of each buffer Core 1 takes any new cooked patch per
-Part; a voice copies its Part's cooked patch when its note starts and
-renders from that copy only. Core 1 never sees Descriptors or stored data.
+slot. Core 1 never sees Descriptors or stored data.
+
+The cooked patch has two groups, matching the Parameter classes:
+
+- **note-on** (waveform, sample, filter mode): Core 0 copies them from the
+  Part's latest cook into the note's `VoiceParams` at note-on, so an edit
+  reaches only later notes — every later note, even one started while
+  Core 1 is still a buffer behind.
+- **live** (everything else): a voice reads them from its Part's newest
+  cooked patch every buffer, so an edit reaches sounding notes from the
+  next buffer — while the Part still holds the Patch load the note belongs
+  to (`VoiceParams::load_id`). Once a different Patch is loaded, the old
+  Patch's sounding voices keep a frozen copy of its live values and finish
+  on them.
+
+At the start of each buffer Core 1 takes any new cooked patch per Part. A
+burst of edits within one buffer coalesces: the Part slot publishes the
+first, and Core 0 publishes the latest Edit buffer state on its next pass.
 
 The Patch has no envelope parameters: the ADSR is one fixed shape for every
 voice. The note's velocity alone sets amplitude.
@@ -345,18 +366,31 @@ insert adds ~1.5pp; reverb adds ~8pp. Measured on breadboard_rp2350 at
 11. **One Part per MIDI channel** — every channel keeps its own Patch
     selection with no routing table; channel → Part routing belongs to the
     Multi.
-12. **A voice copies its Part's whole cooked patch at note-on** — so a
-    Program Change never alters a sounding note, and the render loop reads
-    one small per-voice struct instead of chasing the Part. Each note is
-    tagged with the generation of the cooked patch Core 0 computed its
-    pitch from, and Core 1 keeps each Part's previous patch too, so a
-    Program Change landing in the same buffer as a note-on can't hand that
-    note a different patch.
+12. **Note-on fields travel in the note's `VoiceParams`, live fields come
+    from the Part** — Core 0 computes a note's pitch from the same cooked
+    note-on fields it writes into the note, so the two can never disagree,
+    whatever Core 1 has taken by then. That adds 8 bytes per voice to the
+    `ParamExchange` block, which is copied once per MIDI batch.
 13. **`presets.h` is the authoring source for the factory bank** — the
     generator proves the conversion lossless against the render constants
     each preset implies, so factory sounds can't drift silently.
 14. **The preset `amplitude` field is not a Patch parameter** — velocity
     always overwrote it, so it never affected sound.
+15. **A Program Change leaves held notes on their old Patch** — loading a
+    sound is a different act from tweaking one: edits follow sounding
+    notes, a new Patch only reaches later notes. The cost is a one-off copy
+    of the old live fields into that Part's sounding voices when the new
+    Patch arrives, nothing per buffer.
+16. **NRPN data is scaled onto each parameter's range** — any 7- or 14-bit
+    controller sweeps the full range, at the price of exact integer values
+    for wide ranges; exact values are the SysEx path's job.
+17. **FX type is on CC76, not CC74** — CC74 is the de-facto cutoff CC, and
+    cutoff is a Patch parameter here. The other modules keep FX type on CC74
+    until they move onto the platform.
+18. **Explicit mapping entries come first, then one catch-all entry hands
+    every other CC to the platform** — the descriptor table, not the mapping
+    table, decides which CC drives which parameter; a compile-time check
+    rejects a default CC an explicit entry would shadow.
 
 ## Glossary
 

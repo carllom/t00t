@@ -64,11 +64,13 @@ void to_values(uint32_t i, const VoicePreset &pr, int32_t (&v)[SUB_P_COUNT]) {
 
 // The render constants a preset implies, derived directly from its fields --
 // the reference the cooked patch must reproduce exactly.
-void check_lossless(uint32_t i, const VoicePreset &pr, const SubCookedPatch &c) {
-    const bool has_filter = pr.filter_mode != FILTER_OFF;
+void check_lossless(uint32_t i, const VoicePreset &pr, const SubCookedPatch &cooked) {
+    const SubNoteOnCooked &n = cooked.note_on;
+    const SubLiveCooked &c = cooked.live;
     const bool has_lfo = pr.lfo_rate != 0.0f;
-    if (c.waveform != pr.waveform) fail(i, "cooked waveform");
-    if (pr.waveform == WAVE_SAMPLE && c.sample != pr.sample) fail(i, "cooked sample");
+    if (n.waveform != pr.waveform) fail(i, "cooked waveform");
+    if (pr.waveform == WAVE_SAMPLE && n.sample != pr.sample) fail(i, "cooked sample");
+    if (n.filter_mode != pr.filter_mode) fail(i, "cooked filter_mode");
     if (c.duty_cycle != pr.duty_cycle) fail(i, "cooked duty");
     if (c.has_lfo != has_lfo) fail(i, "cooked has_lfo");
     if (c.lfo_phase_inc != (has_lfo ? pr.lfo_rate / (float)SAMPLE_RATE : 0.0f)) fail(i, "cooked lfo_phase_inc");
@@ -76,12 +78,10 @@ void check_lossless(uint32_t i, const VoicePreset &pr, const SubCookedPatch &c) 
     if (c.lfo_pitch_q15 != (int16_t)(pr.lfo_pitch_depth * 32767.0f)) fail(i, "cooked lfo_pitch_q15");
     if (c.lfo_pwm_q15 != (int16_t)(pr.lfo_pwm_depth * 512.0f)) fail(i, "cooked lfo_pwm_q15");
     if (c.lfo_filt_hz != (int16_t)pr.lfo_filter_depth) fail(i, "cooked lfo_filt_hz");
-    if (c.filter_mode != pr.filter_mode) fail(i, "cooked filter_mode");
     if (c.filter_cutoff != pr.filter_cutoff) fail(i, "cooked filter_cutoff");
     if (c.filter_env_amount != pr.filter_env_amount) fail(i, "cooked filter_env_amount");
-    if (c.filter_q != (has_filter ? svf_compute_q(pr.filter_resonance) : 0)) fail(i, "cooked filter_q");
-    if (c.f_half_seed != (has_filter ? (float)svf_compute_f_half((int32_t)pr.filter_cutoff) : 0.0f))
-        fail(i, "cooked f_half_seed");
+    if (c.filter_q != svf_compute_q(pr.filter_resonance)) fail(i, "cooked filter_q");
+    if (c.f_half_seed != (float)svf_compute_f_half((int32_t)pr.filter_cutoff)) fail(i, "cooked f_half_seed");
 }
 
 std::string generate() {
