@@ -116,6 +116,8 @@ parses raw bytes and maps notes to voices; fed by pluggable transports:
 - [docs/logs/architecture.md](docs/logs/architecture.md) — full system design (detailed).
 - [docs/engine.md](docs/engine.md) — cross-module dual-core architecture (pin allocation, buffer
   flow, IPC, voice allocation, MIDI input) shared by every synthesis module.
+- [docs/platform.md](docs/platform.md) — patch platform design: Patches/Multis as data, cooking,
+  storage, SysEx, editor; roadmap, budgets and open questions.
 - [docs/building.md](docs/building.md) — toolchain, SDK setup, build/flash steps.
 - [docs/logs/migration.md](docs/logs/migration.md) — porting notes.
 - **Per-module docs** — one `docs/module_<name>.md` (current spec/usage) and, where the module
@@ -277,12 +279,6 @@ A play/pause/stop input, first-class rather than a generic Strike.
 _Avoid confusing with_: "MIDI transport" (USB vs. UART — the byte-carrying
 layer under MIDI, see the MIDI section above). Same word, unrelated concept.
 
-**Data Exchange**:
-Parked, not decided: a possible category for opaque byte-blob store/retrieve
-of module-specific table data (curves, waveforms, patch data). Mechanically
-distinct from Configuration (bulk/bidirectional/opaque vs. scalar template
-selection). No module implements anything like this today.
-
 ### Display / UI
 
 Vocabulary for standardizing shared LCD UI components and page structure
@@ -437,6 +433,90 @@ branding. The Page indicator is a row of small filled/dim cells, one per
 Page, reusing ActivityGrid's shape — omitted entirely for a single-Page
 module. Content stays clear of the panel's rounded corners (see
 [docs/lcd-driver-capabilities.md](docs/lcd-driver-capabilities.md)).
+
+### Patch platform
+
+Vocabulary for the module-agnostic layer that turns sounds into data — spec
+#145; design doc [docs/platform.md](docs/platform.md).
+
+**Patch**:
+One named, stored sound for one module, expressed as Descriptor values
+and carrying no FX (those belong to the Multi). Selecting one is a
+Configuration input.
+_Avoid_: "Preset" (the compiled-in tables factory Patches are generated
+from), "Voice" (DX7's word for a patch; here a voice is a synthesis voice),
+"Program" (the MIDI message, not the sound).
+
+**Multi**:
+The whole playable setup of a module: its Parts plus the common FX/master
+settings they share. Single-part use is a Multi with one Part.
+_Avoid_: "Performance" — already the Performance page; "Setup", "Combi".
+
+**Part**:
+One slot of a Multi: a MIDI channel, the Patch it plays, and that Part's
+own volume, pan and FX sends.
+_Avoid_: "Channel" (the MIDI channel, and chip/tracker's own synthesis
+channels), "Timbre", "Layer".
+
+**Bank**:
+A numbered set of Patch and Multi slots. A **factory bank** is read-only
+and ships with the firmware; a **user bank** holds the player's own stored
+sounds and survives reflashing.
+
+**Edit buffer**:
+The volatile working copy of a Part's Patch (or of the Multi) where all
+editing happens. It is "edited" while it differs from its stored slot.
+_Avoid_: "Scratch patch", "current patch" (ambiguous between edited and
+stored).
+
+**Compare**:
+Switching what is heard between an edited Edit buffer and its stored slot.
+
+**Store**:
+Writing an Edit buffer into a user-bank slot — the only act that makes an
+edit permanent.
+_Avoid_: "Save" in docs (fine as a UI label), "Write" (too generic).
+
+**Cook / cooked patch**:
+To cook is to translate a Patch from Descriptor terms into the
+engine-native constants a module's render loop consumes; the cooked patch
+is that result, and the only form of a sound the render side ever sees.
+_Avoid_: "Compile", "bake", "render" (render is audio synthesis).
+
+**Descriptor**:
+The self-description of one parameter of a module, from which UI, MIDI
+mapping, SysEx and the editor all derive. A module's **descriptor table**
+lists all its native parameters, each known by a permanent **parameter
+ID**; one shared table describes the common components (FX, master, MIDI).
+_Avoid_: "Schema" for a single entry (the schema is the whole versioned
+table), "parameter definition".
+
+**Parameter class**:
+How an edit to a parameter reaches sound: **live**, **note-on** or **Data
+Exchange**.
+
+**Live parameter**:
+A parameter whose edits apply to already-sounding notes (levels, cutoff,
+envelope rates, FX).
+
+**Note-on parameter**:
+A parameter fixed for a note when it starts; edits apply to the next note
+only (algorithm, operator enable, waveform select — anything that would
+click or need re-initialisation).
+
+**Data Exchange**:
+A parameter class for opaque bulk table data — samples, waveforms, ramps,
+LFO shapes — moved as a block rather than as scalar values; transfer may
+interrupt the sound.
+_Changed from_: a parked, undecided Input category for "opaque byte-blob
+store/retrieve of module-specific table data (curves, waveforms, patch
+data)". Adopted as a Parameter class by spec #145; patch data is no longer
+an example, since a Patch is structured scalar data. Whether it is also an
+Input category stays open.
+
+**Quick-edit Page**:
+A module's on-device Page showing the handful of quick-edit-flagged
+parameters of the current Patch, with Compare and Store.
 
 ## Notes / gotchas
 
