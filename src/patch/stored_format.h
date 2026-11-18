@@ -77,6 +77,27 @@ inline uint32_t patch_encode(ModuleId module, uint8_t schema_version, const char
     return size;
 }
 
+inline uint32_t patch_payload_len(const uint8_t *data) {
+    return (uint32_t)data[22] | ((uint32_t)data[23] << 8);
+}
+
+// Whether `data` (at least 4 bytes) starts with the stored Patch magic.
+inline bool patch_has_magic(const uint8_t *data) {
+    for (uint32_t i = 0; i < 4; i++) {
+        if (data[i] != kPatchMagic[i]) return false;
+    }
+    return true;
+}
+
+// Whether `data` is a stored Patch header for `module` whose payload fits `len`.
+inline PatchLoadResult patch_check_header(const uint8_t *data, uint32_t len, ModuleId module) {
+    if (len < kPatchHeaderSize) return PatchLoadResult::TRUNCATED;
+    if (!patch_has_magic(data)) return PatchLoadResult::BAD_MAGIC;
+    if (data[4] != (uint8_t)module) return PatchLoadResult::WRONG_MODULE;
+    if (len < kPatchHeaderSize + patch_payload_len(data)) return PatchLoadResult::TRUNCATED;
+    return PatchLoadResult::OK;
+}
+
 // Decode `data` into `values` (one per descriptor) and `name` (kPatchNameLen
 // + 1 bytes, always terminated). On any result other than OK, `values` and
 // `name` are left untouched.
@@ -84,13 +105,9 @@ template <uint32_t N>
 inline PatchLoadResult patch_decode(const uint8_t *data, uint32_t len, ModuleId module,
                                     const ParamDescriptor (&table)[N],
                                     int32_t (&values)[N], char *name) {
-    if (len < kPatchHeaderSize) return PatchLoadResult::TRUNCATED;
-    for (uint32_t i = 0; i < 4; i++) {
-        if (data[i] != kPatchMagic[i]) return PatchLoadResult::BAD_MAGIC;
-    }
-    if (data[4] != (uint8_t)module) return PatchLoadResult::WRONG_MODULE;
-    uint32_t payload_len = (uint32_t)data[22] | ((uint32_t)data[23] << 8);
-    if (len < kPatchHeaderSize + payload_len) return PatchLoadResult::TRUNCATED;
+    const PatchLoadResult header = patch_check_header(data, len, module);
+    if (header != PatchLoadResult::OK) return header;
+    const uint32_t payload_len = patch_payload_len(data);
 
     const uint8_t *p = data + kPatchHeaderSize;
     uint32_t remaining = payload_len;

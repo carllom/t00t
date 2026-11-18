@@ -76,6 +76,9 @@ counter; Core 1 detects a change to (re)start a note.
   ([factory_bank.h](src/engines/subtractive/factory_bank.h)), generated from the
   `VoicePreset` tables in [presets.h](src/engines/subtractive/presets.h) by a host tool;
   Core 0 cooks each Part's Patch for Core 1 — see [docs/platform.md](docs/platform.md).
+  User banks live in a reserved region at the end of flash that survives reflashing
+  ([user_bank.h](src/patch/user_bank.h)); Bank Select MSB 0–63 picks a factory bank,
+  64+ the user bank, and SysEx stores a Part's Edit buffer into a user slot.
   The other modules still use compiled-in const preset/patch tables.
 
 ## Display (LCD)

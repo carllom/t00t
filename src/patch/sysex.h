@@ -19,6 +19,10 @@
 //                           value (int21)
 //   20 edit-buffer request  Part
 //   21 edit-buffer dump     Part, the stored Patch (stored_format.h), packed
+//   30 store request        Part, user slot (2 x 7 bits): store the Part's
+//                           Edit buffer into that user-bank slot
+//   31 store reply          Part, user slot (2 x 7 bits), result
+//                           (StoreResult, user_bank.h)
 //   40 descriptor dump request  (none); answered by, in order:
 //   41   table begin        table, descriptor count (2 x 7 bits)
 //   42   descriptor         table, ID (2 x 7 bits), min, max, default (int21
@@ -31,7 +35,7 @@
 //                           components' (common.h). One message per
 //                           descriptor, sent as the outgoing queue has room.
 //
-// Reserved ranges: 30-3F store and banks, 45-4F more descriptor messages,
+// Reserved ranges: 32-3F store and banks, 45-4F more descriptor messages,
 // 60-7F Data Exchange transfers. Unknown commands and malformed messages are
 // ignored, as is anything for another manufacturer or sub-ID; a dump of a
 // Patch for another module is rejected (patch_decode()).
@@ -53,6 +57,8 @@ enum class SysExCommand : uint8_t {
     PARAM_CHANGE        = 0x10,
     EDIT_BUFFER_REQUEST = 0x20,
     EDIT_BUFFER_DUMP    = 0x21,
+    STORE_REQUEST       = 0x30,
+    STORE_REPLY         = 0x31,
     DESCRIPTOR_DUMP_REQUEST = 0x40,
     DESCRIPTOR_TABLE_BEGIN  = 0x41,
     DESCRIPTOR              = 0x42,
@@ -282,6 +288,19 @@ inline void PatchSysExT<Module>::handle(const uint8_t *msg, uint32_t len) {
             uint32_t n = sysex_unpack(body + 1, body_len - 1, stored, sizeof stored);
             if (n == 0) return;
             platform_.load(body[0], StoredPatchRef{ stored, n });
+            return;
+        }
+        case SysExCommand::STORE_REQUEST: {
+            if (body_len != 3 || body[0] >= Platform::kPartCount) return;
+            const uint32_t slot = sysex_id(body + 1);
+            const StoreResult result = platform_.store(body[0], slot);
+            uint8_t msg_out[9];
+            uint32_t n = sysex_begin(msg_out, SysExCommand::STORE_REPLY);
+            msg_out[n++] = body[0];
+            n += sysex_put_id(msg_out + n, slot);
+            msg_out[n++] = (uint8_t)result;
+            msg_out[n++] = 0xF7;
+            reply(msg_out, n);
             return;
         }
         case SysExCommand::DESCRIPTOR_DUMP_REQUEST: {

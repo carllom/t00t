@@ -21,6 +21,8 @@ static volatile uint8_t playing_index;  // buffer currently being played by DMA
 
 // DMA IRQ handler: called when a buffer finishes playing.
 // Starts DMA on the next buffer and tells Core 1 which buffer to fill.
+// RAM-resident and register-level only -- no SDK calls -- so it runs while
+// flash is being written (user banks).
 static void __isr __time_critical_func(dma_irq_handler)() {
     dma_hw->ints0 = (1u << dma_chan);  // acknowledge IRQ
 
@@ -29,11 +31,20 @@ static void __isr __time_critical_func(dma_irq_handler)() {
 
     // Swap to the other buffer and start DMA
     playing_index = 1 - playing_index;
-    dma_channel_set_read_addr(dma_chan, audio_bufs->data[playing_index], true);
+    dma_hw->ch[dma_chan].al3_read_addr_trig = (uintptr_t)audio_bufs->data[playing_index];
 
     // Tell Core 1: "fill buffer <finished>"
     // Non-blocking: if FIFO is full we drop (Core 1 is behind — will catch up)
-    multicore_fifo_push_timeout_us(finished, 0);
+    if (sio_hw->fifo_st & SIO_FIFO_ST_RDY_BITS) {
+        sio_hw->fifo_wr = finished;
+        __sev();
+    }
+}
+
+void i2s_output_silence() {
+    for (int b = 0; b < 2; b++) {
+        for (uint32_t i = 0; i < SAMPLES_PER_BUFFER * 2; i++) audio_bufs->data[b][i] = 0;
+    }
 }
 
 void i2s_output_init(AudioBuffers *buffers) {

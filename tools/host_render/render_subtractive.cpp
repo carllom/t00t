@@ -35,6 +35,7 @@ constexpr uint32_t kSecondNoteBuffer = 40;   // ~0.23 s
 constexpr uint32_t kReleaseBuffer = 120;     // ~0.70 s
 
 using SubPlatform = PatchPlatformT<SubtractiveModule>;
+const FactoryBank kFactoryBanks[] = { { kSubFactoryBank, kSubFactoryCount } };
 
 // The Note Handler's note-on on Part 0, centred bend/pan, no mod wheel.
 void start_note(VoiceParams &vp, const SubPlatform &platform, uint8_t note, uint8_t velocity) {
@@ -69,8 +70,8 @@ std::vector<int16_t> render_patch(uint32_t patch, bool second_note = true, const
     auto state = std::make_unique<SubRenderState>();
     sub_render_init(*state);
     auto slots = std::make_unique<PartSlotT<SubCookedPatch>[]>(SUB_PART_COUNT);
-    auto platform = std::make_unique<SubPlatform>(slots.get(), kSubFactoryBank, kSubFactoryCount);
-    if (platform->load_factory(0, patch) != PatchLoadResult::OK) {
+    auto platform = std::make_unique<SubPlatform>(slots.get(), kFactoryBanks, 1, nullptr);
+    if (platform->load_factory(0, 0, patch) != PatchLoadResult::OK) {
         fprintf(stderr, "factory patch %u failed to load\n", patch);
         exit(2);
     }
@@ -192,7 +193,7 @@ bool behaviour_checks() {
     ok = report(note_on == -1, "note-on WAVE edit (NRPN) leaves the sounding note as it started") && ok;
 
     int pc_held = first_difference(base, render_patch(2, false, after_at(20, [](SubPlatform &p) {
-        p.load_factory(0, 1);
+        p.load_factory(0, 0, 1);
     })));
     ok = report(pc_held == -1, "Program Change leaves held notes on their Patch") && ok;
 
@@ -200,12 +201,12 @@ bool behaviour_checks() {
     // keeps the Patch (and the pitch Core 0 computed for it) it started
     // with. Fairlite (sample) interrupted by Sq-PWM (oscillator).
     int pc_same_buffer = first_difference(render_patch(0, false), render_patch(0, false,
-        after_at(0, [](SubPlatform &p) { p.load_factory(0, 1); })));
+        after_at(0, [](SubPlatform &p) { p.load_factory(0, 0, 1); })));
     ok = report(pc_same_buffer == -1, "Program Change behind a note-on leaves that note on its own Patch") && ok;
 
     // After a Program Change, a live edit reaches only notes on the new Patch.
     int edit_after_pc = first_difference(base, render_patch(2, false, { nullptr, [](uint32_t b, SubPlatform &p) {
-        if (b == 20) p.load_factory(0, 1);
+        if (b == 20) p.load_factory(0, 0, 1);
         if (b == 30) cc(p, 74, 40);
     } }));
     ok = report(edit_after_pc == -1, "an edit after a Program Change doesn't reach notes on the old Patch") && ok;

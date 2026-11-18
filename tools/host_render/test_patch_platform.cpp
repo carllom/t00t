@@ -12,6 +12,8 @@
 #include "midi/midi_parser.h"
 #include "patch/platform.h"
 #include "patch/receiver.h"
+#include "patch/user_bank.h"
+#include "ram_flash.h"
 
 #include <cstdio>
 #include <cstring>
@@ -110,14 +112,25 @@ const StoredPatchRef kBank[] = {
     { kForeign, sizeof kForeign },
 };
 
+// A second factory bank: BRIGHT first.
+const StoredPatchRef kBank1[] = {
+    { kBright, sizeof kBright },
+};
+
+const FactoryBank kFactoryBanks[] = {
+    { kBank, sizeof kBank / sizeof kBank[0] },
+    { kBank1, sizeof kBank1 / sizeof kBank1[0] },
+};
+
 // --- Wiring: what a real module's Input subsystem provides ---
 
 struct Wiring {
     Platform *platform;
 };
 
+// Program Change: from the bank the channel's Bank Select MSB picks.
 void set_patch(Wiring &w, const InputValue &value) {
-    w.platform->load_factory(value.channel, value.index);
+    w.platform->load_program(value.channel, midi_channel_bank_msb(value.channel), value.index);
 }
 
 // A module's own CC Handler, ahead of the platform in the table.
@@ -141,6 +154,8 @@ void feed(Wiring &w, MidiParser &parser, const uint8_t *bytes, uint32_t len) {
         if (!parser.feed(bytes[i], ev)) continue;
         if (ev.type == MIDI_PROGRAM_CHANGE) {
             midi_dispatch_program_change(w, kTable, ev.channel, ev.data1);
+        } else if (ev.type == MIDI_CC && ev.data1 == 0) {
+            midi_bank_select_msb(ev.channel, ev.data2);  // as the generic MIDI loop does
         } else if (ev.type == MIDI_CC) {
             midi_dispatch_cc(w, kTable, ev.channel, ev.data1, ev.data2);
         }
@@ -151,13 +166,16 @@ void feed(Wiring &w, MidiParser &parser, const uint8_t *bytes, uint32_t len) {
 // already drained from Core 1's side.
 struct Rig {
     PartSlotT<StubCooked> slots[StubModule::kPartCount];
-    Platform platform{slots, kBank, sizeof kBank / sizeof kBank[0]};
+    RamFlash flash;
+    UserBank user{StubModule::kModuleId, user_flash(flash)};
+    Platform platform{slots, kFactoryBanks, 2, &user};
     Wiring wiring{&platform};
     MidiParser parser{};
 
     Rig() {
         parser.init();
-        for (uint8_t p = 0; p < StubModule::kPartCount; p++) platform.load_factory(p, 0);
+        midi_bank_select_init();
+        for (uint8_t p = 0; p < StubModule::kPartCount; p++) platform.load_factory(p, 0, 0);
         StubCooked drain;
         for (auto &s : slots) s.consume(drain);
     }
@@ -198,7 +216,7 @@ void test_patch_for_another_module_is_rejected() {
 
     rig.midi({ 0xC0, 0x03 });  // Part 0 -> FMPATCH (module 3)
     check(!rig.slots[0].consume(got), "patch with a mismatched module ID commits nothing");
-    check(rig.platform.load_factory(0, 3) == PatchLoadResult::WRONG_MODULE,
+    check(rig.platform.load_factory(0, 0, 3) == PatchLoadResult::WRONG_MODULE,
           "load reports WRONG_MODULE");
 
     rig.midi({ 0xC0, 0x00 });  // Part 0 -> DARK still works afterwards
@@ -245,7 +263,7 @@ void test_encoder_writes_the_stored_format() {
 
 void test_missing_factory_slot_is_reported() {
     Rig rig;
-    check(rig.platform.load_factory(0, 99) == PatchLoadResult::NO_SUCH_PATCH, "out-of-range program reports NO_SUCH_PATCH");
+    check(rig.platform.load_factory(0, 0, 99) == PatchLoadResult::NO_SUCH_PATCH, "out-of-range program reports NO_SUCH_PATCH");
     StubCooked got{};
     check(!rig.slots[0].consume(got), "and commits nothing");
 }
@@ -333,7 +351,7 @@ StubVoice start_voice(const Platform &platform, uint8_t part) {
 void test_note_on_edit_reaches_the_next_note_even_while_core1_is_behind() {
     Rig rig;
     PartReceiverT<StubCooked> rx;
-    rig.platform.load_factory(0, 0);
+    rig.platform.load_factory(0, 0, 0);
     rx.take(rig.slots[0]);
 
     // CUTOFF edit occupies the slot; the DETUNE (note-on) edit right behind
@@ -346,7 +364,7 @@ void test_note_on_edit_reaches_the_next_note_even_while_core1_is_behind() {
 void test_live_edit_reaches_core1_from_the_next_buffer() {
     Rig rig;
     PartReceiverT<StubCooked> rx;
-    rig.platform.load_factory(0, 0);
+    rig.platform.load_factory(0, 0, 0);
     rx.take(rig.slots[0]);
     rig.midi({ 0xB0, 99, 0, 0xB0, 98, 0, 0xB0, 6, 127 });  // LEVEL (live) to 100
     check(rx.take(rig.slots[0]) == PartTake::EDIT && rx.current().level_x10 == 1000,
@@ -356,7 +374,7 @@ void test_live_edit_reaches_core1_from_the_next_buffer() {
 void test_core1_tells_a_patch_load_from_an_edit() {
     Rig rig;
     PartReceiverT<StubCooked> rx;
-    rig.platform.load_factory(0, 0);
+    rig.platform.load_factory(0, 0, 0);
     check(rx.take(rig.slots[0]) == PartTake::LOAD, "a loaded Patch arrives as a new load");
     rig.midi({ 0xB0, 74, 64 });
     check(rx.take(rig.slots[0]) == PartTake::EDIT, "a parameter edit arrives as an edit of the same Patch");
@@ -368,7 +386,7 @@ void test_core1_tells_a_patch_load_from_an_edit() {
 void test_notes_know_which_patch_load_they_belong_to() {
     Rig rig;
     PartReceiverT<StubCooked> rx;
-    rig.platform.load_factory(0, 0);  // DARK
+    rig.platform.load_factory(0, 0, 0);  // DARK
     rx.take(rig.slots[0]);
 
     StubVoice on_dark = start_voice(rig.platform, 0);
@@ -385,6 +403,90 @@ void test_notes_know_which_patch_load_they_belong_to() {
     check(on_dark.load_id == rx.previous_load_id() && on_dark.load_id != rx.load_id(),
           "Core 1 can tell the DARK note is on the previous load, BRIGHT's on the current one");
     check(on_bright.load_id == rx.load_id(), "and the BRIGHT note matches the current load");
+}
+
+// --- Banks: Bank Select MSB 0-63 = factory bank, 64+ = user bank; Program
+// Change = slot in it. ---
+
+void test_bank_select_msb_picks_a_factory_bank() {
+    Rig rig;
+    rig.midi({ 0xB0, 0, 1, 0xC0, 0 });  // MSB 1, program 0: factory bank 1's BRIGHT
+    StubCooked got{};
+    check(rig.slots[0].consume(got) && is_bright(got), "MSB 1 + PC 0 loads factory bank 1's first Patch");
+    rig.midi({ 0xB0, 0, 0, 0xC0, 0 });  // back to bank 0: DARK
+    check(rig.slots[0].consume(got) && is_dark(got), "MSB 0 + PC 0 loads factory bank 0's first Patch");
+}
+
+void test_program_change_loads_from_the_user_bank() {
+    Rig rig;
+    rig.user.store_patch(3, kBright, sizeof kBright);
+    rig.midi({ 0xB1, 0, 64, 0xC1, 3 });  // Part 1: MSB 64 (user bank), program 3
+    StubCooked got{};
+    check(rig.slots[1].consume(got) && is_bright(got), "MSB 64 + PC 3 loads user slot 3");
+    check(strcmp(rig.platform.name(1), "BRIGHT") == 0, "with its name");
+}
+
+void test_empty_slots_and_missing_banks_are_ignored() {
+    Rig rig;
+    StubCooked got{};
+    rig.midi({ 0xB0, 0, 64, 0xC0, 7 });
+    check(!rig.slots[0].consume(got), "an empty user slot loads nothing");
+    rig.midi({ 0xB0, 0, 65, 0xC0, 0 });
+    check(!rig.slots[0].consume(got), "a user bank past the last loads nothing");
+    rig.midi({ 0xB0, 0, 2, 0xC0, 0 });
+    check(!rig.slots[0].consume(got), "a factory bank the module doesn't have loads nothing");
+    rig.midi({ 0xB0, 0, 1, 0xC0, 1 });
+    check(!rig.slots[0].consume(got), "a program past a factory bank's end loads nothing");
+    check(strcmp(rig.platform.name(0), "DARK") == 0, "the Part keeps its Patch throughout");
+    check(rig.platform.load_program(0, 64, 7) == PatchLoadResult::NO_SUCH_PATCH, "an empty slot reports NO_SUCH_PATCH");
+}
+
+void test_store_writes_the_edit_buffer_to_a_user_slot() {
+    Rig rig;  // Part 0 on DARK: level 30, detune 0, cutoff 300
+    rig.midi({ 0xB0, 99, 0, 0xB0, 98, 0, 0xB0, 6, 127 });  // LEVEL = 100
+    check(rig.platform.store(0, 10) == StoreResult::OK, "storing Part 0 into user slot 10 succeeds");
+
+    // DARK with level 100: payload level 100, detune 100 (0 - -100), cutoff 280 (300 - 20).
+    const uint8_t want[] = {
+        'T', '0', 'P', 'T', 0x01, 0x02,
+        'D', 'A', 'R', 'K', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0x04, 0x00,
+        100, 100, 0x18, 0x01,
+    };
+    const StoredPatchRef slot = rig.user.patch(10);
+    check(memcmp(slot.data, want, sizeof want) == 0, "the slot holds the edited Edit buffer in stored format");
+
+    rig.midi({ 0xB1, 0, 64, 0xC1, 10 });  // and Part 1 can load it
+    StubCooked got{};
+    check(rig.slots[1].consume(got) && got.level_x10 == 1000 && got.cutoff == 300, "Program Change loads it back");
+    check(rig.platform.store(0, kUserPatchSlots) == StoreResult::NO_SUCH_SLOT, "a slot past the bank is refused");
+    check(rig.platform.store(StubModule::kPartCount, 0) == StoreResult::NO_SUCH_SLOT, "so is an unknown Part");
+}
+
+void test_store_without_a_user_bank_is_refused() {
+    PartSlotT<StubCooked> slots[StubModule::kPartCount];
+    Platform platform{slots, kFactoryBanks, 2, nullptr};
+    platform.load_factory(0, 0, 0);
+    check(platform.store(0, 0) == StoreResult::NO_SUCH_SLOT, "a platform without a user bank can't store");
+    check(platform.load_program(0, 64, 0) == PatchLoadResult::NO_SUCH_PATCH, "or load from one");
+}
+
+void test_user_slot_holding_another_modules_patch_is_rejected() {
+    Rig rig;
+    rig.flash.poke(user_patch_slot_offset(StubModule::kModuleId, 4), kForeign, sizeof kForeign);
+    rig.midi({ 0xB0, 0, 64, 0xC0, 4 });
+    StubCooked got{};
+    check(!rig.slots[0].consume(got), "a user slot holding module 3's Patch loads nothing");
+    check(rig.platform.load_program(0, 64, 4) == PatchLoadResult::WRONG_MODULE, "load reports WRONG_MODULE");
+}
+
+void test_older_schema_user_patch_takes_defaults() {
+    Rig rig;
+    rig.user.store_patch(0, kOld, sizeof kOld);
+    rig.midi({ 0xB0, 0, 64, 0xC0, 0 });
+    StubCooked got{};
+    check(rig.slots[0].consume(got) && got.level_x10 == 600 && got.detune == 5 && got.cutoff == 1000,
+          "a schema-1 user Patch loads, CUTOFF taking its descriptor default");
 }
 
 }  // namespace
@@ -407,6 +509,13 @@ int main() {
     test_live_edit_reaches_core1_from_the_next_buffer();
     test_core1_tells_a_patch_load_from_an_edit();
     test_notes_know_which_patch_load_they_belong_to();
+    test_bank_select_msb_picks_a_factory_bank();
+    test_program_change_loads_from_the_user_bank();
+    test_empty_slots_and_missing_banks_are_ignored();
+    test_store_writes_the_edit_buffer_to_a_user_slot();
+    test_store_without_a_user_bank_is_refused();
+    test_user_slot_holding_another_modules_patch_is_rejected();
+    test_older_schema_user_patch_takes_defaults();
     printf(g_ok ? "ALL CHECKS PASSED\n" : "CHECKS FAILED\n");
     return g_ok ? 0 : 1;
 }

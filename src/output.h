@@ -1,6 +1,7 @@
 #pragma once
 
 #include "audio_common.h"
+#include "hardware/irq.h"
 #include <cstdint>
 
 // Two raw stereo buffers: 256 samples × 2 channels × int16_t = 1024 bytes each.
@@ -13,6 +14,14 @@ struct AudioBuffers {
 // On DMA completion, the ISR starts DMA on the next buffer and pushes
 // the index of the buffer needing fill to Core 1 via multicore FIFO.
 void i2s_output_init(AudioBuffers *buffers);
+
+// The interrupt the buffer swap runs on. Its handler is RAM-resident and
+// touches no flash, so it can stay enabled while flash is written.
+static constexpr unsigned I2S_OUTPUT_IRQ = DMA_IRQ_0;
+
+// Zero both buffers, so playback continues as silence until Core 1 renders
+// again. Only while Core 1 isn't rendering (core1_park.h).
+void i2s_output_silence();
 
 // Get pointer to a specific buffer for filling.
 inline int16_t *i2s_buffer_ptr(AudioBuffers *buffers, uint8_t index) {

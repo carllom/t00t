@@ -12,6 +12,8 @@
 #include "midi/midi_controller_generic.h"
 #include "patch/platform.h"
 #include "patch/sysex.h"
+#include "patch/user_bank.h"
+#include "ram_flash.h"
 
 #include <cstdio>
 #include <cstring>
@@ -70,7 +72,10 @@ const Bytes &vec(const char *name) {
 // --- The module wiring under test: the generic loop, a NOTE Handler that
 // counts, the platform, and SysEx replies captured instead of sent. ---
 
-PatchPlatformT<SubtractiveModule> g_platform(sub_part_slots, kSubFactoryBank, kSubFactoryCount);
+const FactoryBank kFactoryBanks[] = { { kSubFactoryBank, kSubFactoryCount } };
+RamFlash g_flash;
+UserBank g_user(ModuleId::SUBTRACTIVE, user_flash(g_flash));
+PatchPlatformT<SubtractiveModule> g_platform(sub_part_slots, kFactoryBanks, 1, &g_user);
 int g_notes_on = 0;
 Bytes g_sent;
 
@@ -110,7 +115,8 @@ void reset() {
     g_out_budget = -1;
     g_sysex.task();  // finish any dump a previous test left running
     g_sent.clear();
-    for (uint8_t p = 0; p < SUB_PART_COUNT; p++) g_platform.load_factory(p, 0);
+    g_flash.reset();
+    for (uint8_t p = 0; p < SUB_PART_COUNT; p++) g_platform.load_factory(p, 0, 0);
     SubCookedPatch drain;
     for (auto &s : sub_part_slots) s.consume(drain);
 }
@@ -292,6 +298,29 @@ void test_other_sysex_is_answered_during_a_dump() {
           "once there's room the held-back identify reply goes first, then the whole dump");
 }
 
+void test_store_request_writes_the_edit_buffer_and_replies() {
+    reset();  // Part 0 holds Fairlite
+    feed(MIDI_SOURCE_USB, vec("store_request_part0_slot10"));
+    check(g_sent == vec("store_reply_part0_slot10_ok"), "store request: reply OK for Part 0, slot 10");
+    const StoredPatchRef slot = g_user.patch(10);
+    check(slot.data && memcmp(slot.data, kSubFactoryBank[0].data, kSubFactoryBank[0].len) == 0,
+          "user slot 10 now holds Part 0's Edit buffer, Fairlite's stored bytes");
+    check(g_flash.writes.size() == 1, "with one sector write");
+}
+
+void test_store_request_reports_a_refused_store() {
+    reset();
+    feed(MIDI_SOURCE_USB, vec("store_request_part0_slot200"));
+    check(g_sent == vec("store_reply_part0_slot200_no_such_slot"), "a slot past the bank is answered NO_SUCH_SLOT");
+    g_sent.clear();
+    g_flash.fail = true;
+    feed(MIDI_SOURCE_USB, vec("store_request_part0_slot10"));
+    check(g_sent == vec("store_reply_part0_slot10_flash_failed"), "a failed flash write is answered FLASH_FAILED");
+    g_sent.clear();
+    feed(MIDI_SOURCE_USB, vec("store_request_part16_slot0"));
+    check(g_sent.empty() && g_flash.writes.empty(), "a store for an unknown Part is ignored");
+}
+
 }  // namespace
 
 int main() {
@@ -308,6 +337,8 @@ int main() {
     test_descriptor_dump_sends_both_tables();
     test_descriptor_dump_is_paced_by_the_outgoing_queue();
     test_other_sysex_is_answered_during_a_dump();
+    test_store_request_writes_the_edit_buffer_and_replies();
+    test_store_request_reports_a_refused_store();
     printf(g_ok ? "ALL CHECKS PASSED\n" : "CHECKS FAILED\n");
     return g_ok ? 0 : 1;
 }

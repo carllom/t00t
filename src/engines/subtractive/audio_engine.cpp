@@ -1,5 +1,6 @@
 #include "audio_engine.h"
 #include "render.h"
+#include "core1_park.h"
 #include "hardware/gpio.h"
 #include "pico/multicore.h"
 #include "pico/time.h"
@@ -29,6 +30,14 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
     while (true) {
         // Wait for DMA ISR to tell us which buffer to fill
         uint32_t buf_index = multicore_fifo_pop_blocking();
+
+        // Parked while Core 0 wrote flash: playback ran on silenced buffers
+        // meanwhile, so drop the fill requests queued up and resume with the
+        // next one, in step with playback again.
+        if (core1_park_point()) {
+            multicore_fifo_drain();
+            continue;
+        }
 
         gpio_put(PROFILE_PIN, 1);
         uint32_t t_start = time_us_32();

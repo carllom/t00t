@@ -49,11 +49,11 @@ oscillator.
 | CC71 | Resonance | 0–127 | Patch RESO, scaled onto its range; live |
 | CC79 | Env → Cutoff | 0–127 | Patch ENV>CUT, scaled onto ±18000 Hz; live |
 | CC12 | LFO Rate | 0–127 | Patch LFO RATE, scaled onto 0–20 Hz; live |
-| SysEx | t00t protocol | F0 7D 54 … F7 | identify, exact parameter change, edit-buffer request/dump per Part, descriptor dump (with value labels for WAVE, SAMPLE, FILTER) (`docs/platform.md`); replies over USB |
+| SysEx | t00t protocol | F0 7D 54 … F7 | identify, exact parameter change, edit-buffer request/dump per Part, store a Part's Edit buffer to a user slot, descriptor dump (with value labels for WAVE, SAMPLE, FILTER) (`docs/platform.md`); replies over USB |
 | NRPN (CC99/98 + CC6/38) | any Patch parameter | 14-bit | NRPN number = parameter ID (`patch.h`); Data Entry 0–16383 scaled onto the parameter's range (MSB alone reaches full scale, LSB refines); live parameters reach sounding notes, note-on ones the next note |
-| CC0 | Bank Select MSB | 0–127 | selects the microKORG program bank, used with Program Change |
+| CC0 | Bank Select MSB | 0–127 | picks the bank for Program Change: 0 = the factory bank, 64 = the user bank (128 slots); other values select no bank |
 | CC32 | Bank Select LSB | 0–127 | captured, currently unused |
-| Program Change | — | 0–127 | microKORG numbering (tens digit = row, ones digit = column) mapped to one of the 11 factory Patches, loaded into the channel's Part; sounding notes keep the Patch they started with |
+| Program Change | — | 0–127 | loads that slot of the selected bank into the channel's Part (factory: 0–10); an empty slot or missing bank is ignored; sounding notes keep the Patch they started with |
 
 Non-MIDI input: VGA board buttons (A/B/C, `vgaboard_rp2350` only) — each
 fixed to one note/channel, routed through the same Shaping →
@@ -100,12 +100,14 @@ Performance-only otherwise (`HAS_ENCODER=0`).
 - `render.h` — the per-buffer render (voices, post-mix FX, interleave),
   host-buildable and shared by Core 1 and the host tools
 - `audio_engine.cpp` — Core 1 loop: takes new cooked patches from the Part
-  slots, calls `render.h`
+  slots, calls `render.h`; parks in RAM while Core 0 stores to flash
+  (`src/core1_park.h`)
 - `display.cpp` — Performance + DIAG Pages (see Display above)
 - `input_subsystem.cpp` — the Input pipeline's module-specific tail:
   mapping table, Handlers, and Voice Allocation Interface calls, built on
   the shared dispatch layer below; owns the patch platform instance
-  (`src/patch/platform.h`)
+  (`src/patch/platform.h`) and the module's user bank
+  (`src/patch/user_bank.h`)
 
 Also draws on shared, non-engine-specific code: `src/controller.cpp`
 (VGA-board buttons — subtractive is the only engine that links it, see
@@ -143,7 +145,7 @@ Both build with `make host`.
 ### Patches and cooking
 
 A Patch is 12 Descriptor values (`patch.h`'s table). Program Change
-decodes a factory Patch into the channel's Part Edit buffer; NRPN and the
+decodes a factory or user-bank Patch into the channel's Part Edit buffer; NRPN and the
 default CCs change single values in it. After either, Core 0 cooks the Edit
 buffer into a `SubCookedPatch` — sample pointer, LFO phase increment, Q15
 LFO depths, SVF Q and seed coefficient — and publishes it to the Part's
@@ -348,9 +350,10 @@ insert adds ~1.5pp; reverb adds ~8pp. Measured on breadboard_rp2350 at
    low Q; a single pass is not.
 6. **CC10 pan is a live control, not part of a Patch** — it is per-channel
    state applied at note-on, matching mod-wheel depth's treatment.
-7. **Program Change uses microKORG-specific numbering** (row = tens digit,
-   column = ones digit) rather than a linear 0–127 map — matches the specific
-   external controller this engine was built to pair with.
+7. **Program Change is linear, within the bank Bank Select MSB picks** —
+   PC n loads slot n, the same numbering every module on the platform uses,
+   so every one of the 128 user slots is reachable, rather than
+   microKORG-style row/column numbering.
 8. **Each VGA board button plays one fixed note**, not the old per-button
    4-note cycle — a bare on/off switch has no state to key a cycle position
    off other than the button itself, and a fixed note keeps the button's
@@ -358,10 +361,9 @@ insert adds ~1.5pp; reverb adds ~8pp. Measured on breadboard_rp2350 at
    rather than mutable per-button state threaded through the input path.
 9. **Program Change now routes through the Router** (`CONFIGURATION`,
    `src/midi/midi_dispatch.h`'s shared synthetic id) instead of bypassing
-   the dispatch table directly — the microKORG row/col decoding stays
-   entirely inside this module's own patch-select Handler, reading the
-   bank value via `midi_channel_bank_msb()` (shared, module-agnostic
-   plumbing) rather than a locally duplicated array.
+   the dispatch table directly — the patch-select Handler reads the bank
+   value via `midi_channel_bank_msb()` (shared, module-agnostic plumbing)
+   rather than a locally duplicated array.
 10. **Voice allocation lives inside `set_note()`, not the dispatch loop**
     — `voice_alloc_allocate()`/`release()` are the Voice Allocation
     Interface (CONTEXT.md), reached from a Handler, never interleaved in

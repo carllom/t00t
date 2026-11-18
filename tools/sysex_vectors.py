@@ -27,11 +27,18 @@ IDENTIFY_REPLY = 0x02
 PARAM_CHANGE = 0x10
 EDIT_BUFFER_REQUEST = 0x20
 EDIT_BUFFER_DUMP = 0x21
+STORE_REQUEST = 0x30
+STORE_REPLY = 0x31
 DESCRIPTOR_DUMP_REQUEST = 0x40
 DESCRIPTOR_TABLE_BEGIN = 0x41
 DESCRIPTOR = 0x42
 DESCRIPTOR_LABELS = 0x43
 DESCRIPTOR_DUMP_END = 0x44
+
+# Store results (src/patch/user_bank.h).
+STORE_OK = 0
+STORE_NO_SUCH_SLOT = 1
+STORE_FLASH_FAILED = 3
 
 TABLE_MODULE = 0
 TABLE_COMMON = 1
@@ -156,6 +163,15 @@ def vectors(patches):
         ("edit_buffer_dump_truncated_part1", frame(EDIT_BUFFER_DUMP, [1, *pack7(saw_flt[:-2])])),
         # A high-bits byte with no data after it: malformed, must be ignored.
         ("edit_buffer_dump_malformed_part1", frame(EDIT_BUFFER_DUMP, [1, 0x00])),
+        # Store Part 0's Edit buffer into user slot 10, and the device's answers.
+        ("store_request_part0_slot10", frame(STORE_REQUEST, [0, *id14(10)])),
+        ("store_reply_part0_slot10_ok", frame(STORE_REPLY, [0, *id14(10), STORE_OK])),
+        ("store_reply_part0_slot10_flash_failed", frame(STORE_REPLY, [0, *id14(10), STORE_FLASH_FAILED])),
+        # Slot 200: past the 128-slot user bank.
+        ("store_request_part0_slot200", frame(STORE_REQUEST, [0, *id14(200)])),
+        ("store_reply_part0_slot200_no_such_slot", frame(STORE_REPLY, [0, *id14(200), STORE_NO_SUCH_SLOT])),
+        # Part 16: the module has Parts 0-15 only, so no reply.
+        ("store_request_part16_slot0", frame(STORE_REQUEST, [16, *id14(0)])),
         ("descriptor_dump_request", frame(DESCRIPTOR_DUMP_REQUEST)),
         # The device's whole answer, every message F0 ... F7 in order: for the
         # module table then the common table, table begin, then each

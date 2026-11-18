@@ -212,9 +212,13 @@ if(T00T_ENGINE STREQUAL "tracker")
 endif()
 
 # Engines migrated onto the patch platform (docs/platform.md) -- tells
-# main.cpp to run the platform's Core 0 task each pass.
+# main.cpp to run the platform's Core 0 task each pass, and links the
+# user-bank flash writer (src/patch/user_flash.cpp) with the Core 1 park it
+# needs.
 if(T00T_ENGINE STREQUAL "subtractive")
     target_compile_definitions(t00t PRIVATE HAS_PATCH_PLATFORM=1)
+    target_sources(t00t PRIVATE src/patch/user_flash.cpp src/core1_park.cpp)
+    target_link_libraries(t00t hardware_flash)
 endif()
 
 target_link_libraries(t00t
@@ -236,3 +240,11 @@ pico_enable_stdio_uart(t00t 0)
 
 # Generate .uf2 file for flashing
 pico_add_extra_outputs(t00t)
+
+# Every module build must stay clear of the user-bank region (the last
+# 384 KB of the 4 MB flash, src/patch/user_bank.h), so flashing it never
+# overwrites stored Patches.
+add_custom_command(TARGET t00t POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -DIMAGE=$<TARGET_FILE_DIR:t00t>/t00t.bin -DLIMIT=0x3A0000
+            -P ${CMAKE_CURRENT_LIST_DIR}/tools/check_image_size.cmake
+    VERBATIM)

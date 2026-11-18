@@ -486,9 +486,22 @@ target_compile_definitions(render_subtractive PRIVATE
 
 # Host test for the patch platform core (src/patch/), at the
 # platform seam: raw MIDI bytes in, cooked-slot commits observed through a
-# stub module. Header-only, module-agnostic -- no engine, no pico-sdk.
-add_executable(test_patch_platform test_patch_platform.cpp)
+# stub module, factory banks and a user bank on RAM-backed flash
+# (ram_flash.h). Module-agnostic -- no engine, no pico-sdk.
+add_executable(test_patch_platform
+    test_patch_platform.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/../../src/midi/midi_dispatch.cpp
+)
 target_include_directories(test_patch_platform PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}
+    ${CMAKE_CURRENT_LIST_DIR}/../../src
+)
+
+# Host test for the user banks (src/patch/user_bank.h) at the UserBank
+# seam: Patches stored into and read back from a RAM-backed stand-in for the
+# reserved flash region. Header-only, module-agnostic.
+add_executable(test_user_bank test_user_bank.cpp)
+target_include_directories(test_user_bank PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}
     ${CMAKE_CURRENT_LIST_DIR}/../../src
 )

@@ -6,11 +6,24 @@
 #include "part_slot.h"
 #include "profile.h"
 #include "stored_format.h"
+#include "user_bank.h"
 #include <cstdint>
+
+// A compiled-in, read-only factory bank of stored Patches.
+struct FactoryBank {
+    const StoredPatchRef *patches;
+    uint32_t count;
+};
+
+// Bank Select MSB 0..63 picks factory bank MSB, 64..127 user bank MSB - 64;
+// Program Change then picks the slot in that bank.
+static constexpr uint8_t kUserBankMsb = 64;
+static constexpr uint32_t kBankSize = 128;
 
 // The module-agnostic Core 0 side of the patch platform: per-Part Edit
 // buffers, loading stored Patches into them, cooking, and publishing the
-// cooked patch to each Part's slot (docs/platform.md).
+// cooked patch to each Part's slot (docs/platform.md), and storing Edit
+// buffers into the module's user bank.
 //
 // `Module` supplies:
 //   kModuleId, kSchemaVersion, kPartCount
@@ -25,17 +38,44 @@ public:
     static constexpr uint32_t kPartCount = Module::kPartCount;
 
     static_assert(descriptor_table_valid(Module::kDescriptors), "invalid descriptor table");
+    static_assert(patch_stored_size(Module::kDescriptors) <= kUserPatchSlotSize,
+                  "this module's stored Patch doesn't fit a user-bank slot");
 
-    // `slots` is an array of kPartCount, shared with Core 1.
-    PatchPlatformT(PartSlotT<Cooked> *slots, const StoredPatchRef *factory, uint32_t factory_count)
-        : slots_(slots), factory_(factory), factory_count_(factory_count) {}
+    // `slots` is an array of kPartCount, shared with Core 1. `factory` holds
+    // `factory_count` banks (at most kUserBankMsb); `user` may be null for
+    // no user bank.
+    PatchPlatformT(PartSlotT<Cooked> *slots, const FactoryBank *factory, uint32_t factory_count,
+                   UserBank *user)
+        : slots_(slots), factory_(factory), factory_count_(factory_count), user_(user) {}
 
-    // Load factory Patch `index` into `part`'s Edit buffer and publish it
-    // cooked. Out-of-range part or index, or a patch that fails to decode,
-    // leaves the Part unchanged.
-    PatchLoadResult load_factory(uint8_t part, uint32_t index) {
-        if (part >= kPartCount || index >= factory_count_) return PatchLoadResult::NO_SUCH_PATCH;
-        return load(part, factory_[index]);
+    // Load the Patch at `index` of factory bank `bank` into `part`'s Edit
+    // buffer and publish it cooked. Out-of-range part, bank or index, or a
+    // patch that fails to decode, leaves the Part unchanged.
+    PatchLoadResult load_factory(uint8_t part, uint32_t bank, uint32_t index) {
+        if (bank >= factory_count_ || index >= factory_[bank].count) return PatchLoadResult::NO_SUCH_PATCH;
+        return load(part, factory_[bank].patches[index]);
+    }
+
+    // Load user slot `slot`; an empty slot is NO_SUCH_PATCH.
+    PatchLoadResult load_user(uint8_t part, uint32_t slot) {
+        if (!user_ || user_->patch_empty(slot)) return PatchLoadResult::NO_SUCH_PATCH;
+        return load(part, user_->patch(slot));
+    }
+
+    // Program Change `program` with Bank Select MSB `bank_msb`: load the
+    // slot from the factory or user bank the MSB picks.
+    PatchLoadResult load_program(uint8_t part, uint8_t bank_msb, uint8_t program) {
+        if (bank_msb < kUserBankMsb) return load_factory(part, bank_msb, program);
+        return load_user(part, (uint32_t)(bank_msb - kUserBankMsb) * kBankSize + program);
+    }
+
+    // Store `part`'s Edit buffer into user slot `slot`. Blocks for the
+    // sector write (audio is silent meanwhile on the device).
+    StoreResult store(uint8_t part, uint32_t slot) {
+        if (!user_ || part >= kPartCount) return StoreResult::NO_SUCH_SLOT;
+        uint8_t stored[patch_stored_size(Module::kDescriptors)];
+        const uint32_t n = encode_edit_buffer(part, stored, sizeof stored);
+        return user_->store_patch(slot, stored, n);
     }
 
     PatchLoadResult load(uint8_t part, const StoredPatchRef &stored) {
@@ -136,8 +176,9 @@ private:
     };
 
     PartSlotT<Cooked> *slots_;
-    const StoredPatchRef *factory_;
+    const FactoryBank *factory_;
     uint32_t factory_count_;
+    UserBank *user_;
     Edit edit_[kPartCount]{};
     NrpnDecoder nrpn_[kPartCount]{};
 };

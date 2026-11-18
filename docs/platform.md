@@ -80,11 +80,53 @@ channels. This is proven by measurement (the P0 gates), not estimate.
   outside the UF2 image, partitioned by module ID, in fixed-size slots; a Store rewrites the
   4 KB sector containing the slot.
 
+#### User-bank layout
+
+`src/patch/user_bank.h`. The region is the last 384 KB of the 4 MB flash
+(`0x3A0000`–`0x3FFFFF`): eight 48 KB partitions, one per module ID 1–8. Module 1's
+partition is the topmost and each further ID sits one partition lower, so a module ID past 8
+extends the region downward without moving any existing partition. Every build derives the
+layout from the same constants, whichever module it contains, and writes only its own
+partition; the UF2 image covers only the program, so flashing any module build leaves the
+region alone.
+
+| Within a partition | Offset | Slots | Slot size | Per 4 KB sector |
+|---|---|---|---|---|
+| Patch slots | 0 | 128 | 256 B | 16 |
+| Multi slots (reserved until the Multi stored format exists) | 32 KB | 32 | 512 B | 8 |
+
+A slot holds one stored Patch followed by `0xFF` to the slot's end; a slot without the Patch
+magic is empty. Slots never straddle a sector. A module whose stored Patch would exceed 256 B
+fails to compile. Loading a slot goes through `patch_decode()`, so a Patch for another
+module ID is rejected and an older schema loads with defaults for the parameters it lacks.
+
+A Store (`UserBank::store_patch()`) copies the slot's sector to a 4 KB SRAM buffer, replaces
+the slot, and rewrites the sector; storing what the slot already holds writes nothing. The
+device writer (`src/patch/user_flash.cpp`):
+
+1. parks Core 1 in a RAM-resident wait at its next buffer (`src/core1_park.h`; the SDK's
+   multicore lockout would take over the inter-core FIFO the buffer protocol uses),
+2. zeroes both audio buffers,
+3. masks every Core 0 interrupt except the audio DMA's, whose handler is RAM-resident and
+   register-level, so I2S keeps clocking out silence,
+4. erases and programs the sector, unmasks, releases Core 1, and verifies the sector by
+   reading it back.
+
+Core 1 drops the buffer requests queued while it was parked and resumes with the next one.
+DIN MIDI bytes beyond the UART's 32-byte FIFO that arrive during the write are lost; USB
+MIDI waits in the host. If the firmware image ever reaches into the region, the device has
+no user bank (every slot empty, every Store refused); every module build also fails at
+link time if its image would reach `0x3A0000` (`tools/check_image_size.cmake`), so no UF2
+can overwrite the region.
+
 ### MIDI control and SysEx
 
 - Program Change on a Part's channel loads a Patch into that Part; Bank Select MSB picks the
-  bank. Both are Configuration inputs in the Input pipeline. Multis are selected only from the
-  device UI or SysEx.
+  bank: MSB 0–63 is factory bank MSB, 64–127 user bank MSB − 64, and Program Change n is
+  slot n of that bank (`PatchPlatformT::load_program()`). Each module has one user bank
+  today (MSB 64, 128 slots). An empty slot, a missing bank or a program past a bank's end is
+  ignored: the Part keeps its Patch. Bank Select LSB is unused. Both are Configuration inputs
+  in the Input pipeline. Multis are selected only from the device UI or SysEx.
 - Every parameter is addressable by NRPN = parameter ID; a Descriptor may also carry a
   default CC. Descriptor-driven mapping replaces per-module mapping tables where it fits:
   a module's explicit mapping entries come first, and one catch-all entry hands every other
@@ -109,7 +151,9 @@ channels. This is proven by measurement (the P0 gates), not estimate.
   | `10` | parameter change | Part, parameter ID (2 × 7 bits, LSB first), value (int21) |
   | `20` | edit-buffer request | Part |
   | `21` | edit-buffer dump (both directions) | Part, stored Patch (packed) |
-  | `30`–`3F` | *reserved:* store and banks | |
+  | `30` | store request | Part, user slot (2 × 7 bits): store the Part's Edit buffer there |
+  | `31` | store reply | Part, user slot (2 × 7 bits), result: `0` OK, `1` no such slot, `2` bad Patch, `3` flash write failed |
+  | `32`–`3F` | *reserved:* more store and bank messages | |
   | `40` | descriptor dump request | — |
   | `41` | descriptor table begin | table, descriptor count (2 × 7 bits) |
   | `42` | descriptor | table, ID, min, max, default (int21 each), unit, curve, class, flags (bit 0 quick edit), default CC (`7F` = none), name, group |
@@ -200,7 +244,8 @@ as % of the 5.805 ms buffer period, idle (0) / 4 / 16 voices.
 | Cooked slot × 2 per Part | SRAM | subtractive: 84 B/slot × 16 = 1.3 KB | plus Core 1's own per-Part (current + previous) and per-voice state, 1.7 KB |
 | Edit buffer per Part + Multi | SRAM | subtractive: 1.8 KB platform state (16 Parts) | Descriptor-domain values, name, cooked copy, NRPN state |
 | SysEx assembly buffer | SRAM | TBD | bounded; over-length messages discarded |
-| User-bank region | flash (end) | TBD | e.g. 128 Patches + 32 Multis per module, 4 KB sectors |
+| User-bank region | flash (end) | 384 KB: 8 modules × (128 Patches × 256 B + 32 Multis × 512 B) | layout above |
+| Store sector buffer | SRAM | 4 KB | one per module build, in the user bank |
 
 Cook time is measured with `make PATCH_PROFILE=1` (`src/patch/profile.h`): Core 0 cycle
 counts around cook, load and edit, read from RAM through the debug probe. "Warm" is with the
@@ -230,21 +275,18 @@ Existing pieces the platform builds on, and how.
 
 ## Open questions
 
-1. **Bank Select range split.** Proposed: MSB 0–63 factory banks, 64–127 user banks, leaving
-   room for several factory banks per module (e.g. DX7 ROM1–ROM4). Undecided: whether LSB is
-   used at all, and what an MSB pointing at an empty bank does (ignore vs load init Patch).
-2. **MIDI out over DIN.** Replies go out over USB-MIDI only, since the DIN port is wired
+1. **MIDI out over DIN.** Replies go out over USB-MIDI only, since the DIN port is wired
    RX-only; requests arriving over DIN are answered over USB too. DIN replies would need a
    MIDI-out circuit and a free UART TX pin.
-3. **Parts per Multi** for each module (FM 4–8? groovebox = one bass + one drum Part).
-4. **Slot sizes and region size.** Patch and Multi slot sizes per module, how many slots fit
-   a 4 KB sector, and the total reserved region at the end of the 4 MB flash.
-5. **Shipping DX7 factory banks.** FM's `.syx` inputs and generated `patches.h` are
+2. **Parts per Multi** for each module (FM 4–8? groovebox = one bass + one drum Part).
+3. **Shipping DX7 factory banks.** FM's `.syx` inputs and generated `patches.h` are
    gitignored today; factory banks generated from them can't ship in the repo. Does FM ship
    with a project-authored factory bank, and leave DX7 ROMs to user import?
-6. **Store glitch length.** How long audio is muted during a sector erase/program, and
-   whether that is acceptable mid-performance.
-7. **Cook budget for FM.** Whether a full FM Patch cook fits Core 0's control-rate budget
+4. **Store glitch length.** How long audio is silent around a Store — the park wait (up to
+   one buffer, cutting the playing buffer short), the 4 KB erase and 16 page programs, and up
+   to two buffers before fresh audio after Core 1 resumes — and whether that is acceptable
+   mid-performance. To be measured on the rig.
+5. **Cook budget for FM.** Whether a full FM Patch cook fits Core 0's control-rate budget
    while MIDI and the display are busy, or needs to be incremental per parameter.
 
 ## Decision record
@@ -263,6 +305,16 @@ Existing pieces the platform builds on, and how.
 - **SysEx sub-ID `0x54` ('T') under the non-commercial manufacturer ID `0x7D`**, with
   commands grouped in ranges so store/banks, descriptor dump and Data Exchange can be added
   without renumbering.
+- **Bank Select range split, linear Program Change, empty means ignore.** MSB 0–63 factory
+  banks leaves room for several per module (e.g. DX7 ROM1–ROM4); PC n = slot n is the same in
+  every module; a Program Change into an empty slot or missing bank never disturbs a
+  performance. LSB stays free.
+- **Fixed, module-independent user-bank layout growing down from the end of flash.** Every
+  build agrees on where each module's partition is without knowing other modules' Patch
+  sizes, and new module IDs never move existing user data.
+- **Store parks Core 1 cooperatively and keeps the I2S clock running.** Audio is silent, not
+  stopped, so the DAC never loses its clocks; the inter-core FIFO keeps carrying only the
+  buffer protocol.
 - **Host tools over runtime complexity.** Format conversion and import (DX7 `.syx`, OPL
   `.sbi`/`.bnk`) stay in host tools and the editor; runtime SysEx carries only the stored
   format.

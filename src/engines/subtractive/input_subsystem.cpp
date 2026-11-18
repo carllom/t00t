@@ -7,6 +7,8 @@
 #include "patch/platform.h"
 #include "patch/platform_task.h"
 #include "patch/sysex.h"
+#include "patch/user_bank.h"
+#include "patch/user_flash.h"
 #include "midi/midi_out.h"
 #include <cmath>
 
@@ -29,7 +31,10 @@ static bool     voice_held[MAX_VOICES];      // true between note-on and note-of
 
 // --- Patch platform: one Part per MIDI channel (Part N = channel N) ---
 PartSlotT<SubCookedPatch> sub_part_slots[SUB_PART_COUNT];
-static PatchPlatformT<SubtractiveModule> platform(sub_part_slots, kSubFactoryBank, kSubFactoryCount);
+static const FactoryBank kSubFactoryBanks[] = { { kSubFactoryBank, kSubFactoryCount } };
+static UserBank user_bank(SubtractiveModule::kModuleId, user_flash_device());
+static PatchPlatformT<SubtractiveModule> platform(sub_part_slots, kSubFactoryBanks,
+                                                  sizeof kSubFactoryBanks / sizeof kSubFactoryBanks[0], &user_bank);
 
 const char *sub_part_patch_name(uint8_t part) {
     return part < SUB_PART_COUNT ? platform.name(part) : "";
@@ -56,24 +61,13 @@ static constexpr uint8_t NUM_CHANNEL_DEFAULTS = sizeof(channel_default_patch) / 
 static constexpr uint8_t NUM_CHANNELS = 16;
 static_assert(NUM_CHANNELS == SUB_PART_COUNT, "one Part per MIDI channel");
 
-static uint8_t channel_patch[NUM_CHANNELS];   // factory Patch index loaded in each channel's Part
+static uint8_t channel_patch[NUM_CHANNELS];   // program number of the Patch loaded in each channel's Part
 static float   channel_bend_ratio[NUM_CHANNELS]; // phase_inc multiplier (1.0 = centered)
 static int16_t channel_mod[NUM_CHANNELS];        // mod-wheel vibrato depth, Q15
 static int16_t channel_pan[NUM_CHANNELS];        // CC10 pan, Q15 (-32768=L .. 0=center .. 32767=R)
 
 static uint8_t default_patch_for_channel(uint8_t ch) {
     return ch < NUM_CHANNEL_DEFAULTS ? channel_default_patch[ch] : channel_default_patch[NUM_CHANNEL_DEFAULTS - 1];
-}
-
-// microKORG program numbering: the program-change value's tens digit is the row
-// (0-7) and the ones digit is the column (0-7), so a bank holds programs
-// 0-7, 10-17, ... 70-77 (64 total; columns 8/9 and rows >7 are unused). Bank
-// select adds another 64. Returns a linear slot 0-127, or -1 if the value isn't
-// a valid microKORG program.
-static int microkorg_slot(uint8_t bank, uint8_t pc) {
-    uint8_t row = pc / 10, col = pc % 10;
-    if (row > 7 || col > 7) return -1;
-    return (int)(bank & 1) * 64 + row * 8 + col;
 }
 
 // Re-scale phase_inc for every held voice on a channel after a bend change.
@@ -208,19 +202,15 @@ static void set_param_cc(VoiceParamBlock &, const InputValue &value) {
     platform.midi_cc(value.channel, value.id, (uint8_t)value.scalar);
 }
 
-// Patch select: Program Change, translated through microKORG numbering
-// (row = tens digit, col = ones digit) plus the bank value CC0 stored --
-// midi_channel_bank_msb() is shared, module-agnostic plumbing (midi_dispatch.h);
-// what a bank+program pair means is entirely this Handler's own business.
-// Loads the factory Patch into the channel's Part; sounding notes keep the
-// Patch they started with.
+// Patch select: Program Change loads that slot of the bank the channel's
+// Bank Select MSB picks (factory banks 0-63, user banks from 64; see
+// patch/platform.h) into the channel's Part. An empty slot or a missing
+// bank is ignored; sounding notes keep the Patch they started with.
 static void set_patch(VoiceParamBlock &, const InputValue &value) {
-    int slot = microkorg_slot(midi_channel_bank_msb(value.channel), value.index);
-    if (slot < 0) return;
-    uint8_t index = (uint8_t)(slot % kSubFactoryCount);
-    if (platform.load_factory(value.channel, index) == PatchLoadResult::OK) {
-        channel_patch[value.channel] = index;
-        ui_state.program = index;
+    const uint8_t program = (uint8_t)value.index;
+    if (platform.load_program(value.channel, midi_channel_bank_msb(value.channel), program) == PatchLoadResult::OK) {
+        channel_patch[value.channel] = program;
+        ui_state.program = program;
         ui_state.last_channel = value.channel;
     }
 }
@@ -272,7 +262,7 @@ void midi_controller_init() {
     for (uint32_t v = 0; v < MAX_VOICES; v++) voice_held[v] = false;
     for (uint8_t ch = 0; ch < NUM_CHANNELS; ch++) {
         channel_patch[ch] = default_patch_for_channel(ch);
-        platform.load_factory(ch, channel_patch[ch]);
+        platform.load_factory(ch, 0, channel_patch[ch]);
         channel_bend_ratio[ch] = 1.0f;
         channel_mod[ch] = 0;
         channel_pan[ch] = 0;

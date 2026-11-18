@@ -368,3 +368,29 @@ over USB with `amidi`; the normal build was flashed back afterwards.
   it; "largest seen" includes the 16 loads at boot.
 - Even cold, a Patch load costs about 1% of a 5.8 ms buffer period on
   Core 0, so cooking needs no incremental scheme for subtractive.
+
+## User banks in flash (#153, 2026-11-18)
+
+- **Layout** as in `platform.md`'s User-bank layout. Subtractive's 45 B
+  Patch fits a 256 B slot with room for schema growth.
+- **Banks and Program Change** (decided with the author). Bank Select MSB
+  0–63 = factory bank, 64–127 = user bank; Program Change n = slot n. The
+  microKORG row/column numbering is dropped so all 128 user slots are
+  reachable; an empty slot or missing bank is ignored rather than loading
+  an init Patch. Factory programs 11–127 no longer wrap onto the 11 factory
+  Patches.
+- **Store.** SysEx `30` stores a Part's Edit buffer into a user slot and
+  answers with `31` and a result code. The flash writer parks Core 1 in RAM
+  at its next buffer with a cooperative flag rather than the SDK's
+  multicore lockout, which would take over the inter-core FIFO the audio
+  buffer protocol runs on. The audio DMA handler was made RAM-resident and
+  register-level (it called the out-of-line, flash-resident
+  `multicore_fifo_push_timeout_us()`), so it stays enabled during the
+  erase and I2S keeps clocking out the zeroed buffers.
+- **Host tests.** `test_user_bank` (layout, partitioning, sector
+  read-modify-write, refusals, survival across a "reflash"),
+  `test_patch_platform` (Bank Select + Program Change into factory and user
+  banks, Store) and `test_sysex` (store request/reply golden vectors), all
+  against a RAM-backed NOR flash stub (`tools/host_render/ram_flash.h`).
+- **Pending on hardware:** Store → reflash another module → reflash
+  subtractive → user Patch still loads; Store mute length by ear/scope.
