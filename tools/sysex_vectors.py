@@ -20,15 +20,22 @@ import sys
 
 MANUFACTURER = 0x7D
 SUB_ID = 0x54
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 2
 
 IDENTIFY_REQUEST = 0x01
 IDENTIFY_REPLY = 0x02
 PARAM_CHANGE = 0x10
+MULTI_PARAM_CHANGE = 0x11
+MULTI_EDIT_BUFFER_REQUEST = 0x22
+MULTI_EDIT_BUFFER_DUMP = 0x23
 EDIT_BUFFER_REQUEST = 0x20
 EDIT_BUFFER_DUMP = 0x21
 STORE_REQUEST = 0x30
 STORE_REPLY = 0x31
+MULTI_STORE_REQUEST = 0x32
+MULTI_STORE_REPLY = 0x33
+MULTI_LOAD_REQUEST = 0x34
+MULTI_LOAD_REPLY = 0x35
 DESCRIPTOR_DUMP_REQUEST = 0x40
 DESCRIPTOR_TABLE_BEGIN = 0x41
 DESCRIPTOR = 0x42
@@ -42,6 +49,12 @@ STORE_FLASH_FAILED = 3
 
 TABLE_MODULE = 0
 TABLE_COMMON = 1
+TABLE_PART = 2
+MULTI_ITSELF = 0x7F  # Part byte of a Multi parameter change for the Multi's own settings
+
+# Multi load results (PatchLoadResult, src/patch/stored_format.h).
+LOAD_OK = 0
+LOAD_NO_SUCH_PATCH = 4
 NO_CC = 0x7F
 
 # Descriptor field codes (src/patch/descriptor.h).
@@ -75,7 +88,22 @@ COMMON_DESCRIPTORS = [
     ("FX MIX", "FX", 0, 127, 0, "NONE", "LINEAR", "LIVE", False, None, None),
     ("FX P1", "FX", 0, 127, 55, "NONE", "LINEAR", "LIVE", False, None, None),
     ("FX P2", "FX", 0, 127, 36, "NONE", "LINEAR", "LIVE", False, None, None),
+    ("MASTER", "MASTER", 0, 127, 127, "NONE", "LINEAR", "LIVE", False, None, None),
 ]
+
+PART_DESCRIPTORS = [
+    ("CHANNEL", "PART", 0, 16, 0, "ENUM", "LINEAR", "LIVE", False, None,
+     [str(c) for c in range(1, 17)] + ["OFF"]),
+    ("BANK", "PART", 0, 127, 0, "NONE", "LINEAR", "NOTE_ON", False, None, None),
+    ("PROGRAM", "PART", 0, 127, 0, "NONE", "LINEAR", "NOTE_ON", False, None, None),
+    ("VOLUME", "PART", 0, 127, 127, "NONE", "LINEAR", "LIVE", False, 7, None),
+    ("PAN", "PART", 0, 127, 64, "NONE", "LINEAR", "LIVE", False, 10, None),
+    ("FX SEND", "PART", 0, 127, 127, "NONE", "LINEAR", "LIVE", False, 91, None),
+]
+COMMON_FX_MIX = 1
+PART_VOLUME = 3
+PART_CHANNEL_OFF = 16
+MULTI_SCHEMA_VERSION = 1
 
 # Subtractive module facts (src/engines/subtractive/patch.h).
 MODULE_SUBTRACTIVE = 1
@@ -116,7 +144,8 @@ def id14(i):
 
 def descriptor_dump():
     out = []
-    for table, descs in ((TABLE_MODULE, SUBTRACTIVE_DESCRIPTORS), (TABLE_COMMON, COMMON_DESCRIPTORS)):
+    for table, descs in ((TABLE_MODULE, SUBTRACTIVE_DESCRIPTORS), (TABLE_COMMON, COMMON_DESCRIPTORS),
+                         (TABLE_PART, PART_DESCRIPTORS)):
         out += frame(DESCRIPTOR_TABLE_BEGIN, [table, *id14(len(descs))])
         for i, (name, group, lo, hi, default, unit, curve, cls, quick, cc, labels) in enumerate(descs):
             out += frame(DESCRIPTOR, [table, *id14(i), *int21(lo), *int21(hi), *int21(default),
@@ -129,6 +158,24 @@ def descriptor_dump():
     return out
 
 
+def stored_multi(name, common, parts):
+    """A stored Multi (src/patch/multi.h): the Patch header layout under magic
+    T0MT, then common byte count, common values, Part count, Part byte
+    count, Part values -- every value 0..127 here, one byte each."""
+    payload = [len(common), *common, len(parts), len(parts[0]), *[v for part in parts for v in part]]
+    name_bytes = list(name.encode("ascii"))[:16]
+    header = [ord("T"), ord("0"), ord("M"), ord("T"), MODULE_SUBTRACTIVE, MULTI_SCHEMA_VERSION,
+              *name_bytes, *([0] * (16 - len(name_bytes))), len(payload) & 0xFF, len(payload) >> 8]
+    return header + payload
+
+
+def default_multi_parts():
+    """The default Multi's Parts: Part n on channel n, Patch Fairlite, Sq-PWM,
+    then Saw-Flt (subtractive's default_program()), unity volume, centred
+    pan, full send."""
+    return [[p, 0, min(p, 2), 127, 64, 127] for p in range(PART_COUNT)]
+
+
 def factory_patches(header_path):
     text = open(header_path).read()
     patches = {}
@@ -139,6 +186,10 @@ def factory_patches(header_path):
 
 def vectors(patches):
     fairlite, saw_flt = patches[0], patches[2]
+    default_multi = stored_multi("INIT", [1, 0, 55, 36, 127], default_multi_parts())
+    layer_parts = default_multi_parts()
+    layer_parts[1][0] = 0
+    layer_multi = stored_multi("LAYER", [2, 40, 55, 36, 127], layer_parts)
     foreign = list(saw_flt)
     foreign[STORED_MODULE_OFFSET] = MODULE_FM
     return [
@@ -172,6 +223,20 @@ def vectors(patches):
         ("store_reply_part0_slot200_no_such_slot", frame(STORE_REPLY, [0, *id14(200), STORE_NO_SUCH_SLOT])),
         # Part 16: the module has Parts 0-15 only, so no reply.
         ("store_request_part16_slot0", frame(STORE_REQUEST, [16, *id14(0)])),
+        # Multi: FX MIX = 100, Part 2 VOLUME = 64.
+        ("multi_param_change_fx_mix_100", frame(MULTI_PARAM_CHANGE, [MULTI_ITSELF, *id14(COMMON_FX_MIX), *int21(100)])),
+        ("multi_param_change_part2_volume_64", frame(MULTI_PARAM_CHANGE, [2, *id14(PART_VOLUME), *int21(64)])),
+        ("multi_edit_buffer_request", frame(MULTI_EDIT_BUFFER_REQUEST)),
+        # The device's default Multi.
+        ("multi_edit_buffer_dump_default", frame(MULTI_EDIT_BUFFER_DUMP, pack7(default_multi))),
+        # "LAYER": Part 1 moved onto channel 1 with Part 0, reverb at mix 40.
+        ("multi_edit_buffer_dump_layer", frame(MULTI_EDIT_BUFFER_DUMP, pack7(layer_multi))),
+        ("multi_store_request_slot3", frame(MULTI_STORE_REQUEST, [*id14(3)])),
+        ("multi_store_reply_slot3_ok", frame(MULTI_STORE_REPLY, [*id14(3), STORE_OK])),
+        ("multi_load_request_slot3", frame(MULTI_LOAD_REQUEST, [*id14(3)])),
+        ("multi_load_reply_slot3_ok", frame(MULTI_LOAD_REPLY, [*id14(3), LOAD_OK])),
+        ("multi_load_request_slot5", frame(MULTI_LOAD_REQUEST, [*id14(5)])),
+        ("multi_load_reply_slot5_empty", frame(MULTI_LOAD_REPLY, [*id14(5), LOAD_NO_SUCH_PATCH])),
         ("descriptor_dump_request", frame(DESCRIPTOR_DUMP_REQUEST)),
         # The device's whole answer, every message F0 ... F7 in order: for the
         # module table then the common table, table begin, then each

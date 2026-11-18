@@ -15,6 +15,7 @@
 #include "midi/midi_controller.h"
 #include "patch.h"
 #include "sub_platform.h"
+#include "patch/multi_page.h"
 #include "patch/quick_edit_page.h"
 #include "pico/time.h"
 #include <cstdio>
@@ -33,8 +34,9 @@
 // voices+CPU, the current preset, and FXMIX/FX P1/FX P2/FX type/MOD as
 // compact Value bars/Label. EDIT is the Quick-edit Page (patch/
 // quick_edit_page.h): the last-played Part's quick-edit parameters,
-// Compare and Store. DIAG carries the exact-value detail Resource bar drops
-// (CPU%, per-voice activity, last note). EDIT and DIAG are reachable via
+// Compare and Store. MULTI (patch/multi_page.h) lists the Multi's Parts and
+// loads and stores Multis. DIAG carries the exact-value detail Resource bar drops
+// (CPU%, per-voice activity, last note). EDIT, MULTI and DIAG are reachable via
 // the rotary encoder (encoder_nav.h) where one's wired (HAS_ENCODER),
 // Performance-only otherwise.
 //
@@ -77,8 +79,8 @@ static const char *NOTE_NAMES[12] =
     { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
 static const char *FX_TYPE_NAMES[FX_COUNT] = { "OFF", "DELAY", "REVERB", "PHASER", "FLANGER", "CHORUS", "CRUSH", "DRIVE" };
 
-enum { PAGE_PERFORMANCE = 0, PAGE_EDIT = 1, PAGE_DIAG = 2, PAGE_COUNT = 3 };
-static const char *const PAGE_NAMES[PAGE_COUNT] = { "PERF", "EDIT", "DIAG" };
+enum { PAGE_PERFORMANCE = 0, PAGE_EDIT = 1, PAGE_MULTI = 2, PAGE_DIAG = 3, PAGE_COUNT = 4 };
+static const char *const PAGE_NAMES[PAGE_COUNT] = { "PERF", "EDIT", "MULTI", "DIAG" };
 
 struct NoteKey {
     uint8_t note, velocity;
@@ -97,7 +99,21 @@ static SubQuickEdit &quick_edit() {
     return qe;
 }
 static QuickEditPage<SubtractiveModule> quick_edit_page;
-static const QuickEditPageStyle kQuickEditStyle = {
+
+using SubMultiEdit = MultiEditT<SubtractiveModule>;
+static SubMultiEdit &multi_edit() {
+    static SubMultiEdit me(sub_multi());
+    return me;
+}
+static MultiPage<SubtractiveModule> multi_page;
+
+// The Part the UI shows for MIDI channel `channel`: the lowest Part on it,
+// else Part 0.
+static uint8_t shown_part(uint8_t channel) {
+    const uint8_t part = sub_multi().first_part_on_channel(channel);
+    return part < SUB_PART_COUNT ? part : 0;
+}
+static const EditPageStyle kEditStyle = {
     COL_VALUE, COL_BG, COL_FILL, COL_OFF, COL_SEL, COL_SEL_OFF, COL_ACT, COL_ACT_OFF,
     BAR_X, BODY_Y0, DIAG_BAR_W, LCD_H,
 };
@@ -110,13 +126,15 @@ static ActivityGrid<(int)MAX_VOICES> voice_grid;
 static ValueRow<NoteKey> note_row;
 
 #if HAS_ENCODER
-// While EDIT is showing, the Quick-edit Page gets every UI command first,
-// on the last-played Part as of now rather than as of the last redraw.
+// While EDIT or MULTI is showing, that Page gets every UI command first --
+// EDIT on the last-played Part as of now rather than as of the last redraw.
 static bool claim_ui_command(UiCommand command) {
-    if (encoder_nav_page_index() != PAGE_EDIT) return false;
+    const uint8_t page = encoder_nav_page_index();
+    if (page == PAGE_MULTI) return multi_edit().command(command);
+    if (page != PAGE_EDIT) return false;
     MidiUiState m;
     midi_controller_ui_state(&m);
-    quick_edit().follow_part(m.last_channel);
+    quick_edit().follow_part(shown_part(m.last_channel));
     return quick_edit().command(command);
 }
 #endif
@@ -144,8 +162,8 @@ void display_task() {
 #else
     uint8_t page = PAGE_PERFORMANCE;
 #endif
-    // EDIT takes the faster rate so the encoder feels immediate.
-    const PageRefreshCadence cadence{ page == PAGE_EDIT };
+    // EDIT and MULTI take the faster rate so the encoder feels immediate.
+    const PageRefreshCadence cadence{ page == PAGE_EDIT || page == PAGE_MULTI };
     next = make_timeout_time_ms(1000 / refresh_rate_hz(cadence));
 
     header_draw_module_name(hdr, "SUBTRACTIVE", LCD_W, COL_TITLE_FG, COL_TITLE);
@@ -171,6 +189,8 @@ void display_task() {
             mod_bar.initialized = false;
         } else if (page == PAGE_EDIT) {
             quick_edit_page_invalidate(quick_edit_page);
+        } else if (page == PAGE_MULTI) {
+            multi_page_invalidate(multi_page);
         } else {
             cpu_bar.bar.initialized = false;
             voices_row.initialized = false;
@@ -185,7 +205,7 @@ void display_task() {
 
     const PatchPlatformT<SubtractiveModule> &platform = sub_platform();
     if (page == PAGE_PERFORMANCE) {
-        const uint8_t part = m.last_channel < SUB_PART_COUNT ? m.last_channel : 0;
+        const uint8_t part = shown_part(m.last_channel);
         const uint32_t patch_key = (platform.revision(part) << 4) | part;
         if (!preset_row.initialized || preset_row.value != patch_key) {
             char text[24];
@@ -195,22 +215,29 @@ void display_task() {
                                   COL_BG);
         }
 
-        uint8_t fx_type = m.fx_type < FX_COUNT ? m.fx_type : 0;
-        label_draw_value(fx_type_label, m.fx_type, FX_TYPE_NAMES[fx_type], BAR_X, FX_ROW1_Y, 14, 1,
+        // The FX belong to the Multi.
+        const MultiT<SubtractiveModule> &multi = sub_multi();
+        const uint8_t fx_type = (uint8_t)multi.common(COMMON_P_FX_TYPE);
+        const uint8_t fx_mix = (uint8_t)multi.common(COMMON_P_FX_MIX);
+        const uint8_t fx_p1 = (uint8_t)multi.common(COMMON_P_FX_P1);
+        const uint8_t fx_p2 = (uint8_t)multi.common(COMMON_P_FX_P2);
+        label_draw_value(fx_type_label, fx_type, FX_TYPE_NAMES[fx_type < FX_COUNT ? fx_type : 0], BAR_X, FX_ROW1_Y, 14, 1,
                           COL_VALUE, COL_BG);
-        value_bar_draw_value(fxmix_bar, m.fx_mix, "FXMIX", m.fx_mix / 127.0f, BAR_X2, FX_ROW1_Y,
+        value_bar_draw_value(fxmix_bar, fx_mix, "FXMIX", fx_mix / 127.0f, BAR_X2, FX_ROW1_Y,
                               BAR_HALF_W, BAR_H, 1, COL_VALUE, COL_FILL, COL_OFF);
 
-        value_bar_draw_value(fx_p1_bar, m.fx_p1, "FX P1", m.fx_p1 / 127.0f, BAR_X, FX_ROW2_Y,
+        value_bar_draw_value(fx_p1_bar, fx_p1, "FX P1", fx_p1 / 127.0f, BAR_X, FX_ROW2_Y,
                               BAR_HALF_W, BAR_H, 1, COL_VALUE, COL_FILL, COL_OFF);
-        value_bar_draw_value(fx_p2_bar, m.fx_p2, "FX P2", m.fx_p2 / 127.0f, BAR_X2, FX_ROW2_Y,
+        value_bar_draw_value(fx_p2_bar, fx_p2, "FX P2", fx_p2 / 127.0f, BAR_X2, FX_ROW2_Y,
                               BAR_HALF_W, BAR_H, 1, COL_VALUE, COL_FILL, COL_OFF);
 
         value_bar_draw_value(mod_bar, m.mod, "MOD", m.mod / 127.0f, BAR_X, MOD_Y, BAR_HALF_W, BAR_H,
                               1, COL_VALUE, COL_FILL, COL_OFF);
     } else if (page == PAGE_EDIT) {
-        quick_edit().follow_part(m.last_channel);
-        quick_edit_page_draw(quick_edit_page, quick_edit(), platform, kQuickEditStyle);
+        quick_edit().follow_part(shown_part(m.last_channel));
+        quick_edit_page_draw(quick_edit_page, quick_edit(), platform, kEditStyle);
+    } else if (page == PAGE_MULTI) {
+        multi_page_draw(multi_page, multi_edit(), sub_multi(), platform, kEditStyle);
     } else {
         percentage_bar_draw_value(cpu_bar, load, "CPU", BAR_X, CPU_Y, DIAG_BAR_W, 20, 2, COL_VALUE,
                                    COL_OFF);

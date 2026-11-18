@@ -1,5 +1,6 @@
 #pragma once
 
+#include "edit_view.h"
 #include "quick_edit.h"
 #include "wslcd/gfx.h"
 #include "wslcd/label.h"
@@ -16,13 +17,7 @@
 // what it holds, the name being edited) replaces the rows while storing.
 // Shared by the device display and the host preview.
 
-struct QuickEditPageStyle {
-    uint16_t fg, bg;
-    uint16_t fill, off;          // a row at rest
-    uint16_t sel_fill, sel_off;  // the selected row
-    uint16_t act_fill, act_off;  // the row being changed
-    int x, y0, w, panel_h;       // body area: from y0 to panel_h
-};
+using QuickEditPageStyle = EditPageStyle;
 
 // Where a Patch is stored, as shown: "F0.03" (factory bank 0, slot 3),
 // "U012" (user slot 12), "--" (not from a bank).
@@ -57,20 +52,12 @@ struct QuickEditPage {
         uint8_t part;
         bool operator==(const HeadKey &o) const { return revision == o.revision && part == o.part; }
     };
-    struct NameKey {
-        char draft[kPatchNameLen + 1];
-        uint32_t cursor;
-        uint8_t mode;
-        bool operator==(const NameKey &o) const {
-            return cursor == o.cursor && mode == o.mode && strcmp(draft, o.draft) == 0;
-        }
-    };
 
     ValueRow<HeadKey> head;
     ValueBar<RowKey> rows[QuickEdit::kQuickCount];
     ValueBar<RowKey> compare_bar, store_bar;
     ValueRow<uint32_t> slot_row, over_row;
-    ValueRow<NameKey> name_field;
+    NameField name_field;
     Label<uint32_t> hint;
     bool drawn = false;
     bool dialog = false;  // which body layout is on screen
@@ -182,26 +169,8 @@ void quick_edit_page_draw(QuickEditPage<Module> &pg, const QuickEditT<Module> &q
         else snprintf(text, sizeof text, "EMPTY SLOT");
         value_row_draw_value(pg.over_row, slot, text, st.x, rows_y + 22, chars, 1, st.fg, st.bg);
 
-        // The name, eight characters per line at scale 2, then OK; the
-        // cursor's cell is highlighted while naming.
-        typename Page::NameKey key{};
-        memcpy(key.draft, qe.draft(), sizeof key.draft);
-        key.cursor = qe.name_cursor();
-        key.mode = (uint8_t)mode;
-        if (!pg.name_field.initialized || !(pg.name_field.value == key)) {
-            const bool naming = mode != QuickEditMode::STORE_SLOT;
-            const uint16_t hl = mode == QuickEditMode::NAME_CHAR ? st.act_fill : st.sel_fill;
-            for (uint32_t i = 0; i < kPatchNameLen; i++) {
-                const char cell[2] = { qe.draft()[i], '\0' };
-                const bool at = naming && key.cursor == i;
-                gfx_text(st.x + (int)(i % 8) * 16, rows_y + 40 + (int)(i / 8) * 20, cell, at ? st.bg : st.fg,
-                         at ? hl : st.off, 2);
-            }
-            const bool at_ok = naming && key.cursor == kPatchNameLen;
-            gfx_text(st.x, rows_y + 84, " OK ", at_ok ? st.bg : st.fg, at_ok ? st.sel_fill : st.off, 2);
-            pg.name_field.value = key;
-            pg.name_field.initialized = true;
-        }
+        const uint8_t naming = mode == QuickEditMode::NAME_CHAR ? 2 : mode == QuickEditMode::NAME_CURSOR ? 1 : 0;
+        name_field_draw(pg.name_field, qe.draft(), qe.name_cursor(), naming, st.x, rows_y + 40, st);
     }
 
     const uint32_t hint_key = (uint32_t)mode | ((uint32_t)qe.store_result() << 8);

@@ -36,24 +36,26 @@ oscillator.
 
 | Message | Name | Range | Function |
 |---|---|---|---|
-| Note On/Off | — | notes 0–127, all channels | 16 voices, dynamically allocated |
+| Note On/Off | — | notes 0–127, all channels | plays on every Part of the Multi on the channel (layered), one voice each; 16 voices, dynamically allocated |
 | Velocity | — | 0–127 | linear to amplitude |
 | Pitch Bend | — | 14-bit | ±2 semitones |
 | CC1 | Mod Wheel | 0–127 | dedicated vibrato LFO depth |
-| CC10 | Pan | 0–127 | live per-voice stereo pan — subtractive is the only module that maps this CC; not stored in Patches |
-| CC72 | FX Param 1 | 0–127 | delay feedback / reverb room size |
-| CC73 | FX Mix | 0–127 | wet/dry mix (global) |
-| CC75 | FX Param 2 | 0–127 | delay time / reverb damping |
-| CC76 | FX Type | 0–127 | select, splits range into the FX bands (CC74 in the other modules) |
+| CC7 | Volume | 0–127 | the channel's Parts' VOLUME (Multi); live |
+| CC10 | Pan | 0–127 | the channel's Parts' PAN (Multi); live |
+| CC91 | FX Send | 0–127 | the channel's Parts' FX SEND (Multi): how much of each Part feeds the FX; live |
+| CC72 | FX Param 1 | 0–127 | the Multi's FX P1: delay feedback / reverb room size (any channel) |
+| CC73 | FX Mix | 0–127 | the Multi's FX MIX: crossfades the sent share dry/wet (any channel) |
+| CC75 | FX Param 2 | 0–127 | the Multi's FX P2: delay time / reverb damping (any channel) |
+| CC76 | FX Type | 0–127 | the Multi's FX TYPE, the range split into the FX bands (CC74 in the other modules) |
 | CC74 | Cutoff | 0–127 | Patch CUTOFF, scaled onto 20–18000 Hz; live |
 | CC71 | Resonance | 0–127 | Patch RESO, scaled onto its range; live |
 | CC79 | Env → Cutoff | 0–127 | Patch ENV>CUT, scaled onto ±18000 Hz; live |
 | CC12 | LFO Rate | 0–127 | Patch LFO RATE, scaled onto 0–20 Hz; live |
-| SysEx | t00t protocol | F0 7D 54 … F7 | identify, exact parameter change, edit-buffer request/dump per Part, store a Part's Edit buffer to a user slot, descriptor dump (with value labels for WAVE, SAMPLE, FILTER) (`docs/platform.md`); replies over USB |
+| SysEx | t00t protocol | F0 7D 54 … F7 | identify, exact parameter change, edit-buffer request/dump per Part, store a Part's Edit buffer to a user slot, Multi parameter change, Multi edit-buffer request/dump, Multi store and load (select), descriptor dump (`docs/platform.md`); replies over USB |
 | NRPN (CC99/98 + CC6/38) | any Patch parameter | 14-bit | NRPN number = parameter ID (`patch.h`); Data Entry 0–16383 scaled onto the parameter's range (MSB alone reaches full scale, LSB refines); live parameters reach sounding notes, note-on ones the next note |
 | CC0 | Bank Select MSB | 0–127 | picks the bank for Program Change: 0 = the factory bank, 64 = the user bank (128 slots); other values select no bank |
 | CC32 | Bank Select LSB | 0–127 | captured, currently unused |
-| Program Change | — | 0–127 | loads that slot of the selected bank into the channel's Part (factory: 0–10); an empty slot or missing bank is ignored; sounding notes keep the Patch they started with |
+| Program Change | — | 0–127 | loads that slot of the selected bank into every Part on the channel (factory: 0–10); an empty slot or missing bank is ignored; sounding notes keep the Patch they started with; never selects a Multi |
 
 Non-MIDI input: VGA board buttons (A/B/C, `vgaboard_rp2350` only) — each
 fixed to one note/channel, routed through the same Shaping →
@@ -62,7 +64,7 @@ fixed to one note/channel, routed through the same Shaping →
 
 ### Display (Presentation Capabilities)
 
-Three Pages (`src/wslcd/page.h`/`header.h`), the shared Widget/Header/Page
+Four Pages (`src/wslcd/page.h`/`header.h`), the shared Widget/Header/Page
 library (CONTEXT.md's Widget catalog) applied to subtractive — same
 Performance-page layout as OPL's/FM's/chip's own (`docs/module_opl.md` /
 `docs/module_fm.md` / `docs/module_chip.md`'s Display sections):
@@ -74,6 +76,12 @@ Performance-page layout as OPL's/FM's/chip's own (`docs/module_opl.md` /
   "FX P2") with FX type (CC76) as a Label ("OFF"/"DELAY"/"REVERB"/"PHASER"/
   "FLANGER"/"CHORUS"/"CRUSH"/"DRIVE") and the mod wheel (CC1) as a fourth
   Value bar ("MOD").
+- **MULTI** — the Multi (`src/patch/multi_edit.h`, `multi_page.h`): its slot
+  (`M03`) and name, then one bar per Part (number, channel or OFF, Patch
+  name, filled to its volume), then LOAD and STORE. LOAD picks a Multi slot
+  (the Multi's own, else the first stored one) and loads it; STORE picks a
+  slot and a name as on EDIT. The only way, besides SysEx, to change the
+  whole Multi.
 - **EDIT** — the Quick-edit Page (`src/patch/quick_edit.h`,
   `quick_edit_page.h`): the last-played channel's Part (held while
   editing), where its Patch is stored (`F0.02` factory, `U012` user), its
@@ -417,6 +425,12 @@ insert adds ~1.5pp; reverb adds ~8pp. Measured on breadboard_rp2350 at
 19. **The Quick-edit Page edits the last-played Part, held while editing**
     — it matches the Performance page's Patch row, and a note on another
     channel can't move an edit in progress to a different Part.
+20. **Sixteen Parts, Part n on channel n by default** — every channel
+    plays its own Patch out of the box; Parts on one channel layer, a Part
+    on OFF is silent.
+21. **Pan, volume and FX send belong to the Part, read by Core 1 per
+    buffer** — they follow live edits on sounding notes, so a voice's
+    note-on fields carry none of them.
 
 ## Glossary
 

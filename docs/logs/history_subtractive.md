@@ -430,3 +430,38 @@ over USB with `amidi`; the normal build was flashed back afterwards.
   select, value edits, Compare, Store with rename, long press back). The
   breadboard encoder's push switch turned out to be dead (no SW–GND
   continuity when pressed); tested with a jumper from GP28 to GND instead.
+
+## Multi: Parts, channel routing, per-Part mix, FX in the Multi (#155, 2026-11-18)
+
+- **Decided with the author:** FX MIX crossfades only the sent share of
+  the mix (full send = the old sound exactly, send 0 = untouched by FX);
+  Parts on one channel layer; the device UI gets a MULTI Page for load and
+  store/rename only (Part mix via CC7/CC10/CC91, NRPN or SysEx); a Part
+  whose Patch is gone loads factory bank 0, slot 0.
+- **Core 1:** the Multi reaches it through its own slot, taken once per
+  buffer, not through `ParamExchange`; the FX settings and the per-voice
+  pan left the voice block. Volume folds into the pan gains per voice per
+  buffer; the unsent share is accumulated per sample only for voices of a
+  Part with send below full, so the default mix costs one predictable
+  branch per sample. Core 1 duty at 16 voices should be re-measured
+  against the #152 figures.
+- **Render equivalence:** `render_subtractive` now plays every golden
+  render through a one-part Multi and still matches the hashes bit for
+  bit; added checks: send 0 at FX MIX 127 equals FX off, Part volume 0 and
+  MASTER 0 are silent, Part pan hard left leaves the right channel silent.
+- **SysEx:** protocol version 2 — Multi parameter change (`11`), Multi
+  edit-buffer request/dump (`22`/`23`), Multi store and load (`32`–`35`),
+  and the Part table in the descriptor dump; the common table gained
+  MASTER.
+- **Host tests:** `test_multi` (routing, layering, OFF, FX ownership,
+  Program Change, store/load, missing-Patch fallback, an older schema,
+  another module's Multi, the MULTI Page's load/store/rename), `test_sysex`
+  (Multi messages), `render_subtractive`. The Quick-edit Page's name
+  editing moved into `name_editor.h`, shared with the MULTI Page.
+- **After review:** Part and Multi parameters got NRPN numbers (MSB 126
+  and 127); a note-off or retrigger now releases a voice only while it
+  still plays that Part's note, since layering makes voice stealing
+  across Parts on one channel likely; Program Change updating a Part's
+  Patch reference (stored with the Multi) is deliberate.
+- **Not checked:** the vgaboard build fails before and after this change
+  (it compiles the LCD and encoder sources without their pins).

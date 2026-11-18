@@ -8,6 +8,7 @@
 #include "patch/descriptor.h"
 #include "patch/module_id.h"
 #include "patch/common.h"
+#include "patch/multi_cooked.h"
 #include "patch/part_slot.h"
 #include <cmath>
 #include <cstdint>
@@ -80,17 +81,24 @@ struct SubCookedPatch {
     SubLiveCooked live;
 };
 
-static_assert(kFxTypeCount == FX_COUNT, "a common FX TYPE label per EffectType");
 
 // Cooked-patch slots, one per Part, shared between Core 0 (publishes) and
 // Core 1 (consumes once per buffer). Defined by the Input subsystem.
 extern PartSlotT<SubCookedPatch> sub_part_slots[SUB_PART_COUNT];
+
+// The cooked Multi (mix and FX) and its slot, likewise.
+using SubMultiCooked = MultiCookedT<SUB_PART_COUNT>;
+extern PartSlotT<SubMultiCooked> sub_multi_slot;
 
 struct SubtractiveModule {
     static constexpr ModuleId kModuleId = ModuleId::SUBTRACTIVE;
     static constexpr uint8_t kSchemaVersion = 1;
     static constexpr uint32_t kPartCount = SUB_PART_COUNT;
     using Cooked = SubCookedPatch;
+
+    // The default Multi's factory Patch per Part: Fairlite, Sq-PWM, then
+    // Saw-Flt on every other Part.
+    static constexpr uint8_t default_program(uint32_t part) { return (uint8_t)(part < 2 ? part : 2); }
 
     static constexpr ParamDescriptor kDescriptors[SUB_P_COUNT] = {
         // id                name       group     min      max    default unit                 curve                    class                    quick  cc
@@ -146,14 +154,13 @@ inline uint32_t sub_note_phase_inc(const SubCookedPatch &c, uint8_t note) {
 // sub_note_phase_inc() of the same patch, so pitch and note-on fields agree.
 inline void sub_note_start(VoiceParams &vp, uint8_t part, const SubCookedPatch &patch, uint16_t load_id,
                            uint32_t base_inc, float bend_ratio, uint8_t velocity,
-                           int16_t mod_depth, int16_t pan) {
+                           int16_t mod_depth) {
     vp.part = part;
     vp.load_id = load_id;
     vp.note_on = patch.note_on;
     vp.phase_inc = (uint32_t)((float)base_inc * bend_ratio);
     vp.amplitude = (int16_t)(velocity * 258);
     vp.mod_depth = mod_depth;
-    vp.pan = pan;
     vp.trigger++;
     vp.gate = true;
 }

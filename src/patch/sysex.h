@@ -1,6 +1,7 @@
 #pragma once
 
 #include "common.h"
+#include "multi.h"
 #include "platform.h"
 #include "midi/midi_parser.h"
 #include <cstdint>
@@ -17,12 +18,23 @@
 //                           Part count, parameter count (2 x 7 bits, LSB first)
 //   10 parameter change     Part, parameter ID (2 x 7 bits, LSB first),
 //                           value (int21)
+//   11 Multi parameter change  Part (7F: the Multi's own settings), ID
+//                           (2 x 7 bits), value (int21): a kPartDescriptors
+//                           or kCommonDescriptors parameter
 //   20 edit-buffer request  Part
 //   21 edit-buffer dump     Part, the stored Patch (stored_format.h), packed
+//   22 Multi edit-buffer request  (none)
+//   23 Multi edit-buffer dump     the stored Multi (multi.h), packed; both
+//                           directions, loading one loads its Parts' Patches
 //   30 store request        Part, user slot (2 x 7 bits): store the Part's
 //                           Edit buffer into that user-bank slot
 //   31 store reply          Part, user slot (2 x 7 bits), result
 //                           (StoreResult, user_bank.h)
+//   32 Multi store request  Multi slot (2 x 7 bits)
+//   33 Multi store reply    Multi slot (2 x 7 bits), result (StoreResult)
+//   34 Multi load request   Multi slot (2 x 7 bits): select that Multi
+//   35 Multi load reply     Multi slot (2 x 7 bits), result
+//                           (PatchLoadResult, stored_format.h)
 //   40 descriptor dump request  (none); answered by, in order:
 //   41   table begin        table, descriptor count (2 x 7 bits)
 //   42   descriptor         table, ID (2 x 7 bits), min, max, default (int21
@@ -31,11 +43,12 @@
 //   43   labels             table, ID (2 x 7 bits), label count, labels --
 //                           after its descriptor, for ENUM parameters with labels
 //   44   dump end           (none)
-//                           Table 0 is the module's, then table 1 the common
-//                           components' (common.h). One message per
-//                           descriptor, sent as the outgoing queue has room.
+//                           Table 0 is the module's, then table 1 the
+//                           Multi's own settings and table 2 a Part's
+//                           (common.h). One message per descriptor, sent as
+//                           the outgoing queue has room.
 //
-// Reserved ranges: 32-3F store and banks, 45-4F more descriptor messages,
+// Reserved ranges: 36-3F store and banks, 45-4F more descriptor messages,
 // 60-7F Data Exchange transfers. Unknown commands and malformed messages are
 // ignored, as is anything for another manufacturer or sub-ID; a dump of a
 // Patch for another module is rejected (patch_decode()).
@@ -49,16 +62,23 @@
 
 static constexpr uint8_t kSysExManufacturer = 0x7D;
 static constexpr uint8_t kSysExSubId = 0x54;
-static constexpr uint8_t kSysExProtocolVersion = 1;
+static constexpr uint8_t kSysExProtocolVersion = 2;
 
 enum class SysExCommand : uint8_t {
     IDENTIFY_REQUEST    = 0x01,
     IDENTIFY_REPLY      = 0x02,
     PARAM_CHANGE        = 0x10,
+    MULTI_PARAM_CHANGE  = 0x11,
     EDIT_BUFFER_REQUEST = 0x20,
     EDIT_BUFFER_DUMP    = 0x21,
+    MULTI_EDIT_BUFFER_REQUEST = 0x22,
+    MULTI_EDIT_BUFFER_DUMP    = 0x23,
     STORE_REQUEST       = 0x30,
     STORE_REPLY         = 0x31,
+    MULTI_STORE_REQUEST = 0x32,
+    MULTI_STORE_REPLY   = 0x33,
+    MULTI_LOAD_REQUEST  = 0x34,
+    MULTI_LOAD_REPLY    = 0x35,
     DESCRIPTOR_DUMP_REQUEST = 0x40,
     DESCRIPTOR_TABLE_BEGIN  = 0x41,
     DESCRIPTOR              = 0x42,
@@ -66,7 +86,9 @@ enum class SysExCommand : uint8_t {
     DESCRIPTOR_DUMP_END     = 0x44,
 };
 
-enum class DescriptorTable : uint8_t { MODULE = 0, COMMON = 1 };
+enum class DescriptorTable : uint8_t { MODULE = 0, COMMON = 1, PART = 2 };
+
+static constexpr uint8_t kSysExMultiItself = 0x7F;  // Multi parameter change: the Multi's own settings
 
 // Writes F0 7D 54 <command> to `out`; returns the 4 bytes written.
 inline uint32_t sysex_begin(uint8_t *out, SysExCommand command) {
@@ -194,8 +216,9 @@ template <typename Module>
 class PatchSysExT {
 public:
     using Platform = PatchPlatformT<Module>;
+    using Multi = MultiT<Module>;
 
-    PatchSysExT(Platform &platform, SysExSend send) : platform_(platform), send_(send) {}
+    PatchSysExT(Platform &platform, Multi &multi, SysExSend send) : platform_(platform), multi_(multi), send_(send) {}
 
     // Handle one SysEx message (`msg`: the bytes between F0 and F7).
     void handle(const uint8_t *msg, uint32_t len);
@@ -216,8 +239,10 @@ private:
         held_len_ = len;
     }
 
-    // The longest reply: an edit-buffer dump.
-    static constexpr uint32_t kMaxReply = 5 + sysex_packed_len(patch_stored_size(Module::kDescriptors)) + 1;
+    // The longest reply: an edit-buffer dump or a Multi edit-buffer dump.
+    static constexpr uint32_t kPatchDumpLen = 5 + sysex_packed_len(patch_stored_size(Module::kDescriptors)) + 1;
+    static constexpr uint32_t kMultiDumpLen = 4 + sysex_packed_len(Multi::kStoredSize) + 1;
+    static constexpr uint32_t kMaxReply = kPatchDumpLen > kMultiDumpLen ? kPatchDumpLen : kMultiDumpLen;
 
     // Descriptor dump progress: which table, which descriptor, and which of
     // its messages comes next.
@@ -227,6 +252,7 @@ private:
     bool send_dump_step();
 
     Platform &platform_;
+    Multi &multi_;
     SysExSend send_;
     uint8_t held_[kMaxReply];
     uint32_t held_len_ = 0;
@@ -246,6 +272,9 @@ inline void PatchSysExT<Module>::handle(const uint8_t *msg, uint32_t len) {
     // the parser's SysEx buffer or the device would discard its own dumps.
     static_assert(4 + sysex_packed_len(patch_stored_size(Module::kDescriptors)) <= MIDI_SYSEX_MAX,
                   "this module's edit-buffer dump is longer than MIDI_SYSEX_MAX");
+    static_assert(sysex_descriptor_dump_fits(kPartDescriptors), "a Part descriptor dump message is longer than MIDI_SYSEX_MAX");
+    static_assert(3 + sysex_packed_len(Multi::kStoredSize) <= MIDI_SYSEX_MAX,
+                  "this module's Multi edit-buffer dump is longer than MIDI_SYSEX_MAX");
     if (len < 3 || msg[0] != kSysExManufacturer || msg[1] != kSysExSubId) return;
     const SysExCommand command = (SysExCommand)msg[2];
     const uint8_t *body = msg + 3;
@@ -267,6 +296,46 @@ inline void PatchSysExT<Module>::handle(const uint8_t *msg, uint32_t len) {
         case SysExCommand::PARAM_CHANGE: {
             if (body_len != 6) return;
             platform_.set_param(body[0], sysex_id(body + 1), sysex_int21(body + 3));
+            return;
+        }
+        case SysExCommand::MULTI_PARAM_CHANGE: {
+            if (body_len != 6) return;
+            const uint32_t id = sysex_id(body + 1);
+            const int32_t value = sysex_int21(body + 3);
+            if (body[0] == kSysExMultiItself) multi_.set_common(id, value);
+            else multi_.set_part(body[0], id, value);
+            return;
+        }
+        case SysExCommand::MULTI_EDIT_BUFFER_REQUEST: {
+            if (body_len != 0) return;
+            uint8_t stored[Multi::kStoredSize];
+            uint8_t msg_out[kMultiDumpLen];
+            multi_.encode(stored, sizeof stored);
+            uint32_t n = sysex_begin(msg_out, SysExCommand::MULTI_EDIT_BUFFER_DUMP);
+            n += sysex_pack(stored, sizeof stored, msg_out + n);
+            msg_out[n++] = 0xF7;
+            reply(msg_out, n);
+            return;
+        }
+        case SysExCommand::MULTI_EDIT_BUFFER_DUMP: {
+            uint8_t stored[MIDI_SYSEX_MAX];  // unpacking only shrinks a message
+            const uint32_t n = sysex_unpack(body, body_len, stored, sizeof stored);
+            if (n == 0) return;
+            multi_.load_stored(StoredPatchRef{ stored, n });
+            return;
+        }
+        case SysExCommand::MULTI_STORE_REQUEST:
+        case SysExCommand::MULTI_LOAD_REQUEST: {
+            if (body_len != 2) return;
+            const uint32_t slot = sysex_id(body);
+            const bool store = command == SysExCommand::MULTI_STORE_REQUEST;
+            const uint8_t result = store ? (uint8_t)multi_.store(slot) : (uint8_t)multi_.load(slot);
+            uint8_t msg_out[8];
+            uint32_t n = sysex_begin(msg_out, store ? SysExCommand::MULTI_STORE_REPLY : SysExCommand::MULTI_LOAD_REPLY);
+            n += sysex_put_id(msg_out + n, slot);
+            msg_out[n++] = result;
+            msg_out[n++] = 0xF7;
+            reply(msg_out, n);
             return;
         }
         case SysExCommand::EDIT_BUFFER_REQUEST: {
@@ -324,9 +393,12 @@ inline void PatchSysExT<Module>::pump_dump() {
 // Send the dump's next message and advance; false if it didn't fit.
 template <typename Module>
 inline bool PatchSysExT<Module>::send_dump_step() {
-    const bool module = (table_ == DescriptorTable::MODULE);
-    const ParamDescriptor *table = module ? Module::kDescriptors : kCommonDescriptors;
-    const uint32_t count = module ? Platform::kParamCount : COMMON_P_COUNT;
+    const ParamDescriptor *table = table_ == DescriptorTable::MODULE ? Module::kDescriptors
+                                 : table_ == DescriptorTable::COMMON ? kCommonDescriptors
+                                                                     : kPartDescriptors;
+    const uint32_t count = table_ == DescriptorTable::MODULE ? Platform::kParamCount
+                         : table_ == DescriptorTable::COMMON ? (uint32_t)COMMON_P_COUNT
+                                                             : (uint32_t)PART_P_COUNT;
     uint8_t msg[MIDI_SYSEX_MAX + 2];
     uint32_t n = 0;
 
@@ -372,7 +444,7 @@ inline bool PatchSysExT<Module>::send_dump_step() {
     if (!send_(msg, n)) return false;
 
     // Advance: TABLE_BEGIN -> DESCRIPTOR (-> LABELS) per descriptor -> the
-    // next table -> END -> IDLE.
+    // next table (module, common, Part) -> END -> IDLE.
     switch (step_) {
         case DumpStep::DESCRIPTOR:
             if (table[index_].labels) { step_ = DumpStep::LABELS; return true; }
@@ -382,8 +454,8 @@ inline bool PatchSysExT<Module>::send_dump_step() {
             [[fallthrough]];
         case DumpStep::TABLE_BEGIN:
             if (index_ < count) { step_ = DumpStep::DESCRIPTOR; return true; }
-            if (table_ == DescriptorTable::MODULE) {
-                table_ = DescriptorTable::COMMON;
+            if (table_ != DescriptorTable::PART) {
+                table_ = table_ == DescriptorTable::MODULE ? DescriptorTable::COMMON : DescriptorTable::PART;
                 index_ = 0;
                 step_ = DumpStep::TABLE_BEGIN;
             } else {

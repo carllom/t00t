@@ -79,6 +79,9 @@ counter; Core 1 detects a change to (re)start a note.
   User banks live in a reserved region at the end of flash that survives reflashing
   ([user_bank.h](src/patch/user_bank.h)); Bank Select MSB 0–63 picks a factory bank,
   64+ the user bank, and SysEx stores a Part's Edit buffer into a user slot.
+  The Parts, their channels and mix, and the shared FX are a Multi
+  ([multi.h](src/patch/multi.h)), stored in user-bank Multi slots and selected only
+  from the MULTI Page or SysEx.
   The other modules still use compiled-in const preset/patch tables.
 
 ## Display (LCD)

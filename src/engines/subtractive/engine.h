@@ -31,14 +31,14 @@ struct VoiceParams {
     uint8_t part;        // Part whose live fields this note follows (< SUB_PART_COUNT)
     uint16_t load_id;    // the Patch load the note belongs to (PatchPlatformT::load_id())
     int16_t mod_depth;   // mod-wheel vibrato depth, Q15 (0 = off) — dedicated LFO on Core 1
-    int16_t pan;         // Q15 pan: -32768 = full left, 0 = center, 32767 = full right (CC10)
     SubNoteOnCooked note_on;
 };
 
-// Default voice: silent, Part 0, centered pan, sine.
+// Default voice: silent, Part 0, sine. Pan, volume and FX send come from
+// the voice's Part in the Multi.
 template <>
 inline VoiceParams voice_params_default<VoiceParams>() {
-    return { 0, 0, 0, false, 0, 0, 0, 0, { nullptr, WAVE_SINE, FILTER_OFF } };
+    return { 0, 0, 0, false, 0, 0, 0, { nullptr, WAVE_SINE, FILTER_OFF } };
 }
 
 using VoiceParamBlock = VoiceParamBlockT<VoiceParams>;

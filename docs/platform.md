@@ -30,8 +30,9 @@ channels. This is proven by measurement (the P0 gates), not estimate.
  SysEx          ──▶ │              ▼                       │   │   flag, take newest slot    │
  Quick-edit Page──▶ │            cook ─▶ cooked slot [2] ──┼──▶│ per voice:                  │
                     │                    + commit flag     │   │   env/LFO × cooked base     │
-                    │ notes ─▶ ParamExchange (per-note +   │──▶│ note-on: copy note-on-class │
-                    │          Multi-level state only)     │   │   fields into voice state   │
+                    │ Multi ─▶ cook ─▶ Multi slot [2] ─────┼──▶│ mix by Part, shared FX      │
+                    │ notes ─▶ ParamExchange (per-note     │──▶│ note-on: copy note-on-class │
+                    │          state only)                 │   │   fields into voice state   │
                     └──────────────────────────────────────┘   └─────────────────────────────┘
 ```
 
@@ -43,9 +44,11 @@ channels. This is proven by measurement (the P0 gates), not estimate.
   kernel reads the cooked patch instead of a pointer into a `const` table. For subtractive,
   base coefficients arrive cooked; per-sub-block env/LFO modulation of cutoff stays on Core 1.
 - **Per-Part cooked slots live outside `ParamExchange`.** Each Part owns a small double
-  buffer of cooked patches with a commit flag. `ParamExchange` keeps only per-note and
-  Multi-level state, because the generic MIDI controller copies the whole active block into
-  the shadow on every MIDI batch — patch-sized state there would cost kilobytes per batch.
+  buffer of cooked patches with a commit flag, and the Multi one more for its cooked mix and
+  FX. `ParamExchange` keeps only per-note state, because the generic MIDI controller copies
+  the whole active block into the shadow on every MIDI batch — patch-sized state there would
+  cost kilobytes per batch — and because Multi edits also come from the UI and SysEx,
+  outside a MIDI batch.
 - **Voices never see a torn patch.** A swap publishes a whole cooked patch; Core 1 checks the
   commit flags once at the start of each buffer. Live-class parameters reach sounding voices
   through the Part's active slot; note-on-class fields are copied per voice at note-on, so a
@@ -66,8 +69,27 @@ channels. This is proven by measurement (the P0 gates), not estimate.
   integer per parameter in its Descriptor domain (packed uint8/uint16), in parameter-ID order.
   Parameters missing from an older schema load as the Descriptor default; a mismatched module
   ID is rejected. Two stored object types: Patch and Multi.
-- **Multi:** N Parts (fixed per module at build time) plus common FX/master settings. Each
-  Part: MIDI channel, Patch reference, volume, pan, FX sends. FX belong only to the Multi.
+- **Multi** (`src/patch/multi.h`): N Parts (fixed per module at build time; subtractive 16)
+  plus its own settings (`kCommonDescriptors`: FX TYPE, FX MIX, FX P1, FX P2, MASTER). Each
+  Part (`kPartDescriptors`): CHANNEL (1–16 or OFF), BANK and PROGRAM (the Patch, as Bank
+  Select MSB and Program Change), VOLUME, PAN, FX SEND. FX belong only to the Multi. The
+  default Multi puts Part n on channel n with the module's default Patch for it.
+- **Channel routing:** a channel event reaches every Part on that channel — notes play on
+  each (layered), Program Change loads into each and updates its Patch reference,
+  CC7/CC10/CC91 set each Part's VOLUME/PAN/FX SEND (their descriptors' default CCs), other
+  CCs and NRPN edit each Part's Patch. NRPN MSB 126 addresses a Part parameter (LSB = its ID)
+  on the channel's Parts, MSB 127 one of the Multi's own settings from any channel.
+- **Mix (Core 1, once per buffer from the cooked Multi):** a voice's stereo gains are its
+  Part's pan gains times its volume; the FX gets the sent share of the mix (each Part times
+  its FX SEND), and FX MIX crossfades only that share dry/wet, so the unsent share stays dry
+  at unity; MASTER scales the output. At unity volume, full send and unity master the mix is
+  bit for bit the single-Patch mix; what that costs is a loop-invariant branch per sample per
+  voice (send below full?) and per output sample (master below unity?). A sounding Part with
+  send below full adds a per-sample accumulation for its voices.
+- **Stored Multi:** the Patch header under magic `T0MT`, then the common values, the Part
+  count and each Part's values, with byte counts so older and newer schemas load (missing
+  values take descriptor defaults, missing Parts the default Multi's). Loading a Multi loads
+  each Part's Patch by reference; a Part whose Patch is gone gets factory bank 0, slot 0.
 
 ### Editing and storage
 
@@ -106,7 +128,7 @@ region alone.
 | Within a partition | Offset | Slots | Slot size | Per 4 KB sector |
 |---|---|---|---|---|
 | Patch slots | 0 | 128 | 256 B | 16 |
-| Multi slots (reserved until the Multi stored format exists) | 32 KB | 32 | 512 B | 8 |
+| Multi slots | 32 KB | 32 | 512 B | 8 |
 
 A slot holds one stored Patch followed by `0xFF` to the slot's end; a slot without the Patch
 magic is empty. Slots never straddle a sector. A module whose stored Patch would exceed 256 B
@@ -160,13 +182,20 @@ can overwrite the region.
   | Command | Message | Body |
   |---|---|---|
   | `01` | identify request | — |
-  | `02` | identify reply | module ID, schema version, protocol version, Part count, parameter count (2 × 7 bits, LSB first) |
+  | `02` | identify reply | module ID, schema version, protocol version (2), Part count, parameter count (2 × 7 bits, LSB first) |
   | `10` | parameter change | Part, parameter ID (2 × 7 bits, LSB first), value (int21) |
   | `20` | edit-buffer request | Part |
+  | `11` | Multi parameter change | Part (`7F` = the Multi's own settings), parameter ID (2 × 7 bits), value (int21) |
   | `21` | edit-buffer dump (both directions) | Part, stored Patch (packed) |
+  | `22` | Multi edit-buffer request | — |
+  | `23` | Multi edit-buffer dump (both directions) | stored Multi (packed); loading one loads its Parts' Patches |
   | `30` | store request | Part, user slot (2 × 7 bits): store the Part's Edit buffer there |
   | `31` | store reply | Part, user slot (2 × 7 bits), result: `0` OK, `1` no such slot, `2` bad Patch, `3` flash write failed |
-  | `32`–`3F` | *reserved:* more store and bank messages | |
+  | `32` | Multi store request | Multi slot (2 × 7 bits) |
+  | `33` | Multi store reply | Multi slot, result (as `31`) |
+  | `34` | Multi load request | Multi slot (2 × 7 bits): select that Multi |
+  | `35` | Multi load reply | Multi slot, result: `0` OK, `1` bad magic, `2` wrong module, `3` truncated, `4` empty slot |
+  | `36`–`3F` | *reserved:* more store and bank messages | |
   | `40` | descriptor dump request | — |
   | `41` | descriptor table begin | table, descriptor count (2 × 7 bits) |
   | `42` | descriptor | table, ID, min, max, default (int21 each), unit, curve, class, flags (bit 0 quick edit), default CC (`7F` = none), name, group |
@@ -175,9 +204,8 @@ can overwrite the region.
   | `45`–`4F` | *reserved:* more descriptor messages | |
   | `60`–`7F` | *reserved:* Data Exchange transfers | |
 
-  A descriptor dump sends table 0 (the module's) then table 1 (the common components',
-  `src/patch/common.h`: FX type/mix/P1/P2 today, described but still set through each module's
-  FX CCs until the Multi holds them). It is chunked — one message per descriptor, each within
+  A descriptor dump sends table 0 (the module's), table 1 (the Multi's own settings) and
+  table 2 (one Part's parameters), the last two from `src/patch/common.h`. It is chunked — one message per descriptor, each within
   `MIDI_SYSEX_MAX`, checked at compile time — and paced by backpressure: the next message goes
   out only when the outgoing queue has room, so a slower transport (a future DIN out) would
   pace it the same way. Other SysEx is handled while a dump is in progress; a reply that
@@ -255,7 +283,7 @@ as % of the 5.805 ms buffer period, idle (0) / 4 / 16 voices.
 | Descriptor tables (module + shared) | flash | TBD | `constexpr`, never touched by Core 1 |
 | Factory banks | flash | subtractive: 11 × 45 B | compiled in |
 | Cooked slot × 2 per Part | SRAM | subtractive: 84 B/slot × 16 = 1.3 KB | plus Core 1's own per-Part (current + previous) and per-voice state, 1.7 KB |
-| Edit buffer per Part + Multi | SRAM | subtractive: 1.8 KB platform state (16 Parts) | Descriptor-domain values, name, cooked copy, NRPN state |
+| Edit buffer per Part + Multi | SRAM | subtractive: 1.8 KB platform state (16 Parts) | Descriptor-domain values, name, cooked copy, NRPN state; the Multi adds ~0.8 KB (values, cooked mix and its slot) |
 | SysEx assembly buffer | SRAM | TBD | bounded; over-length messages discarded |
 | User-bank region | flash (end) | 384 KB: 8 modules × (128 Patches × 256 B + 32 Multis × 512 B) | layout above |
 | Store sector buffer | SRAM | 4 KB | one per module build, in the user bank |
@@ -313,6 +341,12 @@ Existing pieces the platform builds on, and how.
 - **FX in the Multi, not the Patch.** Loading a Patch into one Part must never change FX that
   other Parts depend on.
 - **No Program Change for Multis.** A stray Program Change must never swap the whole setup.
+- **Parts on one channel layer.** A channel event reaches every Part on it, the standard
+  multitimbral behaviour; a Part on OFF hears nothing.
+- **FX MIX crossfades only the sent share.** Full send reproduces the single-Patch sound
+  exactly, and a Part with send 0 is untouched by the FX at any mix.
+- **A Multi refers to Patches; a missing one loads factory bank 0, slot 0.** Patch edits are
+  stored with the Patch, never in the Multi, and a Multi always loads to known sounds.
 - **Engine structs are never stored.** The stored format survives engine refactors; only
   cooking produces engine structs.
 - **SysEx sub-ID `0x54` ('T') under the non-commercial manufacturer ID `0x7D`**, with

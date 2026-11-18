@@ -19,6 +19,7 @@
 #include "lcd_st7789.h"
 #include "factory_bank.h"
 #include "patch.h"
+#include "patch/multi_page.h"
 #include "patch/quick_edit_page.h"
 #include "ram_flash.h"
 
@@ -71,9 +72,44 @@ static void write_ppm(const char *file) {
     printf("wrote %s\n", path.c_str());
 }
 
-static Header<3> hdr;
+static Header<4> hdr;
 
 PartSlotT<SubCookedPatch> sub_part_slots[SUB_PART_COUNT];
+PartSlotT<SubMultiCooked> sub_multi_slot;
+
+// The MULTI Page in a few representative states: Parts 0 and 1 layered on
+// channel 1, Part 2 quieter, Parts 4 and up OFF; a stored Multi in M00.
+static void preview_multi_page() {
+    static RamFlash flash;
+    static UserBank user(ModuleId::SUBTRACTIVE, user_flash(flash));
+    static const FactoryBank banks[] = { { kSubFactoryBank, kSubFactoryCount } };
+    static PatchPlatformT<SubtractiveModule> platform(sub_part_slots, banks, 1, &user);
+    static MultiT<SubtractiveModule> multi(platform, &user, sub_multi_slot);
+    static MultiEditT<SubtractiveModule> me(multi);
+    static MultiPage<SubtractiveModule> pg;
+    const EditPageStyle style = { COL_VALUE, COL_BG, COL_FILL, COL_OFF, COL_SEL, COL_SEL_OFF,
+                                  COL_ACT, COL_ACT_OFF, BAR_X, BODY_Y0, DIAG_BAR_W, LCD_H };
+    multi.init();
+    multi.set_part(1, PART_P_CHANNEL, 0);
+    multi.set_part(1, PART_P_PROGRAM, 4);
+    multi.set_part(2, PART_P_VOLUME, 60);
+    for (uint8_t p = 4; p < SUB_PART_COUNT; p++) multi.set_part(p, PART_P_CHANNEL, kPartChannelOff);
+    multi.rename("LAYERS");
+    multi.store(0);
+
+    gfx_fill_rect(0, BODY_Y0, LCD_W, LCD_H - BODY_Y0, COL_BG);
+    header_draw_page_row(hdr, 2, "MULTI", LCD_W, COL_TITLE_FG, COL_TITLE, COL_TITLE_FG, COL_OFF, 1, 8);
+    multi_page_invalidate(pg);
+    auto step = [&](std::initializer_list<UiCommand> commands, const char *file) {
+        for (UiCommand c : commands) me.command(c);
+        multi_page_draw(pg, me, multi, platform, style);
+        if (file) write_ppm(file);
+    };
+    using C = UiCommand;
+    step({}, "subtractive_multi_browse.ppm");
+    step({ C::ENTER, C::ENTER }, "subtractive_multi_load.ppm");
+    step({ C::EXIT, C::PLUS, C::ENTER, C::PLUS, C::ENTER, C::PLUS }, "subtractive_multi_store_name.ppm");
+}
 
 // The EDIT Page in a few representative states, drawn incrementally the way
 // display_task() draws it, one image per state.
@@ -173,5 +209,6 @@ int main(int argc, char **argv) {
     write_ppm("subtractive_diag.ppm");
 
     preview_edit_page();
+    preview_multi_page();
     return 0;
 }

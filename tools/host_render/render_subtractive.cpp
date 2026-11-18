@@ -11,9 +11,13 @@
 //
 // The golden hashes are those of the const-table presets (presets.h)
 // played directly, so a match means the stored-format path sounds the same.
+// Every render plays through a one-part Multi (multi.h: Part 0 on channel
+// 1, every other Part OFF, default mix and FX), so a match also means a
+// one-part Multi sounds exactly as its single Patch does.
 
 #include "factory_bank.h"
 #include "patch.h"
+#include "patch/multi.h"
 #include "patch/platform.h"
 #include "render.h"
 #include "osc/sample.h"
@@ -35,12 +39,13 @@ constexpr uint32_t kSecondNoteBuffer = 40;   // ~0.23 s
 constexpr uint32_t kReleaseBuffer = 120;     // ~0.70 s
 
 using SubPlatform = PatchPlatformT<SubtractiveModule>;
+using SubMulti = MultiT<SubtractiveModule>;
 const FactoryBank kFactoryBanks[] = { { kSubFactoryBank, kSubFactoryCount } };
 
-// The Note Handler's note-on on Part 0, centred bend/pan, no mod wheel.
+// The Note Handler's note-on on Part 0, centred bend, no mod wheel.
 void start_note(VoiceParams &vp, const SubPlatform &platform, uint8_t note, uint8_t velocity) {
     const SubCookedPatch &patch = platform.cooked(0);
-    sub_note_start(vp, 0, patch, platform.load_id(0), sub_note_phase_inc(patch, note), 1.0f, velocity, 0, 0);
+    sub_note_start(vp, 0, patch, platform.load_id(0), sub_note_phase_inc(patch, note), 1.0f, velocity, 0);
 }
 
 uint64_t fnv1a(const std::vector<int16_t> &pcm) {
@@ -62,6 +67,7 @@ uint64_t fnv1a(const std::vector<int16_t> &pcm) {
 struct Hooks {
     std::function<void(uint32_t b, SubPlatform &platform, VoiceParamBlock &shadow)> before;
     std::function<void(uint32_t b, SubPlatform &platform)> after;
+    std::function<void(SubMulti &multi)> multi;  // Multi settings, before the first buffer
 };
 
 std::vector<int16_t> render_patch(uint32_t patch, bool second_note = true, const Hooks &hooks = {}) {
@@ -71,13 +77,27 @@ std::vector<int16_t> render_patch(uint32_t patch, bool second_note = true, const
     sub_render_init(*state);
     auto slots = std::make_unique<PartSlotT<SubCookedPatch>[]>(SUB_PART_COUNT);
     auto platform = std::make_unique<SubPlatform>(slots.get(), kFactoryBanks, 1, nullptr);
-    if (platform->load_factory(0, 0, patch) != PatchLoadResult::OK) {
+    auto multi_slot = std::make_unique<PartSlotT<SubMultiCooked>>();
+    auto multi = std::make_unique<SubMulti>(*platform, nullptr, *multi_slot);
+
+    // A one-part Multi: Part 0 plays `patch`, every other Part is OFF.
+    multi->init();
+    for (uint8_t p = 1; p < SUB_PART_COUNT; p++) multi->set_part(p, PART_P_CHANNEL, kPartChannelOff);
+    multi->set_part(0, PART_P_PROGRAM, (int32_t)patch);
+    if (multi->part_param(0, PART_P_PROGRAM) != (int32_t)patch) {
         fprintf(stderr, "factory patch %u failed to load\n", patch);
         exit(2);
     }
+    if (hooks.multi) hooks.multi(*multi);
 
-    // Core 1 has already taken the Part's Patch before the first note.
-    for (uint32_t p = 0; p < SUB_PART_COUNT; p++) sub_render_take_patch(*state, p, slots[p]);
+    // Core 1 has already taken the Parts' Patches and the Multi before the
+    // first note.
+    for (int i = 0; i < 2; i++) {
+        platform->task();
+        multi->task();
+        for (uint32_t p = 0; p < SUB_PART_COUNT; p++) sub_render_take_patch(*state, p, slots[p]);
+        sub_render_take_multi(*state, *multi_slot);
+    }
 
     std::vector<int16_t> pcm;
     pcm.reserve(kBuffers * SAMPLES_PER_BUFFER * 2);
@@ -85,6 +105,7 @@ std::vector<int16_t> render_patch(uint32_t patch, bool second_note = true, const
 
     for (uint32_t b = 0; b < kBuffers; b++) {
         platform->task();
+        multi->task();
         VoiceParamBlock &shadow = px.shadow();
         shadow = px.active();
         if (b == 0) start_note(shadow.voices[0], *platform, 60, 100);
@@ -100,6 +121,7 @@ std::vector<int16_t> render_patch(uint32_t patch, bool second_note = true, const
         // cooked patches, render.
         const VoiceParamBlock &active = px.active();
         for (uint32_t p = 0; p < SUB_PART_COUNT; p++) sub_render_take_patch(*state, p, slots[p]);
+        sub_render_take_multi(*state, *multi_slot);
         sub_render_buffer(*state, active, buf);
         pcm.insert(pcm.end(), buf, buf + SAMPLES_PER_BUFFER * 2);
     }
@@ -225,6 +247,36 @@ bool behaviour_checks() {
     };
     int queued = first_difference(second_note_square(10, false), second_note_square(40, true));
     ok = report(queued == -1, "a note right after a queued note-on edit plays the edited Patch") && ok;
+
+    // The Multi's mix. Fairlite (patch 0) with both notes.
+    auto with = [](std::function<void(SubMulti &)> setup) { return render_patch(0, true, { nullptr, nullptr, setup }); };
+    auto silent = [](const std::vector<int16_t> &pcm) {
+        for (int16_t s : pcm) if (s != 0) return false;
+        return true;
+    };
+    auto fx_on = [](SubMulti &m) {
+        m.set_common(COMMON_P_FX_TYPE, FX_DELAY);
+        m.set_common(COMMON_P_FX_MIX, 127);
+    };
+    const std::vector<int16_t> fx_off = with([](SubMulti &m) { m.set_common(COMMON_P_FX_TYPE, FX_OFF); });
+    ok = report(!silent(fx_off), "a dry Multi renders sound") && ok;
+    ok = report(first_difference(fx_off, with([&](SubMulti &m) {
+        fx_on(m);
+        m.set_part(0, PART_P_SEND, 0);
+    })) == -1, "a Part with FX send 0 sounds the same at full FX MIX as with the FX off") && ok;
+    ok = report(first_difference(fx_off, with(fx_on)) != -1, "with the send up the FX is heard") && ok;
+    ok = report(silent(with([](SubMulti &m) { m.set_part(0, PART_P_VOLUME, 0); })), "Part volume 0 is silent") && ok;
+    ok = report(silent(with([](SubMulti &m) { m.set_common(COMMON_P_MASTER, 0); })), "master 0 is silent") && ok;
+    const std::vector<int16_t> left = with([](SubMulti &m) {
+        m.set_common(COMMON_P_FX_TYPE, FX_OFF);
+        m.set_part(0, PART_P_PAN, 0);
+    });
+    bool right_silent = true, left_heard = false;
+    for (size_t i = 0; i < left.size(); i += 2) {
+        right_silent = right_silent && left[i + 1] == 0;
+        left_heard = left_heard || left[i] != 0;
+    }
+    ok = report(right_silent && left_heard, "Part pan hard left puts it all on the left") && ok;
     return ok;
 }
 

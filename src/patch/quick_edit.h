@@ -1,5 +1,6 @@
 #pragma once
 
+#include "name_editor.h"
 #include "platform.h"
 #include "wslcd/page.h"
 #include <cstdint>
@@ -18,13 +19,9 @@
 //                short or long press -> SELECT.
 //   STORE_SLOT   +/- pick the user slot (wrapping); short press ->
 //                NAME_CURSOR; long press -> SELECT, nothing stored.
-//   NAME_CURSOR  +/- move over the name's characters and a final OK;
-//                short press on a character -> NAME_CHAR, on OK renames
-//                and stores, then -> SELECT; long press -> SELECT, nothing
-//                stored.
-//   NAME_CHAR    +/- step the character through kNameChars (wrapping);
-//                short press -> NAME_CURSOR; long press -> SELECT, nothing
-//                stored.
+//   NAME_CURSOR  the name (name_editor.h): cursor mode; OK renames and
+//   NAME_CHAR    stores, then -> SELECT; long press -> SELECT, nothing
+//                stored. NAME_CHAR is the editor's char mode.
 //
 // While browsing, the Page follows the Part it is told to (the last-played
 // one); once editing starts it stays on that Part until backed out. A load
@@ -52,9 +49,7 @@ public:
     static constexpr uint32_t kStoreRow = kQuickCount + 1;
     static constexpr uint32_t kRowCount = kQuickCount + 2;
 
-    // Characters a name can be edited to, space first.
-    static constexpr char kNameChars[] =
-        " ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-+._/#&!";
+    static constexpr auto &kNameChars = NameEditor::kChars;
 
     // Parameter ID of parameter row `row` (< kQuickCount).
     static constexpr uint32_t param_id(uint32_t row) {
@@ -82,14 +77,17 @@ public:
         close_store_if_reloaded();
     }
 
-    QuickEditMode mode() const { return mode_; }
+    QuickEditMode mode() const {
+        if (mode_ == QuickEditMode::NAME_CURSOR && names_.char_mode()) return QuickEditMode::NAME_CHAR;
+        return mode_;
+    }
     uint8_t part() const { return part_; }
     uint32_t row() const { return row_; }
     uint32_t store_slot() const { return slot_; }
     // The name being edited, space-padded to kPatchNameLen.
-    const char *draft() const { return draft_; }
+    const char *draft() const { return names_.draft(); }
     // 0..kPatchNameLen - 1 a character, kPatchNameLen the OK field.
-    uint32_t name_cursor() const { return cursor_; }
+    uint32_t name_cursor() const { return names_.cursor(); }
     QuickEditStore store_result() const { return store_result_; }
 
 private:
@@ -97,18 +95,10 @@ private:
     void finish_store();
 
     bool in_store() const {
-        return mode_ == QuickEditMode::STORE_SLOT || mode_ == QuickEditMode::NAME_CURSOR ||
-               mode_ == QuickEditMode::NAME_CHAR;
+        return mode_ == QuickEditMode::STORE_SLOT || mode_ == QuickEditMode::NAME_CURSOR;
     }
     void close_store_if_reloaded() {
         if (in_store() && platform_.load_id(part_) != store_load_id_) mode_ = QuickEditMode::SELECT;
-    }
-
-    static uint32_t char_index(char c) {
-        for (uint32_t i = 0; i + 1 < sizeof kNameChars; i++) {
-            if (kNameChars[i] == c) return i;
-        }
-        return 0;
     }
 
     Platform &platform_;
@@ -116,8 +106,7 @@ private:
     uint8_t part_ = 0;
     uint32_t row_ = 0;
     uint32_t slot_ = 0;
-    uint32_t cursor_ = 0;
-    char draft_[kPatchNameLen + 1] = {};
+    NameEditor names_;
     uint16_t store_load_id_ = 0;  // the Part's load when the Store dialog opened
     QuickEditStore store_result_ = QuickEditStore::NONE;
 };
@@ -161,30 +150,17 @@ bool QuickEditT<Module>::command(UiCommand c) {
         case QuickEditMode::STORE_SLOT:
             if (plus) slot_ = (slot_ + 1) % kUserPatchSlots;
             if (minus) slot_ = (slot_ + kUserPatchSlots - 1) % kUserPatchSlots;
-            if (enter) {
-                mode_ = QuickEditMode::NAME_CURSOR;
-                cursor_ = 0;
-            }
-            if (exit) mode_ = QuickEditMode::SELECT;
-            break;
-        case QuickEditMode::NAME_CURSOR:
-            if (plus && cursor_ < kPatchNameLen) cursor_++;
-            if (minus && cursor_ > 0) cursor_--;
-            if (enter) {
-                if (cursor_ < kPatchNameLen) mode_ = QuickEditMode::NAME_CHAR;
-                else finish_store();
-            }
-            if (exit) mode_ = QuickEditMode::SELECT;
-            break;
-        case QuickEditMode::NAME_CHAR: {
-            constexpr uint32_t n = sizeof kNameChars - 1;
-            const uint32_t i = char_index(draft_[cursor_]);
-            if (plus) draft_[cursor_] = kNameChars[(i + 1) % n];
-            if (minus) draft_[cursor_] = kNameChars[(i + n - 1) % n];
             if (enter) mode_ = QuickEditMode::NAME_CURSOR;
             if (exit) mode_ = QuickEditMode::SELECT;
             break;
-        }
+        case QuickEditMode::NAME_CURSOR:
+        case QuickEditMode::NAME_CHAR:
+            switch (names_.command(c)) {
+                case NameEdit::DONE: finish_store(); break;
+                case NameEdit::CANCELLED: mode_ = QuickEditMode::SELECT; break;
+                case NameEdit::EDITING: break;
+            }
+            break;
         case QuickEditMode::BROWSE:
             break;
     }
@@ -205,13 +181,7 @@ void QuickEditT<Module>::start_store() {
             if (!platform_.user_slot_name(s, name)) { slot_ = s; break; }
         }
     }
-    const char *name = platform_.name(part_);
-    bool ended = false;
-    for (uint32_t i = 0; i < kPatchNameLen; i++) {
-        if (!ended && name[i] == '\0') ended = true;
-        draft_[i] = ended ? ' ' : name[i];
-    }
-    draft_[kPatchNameLen] = '\0';
+    names_.start(platform_.name(part_));
     store_load_id_ = platform_.load_id(part_);
     mode_ = QuickEditMode::STORE_SLOT;
 }
@@ -225,8 +195,7 @@ void QuickEditT<Module>::finish_store() {
     for (uint32_t i = 0; i <= kPatchNameLen; i++) old_name[i] = cur[i];
 
     char name[kPatchNameLen + 1];
-    for (uint32_t i = 0; i <= kPatchNameLen; i++) name[i] = draft_[i];
-    for (int32_t i = kPatchNameLen - 1; i >= 0 && name[i] == ' '; i--) name[i] = '\0';
+    names_.name(name);
 
     platform_.rename(part_, name);
     if (platform_.store(part_, slot_) == StoreResult::OK) {

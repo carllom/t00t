@@ -11,6 +11,7 @@
 #include "patch.h"
 #include "midi/midi_controller_generic.h"
 #include "patch/platform.h"
+#include "patch/multi.h"
 #include "patch/sysex.h"
 #include "patch/user_bank.h"
 #include "ram_flash.h"
@@ -23,6 +24,7 @@
 #include <vector>
 
 PartSlotT<SubCookedPatch> sub_part_slots[SUB_PART_COUNT];
+PartSlotT<SubMultiCooked> sub_multi_slot;
 
 namespace {
 
@@ -75,6 +77,7 @@ const FactoryBank kFactoryBanks[] = { { kSubFactoryBank, kSubFactoryCount } };
 RamFlash g_flash;
 UserBank g_user(ModuleId::SUBTRACTIVE, user_flash(g_flash));
 PatchPlatformT<SubtractiveModule> g_platform(sub_part_slots, kFactoryBanks, 1, &g_user);
+MultiT<SubtractiveModule> g_multi(g_platform, &g_user, sub_multi_slot);
 int g_notes_on = 0;
 Bytes g_sent;
 
@@ -91,7 +94,7 @@ bool capture(const uint8_t *data, uint32_t len) {
     g_sent.insert(g_sent.end(), data, data + len);
     return true;
 }
-PatchSysExT<SubtractiveModule> g_sysex(g_platform, capture);
+PatchSysExT<SubtractiveModule> g_sysex(g_platform, g_multi, capture);
 void on_sysex(const uint8_t *data, uint32_t len) { g_sysex.handle(data, len); }
 
 constexpr InputMapEntryT<VoiceParamBlock> kTable[] = {
@@ -115,6 +118,7 @@ void reset() {
     g_sysex.task();  // finish any dump a previous test left running
     g_sent.clear();
     g_flash.reset();
+    g_multi.init();
     for (uint8_t p = 0; p < SUB_PART_COUNT; p++) g_platform.load_factory(p, 0, 0);
     SubCookedPatch drain;
     for (auto &s : sub_part_slots) s.consume(drain);
@@ -320,6 +324,50 @@ void test_store_request_reports_a_refused_store() {
     check(g_sent.empty() && g_flash.writes.empty(), "a store for an unknown Part is ignored");
 }
 
+// Unpack a dump's packed payload (after F0 7D 54 <command>, up to F7).
+Bytes unpacked_payload(const Bytes &msg) {
+    Bytes out(MIDI_SYSEX_MAX);
+    const uint32_t n = sysex_unpack(msg.data() + 4, (uint32_t)msg.size() - 5, out.data(), (uint32_t)out.size());
+    out.resize(n);
+    return out;
+}
+
+void test_multi_parameter_change_sets_multi_and_part_values() {
+    reset();
+    feed(MIDI_SOURCE_USB, vec("multi_param_change_fx_mix_100"));
+    check(g_multi.common(COMMON_P_FX_MIX) == 100, "Multi parameter change: the Multi's FX MIX = 100");
+    feed(MIDI_SOURCE_USB, vec("multi_param_change_part2_volume_64"));
+    check(g_multi.part_param(2, PART_P_VOLUME) == 64, "and Part 2's VOLUME = 64");
+}
+
+void test_multi_edit_buffer_request_and_dump() {
+    reset();
+    feed(MIDI_SOURCE_USB, vec("multi_edit_buffer_request"));
+    check(g_sent == vec("multi_edit_buffer_dump_default"), "Multi edit-buffer request: dump of the default Multi");
+    feed(MIDI_SOURCE_USB, vec("multi_edit_buffer_dump_layer"));
+    check(g_multi.parts_on_channel(0) == 3 && g_multi.common(COMMON_P_FX_TYPE) == FX_REVERB &&
+          strcmp(g_multi.name(), "LAYER") == 0, "a Multi dump loads: Parts 0 and 1 layered on channel 1, reverb");
+}
+
+void test_multi_store_and_load_by_slot() {
+    reset();
+    feed(MIDI_SOURCE_USB, vec("multi_store_request_slot3"));
+    check(g_sent == vec("multi_store_reply_slot3_ok"), "Multi store request: reply OK for slot 3");
+    const Bytes want = unpacked_payload(vec("multi_edit_buffer_dump_default"));
+    const StoredPatchRef slot = g_user.multi(3);
+    check(slot.data && !want.empty() && memcmp(slot.data, want.data(), want.size()) == 0,
+          "Multi slot 3 holds the default Multi");
+
+    g_sent.clear();
+    g_multi.set_common(COMMON_P_FX_TYPE, FX_OFF);
+    feed(MIDI_SOURCE_USB, vec("multi_load_request_slot3"));
+    check(g_sent == vec("multi_load_reply_slot3_ok") && g_multi.common(COMMON_P_FX_TYPE) == FX_DELAY,
+          "Multi load request (select): reply OK, the stored Multi is back");
+    g_sent.clear();
+    feed(MIDI_SOURCE_USB, vec("multi_load_request_slot5"));
+    check(g_sent == vec("multi_load_reply_slot5_empty"), "an empty slot is answered NO_SUCH_PATCH");
+}
+
 }  // namespace
 
 int main() {
@@ -338,6 +386,9 @@ int main() {
     test_other_sysex_is_answered_during_a_dump();
     test_store_request_writes_the_edit_buffer_and_replies();
     test_store_request_reports_a_refused_store();
+    test_multi_parameter_change_sets_multi_and_part_values();
+    test_multi_edit_buffer_request_and_dump();
+    test_multi_store_and_load_by_slot();
     printf(g_ok ? "ALL CHECKS PASSED\n" : "CHECKS FAILED\n");
     return g_ok ? 0 : 1;
 }

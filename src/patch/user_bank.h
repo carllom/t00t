@@ -77,11 +77,11 @@ struct UserFlash {
 enum class StoreResult : uint8_t {
     OK           = 0,
     NO_SUCH_SLOT = 1,  // slot out of range, unknown Part, or no user bank for this module
-    BAD_PATCH    = 2,  // not a valid stored Patch for this module, or larger than a slot
+    BAD_PATCH    = 2,  // not a valid stored Patch / Multi for this module, or larger than a slot
     FLASH_FAILED = 3,  // the sector write failed or the region is unusable
 };
 
-// One module's user Patch bank. Core 0 only.
+// One module's user bank: its Patch slots and its Multi slots. Core 0 only.
 class UserBank {
 public:
     UserBank(ModuleId module, const UserFlash &flash) : module_(module), flash_(flash) {}
@@ -103,20 +103,41 @@ public:
     // holds writes nothing.
     StoreResult store_patch(uint32_t slot, const uint8_t *data, uint32_t len) {
         if (!usable() || slot >= kUserPatchSlots) return StoreResult::NO_SUCH_SLOT;
-        if (len > kUserPatchSlotSize || patch_check_header(data, len, module_) != PatchLoadResult::OK) {
-            return StoreResult::BAD_PATCH;
-        }
-        const uint32_t offset = user_patch_slot_offset(module_, slot);
-        const uint32_t sector = offset - offset % kFlashSectorSize;
-        for (uint32_t i = 0; i < kFlashSectorSize; i++) sector_[i] = flash_.base[sector + i];
-        uint8_t *dst = sector_ + (offset - sector);
-        for (uint32_t i = 0; i < kUserPatchSlotSize; i++) dst[i] = i < len ? data[i] : 0xFF;
-        if (memcmp(sector_, flash_.base + sector, kFlashSectorSize) == 0) return StoreResult::OK;
-        return flash_.write_sector(sector, sector_) ? StoreResult::OK : StoreResult::FLASH_FAILED;
+        return store(user_patch_slot_offset(module_, slot), kUserPatchSlotSize, kPatchMagic, data, len);
+    }
+
+    // The same for Multi slots and stored Multis (multi.h).
+    StoredPatchRef multi(uint32_t slot) const {
+        if (!usable() || slot >= kUserMultiSlots) return StoredPatchRef{ nullptr, 0 };
+        return StoredPatchRef{ flash_.base + user_multi_slot_offset(module_, slot), kUserMultiSlotSize };
+    }
+
+    bool multi_empty(uint32_t slot) const {
+        const StoredPatchRef ref = multi(slot);
+        return !ref.data || !stored_has_magic(ref.data, kMultiMagic);
+    }
+
+    StoreResult store_multi(uint32_t slot, const uint8_t *data, uint32_t len) {
+        if (!usable() || slot >= kUserMultiSlots) return StoreResult::NO_SUCH_SLOT;
+        return store(user_multi_slot_offset(module_, slot), kUserMultiSlotSize, kMultiMagic, data, len);
     }
 
 private:
     bool usable() const { return flash_.base && user_bank_has_partition(module_); }
+
+    // Write `data` (a stored header with `magic`, for this module) into the
+    // slot of `size` bytes at `offset`, 0xFF-padded, through its sector.
+    StoreResult store(uint32_t offset, uint32_t size, const uint8_t (&magic)[4], const uint8_t *data, uint32_t len) {
+        if (len > size || stored_check_header(data, len, module_, magic) != PatchLoadResult::OK) {
+            return StoreResult::BAD_PATCH;
+        }
+        const uint32_t sector = offset - offset % kFlashSectorSize;
+        for (uint32_t i = 0; i < kFlashSectorSize; i++) sector_[i] = flash_.base[sector + i];
+        uint8_t *dst = sector_ + (offset - sector);
+        for (uint32_t i = 0; i < size; i++) dst[i] = i < len ? data[i] : 0xFF;
+        if (memcmp(sector_, flash_.base + sector, kFlashSectorSize) == 0) return StoreResult::OK;
+        return flash_.write_sector(sector, sector_) ? StoreResult::OK : StoreResult::FLASH_FAILED;
+    }
 
     ModuleId module_;
     UserFlash flash_;

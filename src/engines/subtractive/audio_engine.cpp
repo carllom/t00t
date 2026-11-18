@@ -51,6 +51,7 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
         for (uint32_t p = 0; p < SUB_PART_COUNT; p++) {
             sub_render_take_patch(render_state, p, sub_part_slots[p]);
         }
+        sub_render_take_multi(render_state, sub_multi_slot);
 
         sub_render_buffer(render_state, vp, i2s_buffer_ptr(buffers, buf_index));
 

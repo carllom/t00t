@@ -519,6 +519,15 @@ target_include_directories(test_quick_edit PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}/../../src
 )
 
+# Host test for the Multi (src/patch/multi.h) at the platform seam: channel
+# routing, Part mix and FX ownership, Multi store/load, with a stub module
+# and RAM-backed flash. Header-only.
+add_executable(test_multi test_multi.cpp)
+target_include_directories(test_multi PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}
+    ${CMAKE_CURRENT_LIST_DIR}/../../src
+)
+
 # Subtractive factory-bank generator: converts the const preset
 # tables in src/engines/subtractive/presets.h into factory_bank.h, stored-
 # format Patches, checking the conversion is lossless. `--check <file>`
