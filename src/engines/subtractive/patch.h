@@ -158,5 +158,3 @@ inline void sub_note_start(VoiceParams &vp, uint8_t part, const SubCookedPatch &
     vp.gate = true;
 }
 
-// Name of the Patch currently in `part`'s Edit buffer (Core 0 / UI).
-const char *sub_part_patch_name(uint8_t part);

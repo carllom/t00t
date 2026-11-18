@@ -10,9 +10,9 @@
 static constexpr uint32_t SW_DEBOUNCE_THRESHOLD = 10;  // 10ms at 1ms tick, matches controller.cpp
 
 // Synthetic Sensor-event ids fed through ui_command_shaping.h -- CW/CCW
-// detents and the SW press are three independent "buttons" as far as
-// Shaping is concerned, each wired to its own UiCommand.
-enum EncoderSource : uint8_t { ENC_CW = 0, ENC_CCW = 1, ENC_SW = 2 };
+// detents are two independent "buttons" as far as Shaping is concerned,
+// each wired to its own UiCommand. SW goes through press-duration Shaping.
+enum EncoderSource : uint8_t { ENC_CW = 0, ENC_CCW = 1 };
 
 // Quarter-step quadrature transition table, indexed by (old_state << 2 |
 // new_state) where state = (CLK << 1) | DT: +1/-1 for a valid single-step
@@ -26,7 +26,9 @@ static const int8_t kQuadTable[16] = {
 };
 
 static PageCursor cursor;
-static UiNavConfig cfg_cw, cfg_ccw, cfg_sw;
+static UiNavConfig cfg_cw, cfg_ccw;
+static UiCommandClaim s_claim = nullptr;
+static PressShaper sw_shaper;
 
 static uint8_t quad_state;
 static int8_t quad_accum;
@@ -49,7 +51,7 @@ void encoder_nav_init(uint8_t page_count, uint8_t performance_index) {
 
     cfg_cw = { { UiCommand::PLUS }, page_count, performance_index };
     cfg_ccw = { { UiCommand::MINUS }, page_count, performance_index };
-    cfg_sw = { { UiCommand::EXIT }, page_count, performance_index };
+    sw_shaper = PressShaper{};
 
     quad_state = (uint8_t)((gpio_get(ENCODER_CLK_PIN) << 1) | gpio_get(ENCODER_DT_PIN));
     quad_accum = 0;
@@ -68,11 +70,11 @@ void encoder_nav_tick() {
         if (quad_accum >= 4) {
             quad_accum = 0;
             SensorEvent ev = sensor_event_button(ENC_CW, true);
-            ui_nav_consumer_feed(cursor, ev, cfg_cw);
+            ui_nav_consumer_feed(cursor, ev, cfg_cw, s_claim);
         } else if (quad_accum <= -4) {
             quad_accum = 0;
             SensorEvent ev = sensor_event_button(ENC_CCW, true);
-            ui_nav_consumer_feed(cursor, ev, cfg_ccw);
+            ui_nav_consumer_feed(cursor, ev, cfg_ccw, s_claim);
         }
     }
 
@@ -91,11 +93,15 @@ void encoder_nav_tick() {
         new_sw = false;
     }
 
-    if (new_sw != sw_debounced) {
-        sw_debounced = new_sw;
-        SensorEvent ev = sensor_event_button(ENC_SW, new_sw);
-        ui_nav_consumer_feed(cursor, ev, cfg_sw);
+    sw_debounced = new_sw;
+    UiCommand command;
+    if (shape_press_tick(sw_shaper, sw_debounced, &command)) {
+        ui_nav_consumer_apply(cursor, command, cfg_cw.page_count, cfg_cw.performance_index, s_claim);
     }
+}
+
+void encoder_nav_set_claim(UiCommandClaim claim) {
+    s_claim = claim;
 }
 
 uint8_t encoder_nav_page_index() {

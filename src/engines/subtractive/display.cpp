@@ -14,6 +14,8 @@
 #include "voice_alloc.h"
 #include "midi/midi_controller.h"
 #include "patch.h"
+#include "sub_platform.h"
+#include "patch/quick_edit_page.h"
 #include "pico/time.h"
 #include <cstdio>
 
@@ -29,9 +31,11 @@
 // layout as OPL's/FM's/chip's own (docs/module_opl.md, module_fm.md,
 // module_chip.md's Display sections) -- Header's Resource bar folding
 // voices+CPU, the current preset, and FXMIX/FX P1/FX P2/FX type/MOD as
-// compact Value bars/Label. DIAG carries the exact-value detail Resource
-// bar drops (CPU%, per-voice activity, last note) -- reachable via the
-// rotary encoder (encoder_nav.h) where one's wired (HAS_ENCODER),
+// compact Value bars/Label. EDIT is the Quick-edit Page (patch/
+// quick_edit_page.h): the last-played Part's quick-edit parameters,
+// Compare and Store. DIAG carries the exact-value detail Resource bar drops
+// (CPU%, per-voice activity, last note). EDIT and DIAG are reachable via
+// the rotary encoder (encoder_nav.h) where one's wired (HAS_ENCODER),
 // Performance-only otherwise.
 //
 // No per-channel patch or algorithm concept here (subtractive is a single
@@ -48,6 +52,10 @@ static const uint16_t COL_VALUE    = gfx_rgb(240, 240, 240);
 static const uint16_t COL_SND      = gfx_rgb(60, 220, 90);
 static const uint16_t COL_OFF      = gfx_rgb(28, 28, 34);
 static const uint16_t COL_FILL     = gfx_rgb(70, 130, 180);
+static const uint16_t COL_SEL      = gfx_rgb(220, 150, 30);   // amber: selected row
+static const uint16_t COL_SEL_OFF  = gfx_rgb(60, 40, 10);
+static const uint16_t COL_ACT      = gfx_rgb(40, 180, 80);    // green: value being changed
+static const uint16_t COL_ACT_OFF  = gfx_rgb(10, 50, 20);
 
 static constexpr int BODY_Y0 = 36;
 
@@ -69,7 +77,8 @@ static const char *NOTE_NAMES[12] =
     { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
 static const char *FX_TYPE_NAMES[FX_COUNT] = { "OFF", "DELAY", "REVERB", "PHASER", "FLANGER", "CHORUS", "CRUSH", "DRIVE" };
 
-enum { PAGE_PERFORMANCE = 0, PAGE_DIAG = 1, PAGE_COUNT = 2 };
+enum { PAGE_PERFORMANCE = 0, PAGE_EDIT = 1, PAGE_DIAG = 2, PAGE_COUNT = 3 };
+static const char *const PAGE_NAMES[PAGE_COUNT] = { "PERF", "EDIT", "DIAG" };
 
 struct NoteKey {
     uint8_t note, velocity;
@@ -80,7 +89,18 @@ struct NoteKey {
 static Header<PAGE_COUNT> hdr;
 static ResourceBar resource_bar;
 
-static ValueRow<uint8_t> preset_row;
+static ValueRow<uint32_t> preset_row;  // keyed by the Part and its platform revision
+
+using SubQuickEdit = QuickEditT<SubtractiveModule>;
+static SubQuickEdit &quick_edit() {
+    static SubQuickEdit qe(sub_platform());
+    return qe;
+}
+static QuickEditPage<SubtractiveModule> quick_edit_page;
+static const QuickEditPageStyle kQuickEditStyle = {
+    COL_VALUE, COL_BG, COL_FILL, COL_OFF, COL_SEL, COL_SEL_OFF, COL_ACT, COL_ACT_OFF,
+    BAR_X, BODY_Y0, DIAG_BAR_W, LCD_H,
+};
 static ValueBar<uint8_t> fxmix_bar, fx_p1_bar, fx_p2_bar, mod_bar;
 static Label<uint8_t> fx_type_label;
 
@@ -89,6 +109,18 @@ static ValueRow<uint32_t> voices_row;
 static ActivityGrid<(int)MAX_VOICES> voice_grid;
 static ValueRow<NoteKey> note_row;
 
+#if HAS_ENCODER
+// While EDIT is showing, the Quick-edit Page gets every UI command first,
+// on the last-played Part as of now rather than as of the last redraw.
+static bool claim_ui_command(UiCommand command) {
+    if (encoder_nav_page_index() != PAGE_EDIT) return false;
+    MidiUiState m;
+    midi_controller_ui_state(&m);
+    quick_edit().follow_part(m.last_channel);
+    return quick_edit().command(command);
+}
+#endif
+
 void display_init() {
     lcd_init();
     lcd_fill(COL_BG);
@@ -96,14 +128,13 @@ void display_init() {
 
 #if HAS_ENCODER
     encoder_nav_init(PAGE_COUNT, PAGE_PERFORMANCE);
+    encoder_nav_set_claim(claim_ui_command);
 #endif
 }
 
 void display_task() {
-    static PageRefreshCadence cadence{};  // base 10Hz -- neither Page needs the faster override
     static absolute_time_t next = {0};
     if (!time_reached(next)) return;
-    next = make_timeout_time_ms(1000 / refresh_rate_hz(cadence));
 
     static bool    first = true;
     static uint8_t last_page = 0xFF;
@@ -113,6 +144,9 @@ void display_task() {
 #else
     uint8_t page = PAGE_PERFORMANCE;
 #endif
+    // EDIT takes the faster rate so the encoder feels immediate.
+    const PageRefreshCadence cadence{ page == PAGE_EDIT };
+    next = make_timeout_time_ms(1000 / refresh_rate_hz(cadence));
 
     header_draw_module_name(hdr, "SUBTRACTIVE", LCD_W, COL_TITLE_FG, COL_TITLE);
 
@@ -123,7 +157,7 @@ void display_task() {
                              LCD_W - kResourceBarMaxPx - row1_margin,
                              kHeaderRow1Y + (kHeaderRow1H - 8) / 2, 8, COL_BG);
 
-    header_draw_page_row(hdr, page, page == PAGE_PERFORMANCE ? "PERF" : "DIAG", LCD_W,
+    header_draw_page_row(hdr, page, PAGE_NAMES[page < PAGE_COUNT ? page : 0], LCD_W,
                           COL_TITLE_FG, COL_TITLE, COL_TITLE_FG, COL_OFF, 1, 8);
 
     if (first || page != last_page) {
@@ -135,6 +169,8 @@ void display_task() {
             fx_p2_bar.initialized = false;
             fx_type_label.initialized = false;
             mod_bar.initialized = false;
+        } else if (page == PAGE_EDIT) {
+            quick_edit_page_invalidate(quick_edit_page);
         } else {
             cpu_bar.bar.initialized = false;
             voices_row.initialized = false;
@@ -147,12 +183,15 @@ void display_task() {
     MidiUiState m;
     midi_controller_ui_state(&m);
 
+    const PatchPlatformT<SubtractiveModule> &platform = sub_platform();
     if (page == PAGE_PERFORMANCE) {
-        if (!preset_row.initialized || preset_row.value != m.program) {
-            const char *name = sub_part_patch_name(m.last_channel);
+        const uint8_t part = m.last_channel < SUB_PART_COUNT ? m.last_channel : 0;
+        const uint32_t patch_key = (platform.revision(part) << 4) | part;
+        if (!preset_row.initialized || preset_row.value != patch_key) {
             char text[24];
-            snprintf(text, sizeof(text), "#%-3d %.10s", m.program, name);
-            value_row_draw_value(preset_row, m.program, text, 4, PRESET_Y, 28, 1, COL_VALUE,
+            snprintf(text, sizeof(text), "#%-3d %.16s%s", m.program, platform.name(part),
+                     platform.edited(part) ? "*" : "");
+            value_row_draw_value(preset_row, patch_key, text, 4, PRESET_Y, 28, 1, COL_VALUE,
                                   COL_BG);
         }
 
@@ -169,6 +208,9 @@ void display_task() {
 
         value_bar_draw_value(mod_bar, m.mod, "MOD", m.mod / 127.0f, BAR_X, MOD_Y, BAR_HALF_W, BAR_H,
                               1, COL_VALUE, COL_FILL, COL_OFF);
+    } else if (page == PAGE_EDIT) {
+        quick_edit().follow_part(m.last_channel);
+        quick_edit_page_draw(quick_edit_page, quick_edit(), platform, kQuickEditStyle);
     } else {
         percentage_bar_draw_value(cpu_bar, load, "CPU", BAR_X, CPU_Y, DIAG_BAR_W, 20, 2, COL_VALUE,
                                    COL_OFF);

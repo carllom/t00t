@@ -2,6 +2,7 @@
 
 #include "midi/nrpn.h"
 #include <cstdint>
+#include <cstdio>
 
 // Descriptor vocabulary of the patch platform (CONTEXT.md "Patch platform",
 // docs/platform.md). A module describes each of its native parameters with
@@ -108,4 +109,55 @@ constexpr bool descriptor_table_valid(const ParamDescriptor (&table)[N]) {
         if (descriptor_find_cc(table, d.default_cc) != i) return false;  // claimed twice
     }
     return true;
+}
+
+// One step of a value control (an encoder detent) from `value` in
+// direction `dir` (+1 / -1), clamped to the range: by 1 for an ENUM or a
+// range of at most 127, by about 6% of the distance above min for an
+// EXPONENTIAL parameter, else by 1/128 of the range -- always at least 1.
+constexpr int32_t param_step(const ParamDescriptor &d, int32_t value, int dir) {
+    const int64_t range = (int64_t)d.max - (int64_t)d.min;
+    const int64_t off = (int64_t)value - (int64_t)d.min;
+    int64_t next = off;
+    if (d.unit == ParamUnit::ENUM || range <= 127) {
+        next = off + dir;
+    } else if (d.curve == ParamCurve::EXPONENTIAL) {
+        const int64_t scaled = dir > 0 ? off + (off * 6 + 50) / 100 : (off * 100 + 53) / 106;
+        next = scaled == off ? off + dir : scaled;
+    } else {
+        const int64_t step = (range + 64) / 128;
+        next = off + dir * (step < 1 ? 1 : step);
+    }
+    if (next < 0) next = 0;
+    if (next > range) next = range;
+    return d.min + (int32_t)next;
+}
+
+// `value` as display text into `out` (`n` bytes): an ENUM's label, else the
+// number in the parameter's unit ("1234Hz", "12.5k", "2.50Hz", "35.0%").
+inline void param_format(const ParamDescriptor &d, int32_t value, char *out, uint32_t n) {
+    const long v = value;
+    const long a = v < 0 ? -v : v;
+    const char *sign = v < 0 ? "-" : "";
+    switch (d.unit) {
+        case ParamUnit::ENUM:
+            if (d.labels && value >= d.min && value <= d.max) {
+                snprintf(out, n, "%s", d.labels[value - d.min]);
+                return;
+            }
+            break;
+        case ParamUnit::HZ:
+            if (a < 10000) snprintf(out, n, "%ldHz", v);
+            else snprintf(out, n, "%s%ld.%ldk", sign, a / 1000, (a % 1000) / 100);
+            return;
+        case ParamUnit::CENTI_HZ:
+            snprintf(out, n, "%s%ld.%02ldHz", sign, a / 100, a % 100);
+            return;
+        case ParamUnit::PERMILLE:
+            snprintf(out, n, "%s%ld.%ld%%", sign, a / 10, a % 10);
+            return;
+        case ParamUnit::NONE:
+            break;
+    }
+    snprintf(out, n, "%ld", v);
 }

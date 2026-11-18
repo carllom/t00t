@@ -24,13 +24,27 @@ struct UiNavConfig {
     uint8_t performance_index;
 };
 
+// An interaction context that gives UI commands a more specific meaning
+// than Page navigation (e.g. a Page's value editing): returns true if it
+// took the command, false to leave it to Page navigation.
+using UiCommandClaim = bool (*)(UiCommand command);
+
+// Apply one UI command: to `claim` first if there is one, else to
+// `cursor` as Page navigation.
+inline void ui_nav_consumer_apply(PageCursor &cursor, UiCommand command, uint8_t page_count,
+                                  uint8_t performance_index, UiCommandClaim claim = nullptr) {
+    if (claim && claim(command)) return;
+    page_cursor_apply(cursor, command, page_count, performance_index);
+}
+
 // Feed one already-debounced Sensor event through Shaping and, if it maps
-// to a UI command, apply it to `cursor`. Returns whether a command fired,
-// so a caller (e.g. a display's redraw-only-if-changed check) doesn't need
-// to re-derive Shaping's own press-edge predicate.
-inline bool ui_nav_consumer_feed(PageCursor &cursor, const SensorEvent &ev, const UiNavConfig &cfg) {
+// to a UI command, apply it (ui_nav_consumer_apply()). Returns whether a
+// command fired, so a caller (e.g. a display's redraw-only-if-changed
+// check) doesn't need to re-derive Shaping's own press-edge predicate.
+inline bool ui_nav_consumer_feed(PageCursor &cursor, const SensorEvent &ev, const UiNavConfig &cfg,
+                                 UiCommandClaim claim = nullptr) {
     UiCommand command;
     if (!shape_ui_command_event(ev, cfg.shaping, &command)) return false;
-    page_cursor_apply(cursor, command, cfg.page_count, cfg.performance_index);
+    ui_nav_consumer_apply(cursor, command, cfg.page_count, cfg.performance_index, claim);
     return true;
 }

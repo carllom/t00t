@@ -190,12 +190,15 @@ behavior shared by all 7 engine modules, not seven per-module forks.
 Whatever consumes UI command must be fully optional: a board/config with
 no UI-navigation control wired (or `HAS_LCD=0`) leaves audio functionality
 completely unaffected, matching the board-conditional pattern the LCD
-itself already follows. Only one concrete meaning for these four commands
-is decided so far — see Page's entry below for Page navigation, wayfinder
+itself already follows. Page navigation (see Page's entry below, wayfinder
 ticket "Page navigation: how a module's Pages relate and get switched,
-control-agnostic". The general command vocabulary as a reusable primitive
-across other, not-yet-designed interaction contexts (value editing,
-confirm/cancel) is intentionally left open.
+control-agnostic") is the default meaning. A Page may define an
+**interaction context** that claims commands first and leaves the rest to
+Page navigation — the Quick-edit Page's value editing and Store/rename
+(`src/patch/quick_edit.h`) is the one so far: `enter` selects/confirms,
+`exit` backs out one level, `+`/`-` step whatever is selected. On a single
+push button, a short press is `enter` and a long press (0.5 s) `exit`
+(`ui_command_shaping.h`).
 
 **Shaping**:
 Generic, cross-module value-adjustment that runs before the Router, in the

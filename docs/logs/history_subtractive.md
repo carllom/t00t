@@ -397,3 +397,32 @@ over USB with `amidi`; the normal build was flashed back afterwards.
   Bank Select 64 + Program Change 5. Then the FM build was flashed, then
   subtractive again; after the reboot (Part 1 back on Sq-PWM) slot 5 still
   loaded as Fairlite at 1234 Hz. Store mute length is still to be measured.
+
+## Quick-edit Page with Compare and Store/rename (#154, 2026-11-18)
+
+- **Interaction** (decided with the author): the encoder's push button is
+  a short press = ENTER, a 0.5 s hold = EXIT, for every module with an
+  encoder (a hold still jumps to Performance outside an edit). The Page
+  claims UI commands before Page navigation while showing; rename uses a
+  cursor mode and a character mode over 16 characters plus OK.
+- **Part:** the last-played channel's Part, frozen once editing starts.
+- **Compare:** publishes the stored version as an edit, not a load, so
+  sounding notes switch with it; any edit (encoder, NRPN, SysEx) ends it.
+- **Platform:** each Edit buffer keeps its stored version and origin;
+  `edited()`, `set_compare()`, `rename()`, `revision()` (any change the
+  display shows) and `user_slot_name()` were added; a Store makes the slot
+  the stored version.
+- **Rendering** is shared by the device and `preview_subtractive_display`,
+  which now runs the real module through UI commands and writes the EDIT
+  Page states to `[out_dir]` (its output path was a hard-coded scratch
+  directory).
+- **After review:** rows show what is heard (the stored values while
+  comparing); a Store ends Compare; a long press cancels a Store from any
+  of its steps; a load into the Part closes the Store dialog; the head row
+  drops its `CMP` tag (the COMPARE button shows it) so a 16-character name
+  fits. The edited marker compares against the copy taken at load or
+  Store, so it doesn't notice the slot being overwritten from elsewhere.
+- **Host tests:** `test_quick_edit` (rows, Part follow, value steps per
+  curve, Compare, Store slot choice, rename, cancel, failed Store, value
+  text), `test_patch_platform` (edited marker, Compare, rename, Store,
+  load without prompt), `test_ui_nav_consumer` (short/long press, claim).

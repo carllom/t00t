@@ -98,6 +98,13 @@ inline PatchLoadResult patch_check_header(const uint8_t *data, uint32_t len, Mod
     return PatchLoadResult::OK;
 }
 
+// The name in a stored Patch header into `out` (kPatchNameLen + 1 bytes,
+// always terminated).
+inline void patch_read_name(const uint8_t *data, char *out) {
+    for (uint32_t i = 0; i < kPatchNameLen; i++) out[i] = (char)data[6 + i];
+    out[kPatchNameLen] = '\0';
+}
+
 // Decode `data` into `values` (one per descriptor) and `name` (kPatchNameLen
 // + 1 bytes, always terminated). On any result other than OK, `values` and
 // `name` are left untouched.
@@ -126,7 +133,6 @@ inline PatchLoadResult patch_decode(const uint8_t *data, uint32_t len, ModuleId 
         values[i] = v > d.max ? d.max : v;
     }
 
-    for (uint32_t i = 0; i < kPatchNameLen; i++) name[i] = (char)data[6 + i];
-    name[kPatchNameLen] = '\0';
+    patch_read_name(data, name);
     return PatchLoadResult::OK;
 }

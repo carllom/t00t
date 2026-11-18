@@ -62,18 +62,30 @@ fixed to one note/channel, routed through the same Shaping →
 
 ### Display (Presentation Capabilities)
 
-Two Pages (`src/wslcd/page.h`/`header.h`), the shared Widget/Header/Page
+Three Pages (`src/wslcd/page.h`/`header.h`), the shared Widget/Header/Page
 library (CONTEXT.md's Widget catalog) applied to subtractive — same
 Performance-page layout as OPL's/FM's/chip's own (`docs/module_opl.md` /
 `docs/module_fm.md` / `docs/module_chip.md`'s Display sections):
 
 - **Performance** (required, default): the Header's Resource bar (combined
   active-voice/CPU indicator) plus the last-played channel's Patch
-  (factory number + name) and
+  (program number + name, `*` while edited) and
   the three FX CCs (CC73/72/75) as compact Value bars ("FXMIX"/"FX P1"/
   "FX P2") with FX type (CC76) as a Label ("OFF"/"DELAY"/"REVERB"/"PHASER"/
   "FLANGER"/"CHORUS"/"CRUSH"/"DRIVE") and the mod wheel (CC1) as a fourth
   Value bar ("MOD").
+- **EDIT** — the Quick-edit Page (`src/patch/quick_edit.h`,
+  `quick_edit_page.h`): the last-played channel's Part (held while
+  editing), where its Patch is stored (`F0.02` factory, `U012` user), its
+  name with `*` while edited; then the five quick-edit parameters (WAVE,
+  LFO RATE, CUTOFF, RESO, ENV>CUT) as Value bars showing what is heard
+  (the stored values while comparing), then COMPARE and STORE. Short press starts editing, turning picks a
+  row, short press acts on it (edit a value, toggle Compare, Store), long
+  press backs out one level. Store picks a user slot (the Patch's own if it
+  came from one, else the first empty), then the name: turn to move the
+  cursor, press to change the letter under it, press OK to store; a long
+  press cancels, as does a Program Change into the Part. Edits go
+  through the Part's Edit buffer like NRPN and SysEx; any edit ends Compare.
 - **DIAG**: the exact-value detail Resource bar deliberately sacrifices —
   CPU% (PercentageBar), per-voice sounding activity (ActivityGrid), and
   last note (name + octave + velocity). No multitimbral grid or algorithm
@@ -82,8 +94,9 @@ Performance-page layout as OPL's/FM's/chip's own (`docs/module_opl.md` /
   Performance/DIAG content exactly).
 
 Reachable via the breadboard's rotary encoder (`src/encoder_nav.h`,
-docs/engine.md's "Encoder navigation" entry) where one's wired;
-Performance-only otherwise (`HAS_ENCODER=0`).
+docs/engine.md's "Encoder navigation" entry) where one's wired: turn to
+change Page, hold to jump to Performance. Performance-only otherwise
+(`HAS_ENCODER=0`).
 
 ## Technical Overview
 
@@ -102,7 +115,9 @@ Performance-only otherwise (`HAS_ENCODER=0`).
 - `audio_engine.cpp` — Core 1 loop: takes new cooked patches from the Part
   slots, calls `render.h`; parks in RAM while Core 0 stores to flash
   (`src/core1_park.h`)
-- `display.cpp` — Performance + DIAG Pages (see Display above)
+- `display.cpp` — Performance, EDIT and DIAG Pages (see Display above)
+- `sub_platform.h` — access to the module's patch platform instance for
+  the display
 - `input_subsystem.cpp` — the Input pipeline's module-specific tail:
   mapping table, Handlers, and Voice Allocation Interface calls, built on
   the shared dispatch layer below; owns the patch platform instance
@@ -399,6 +414,9 @@ insert adds ~1.5pp; reverb adds ~8pp. Measured on breadboard_rp2350 at
     every other CC to the platform** — the descriptor table, not the mapping
     table, decides which CC drives which parameter; a compile-time check
     rejects a default CC an explicit entry would shadow.
+19. **The Quick-edit Page edits the last-played Part, held while editing**
+    — it matches the Performance page's Patch row, and a note on another
+    channel can't move an edit in progress to a different Part.
 
 ## Glossary
 

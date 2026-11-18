@@ -489,6 +489,117 @@ void test_older_schema_user_patch_takes_defaults() {
           "a schema-1 user Patch loads, CUTOFF taking its descriptor default");
 }
 
+// --- Edit buffer vs its stored version: edited marker, Compare, rename, Store ---
+
+void nrpn_level(Rig &rig, uint8_t data_msb) {  // Part 0, LEVEL (NRPN 0)
+    rig.midi({ 0xB0, 99, 0, 0xB0, 98, 0, 0xB0, 6, data_msb });
+}
+
+void test_a_load_is_unedited_until_a_value_differs() {
+    Rig rig;  // Part 0 on DARK, level 30
+    check(!rig.platform.edited(0), "a freshly loaded Patch is not edited");
+    nrpn_level(rig, 127);
+    check(rig.platform.edited(0), "an edit marks it edited");
+    rig.platform.set_param(0, 0, 30);
+    check(!rig.platform.edited(0), "setting the value back to the stored one clears the marker");
+    check(rig.platform.param(0, 0) == 30, "param() reads the Edit buffer");
+}
+
+void test_compare_plays_the_stored_version_and_back() {
+    Rig rig;
+    nrpn_level(rig, 127);  // LEVEL 100
+    StubCooked got{};
+    rig.slots[0].consume(got);
+
+    rig.platform.set_compare(0, true);
+    check(rig.platform.comparing(0), "Compare on");
+    check(rig.slots[0].consume(got) && is_dark(got), "Compare publishes the stored DARK");
+    check(is_dark(rig.platform.cooked(0)), "and new notes take it too");
+    check(rig.platform.edited(0) && rig.platform.param(0, 0) == 100, "the Edit buffer keeps its edit meanwhile");
+
+    rig.platform.set_compare(0, false);
+    check(rig.slots[0].consume(got) && got.level_x10 == 1000, "Compare off publishes the edited version again");
+    check(!rig.platform.comparing(0), "Compare off");
+}
+
+void test_an_edit_during_compare_ends_compare() {
+    Rig rig;
+    nrpn_level(rig, 127);                // LEVEL 100
+    rig.platform.set_compare(0, true);
+    StubCooked got{};
+    while (rig.slots[0].consume(got)) rig.platform.task();
+    rig.midi({ 0xB0, 74, 127 });         // CUTOFF by its default CC
+    check(!rig.platform.comparing(0), "an edit while comparing ends Compare");
+    check(rig.slots[0].consume(got) && got.level_x10 == 1000 && got.cutoff == 18000,
+          "and applies to the edited version, keeping the earlier edit");
+}
+
+void test_compare_is_an_edit_not_a_load() {
+    Rig rig;
+    const uint16_t before = rig.platform.load_id(0);
+    nrpn_level(rig, 127);
+    rig.platform.set_compare(0, true);
+    check(rig.platform.load_id(0) == before, "Compare keeps the load ID, so sounding notes follow it");
+}
+
+void test_rename_changes_the_name_and_marks_edited() {
+    Rig rig;
+    rig.platform.rename(0, "DEEP DARK");
+    check(strcmp(rig.platform.name(0), "DEEP DARK") == 0, "rename sets the Edit buffer's name");
+    check(rig.platform.edited(0), "a new name alone marks it edited");
+    rig.platform.rename(0, "A NAME LONGER THAN SIXTEEN");
+    check(strcmp(rig.platform.name(0), "A NAME LONGER TH") == 0, "names are cut to 16 characters");
+}
+
+void test_store_makes_the_edit_buffer_the_stored_version() {
+    Rig rig;
+    nrpn_level(rig, 127);
+    rig.platform.rename(0, "LOUD");
+    check(rig.platform.store(0, 12) == StoreResult::OK, "store into user slot 12");
+    check(!rig.platform.edited(0), "after a Store the Edit buffer is no longer edited");
+    const PatchOrigin o = rig.platform.origin(0);
+    check(o.source == PatchSource::USER && o.slot == 12, "and its stored version is user slot 12");
+    char name[kPatchNameLen + 1];
+    check(rig.platform.user_slot_name(12, name) && strcmp(name, "LOUD") == 0, "the slot holds the new name");
+    check(!rig.platform.user_slot_name(13, name), "an empty slot has no name");
+
+    rig.platform.set_compare(0, true);
+    StubCooked got{};
+    while (rig.slots[0].consume(got)) rig.platform.task();
+    check(got.level_x10 == 1000, "Compare now plays the stored edit");
+    check(rig.platform.stored_param(0, 0) == 100, "stored_param() reads the stored version");
+
+    rig.platform.store(0, 13);
+    check(!rig.platform.comparing(0), "a Store ends Compare: both versions are the same now");
+}
+
+void test_a_load_replaces_the_edit_buffer_without_asking() {
+    Rig rig;
+    nrpn_level(rig, 127);
+    rig.platform.set_compare(0, true);
+    rig.midi({ 0xC0, 0x01 });  // BRIGHT
+    check(strcmp(rig.platform.name(0), "BRIGHT") == 0 && !rig.platform.edited(0) && !rig.platform.comparing(0),
+          "a Program Change over an edited, comparing Part simply loads: unedited, Compare off");
+    const PatchOrigin o = rig.platform.origin(0);
+    check(o.source == PatchSource::FACTORY && o.bank == 0 && o.slot == 1, "its stored version is factory bank 0, slot 1");
+}
+
+void test_revision_changes_with_anything_shown() {
+    Rig rig;
+    uint32_t r = rig.platform.revision(0);
+    nrpn_level(rig, 100);
+    bool edit = rig.platform.revision(0) != r; r = rig.platform.revision(0);
+    rig.platform.set_compare(0, true);
+    bool cmp = rig.platform.revision(0) != r; r = rig.platform.revision(0);
+    rig.platform.rename(0, "X");
+    bool ren = rig.platform.revision(0) != r; r = rig.platform.revision(0);
+    rig.platform.store(0, 0);
+    bool sto = rig.platform.revision(0) != r; r = rig.platform.revision(0);
+    rig.midi({ 0xC0, 0x00 });
+    bool load = rig.platform.revision(0) != r;
+    check(edit && cmp && ren && sto && load, "revision() changes on edit, Compare, rename, Store and load");
+}
+
 }  // namespace
 
 int main() {
@@ -516,6 +627,14 @@ int main() {
     test_store_without_a_user_bank_is_refused();
     test_user_slot_holding_another_modules_patch_is_rejected();
     test_older_schema_user_patch_takes_defaults();
+    test_a_load_is_unedited_until_a_value_differs();
+    test_compare_plays_the_stored_version_and_back();
+    test_an_edit_during_compare_ends_compare();
+    test_compare_is_an_edit_not_a_load();
+    test_rename_changes_the_name_and_marks_edited();
+    test_store_makes_the_edit_buffer_the_stored_version();
+    test_a_load_replaces_the_edit_buffer_without_asking();
+    test_revision_changes_with_anything_shown();
     printf(g_ok ? "ALL CHECKS PASSED\n" : "CHECKS FAILED\n");
     return g_ok ? 0 : 1;
 }

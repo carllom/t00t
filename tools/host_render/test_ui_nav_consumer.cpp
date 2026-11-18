@@ -121,6 +121,64 @@ bool test_ui_command_never_reaches_a_module_handler() {
     return ok;
 }
 
+// --- Press-duration Shaping: one button, two commands ---
+
+// Feeds `ms` 1 ms ticks of `pressed`; returns the commands fired, in order.
+int run_press(PressShaper &s, bool pressed, int ms, UiCommand *fired, int cap) {
+    int n = 0;
+    for (int i = 0; i < ms; i++) {
+        UiCommand c;
+        if (shape_press_tick(s, pressed, &c) && n < cap) fired[n++] = c;
+    }
+    return n;
+}
+
+bool test_short_press_fires_enter_on_release() {
+    PressShaper s;
+    UiCommand fired[4];
+    int during = run_press(s, true, 100, fired, 4);
+    int after = run_press(s, false, 5, fired, 4);
+    bool ok = during == 0 && after == 1 && fired[0] == UiCommand::ENTER;
+    printf(ok ? "  OK: a short press fires ENTER on release, nothing while held\n"
+              : "  FAIL: short press did not fire exactly one ENTER on release\n");
+    return ok;
+}
+
+bool test_long_press_fires_exit_once_while_held() {
+    PressShaper s;
+    UiCommand fired[4];
+    int early = run_press(s, true, kLongPressMs - 1, fired, 4);
+    int at = run_press(s, true, 1, fired, 4);
+    bool exit_fired = at == 1 && fired[0] == UiCommand::EXIT;
+    int later = run_press(s, true, 2000, fired, 4) + run_press(s, false, 5, fired, 4);
+    bool ok = early == 0 && exit_fired && later == 0;
+    printf(ok ? "  OK: holding fires EXIT once at the long-press threshold, and nothing on release\n"
+              : "  FAIL: long press did not fire exactly one EXIT at the threshold\n");
+    return ok;
+}
+
+// --- A claiming interaction context takes precedence over Page navigation ---
+
+int g_claimed = 0;
+bool claim_all(UiCommand) { g_claimed++; return true; }
+bool claim_none(UiCommand) { return false; }
+
+bool test_claimed_command_leaves_the_page_cursor() {
+    PageCursor cursor;
+    cursor.index = 1;
+    g_claimed = 0;
+    ui_nav_consumer_feed(cursor, sensor_event_button(0, true), kPlusButton, claim_all);
+    bool claimed_ok = cursor.index == 1 && g_claimed == 1;
+    ui_nav_consumer_feed(cursor, sensor_event_button(0, true), kPlusButton, claim_none);
+    bool fallback_ok = cursor.index == 2;
+    ui_nav_consumer_apply(cursor, UiCommand::EXIT, 4, 0, claim_none);
+    bool apply_ok = cursor.index == 0;
+    bool ok = claimed_ok && fallback_ok && apply_ok;
+    printf(ok ? "  OK: a claimed command never moves the cursor; an unclaimed one falls back to Page navigation\n"
+              : "  FAIL: claim did not take precedence over Page navigation\n");
+    return ok;
+}
+
 }  // namespace
 
 int main() {
@@ -138,6 +196,12 @@ int main() {
     ok = test_single_page_module_never_advances() && ok;
     printf("\n== divergence before the Router ==\n");
     ok = test_ui_command_never_reaches_a_module_handler() && ok;
+
+    printf("\n== press duration: short = ENTER, long = EXIT ==\n");
+    ok = test_short_press_fires_enter_on_release() && ok;
+    ok = test_long_press_fires_exit_once_while_held() && ok;
+    printf("\n== an interaction context claims commands first ==\n");
+    ok = test_claimed_command_leaves_the_page_cursor() && ok;
 
     printf(ok ? "\nALL CHECKS PASSED\n" : "\nCHECKS FAILED\n");
     return ok ? 0 : 1;

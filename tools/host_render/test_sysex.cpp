@@ -23,7 +23,6 @@
 #include <vector>
 
 PartSlotT<SubCookedPatch> sub_part_slots[SUB_PART_COUNT];
-const char *sub_part_patch_name(uint8_t) { return ""; }
 
 namespace {
 

@@ -16,10 +16,10 @@
 // applies whichever UiCommand fires immediately, each 1ms poll, through the
 // existing Sensor event -> Shaping -> ui_nav_consumer_feed() path -- a CW
 // detent and a CCW detent are shaped as two independent synthetic buttons
-// (PLUS/MINUS), and the SW press as a third (EXIT). ENTER carries no
-// Page-navigation meaning (page.h), so it's left unmapped; EXIT (jump to
-// the module's Performance page) is the one command a single button can
-// usefully fire on its own.
+// (PLUS/MINUS); the SW button goes through press-duration Shaping: a short
+// press is ENTER, a long press EXIT (ui_command_shaping.h). A claiming
+// interaction context (encoder_nav_set_claim()) sees every command before
+// Page navigation does.
 //
 // Rotation is quarter-step quadrature-decoded and only counted at a full
 // detent (four valid quarter-steps), matching common KY-040-style encoders'
@@ -34,3 +34,7 @@ void encoder_nav_tick();
 // The shared PageCursor's current Page index, for a module's display_task()
 // to read each redraw.
 uint8_t encoder_nav_page_index();
+
+// Set (or clear, with nullptr) the interaction context that may claim
+// commands before Page navigation. Called from Core 0 only, like the tick.
+void encoder_nav_set_claim(UiCommandClaim claim);

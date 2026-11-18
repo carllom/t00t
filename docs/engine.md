@@ -287,15 +287,17 @@ can be heard simultaneously.
 `src/encoder_nav.h`/`.cpp` (`HAS_ENCODER`, breadboard only): a CLK/DT/SW
 rotary encoder driving `src/wslcd/page.h`'s `PageCursor` through the same
 Sensor event → Shaping → `ui_nav_consumer_feed()` path a discrete button
-would, treating a CW detent, a CCW detent, and the SW press as three
-independent synthetic buttons (mapped to `UiCommand::PLUS`/`MINUS`/`EXIT`
-respectively). Rotation is quarter-step quadrature-decoded (a transition
-table indexed by `(old_state << 2 | new_state)`) and only counted at a full
-four-quarter-step detent, matching common KY-040-style encoders' click
-spacing; SW uses the same integrator debounce as button GPIOs above.
-`UiCommand::ENTER` has no Page-navigation meaning (`page.h`), so the single
-SW button is mapped to `EXIT` — jump straight to the module's Performance
-page — the one command still useful without a second button. Polled at the
+would, treating a CW detent and a CCW detent as two independent synthetic
+buttons (`UiCommand::PLUS`/`MINUS`). Rotation is quarter-step
+quadrature-decoded (a transition table indexed by `(old_state << 2 |
+new_state)`) and only counted at a full four-quarter-step detent, matching
+common KY-040-style encoders' click spacing; SW uses the same integrator
+debounce as button GPIOs above, then press-duration Shaping
+(`ui_command_shaping.h`): a short press is `ENTER`, a 0.5 s hold `EXIT`
+(fired once, while still held). With no interaction context claiming them,
+`ENTER` does nothing and `EXIT` jumps to the module's Performance page; a
+module's display can register a claim (`encoder_nav_set_claim()`) that sees
+every command first, as subtractive's Quick-edit Page does. Polled at the
 same 1ms tick as button debounce; owns a single shared `PageCursor` (only
 one engine is ever linked per build), read by a module's `display_task()`
 via `encoder_nav_page_index()`.

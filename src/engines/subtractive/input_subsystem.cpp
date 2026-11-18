@@ -3,6 +3,7 @@
 #include "midi_controller_generic.h"
 #include "voice_alloc.h"
 #include "patch.h"
+#include "sub_platform.h"
 #include "factory_bank.h"
 #include "patch/platform.h"
 #include "patch/platform_task.h"
@@ -36,9 +37,7 @@ static UserBank user_bank(SubtractiveModule::kModuleId, user_flash_device());
 static PatchPlatformT<SubtractiveModule> platform(sub_part_slots, kSubFactoryBanks,
                                                   sizeof kSubFactoryBanks / sizeof kSubFactoryBanks[0], &user_bank);
 
-const char *sub_part_patch_name(uint8_t part) {
-    return part < SUB_PART_COUNT ? platform.name(part) : "";
-}
+PatchPlatformT<SubtractiveModule> &sub_platform() { return platform; }
 
 // SysEx: the t00t editor protocol (patch/sysex.h), replies over USB.
 static PatchSysExT<SubtractiveModule> sysex(platform, midi_out_send);

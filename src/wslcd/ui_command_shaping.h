@@ -28,3 +28,39 @@ inline bool shape_ui_command_event(const SensorEvent &ev, const UiCommandShaping
     *out = cfg.command;
     return true;
 }
+
+// Press-duration Shaping: one push button carrying two UI commands. A
+// press released before kLongPressMs fires ENTER on release; holding it
+// that long fires EXIT once, at the threshold, and its release fires
+// nothing.
+inline constexpr uint32_t kLongPressMs = 500;
+
+struct PressShaper {
+    uint32_t held_ms = 0;
+    bool pressed = false;
+    bool long_fired = false;
+};
+
+// Once per 1 ms tick with the button's debounced state. Returns true and
+// sets *out when a command fires.
+inline bool shape_press_tick(PressShaper &s, bool pressed, UiCommand *out) {
+    if (pressed) {
+        if (!s.pressed) {
+            s.pressed = true;
+            s.held_ms = 0;
+            s.long_fired = false;
+        }
+        if (s.long_fired) return false;
+        if (++s.held_ms >= kLongPressMs) {
+            s.long_fired = true;
+            *out = UiCommand::EXIT;
+            return true;
+        }
+        return false;
+    }
+    if (!s.pressed) return false;
+    s.pressed = false;
+    if (s.long_fired) return false;
+    *out = UiCommand::ENTER;
+    return true;
+}

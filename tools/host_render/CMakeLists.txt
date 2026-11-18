@@ -450,17 +450,21 @@ target_include_directories(preview_chip_display PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}/../../src/wslcd
 )
 
-# Visual preview of subtractive's Performance/DIAG Page layout
-# (src/engines/subtractive/display.cpp), same shape as preview_opl_display
-# above.
+# Visual preview of subtractive's Pages (src/engines/subtractive/display.cpp),
+# same shape as preview_opl_display above; the EDIT Page runs the real
+# subtractive module and the device's Quick-edit Page renderer.
 add_executable(preview_subtractive_display
     preview_subtractive_display.cpp
     ${GFX_HOST_COPY}
+    ${CMAKE_CURRENT_LIST_DIR}/../../src/samples.cpp
 )
 target_include_directories(preview_subtractive_display PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}/host_stub_lcd
+    ${CMAKE_CURRENT_LIST_DIR}/host_stub_pico
     ${CMAKE_CURRENT_LIST_DIR}
     ${CMAKE_CURRENT_LIST_DIR}/../../src/wslcd
+    ${CMAKE_CURRENT_LIST_DIR}/../../src/engines/subtractive
+    ${CMAKE_CURRENT_LIST_DIR}/../../src
 )
 
 # Render-equivalence check for the subtractive engine: renders
@@ -502,6 +506,15 @@ target_include_directories(test_patch_platform PRIVATE
 # reserved flash region. Header-only, module-agnostic.
 add_executable(test_user_bank test_user_bank.cpp)
 target_include_directories(test_user_bank PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}
+    ${CMAKE_CURRENT_LIST_DIR}/../../src
+)
+
+# Host test for the Quick-edit Page's interaction (src/patch/quick_edit.h):
+# UI commands in, Edit buffer / Compare / user-bank effects and view state
+# out, with a stub module and RAM-backed flash. Header-only.
+add_executable(test_quick_edit test_quick_edit.cpp)
+target_include_directories(test_quick_edit PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}
     ${CMAKE_CURRENT_LIST_DIR}/../../src
 )
