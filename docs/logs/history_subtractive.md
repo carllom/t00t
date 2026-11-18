@@ -426,3 +426,7 @@ over USB with `amidi`; the normal build was flashed back afterwards.
   curve, Compare, Store slot choice, rename, cancel, failed Store, value
   text), `test_patch_platform` (edited marker, Compare, rename, Store,
   load without prompt), `test_ui_nav_consumer` (short/long press, claim).
+- **On hardware (2026-11-18):** the EDIT Page works end to end (row
+  select, value edits, Compare, Store with rename, long press back). The
+  breadboard encoder's push switch turned out to be dead (no SW–GND
+  continuity when pressed); tested with a jumper from GP28 to GND instead.
