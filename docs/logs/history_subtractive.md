@@ -392,5 +392,8 @@ over USB with `amidi`; the normal build was flashed back afterwards.
   `test_patch_platform` (Bank Select + Program Change into factory and user
   banks, Store) and `test_sysex` (store request/reply golden vectors), all
   against a RAM-backed NOR flash stub (`tools/host_render/ram_flash.h`).
-- **Pending on hardware:** Store → reflash another module → reflash
-  subtractive → user Patch still loads; Store mute length by ear/scope.
+- **On hardware (2026-11-18):** Part 0's Fairlite with CUTOFF set to 1234 Hz
+  over SysEx, stored to user slot 5 (reply OK), loaded into Part 1 with
+  Bank Select 64 + Program Change 5. Then the FM build was flashed, then
+  subtractive again; after the reboot (Part 1 back on Sq-PWM) slot 5 still
+  loaded as Fairlite at 1234 Hz. Store mute length is still to be measured.
