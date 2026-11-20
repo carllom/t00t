@@ -377,9 +377,10 @@ Existing pieces the platform builds on, and how.
    to two buffers before fresh audio after Core 1 resumes — and whether that is acceptable
    mid-performance. To be measured on the rig.
 5. **Bank restore time.** A restore rewrites a flash sector for each slot whose contents
-   change, up to 160 rewrites (16 per Patch sector) each with a Store's mute; the time
-   and the mutes are to be measured on the rig. Batching a sector's slots into one rewrite
-   would need the load to span messages.
+   change, each with a Store's mute. On the rig one rewritten slot is answered in about
+   33 ms over USB, so a restore changing all 160 slots takes about 5 s of repeated short
+   mutes; whether that is acceptable, and how it sounds, is still to be judged. Batching
+   a sector's slots into one rewrite would need the load to span messages.
 6. **Cook budget for FM.** Whether a full FM Patch cook fits Core 0's control-rate budget
    while MIDI and the display are busy, or needs to be incremental per parameter.
 

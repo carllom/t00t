@@ -522,6 +522,14 @@ over USB with `amidi`; the normal build was flashed back afterwards.
   a restore runs (no edits, Store, push, reload or Part switch), so no
   other DIN bytes land on a flash write; a bank or descriptor dump
   requested while a reply is held now sends that reply first.
-- **Not checked on hardware yet:** a backup and restore on the breadboard
-  rig, and how long a full restore into an empty bank takes and mutes
-  (open question in `docs/platform.md`).
+- **On hardware (2026-11-20):** flashed through the debug probe and
+  driven over raw MIDI on USB (a host script, not the editor page): the
+  bank dump (160 slots, 0.02 s) showed Fairlite in Patch slots 3 and 5 and
+  "EDITOR TEST 2" in 127; restoring it unchanged took 0.22 s with every
+  slot answered OK and no writes; a test Patch written into empty slot 126
+  was answered in 33 ms, sector rewrite included, and read back; restoring
+  the first dump over that took 0.28 s and the next dump equalled the
+  first byte for byte, so the user bank is as it was.
+- **Not checked:** a restore driven from the editor page on hardware (its
+  slot messages equal the dump's in the session tests), a restore over
+  DIN, and the mute of a full restore by ear.
