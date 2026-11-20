@@ -41,7 +41,7 @@ std::map<std::string, Bytes> load_vectors(const char *path) {
     std::map<std::string, Bytes> out;
     FILE *f = fopen(path, "r");
     if (!f) { fprintf(stderr, "cannot read %s\n", path); return out; }
-    char line[4096];
+    char line[16384];
     while (fgets(line, sizeof line, f)) {
         if (line[0] == '#' || line[0] == '\n') continue;
         char *p = line;
@@ -94,7 +94,7 @@ bool capture(const uint8_t *data, uint32_t len) {
     g_sent.insert(g_sent.end(), data, data + len);
     return true;
 }
-PatchSysExT<SubtractiveModule> g_sysex(g_platform, g_multi, capture);
+PatchSysExT<SubtractiveModule> g_sysex(g_platform, g_multi, &g_user, capture);
 void on_sysex(const uint8_t *data, uint32_t len) { g_sysex.handle(data, len); }
 
 constexpr InputMapEntryT<VoiceParamBlock> kTable[] = {
@@ -368,6 +368,160 @@ void test_multi_store_and_load_by_slot() {
     check(g_sent == vec("multi_load_reply_slot5_empty"), "an empty slot is answered NO_SUCH_PATCH");
 }
 
+// The user bank the bank-dump vectors describe: Fairlite in Patch slot 0,
+// Saw-Flt in slot 10, the default Multi in Multi slot 3.
+void fill_user_bank() {
+    g_user.store_patch(0, kSubFactoryBank[0].data, kSubFactoryBank[0].len);
+    g_user.store_patch(10, kSubFactoryBank[2].data, kSubFactoryBank[2].len);
+    g_multi.store(3);
+}
+
+void test_bank_dump_sends_every_slot() {
+    reset();
+    fill_user_bank();
+    feed(MIDI_SOURCE_USB, vec("bank_dump_request"));
+    g_sysex.task();
+    check(g_sent == vec("bank_dump"),
+          "bank dump: every Patch slot then every Multi slot in order, empty ones without data, then the end");
+}
+
+void test_bank_slot_is_written_byte_for_byte_and_answered() {
+    reset();
+    feed(MIDI_SOURCE_USB, vec("bank_slot_patch10_saw_flt"));
+    check(g_sent == vec("bank_slot_reply_patch10_ok"), "bank slot: Saw-Flt into Patch slot 10, answered OK");
+    const StoredPatchRef slot = g_user.patch(10);
+    check(slot.data && memcmp(slot.data, kSubFactoryBank[2].data, kSubFactoryBank[2].len) == 0,
+          "Patch slot 10 holds Saw-Flt's stored bytes");
+    check(slot.data && slot.data[kSubFactoryBank[2].len] == 0xFF && slot.data[kUserPatchSlotSize - 1] == 0xFF,
+          "padded with 0xFF to the slot's end");
+
+    g_sent.clear();
+    feed(MIDI_SOURCE_USB, vec("bank_slot_multi3_default"));
+    const Bytes want = unpacked_payload(vec("multi_edit_buffer_dump_default"));
+    check(g_sent == vec("bank_slot_reply_multi3_ok") && !want.empty() &&
+          memcmp(g_user.multi(3).data, want.data(), want.size()) == 0,
+          "a Multi slot message writes Multi slot 3, answered OK");
+}
+
+void test_empty_bank_slot_empties_the_slot() {
+    reset();
+    fill_user_bank();
+    feed(MIDI_SOURCE_USB, vec("bank_slot_patch0_empty"));
+    check(g_sent == vec("bank_slot_reply_patch0_ok"), "an empty bank slot message is answered OK");
+    bool erased = true;
+    const StoredPatchRef slot = g_user.patch(0);
+    for (uint32_t i = 0; i < kUserPatchSlotSize; i++) erased = erased && slot.data[i] == 0xFF;
+    check(erased && g_user.patch_empty(0), "and Patch slot 0 is erased");
+    check(!g_user.patch_empty(10), "its sector neighbour slot 10 keeps Saw-Flt");
+}
+
+void test_refused_bank_slots_are_answered_and_leave_flash_alone() {
+    reset();
+    fill_user_bank();
+    const std::vector<uint8_t> before = g_flash.mem;
+    feed(MIDI_SOURCE_USB, vec("bank_slot_patch10_fm_module"));
+    check(g_sent == vec("bank_slot_reply_patch10_bad_patch"), "a Patch for another module is answered BAD_PATCH");
+    g_sent.clear();
+    feed(MIDI_SOURCE_USB, vec("bank_slot_patch200_saw_flt"));
+    check(g_sent == vec("bank_slot_reply_patch200_no_such_slot"), "a slot past the bank is answered NO_SUCH_SLOT");
+    check(g_flash.mem == before, "neither touches flash");
+
+    g_sent.clear();
+    g_user.restore(SlotKind::MULTI, 3, nullptr, 0);  // so the write below has something to change
+    g_flash.fail = true;
+    feed(MIDI_SOURCE_USB, vec("bank_slot_multi3_default"));
+    check(g_sent == vec("bank_slot_reply_multi3_flash_failed"), "a failed flash write is answered FLASH_FAILED");
+}
+
+// The messages of a concatenated stream, each F0 ... F7.
+std::vector<Bytes> split_messages(const Bytes &stream) {
+    std::vector<Bytes> out;
+    for (size_t i = 0; i < stream.size(); i++) {
+        if (stream[i] != 0xF0) continue;
+        size_t j = i;
+        while (j < stream.size() && stream[j] != 0xF7) j++;
+        out.emplace_back(stream.begin() + i, stream.begin() + j + 1);
+        i = j;
+    }
+    return out;
+}
+
+void test_restoring_a_bank_dump_round_trips_byte_for_byte() {
+    reset();
+    fill_user_bank();
+    // An older-schema Patch (two parameters short) in slot 127 and a Multi in
+    // slot 31: restored as they are, not re-encoded.
+    Bytes old_schema(kSubFactoryBank[1].data, kSubFactoryBank[1].data + kSubFactoryBank[1].len - 2);
+    old_schema[22] -= 2;
+    g_flash.poke(user_patch_slot_offset(ModuleId::SUBTRACTIVE, 127), old_schema.data(), (uint32_t)old_schema.size());
+    g_multi.store(31);
+    const std::vector<uint8_t> backup_flash = g_flash.mem;
+
+    feed(MIDI_SOURCE_USB, vec("bank_dump_request"));
+    g_sysex.task();
+    const std::vector<Bytes> dump = split_messages(g_sent);
+    check(dump.size() == kUserPatchSlots + kUserMultiSlots + 1, "the dump is one message per slot plus the end");
+
+    // A different bank on the device: other Patches in other slots.
+    g_flash.reset();
+    g_user.store_patch(5, kSubFactoryBank[3].data, kSubFactoryBank[3].len);
+    g_user.store_patch(10, kSubFactoryBank[4].data, kSubFactoryBank[4].len);
+    g_multi.store(0);
+
+    bool all_ok = true;
+    for (size_t i = 0; i + 1 < dump.size(); i++) {
+        g_sent.clear();
+        feed(MIDI_SOURCE_USB, dump[i]);
+        // The reply echoes kind and slot, then OK.
+        const Bytes want = { 0xF0, 0x7D, 0x54, 0x38, dump[i][4], dump[i][5], dump[i][6], 0x00, 0xF7 };
+        all_ok = all_ok && g_sent == want;
+    }
+    check(all_ok, "each slot sent back is answered OK");
+    check(g_flash.mem == backup_flash, "the region is byte for byte what was backed up, older-schema Patch included");
+}
+
+void test_bank_dump_is_paced_by_the_outgoing_queue() {
+    reset();
+    fill_user_bank();
+    // Room for 200 bytes per pass: a Multi slot message (~155) fits, two don't.
+    g_out_budget = 200;
+    feed(MIDI_SOURCE_USB, vec("bank_dump_request"));
+    int passes = 0;
+    while (g_sent.size() < vec("bank_dump").size() && passes < 1000) {
+        g_out_budget = 200;
+        g_sysex.task();
+        passes++;
+    }
+    check(g_sent == vec("bank_dump"), "a bank dump through a small queue arrives whole, in order");
+    check(passes > 5, "spread over several passes");
+}
+
+void test_a_bank_dump_waits_for_a_descriptor_dump_in_progress() {
+    reset();
+    fill_user_bank();
+    g_out_budget = 0;
+    feed(MIDI_SOURCE_USB, vec("descriptor_dump_request"));
+    feed(MIDI_SOURCE_USB, vec("bank_dump_request"));
+    g_out_budget = -1;
+    g_sysex.task();
+    Bytes want = vec("descriptor_dump");
+    want.insert(want.end(), vec("bank_dump").begin(), vec("bank_dump").end());
+    check(g_sent == want, "requested during a descriptor dump, the bank dump follows it whole");
+}
+
+void test_a_held_reply_goes_out_before_a_bank_dump() {
+    reset();
+    fill_user_bank();
+    g_out_budget = 0;
+    feed(MIDI_SOURCE_USB, vec("identify_request"));  // the reply is held
+    g_out_budget = -1;
+    feed(MIDI_SOURCE_USB, vec("bank_dump_request"));
+    g_sysex.task();
+    Bytes want = vec("identify_reply");
+    want.insert(want.end(), vec("bank_dump").begin(), vec("bank_dump").end());
+    check(g_sent == want, "a reply held before a bank dump request goes out first, then the dump");
+}
+
 }  // namespace
 
 int main() {
@@ -389,6 +543,14 @@ int main() {
     test_multi_parameter_change_sets_multi_and_part_values();
     test_multi_edit_buffer_request_and_dump();
     test_multi_store_and_load_by_slot();
+    test_bank_dump_sends_every_slot();
+    test_bank_slot_is_written_byte_for_byte_and_answered();
+    test_empty_bank_slot_empties_the_slot();
+    test_refused_bank_slots_are_answered_and_leave_flash_alone();
+    test_restoring_a_bank_dump_round_trips_byte_for_byte();
+    test_bank_dump_is_paced_by_the_outgoing_queue();
+    test_a_bank_dump_waits_for_a_descriptor_dump_in_progress();
+    test_a_held_reply_goes_out_before_a_bank_dump();
     printf(g_ok ? "ALL CHECKS PASSED\n" : "CHECKS FAILED\n");
     return g_ok ? 0 : 1;
 }

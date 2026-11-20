@@ -47,7 +47,7 @@ PatchPlatformT<SubtractiveModule> &sub_platform() { return platform; }
 MultiT<SubtractiveModule> &sub_multi() { return multi; }
 
 // SysEx: the t00t editor protocol (patch/sysex.h), replies over USB.
-static PatchSysExT<SubtractiveModule> sysex(platform, multi, midi_out_send);
+static PatchSysExT<SubtractiveModule> sysex(platform, multi, &user_bank, midi_out_send);
 
 void patch_platform_task() {
     platform.task();

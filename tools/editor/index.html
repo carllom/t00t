@@ -129,9 +129,21 @@ select, input[type="number"], input[type="text"] {
     <span id="store-result" class="store-result"></span>
 </div>
 
+<div id="files" class="toolbar hidden">
+    <button id="export-patch" title="Save the editor's copy as a Patch file (.t0p)">Export Patch</button>
+    <button id="import-patch" title="Load a Patch file (.t0p) into the editor's copy and push it to the device">Import Patch…</button>
+    <span class="sep"></span>
+    <button id="backup" title="Save every user-bank Patch and Multi slot of the device as a bank file (.t0b)">Back up bank</button>
+    <button id="restore" title="Write a bank file (.t0b) into the device's user bank, replacing every slot">Restore bank…</button>
+    <span id="file-result" class="store-result"></span>
+    <input id="patch-file" type="file" accept=".t0p" class="hidden">
+    <input id="bank-file" type="file" accept=".t0b" class="hidden">
+</div>
+
 <div id="panels" class="panels"></div>
 
 <script src="sysex.js"></script>
+<script src="files.js"></script>
 <script src="session.js"></script>
 <script src="app.js"></script>
 </body>

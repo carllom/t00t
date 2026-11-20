@@ -42,6 +42,26 @@ bool slot_holds(const StoredPatchRef &ref, const uint8_t *patch, uint32_t len) {
 
 // --- Tests ---
 
+void test_stored_gives_a_slot_without_padding_and_skips_what_isnt_loadable() {
+    RamFlash f;
+    UserBank bank(ModuleId::SUBTRACTIVE, user_flash(f));
+    bank.store_patch(5, kLead, sizeof kLead);
+    const StoredPatchRef lead = bank.stored(SlotKind::PATCH, 5);
+    check(lead.data && lead.len == sizeof kLead, "stored(): LEAD without its 0xFF padding");
+    check(!bank.stored(SlotKind::PATCH, 6).data, "an empty slot gives nothing");
+
+    uint8_t runs_past[sizeof kLead];
+    memcpy(runs_past, kLead, sizeof kLead);
+    runs_past[22] = 0xFF;  // a payload longer than the slot
+    f.poke(user_patch_slot_offset(ModuleId::SUBTRACTIVE, 7), runs_past, sizeof runs_past);
+    check(!bank.stored(SlotKind::PATCH, 7).data, "a header whose payload runs past the slot gives nothing");
+    check(bank.slot_count(SlotKind::PATCH) == 128 && bank.slot_count(SlotKind::MULTI) == 32, "128 Patch and 32 Multi slots");
+
+    UserBank none(ModuleId::SUBTRACTIVE, UserFlash{ nullptr, ram_flash_write_sector });
+    check(none.slot_count(SlotKind::PATCH) == 0 && none.restore(SlotKind::PATCH, 0, nullptr, 0) == StoreResult::NO_SUCH_SLOT,
+          "without a usable region there are no slots");
+}
+
 void test_a_fresh_region_has_only_empty_slots() {
     RamFlash f;
     UserBank bank(ModuleId::SUBTRACTIVE, user_flash(f));
@@ -171,6 +191,7 @@ int main() {
     test_storing_an_unchanged_patch_writes_nothing();
     test_a_failed_write_is_reported_and_the_slot_unchanged();
     test_patches_survive_a_restart_and_another_module_build();
+    test_stored_gives_a_slot_without_padding_and_skips_what_isnt_loadable();
     printf(g_ok ? "ALL CHECKS PASSED\n" : "CHECKS FAILED\n");
     return g_ok ? 0 : 1;
 }

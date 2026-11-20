@@ -2,7 +2,7 @@
 // built from the device's descriptors -- one panel per group, one control
 // per parameter.
 //
-// A classic script (see sysex.js), loaded after sysex.js and session.js.
+// A classic script (see sysex.js), loaded after sysex.js, files.js and session.js.
 
 (function (t00t) {
 "use strict";
@@ -13,6 +13,9 @@ const { MODULE_NAMES, STORE_OK, Unit, Curve, ParamClass, storeResultText } = t00
 const $ = (id) => document.getElementById(id);
 
 const ANSWER_TIMEOUT_MS = 2000;
+// A backup or restore with no progress for this long has stalled. Each
+// restored slot may rewrite a flash sector on the device first.
+const TRANSFER_TIMEOUT_MS = 5000;
 
 let midi = null;
 let output = null;
@@ -21,6 +24,9 @@ let portName = null;    // the device being edited, to reconnect to when it retu
 let appProblem = null;  // a problem outside the session (browser, ports, no answer)
 let builtFor = null;    // the descriptor tables the panels were built from
 const controls = [];    // per module parameter: { update(value) }
+let fileMessage = null; // { text, ok } from the last import, or null
+let transferTimer = null;
+let transferSeen = null; // the transfer and its count when the timer was last armed
 
 const session = new Session({
     send: (bytes) => output?.send(bytes),
@@ -258,7 +264,7 @@ function render() {
     $("problem-text").textContent = problem ?? "";
     $("discard").classList.toggle("hidden", !(session.state === "mismatch" && session.patch && output));
 
-    const ready = session.state === "ready" && !!output;
+    const ready = session.editable() && !!output;
     const tables = session.tables;
     $("toolbar").classList.toggle("hidden", !tables || !session.patch);
     for (const id of ["reload", "push", "store", "part"]) $(id).disabled = !ready;
@@ -282,6 +288,8 @@ function render() {
     $("panels").classList.toggle("hidden", !session.patch);
     $("panels").inert = !ready;
 
+    renderFiles(ready);
+
     const s = session.lastStore;
     const result = $("store-result");
     result.className = "store-result";
@@ -294,6 +302,69 @@ function render() {
         result.textContent = `Store failed: ${storeResultText(s.result)}`;
         result.classList.add("failed");
     }
+}
+
+// --- Files and banks ---------------------------------------------------------
+
+function download(bytes, name) {
+    const url = URL.createObjectURL(new Blob([bytes], { type: "application/octet-stream" }));
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = name;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
+const safeName = (s) => s.trim().replace(/[^A-Za-z0-9._-]+/g, "_") || "patch";
+
+function renderFiles(ready) {
+    const t = session.transfer;
+    const busy = session.transferring();
+    $("files").classList.toggle("hidden", !session.tables || !session.patch);
+    for (const id of ["export-patch", "import-patch", "backup", "restore"]) $(id).disabled = !ready || busy;
+
+    const result = $("file-result");
+    result.className = "store-result";
+    if (t && (busy || t.error || t.done)) {
+        if (t.error) {
+            result.textContent = t.error;
+            result.classList.add("failed");
+        } else if (busy) {
+            const ofTotal = t.total === null ? "" : ` of ${t.total}`;
+            result.textContent = `${t.kind === "backup" ? "Backing up" : "Restoring"}: slot ${t.count}${ofTotal}…`;
+        } else {
+            result.textContent = t.kind === "backup" ? `Backed up ${t.total} slots` : `Restored ${t.total} slots`;
+            result.classList.add("ok");
+        }
+    } else if (fileMessage) {
+        result.textContent = fileMessage.text;
+        if (fileMessage.ok !== null) result.classList.add(fileMessage.ok ? "ok" : "failed");
+    } else {
+        result.textContent = "";
+    }
+
+    // A finished backup is saved once; a stalled transfer is given up.
+    if (t?.kind === "backup" && t.done && t.file) {
+        const module = MODULE_NAMES[session.device.module] ?? `module${session.device.module}`;
+        download(t.file, `t00t-${module}-bank-${new Date().toISOString().slice(0, 10)}.t0b`);
+        t.file = null;
+    }
+    if (busy && (transferSeen?.t !== t || transferSeen.count !== t.count)) {
+        clearTimeout(transferTimer);
+        transferSeen = { t, count: t.count };
+        transferTimer = setTimeout(() => session.abortTransfer(
+            `The device stopped answering at slot ${t.count}. Check the connection and try again.`),
+            TRANSFER_TIMEOUT_MS);
+    } else if (!busy) {
+        clearTimeout(transferTimer);
+        transferSeen = null;
+    }
+}
+
+async function readFile(inputEl) {
+    const file = inputEl.files[0];
+    inputEl.value = "";
+    return file ? { name: file.name, bytes: new Uint8Array(await file.arrayBuffer()) } : null;
 }
 
 // --- Wiring -------------------------------------------------------------------
@@ -317,6 +388,34 @@ $("name").oninput = () => { $("name").dataset.edited = "1"; };
 $("store").onclick = () => {
     followName();
     session.store(Number($("slot").value), $("name").value);
+};
+
+$("export-patch").onclick = () => {
+    const bytes = session.exportPatch();
+    if (bytes) download(bytes, `${safeName(session.patch.name)}.t0p`);
+};
+$("import-patch").onclick = () => $("patch-file").click();
+$("patch-file").onchange = async () => {
+    const file = await readFile($("patch-file"));
+    if (!file) return;
+    session.transfer = null;
+    followName();
+    const error = session.importPatch(file.bytes);
+    fileMessage = error ? { text: error, ok: false } : { text: `Imported ${file.name}`, ok: true };
+    render();
+};
+$("backup").onclick = () => {
+    fileMessage = null;
+    session.backup();
+};
+$("restore").onclick = () => $("bank-file").click();
+$("bank-file").onchange = async () => {
+    const file = await readFile($("bank-file"));
+    if (!file) return;
+    fileMessage = null;
+    if (!confirm(`Restore ${file.name} into the device's user bank? Every Patch and Multi slot it holds is ` +
+                 "replaced, empty ones emptied.")) return;
+    session.restore(file.bytes);
 };
 
 start();

@@ -7,6 +7,7 @@
 <body>
 <pre id="results"></pre>
 <script src="../sysex.js"></script>
+<script src="../files.js"></script>
 <script src="../session.js"></script>
 <script type="module">
 import { run } from "./harness.js";
@@ -14,7 +15,7 @@ import { run } from "./harness.js";
 const out = document.getElementById("results");
 const log = (line) => { out.textContent += line + "\n"; };
 let allOk = true;
-for (const file of ["./sysex.test.js", "./session.test.js"]) {
+for (const file of ["./sysex.test.js", "./session.test.js", "./bank.test.js"]) {
     try {
         await import(file);
     } catch (e) {

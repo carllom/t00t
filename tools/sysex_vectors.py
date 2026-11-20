@@ -36,6 +36,10 @@ MULTI_STORE_REQUEST = 0x32
 MULTI_STORE_REPLY = 0x33
 MULTI_LOAD_REQUEST = 0x34
 MULTI_LOAD_REPLY = 0x35
+BANK_DUMP_REQUEST = 0x36
+BANK_SLOT = 0x37
+BANK_SLOT_REPLY = 0x38
+BANK_DUMP_END = 0x39
 DESCRIPTOR_DUMP_REQUEST = 0x40
 DESCRIPTOR_TABLE_BEGIN = 0x41
 DESCRIPTOR = 0x42
@@ -45,7 +49,14 @@ DESCRIPTOR_DUMP_END = 0x44
 # Store results (src/patch/user_bank.h).
 STORE_OK = 0
 STORE_NO_SUCH_SLOT = 1
+STORE_BAD_PATCH = 2
 STORE_FLASH_FAILED = 3
+
+# Slot kinds in bank messages (SlotKind, src/patch/user_bank.h).
+SLOT_PATCH = 0
+SLOT_MULTI = 1
+USER_PATCH_SLOTS = 128
+USER_MULTI_SLOTS = 32
 
 TABLE_MODULE = 0
 TABLE_COMMON = 1
@@ -176,6 +187,24 @@ def default_multi_parts():
     return [[p, 0, min(p, 2), 127, 64, 127] for p in range(PART_COUNT)]
 
 
+def bank_slot(kind, slot, stored=None):
+    """One slot of a bank dump or bank load: slot kind, slot, then the stored
+    Patch or Multi packed, or no data for an empty slot."""
+    return frame(BANK_SLOT, [kind, *id14(slot), *(pack7(stored) if stored else [])])
+
+
+def bank_dump(patches, multis):
+    """The device's answer to a bank dump request: every Patch slot in order,
+    then every Multi slot, `patches` and `multis` mapping slot -> stored bytes
+    (the rest empty), then the end message with both slot counts."""
+    out = []
+    for slot in range(USER_PATCH_SLOTS):
+        out += bank_slot(SLOT_PATCH, slot, patches.get(slot))
+    for slot in range(USER_MULTI_SLOTS):
+        out += bank_slot(SLOT_MULTI, slot, multis.get(slot))
+    return out + frame(BANK_DUMP_END, [*id14(USER_PATCH_SLOTS), *id14(USER_MULTI_SLOTS)])
+
+
 def factory_patches(header_path):
     text = open(header_path).read()
     patches = {}
@@ -237,6 +266,25 @@ def vectors(patches):
         ("multi_load_reply_slot3_ok", frame(MULTI_LOAD_REPLY, [*id14(3), LOAD_OK])),
         ("multi_load_request_slot5", frame(MULTI_LOAD_REQUEST, [*id14(5)])),
         ("multi_load_reply_slot5_empty", frame(MULTI_LOAD_REPLY, [*id14(5), LOAD_NO_SUCH_PATCH])),
+        # Bank dump. The user bank holds Fairlite in Patch slot 0, Saw-Flt in
+        # Patch slot 10 and the default Multi in Multi slot 3; every other slot
+        # is empty.
+        ("bank_dump_request", frame(BANK_DUMP_REQUEST)),
+        ("bank_dump", bank_dump({0: fairlite, 10: saw_flt}, {3: default_multi})),
+        # Bank load, one slot per message, each answered before the next is sent.
+        ("bank_slot_patch10_saw_flt", bank_slot(SLOT_PATCH, 10, saw_flt)),
+        ("bank_slot_reply_patch10_ok", frame(BANK_SLOT_REPLY, [SLOT_PATCH, *id14(10), STORE_OK])),
+        ("bank_slot_patch0_empty", bank_slot(SLOT_PATCH, 0)),
+        ("bank_slot_reply_patch0_ok", frame(BANK_SLOT_REPLY, [SLOT_PATCH, *id14(0), STORE_OK])),
+        ("bank_slot_patch10_fm_module", bank_slot(SLOT_PATCH, 10, foreign)),
+        ("bank_slot_reply_patch10_bad_patch", frame(BANK_SLOT_REPLY, [SLOT_PATCH, *id14(10), STORE_BAD_PATCH])),
+        ("bank_slot_patch200_saw_flt", bank_slot(SLOT_PATCH, 200, saw_flt)),
+        ("bank_slot_reply_patch200_no_such_slot",
+         frame(BANK_SLOT_REPLY, [SLOT_PATCH, *id14(200), STORE_NO_SUCH_SLOT])),
+        ("bank_slot_multi3_default", bank_slot(SLOT_MULTI, 3, default_multi)),
+        ("bank_slot_reply_multi3_ok", frame(BANK_SLOT_REPLY, [SLOT_MULTI, *id14(3), STORE_OK])),
+        ("bank_slot_reply_multi3_flash_failed",
+         frame(BANK_SLOT_REPLY, [SLOT_MULTI, *id14(3), STORE_FLASH_FAILED])),
         ("descriptor_dump_request", frame(DESCRIPTOR_DUMP_REQUEST)),
         # The device's whole answer, every message F0 ... F7 in order: for the
         # module table then the common table, table begin, then each

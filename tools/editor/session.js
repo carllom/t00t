@@ -1,15 +1,18 @@
 // An editing session with one t00t over SysEx: identify, descriptor dump,
-// Edit buffer sync, parameter streaming and Store. Transport-free: messages
+// Edit buffer sync, parameter streaming, Store, Patch import/export and
+// user-bank backup and restore. Transport-free: messages
 // go out through `send` and come in through receive(), so the Web MIDI
 // page and the tests drive the same code.
 //
-// A classic script (see sysex.js), loaded after sysex.js: publishes
+// A classic script (see sysex.js), loaded after sysex.js and files.js: publishes
 // globalThis.t00t.Session.
 
 (function (t00t) {
 "use strict";
 
 const sx = t00t.sysex;
+const files = t00t.files;
+const { PATCH, MULTI } = sx.SlotKind;
 
 class Session {
     constructor({ send, onChange = () => {} }) {
@@ -23,6 +26,10 @@ class Session {
         this.dump = [];     // descriptor dump messages so far
         this.lastStore = null;  // { part, slot, result }: result null until the reply
         this.problem = null;    // what is wrong, in words, or null
+        // A bank backup or restore: { kind: "backup" | "restore", done, error,
+        // count (slots so far), total (slots in all, once known), file (a
+        // finished backup's bank file) }, or null.
+        this.transfer = null;
     }
 
     // Start (or restart) talking to the device.
@@ -36,7 +43,7 @@ class Session {
     // is clamped to the descriptor's range; an unchanged value isn't sent.
     setParam(id, value) {
         const d = this.tables?.module[id];
-        if (this.state !== "ready" || !d) return;
+        if (!this.editable() || !d) return;
         const v = Math.min(Math.max(Math.round(value), d.min), d.max);
         if (this.patch.values[id] === v) return;
         this.patch.values[id] = v;
@@ -46,7 +53,8 @@ class Session {
 
     // Edit Part `part` instead, starting from its Edit buffer on the device.
     selectPart(part) {
-        if (!["ready", "syncing"].includes(this.state) || part < 0 || part >= this.device.partCount) return;
+        if (!["ready", "syncing"].includes(this.state) || this.restoring() || part < 0 ||
+            part >= this.device.partCount) return;
         this.part = part;
         this.sync();
         this.onChange(this);
@@ -55,7 +63,7 @@ class Session {
     // Send the copy into the Part's Edit buffer on the device. False if
     // there is nothing to send.
     push() {
-        if (this.state !== "ready") return false;
+        if (!this.editable()) return false;
         this.send(sx.editBufferDump(this.part, sx.encodePatch(this.patch, this.tables.module)));
         return true;
     }
@@ -64,13 +72,143 @@ class Session {
     // pushed first, so the device stores what the editor shows. The result
     // arrives in lastStore. False if nothing was sent.
     store(slot, name) {
-        if (this.state !== "ready") return false;
+        if (!this.editable()) return false;
         if (name !== undefined) this.patch.name = Array.from(name).slice(0, sx.NAME_LEN).join("");
         this.push();
         this.send(sx.storeRequest(this.part, slot));
         this.lastStore = { part: this.part, slot, result: null };
         this.onChange(this);
         return true;
+    }
+
+    // The copy as a stored Patch (a Patch file), or null if there is none.
+    exportPatch() {
+        if (!this.patch || !this.tables) return null;
+        return sx.encodePatch(this.patch, this.tables.module);
+    }
+
+    // Make the stored Patch `stored` (a Patch file) the copy and push it into
+    // the Part's Edit buffer. A Patch from an older or newer schema of the
+    // device's module is read the way the device reads one (missing
+    // parameters take their default). Returns null, or why it was refused.
+    importPatch(stored) {
+        if (this.restoring()) return "Wait for the bank restore to finish.";
+        if (this.state !== "ready") return "Not connected to a device ready to edit.";
+        const patch = sx.decodePatch(stored, this.tables.module);
+        if (patch.error) return patch.error === "truncated" ? "This file is not a Patch (truncated)." : "This file is not a Patch.";
+        if (patch.module !== this.device.module) {
+            return `This Patch is for ${moduleText(patch)}; the device is ${moduleText(this.device)}.`;
+        }
+        this.patch = { ...patch, schema: this.device.schema };
+        this.push();
+        this.onChange(this);
+        return null;
+    }
+
+    // Back up the user bank: ask for the bank dump; the bank file arrives in
+    // transfer.file. False if nothing was sent.
+    backup() {
+        if (this.state !== "ready" || this.transferring()) return false;
+        this.transfer = { kind: "backup", done: false, error: null, count: 0, total: null, file: null,
+                          slots: { [PATCH]: [], [MULTI]: [] } };
+        this.send(sx.bankDumpRequest());
+        this.onChange(this);
+        return true;
+    }
+
+    // Restore the bank file `file` into the user bank, one slot at a time:
+    // each slot goes out only once the device has answered the one before,
+    // so nothing arrives over DIN while flash is being written. Stops at the
+    // first slot the device refuses. False if nothing was sent (the reason
+    // is in transfer.error).
+    restore(file) {
+        if (this.state !== "ready" || this.transferring()) return false;
+        const bank = files.decodeBank(file);
+        let error = bank.error ? `That is not a bank file this editor reads (${bank.error}).` : null;
+        if (!error && bank.module !== this.device.module) {
+            error = `The bank file is for ${moduleText({ module: bank.module })}; the device is ` +
+                    `${moduleText({ module: this.device.module })}. Nothing was sent.`;
+        }
+        if (error) {
+            this.transfer = { kind: "restore", done: false, error, count: 0, total: null, file: null };
+            this.onChange(this);
+            return false;
+        }
+        const queue = [...bank.patches.map((stored, slot) => ({ kind: PATCH, slot, stored })),
+                       ...bank.multis.map((stored, slot) => ({ kind: MULTI, slot, stored }))];
+        this.transfer = { kind: "restore", done: queue.length === 0, error: null, count: 0, total: queue.length,
+                          file: null, queue };
+        this.sendNextSlot();
+        this.onChange(this);
+        return true;
+    }
+
+    // Whether a backup or restore is under way.
+    transferring() {
+        return !!this.transfer && !this.transfer.done && !this.transfer.error;
+    }
+
+    // Whether a restore is under way. Nothing else is sent meanwhile: each
+    // slot may have the device writing flash, when DIN input is lost.
+    restoring() {
+        return this.transferring() && this.transfer.kind === "restore";
+    }
+
+    // Whether the copy can be edited, pushed or stored now.
+    editable() {
+        return this.state === "ready" && !this.restoring();
+    }
+
+    // Give up on the backup or restore under way, for `reason`.
+    abortTransfer(reason) {
+        if (!this.transferring()) return;
+        this.transfer = { ...this.transfer, error: reason };
+        this.onChange(this);
+    }
+
+    sendNextSlot() {
+        const t = this.transfer;
+        if (t.count === t.total) return;
+        const { kind, slot, stored } = t.queue[t.count];
+        this.send(sx.bankSlot(kind, slot, stored));
+    }
+
+    // A bank dump slot from the device, during a backup.
+    backupSlot({ kind, slot, stored }) {
+        const t = this.transfer;
+        const slots = t.slots[kind];
+        if ((kind === PATCH && t.slots[MULTI].length > 0) || slot !== slots.length) {
+            this.transfer = { ...t, error: `The bank dump skipped ${slotText(kind, slots.length)}. Try again.` };
+            return;
+        }
+        slots.push(stored);
+        t.count++;
+    }
+
+    backupEnd({ patchSlots, multiSlots }) {
+        const t = this.transfer;
+        if (t.slots[PATCH].length !== patchSlots || t.slots[MULTI].length !== multiSlots) {
+            this.transfer = { ...t, error: "The bank dump ended early. Try again." };
+            return;
+        }
+        this.transfer = { ...t, done: true, total: t.count, slots: null,
+                          file: files.encodeBank({ module: this.device.module, patches: t.slots[PATCH],
+                                                   multis: t.slots[MULTI] }) };
+    }
+
+    // The device's answer for one restored slot.
+    restoredSlot({ kind, slot, result }) {
+        const t = this.transfer;
+        const expected = t.queue[t.count];
+        if (kind !== expected.kind || slot !== expected.slot) return;
+        if (result !== sx.STORE_OK) {
+            this.transfer = { ...t, error: `${slotText(kind, slot)} was not restored: ${sx.storeResultText(result)}. ` +
+                                           "The slots before it were." };
+            return;
+        }
+        t.count++;
+        if (t.count === t.total) t.done = true;
+        else this.sendNextSlot();
     }
 
     // One whole message from the device, F0 ... F7.
@@ -91,6 +229,15 @@ class Session {
                 break;
             case "editBuffer":
                 if (this.state === "syncing" && m.part === this.part) this.synced(m.stored);
+                break;
+            case "bankSlot":
+                if (this.transferring() && this.transfer.kind === "backup") this.backupSlot(m);
+                break;
+            case "bankDumpEnd":
+                if (this.transferring() && this.transfer.kind === "backup") this.backupEnd(m);
+                break;
+            case "bankSlotReply":
+                if (this.restoring()) this.restoredSlot(m);
                 break;
             case "storeReply":
                 if (m.part === this.lastStore?.part && m.slot === this.lastStore.slot) {
@@ -178,7 +325,7 @@ class Session {
 
     // Replace the copy with the device's Edit buffer for the Part.
     reload() {
-        if (this.state !== "ready") return;
+        if (!this.editable()) return;
         this.sync();
         this.onChange(this);
     }
@@ -186,7 +333,11 @@ class Session {
 
 function moduleText({ module, schema }) {
     const name = sx.MODULE_NAMES[module];
-    return `module ${module}${name ? ` (${name})` : ""}, schema ${schema}`;
+    return `module ${module}${name ? ` (${name})` : ""}${schema === undefined ? "" : `, schema ${schema}`}`;
+}
+
+function slotText(kind, slot) {
+    return `${kind === PATCH ? "Patch" : "Multi"} slot ${slot}`;
 }
 
 t00t.Session = Session;

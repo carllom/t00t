@@ -500,3 +500,28 @@ over USB with `amidi`; the normal build was flashed back afterwards.
   an emptied value box restores the value instead of sending 0.
 - **Not checked:** `test_header` fails before and after this change (no
   C++ was touched).
+
+## Bank dump, backup and restore (#157, 2026-11-20)
+
+- **Seams** (from the spec's testing decisions): `test_sysex` at the SysEx
+  seam against new golden vectors (`bank_dump`, `bank_slot_*`), plus
+  `UserBank::stored()` in `test_user_bank`; the editor's codec, bank file
+  and session in `tools/editor/test/bank.test.js`.
+- **Shape:** one bank dump covers the whole user bank, Patch slots then
+  Multi slots (a Bank is both, per the glossary), so a backup is one
+  request and one file. Slots travel verbatim, one message each; a bank
+  load is the same messages, each answered before the next is sent.
+- **Round trip:** `test_sysex` dumps a bank holding factory Patches, an
+  older-schema Patch planted in slot 127 and two Multis, restores it into
+  a different bank and finds the region byte for byte as dumped.
+- **Editor UI** checked in headless Chromium against a simulated device
+  answering with the golden vectors: backup (160 slots, a 548-byte bank
+  file downloaded), restore of that file (the 160 slot messages equal the
+  dump's), Patch export, import and refusals.
+- **After review:** the editor sends nothing but the restore's slots while
+  a restore runs (no edits, Store, push, reload or Part switch), so no
+  other DIN bytes land on a flash write; a bank or descriptor dump
+  requested while a reply is held now sends that reply first.
+- **Not checked on hardware yet:** a backup and restore on the breadboard
+  rig, and how long a full restore into an empty bank takes and mutes
+  (open question in `docs/platform.md`).

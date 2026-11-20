@@ -35,6 +35,20 @@
 //   34 Multi load request   Multi slot (2 x 7 bits): select that Multi
 //   35 Multi load reply     Multi slot (2 x 7 bits), result
 //                           (PatchLoadResult, stored_format.h)
+//   36 bank dump request    (none); answered by every Patch slot of the user
+//                           bank in order, then every Multi slot, one 37
+//                           each, then 39. Sent as the outgoing queue has room.
+//   37 bank slot            slot kind (SlotKind, user_bank.h), slot (2 x 7
+//                           bits), the stored Patch or Multi packed, or no
+//                           data for an empty slot. Both directions: sent to
+//                           the device it is written into that user-bank slot
+//                           byte for byte (no data empties it), and answered
+//                           by 38 -- a bank load waits for each answer
+//                           before sending the next, since DIN input
+//                           overruns while flash is written
+//   38 bank slot reply      slot kind, slot (2 x 7 bits), result (StoreResult)
+//   39 bank dump end        Patch slot count, Multi slot count (2 x 7 bits
+//                           each)
 //   40 descriptor dump request  (none); answered by, in order:
 //   41   table begin        table, descriptor count (2 x 7 bits)
 //   42   descriptor         table, ID (2 x 7 bits), min, max, default (int21
@@ -48,7 +62,7 @@
 //                           (common.h). One message per descriptor, sent as
 //                           the outgoing queue has room.
 //
-// Reserved ranges: 36-3F store and banks, 45-4F more descriptor messages,
+// Reserved ranges: 3A-3F store and banks, 45-4F more descriptor messages,
 // 60-7F Data Exchange transfers. Unknown commands and malformed messages are
 // ignored, as is anything for another manufacturer or sub-ID; a dump of a
 // Patch for another module is rejected (patch_decode()).
@@ -79,6 +93,10 @@ enum class SysExCommand : uint8_t {
     MULTI_STORE_REPLY   = 0x33,
     MULTI_LOAD_REQUEST  = 0x34,
     MULTI_LOAD_REPLY    = 0x35,
+    BANK_DUMP_REQUEST   = 0x36,
+    BANK_SLOT           = 0x37,
+    BANK_SLOT_REPLY     = 0x38,
+    BANK_DUMP_END       = 0x39,
     DESCRIPTOR_DUMP_REQUEST = 0x40,
     DESCRIPTOR_TABLE_BEGIN  = 0x41,
     DESCRIPTOR              = 0x42,
@@ -218,17 +236,25 @@ public:
     using Platform = PatchPlatformT<Module>;
     using Multi = MultiT<Module>;
 
-    PatchSysExT(Platform &platform, Multi &multi, SysExSend send) : platform_(platform), multi_(multi), send_(send) {}
+    // `user` is the module's user bank, or null for none (a bank dump is then
+    // empty).
+    PatchSysExT(Platform &platform, Multi &multi, UserBank *user, SysExSend send)
+        : platform_(platform), multi_(multi), user_(user), send_(send) {}
 
     // Handle one SysEx message (`msg`: the bytes between F0 and F7).
     void handle(const uint8_t *msg, uint32_t len);
 
     // Core 0, once per main-loop pass: send a reply the outgoing queue
-    // refused earlier, then continue a descriptor dump.
+    // refused earlier, then continue a descriptor dump, then a bank dump.
     void task() {
         if (held_len_ && send_(held_, held_len_)) held_len_ = 0;
         if (!held_len_) pump_dump();
     }
+
+    // The longest stored Patch or Multi one bank slot message carries:
+    // F0 7D 54 37, slot kind, slot (2 bytes), packed data, F7.
+    static constexpr uint32_t kBankSlotHeaderLen = kSysExHeaderLen + 3;
+    static constexpr uint32_t kBankSlotMaxStored = (MIDI_SYSEX_MAX + 2 - kBankSlotHeaderLen - 1) * 7 / 8;
 
 private:
     // Send a reply now, or hold it for task() if the queue is full; a newer
@@ -250,15 +276,24 @@ private:
 
     void pump_dump();
     bool send_dump_step();
+    bool send_bank_step();
+    uint32_t slot_count(SlotKind kind) const { return user_ ? user_->slot_count(kind) : 0; }
 
     Platform &platform_;
     Multi &multi_;
+    UserBank *user_;
     SysExSend send_;
     uint8_t held_[kMaxReply];
     uint32_t held_len_ = 0;
     DumpStep step_ = DumpStep::IDLE;
     DescriptorTable table_ = DescriptorTable::MODULE;
     uint32_t index_ = 0;
+
+    // Bank dump progress: the next slot to send, or the end message once
+    // past the last Multi slot.
+    bool bank_dumping_ = false;
+    SlotKind bank_kind_ = SlotKind::PATCH;
+    uint32_t bank_slot_ = 0;
 };
 
 // Handle one SysEx message (`msg`: the bytes between F0 and F7). Replies go
@@ -275,6 +310,9 @@ inline void PatchSysExT<Module>::handle(const uint8_t *msg, uint32_t len) {
     static_assert(sysex_descriptor_dump_fits(kPartDescriptors), "a Part descriptor dump message is longer than MIDI_SYSEX_MAX");
     static_assert(3 + sysex_packed_len(Multi::kStoredSize) <= MIDI_SYSEX_MAX,
                   "this module's Multi edit-buffer dump is longer than MIDI_SYSEX_MAX");
+    static_assert(patch_stored_size(Module::kDescriptors) <= kBankSlotMaxStored &&
+                  Multi::kStoredSize <= kBankSlotMaxStored,
+                  "this module's bank slot message is longer than MIDI_SYSEX_MAX");
     if (len < 3 || msg[0] != kSysExManufacturer || msg[1] != kSysExSubId) return;
     const SysExCommand command = (SysExCommand)msg[2];
     const uint8_t *body = msg + 3;
@@ -372,12 +410,40 @@ inline void PatchSysExT<Module>::handle(const uint8_t *msg, uint32_t len) {
             reply(msg_out, n);
             return;
         }
+        case SysExCommand::BANK_DUMP_REQUEST: {
+            if (body_len != 0) return;
+            bank_dumping_ = true;
+            bank_kind_ = SlotKind::PATCH;
+            bank_slot_ = 0;
+            if (!held_len_) pump_dump();
+            return;
+        }
+        case SysExCommand::BANK_SLOT: {
+            if (body_len < 3 || body[0] > (uint8_t)SlotKind::MULTI) return;
+            const SlotKind kind = (SlotKind)body[0];
+            const uint32_t slot = sysex_id(body + 1);
+            uint8_t stored[MIDI_SYSEX_MAX];  // unpacking only shrinks a message
+            uint32_t n = 0;
+            StoreResult result = StoreResult::BAD_PATCH;
+            if (body_len > 3) n = sysex_unpack(body + 3, body_len - 3, stored, sizeof stored);
+            if (body_len == 3 || n != 0) {
+                result = user_ ? user_->restore(kind, slot, stored, n) : StoreResult::NO_SUCH_SLOT;
+            }
+            uint8_t msg_out[9];
+            uint32_t o = sysex_begin(msg_out, SysExCommand::BANK_SLOT_REPLY);
+            msg_out[o++] = (uint8_t)kind;
+            o += sysex_put_id(msg_out + o, slot);
+            msg_out[o++] = (uint8_t)result;
+            msg_out[o++] = 0xF7;
+            reply(msg_out, o);
+            return;
+        }
         case SysExCommand::DESCRIPTOR_DUMP_REQUEST: {
             if (body_len != 0) return;
             step_ = DumpStep::TABLE_BEGIN;
             table_ = DescriptorTable::MODULE;
             index_ = 0;
-            pump_dump();
+            if (!held_len_) pump_dump();  // a held reply goes first (task())
             return;
         }
         default:
@@ -388,6 +454,38 @@ inline void PatchSysExT<Module>::handle(const uint8_t *msg, uint32_t len) {
 template <typename Module>
 inline void PatchSysExT<Module>::pump_dump() {
     while (step_ != DumpStep::IDLE && send_dump_step()) {}
+    if (step_ != DumpStep::IDLE) return;
+    while (bank_dumping_ && send_bank_step()) {}
+}
+
+// Send the bank dump's next message and advance; false if it didn't fit.
+// A slot holding more than one message carries (only possible if a build
+// with a larger schema wrote it) is sent as empty.
+template <typename Module>
+inline bool PatchSysExT<Module>::send_bank_step() {
+    if (bank_kind_ == SlotKind::PATCH && bank_slot_ >= slot_count(SlotKind::PATCH)) {
+        bank_kind_ = SlotKind::MULTI;
+        bank_slot_ = 0;
+    }
+    uint8_t msg[MIDI_SYSEX_MAX + 2];
+    uint32_t n;
+    const bool end = bank_slot_ >= slot_count(bank_kind_);
+    if (end) {
+        n = sysex_begin(msg, SysExCommand::BANK_DUMP_END);
+        n += sysex_put_id(msg + n, slot_count(SlotKind::PATCH));
+        n += sysex_put_id(msg + n, slot_count(SlotKind::MULTI));
+    } else {
+        n = sysex_begin(msg, SysExCommand::BANK_SLOT);
+        msg[n++] = (uint8_t)bank_kind_;
+        n += sysex_put_id(msg + n, bank_slot_);
+        const StoredPatchRef stored = user_->stored(bank_kind_, bank_slot_);
+        if (stored.data && stored.len <= kBankSlotMaxStored) n += sysex_pack(stored.data, stored.len, msg + n);
+    }
+    msg[n++] = 0xF7;
+    if (!send_(msg, n)) return false;
+    if (end) bank_dumping_ = false;
+    else bank_slot_++;
+    return true;
 }
 
 // Send the dump's next message and advance; false if it didn't fit.

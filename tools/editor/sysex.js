@@ -31,6 +31,10 @@ const Command = Object.freeze({
     EDIT_BUFFER_DUMP: 0x21,
     STORE_REQUEST: 0x30,
     STORE_REPLY: 0x31,
+    BANK_DUMP_REQUEST: 0x36,
+    BANK_SLOT: 0x37,
+    BANK_SLOT_REPLY: 0x38,
+    BANK_DUMP_END: 0x39,
     DESCRIPTOR_DUMP_REQUEST: 0x40,
     DESCRIPTOR_TABLE_BEGIN: 0x41,
     DESCRIPTOR: 0x42,
@@ -77,6 +81,20 @@ function editBufferRequest(part) {
 // Store Part `part`'s Edit buffer into user slot `slot`.
 function storeRequest(part, slot) {
     return frame(Command.STORE_REQUEST, [part, ...id14(slot)]);
+}
+
+// The two kinds of user-bank slot (SlotKind, src/patch/user_bank.h).
+const SlotKind = Object.freeze({ PATCH: 0, MULTI: 1 });
+
+// Ask for the whole user bank: every Patch slot, then every Multi slot.
+function bankDumpRequest() {
+    return frame(Command.BANK_DUMP_REQUEST);
+}
+
+// Put `stored` (a stored Patch or Multi) into user-bank slot `slot` of
+// `kind`, byte for byte; null empties the slot.
+function bankSlot(kind, slot, stored) {
+    return frame(Command.BANK_SLOT, [kind, ...id14(slot), ...(stored ? pack(Array.from(stored)) : [])]);
 }
 
 // Packed 8-bit data: groups of up to 7 bytes, each led by a byte holding
@@ -183,6 +201,18 @@ function parse(msg) {
         case Command.STORE_REPLY:
             if (b.length !== 4) return null;
             return { type: "storeReply", part: b[0], slot: readId14(b, 1), result: b[3] };
+        case Command.BANK_SLOT: {
+            if (b.length < 3 || b[0] > SlotKind.MULTI) return null;
+            const stored = b.length > 3 ? unpack(b.subarray(3)) : null;
+            if (b.length > 3 && !stored) return null;
+            return { type: "bankSlot", kind: b[0], slot: readId14(b, 1), stored };
+        }
+        case Command.BANK_SLOT_REPLY:
+            if (b.length !== 4) return null;
+            return { type: "bankSlotReply", kind: b[0], slot: readId14(b, 1), result: b[3] };
+        case Command.BANK_DUMP_END:
+            if (b.length !== 4) return null;
+            return { type: "bankDumpEnd", patchSlots: readId14(b, 0), multiSlots: readId14(b, 2) };
         case Command.DESCRIPTOR_TABLE_BEGIN:
             if (b.length !== 3) return null;
             return { type: "tableBegin", table: b[0], count: readId14(b, 1) };
@@ -290,8 +320,9 @@ function editBufferDump(part, stored) {
 }
 
 t00t.sysex = {
-    PROTOCOL_VERSION, MODULE_NAMES, NAME_LEN, Unit, Curve, ParamClass, STORE_OK,
+    PROTOCOL_VERSION, MODULE_NAMES, NAME_LEN, Unit, Curve, ParamClass, SlotKind, STORE_OK,
     identifyRequest, descriptorDumpRequest, editBufferRequest, paramChange, editBufferDump, storeRequest,
+    bankDumpRequest, bankSlot,
     parse, splitSysEx, assembleDump, decodePatch, encodePatch, storeResultText,
 };
 })(globalThis.t00t ??= {});

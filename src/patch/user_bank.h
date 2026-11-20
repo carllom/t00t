@@ -81,6 +81,10 @@ enum class StoreResult : uint8_t {
     FLASH_FAILED = 3,  // the sector write failed or the region is unusable
 };
 
+// The two kinds of user-bank slot. The values go out in SysEx bank messages
+// (sysex.h), so they are permanent.
+enum class SlotKind : uint8_t { PATCH = 0, MULTI = 1 };
+
 // One module's user bank: its Patch slots and its Multi slots. Core 0 only.
 class UserBank {
 public:
@@ -122,8 +126,42 @@ public:
         return store(user_multi_slot_offset(module_, slot), kUserMultiSlotSize, kMultiMagic, data, len);
     }
 
+    // --- By slot kind, for backing up and restoring the whole bank. ---
+
+    // How many slots of `kind` there are; 0 without a usable region.
+    uint32_t slot_count(SlotKind kind) const {
+        if (!usable()) return 0;
+        return kind == SlotKind::PATCH ? kUserPatchSlots : kUserMultiSlots;
+    }
+
+    // The stored Patch or Multi in `slot`, without the slot's padding:
+    // {nullptr, 0} if the slot holds nothing for this module (empty, or a
+    // payload that runs past the slot).
+    StoredPatchRef stored(SlotKind kind, uint32_t slot) const {
+        if (slot >= slot_count(kind)) return StoredPatchRef{ nullptr, 0 };
+        const StoredPatchRef ref = kind == SlotKind::PATCH ? patch(slot) : multi(slot);
+        if (stored_check_header(ref.data, ref.len, module_, magic(kind)) != PatchLoadResult::OK) {
+            return StoredPatchRef{ nullptr, 0 };
+        }
+        return StoredPatchRef{ ref.data, kPatchHeaderSize + patch_payload_len(ref.data) };
+    }
+
+    // Put `data` into `slot` byte for byte, as a Store does (header checked,
+    // padded with 0xFF), or empty the slot if `len` is 0. Writing what the
+    // slot already holds writes nothing.
+    StoreResult restore(SlotKind kind, uint32_t slot, const uint8_t *data, uint32_t len) {
+        if (slot >= slot_count(kind)) return StoreResult::NO_SUCH_SLOT;
+        const bool patch = kind == SlotKind::PATCH;
+        const uint32_t offset = patch ? user_patch_slot_offset(module_, slot) : user_multi_slot_offset(module_, slot);
+        const uint32_t size = patch ? kUserPatchSlotSize : kUserMultiSlotSize;
+        if (len == 0) return write_slot(offset, size, data, 0);
+        return store(offset, size, magic(kind), data, len);
+    }
+
 private:
     bool usable() const { return flash_.base && user_bank_has_partition(module_); }
+
+    static const uint8_t (&magic(SlotKind kind))[4] { return kind == SlotKind::PATCH ? kPatchMagic : kMultiMagic; }
 
     // Write `data` (a stored header with `magic`, for this module) into the
     // slot of `size` bytes at `offset`, 0xFF-padded, through its sector.
@@ -131,6 +169,12 @@ private:
         if (len > size || stored_check_header(data, len, module_, magic) != PatchLoadResult::OK) {
             return StoreResult::BAD_PATCH;
         }
+        return write_slot(offset, size, data, len);
+    }
+
+    // Rewrite the slot of `size` bytes at `offset` with `len` bytes of
+    // `data`, then 0xFF to its end, through its sector.
+    StoreResult write_slot(uint32_t offset, uint32_t size, const uint8_t *data, uint32_t len) {
         const uint32_t sector = offset - offset % kFlashSectorSize;
         for (uint32_t i = 0; i < kFlashSectorSize; i++) sector_[i] = flash_.base[sector + i];
         uint8_t *dst = sector_ + (offset - sector);

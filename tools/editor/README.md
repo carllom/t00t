@@ -30,6 +30,17 @@ MIDI gets a message saying so.
    **Reload from device** replaces the copy with the device's Edit buffer.
 5. **Store** sends the copy, then stores it into the user slot given, under the name given.
    The device's answer (stored, no such slot, flash write failed) shows beside it.
+6. **Export Patch** saves the copy as a Patch file (`.t0p`, the stored Patch as it is);
+   **Import Patch…** loads one into the copy and pushes it to the device. A Patch for
+   another module is refused; one from an older schema takes defaults for what it lacks.
+7. **Back up bank** saves the device's whole user bank (every Patch and Multi slot) as a
+   bank file (`.t0b`). **Restore bank…** writes a bank file back, after asking: every slot
+   the file holds is replaced and its empty slots emptied, one slot at a time, each sent
+   once the device has answered the last (so it is safe over DIN too). A file for another
+   module is refused; a slot the device refuses stops the restore and is named. Restoring
+   a backup to the same module gives back exactly what was backed up. Editing, Store and
+   Part switching wait while a restore runs, since the device may be writing flash. Formats:
+   `docs/platform.md`.
 
 If the device goes away and comes back, the editor reconnects and keeps its copy. If the
 device is then a different module or schema than the copy was made for, the editor says
@@ -38,11 +49,12 @@ SysEx protocol version is reported and left alone.
 
 ## Files
 
-- `index.html` — the page and its styles; loads the three scripts below in order.
+- `index.html` — the page and its styles; loads the four scripts below in order.
 - `app.js` — Web MIDI ports, the generic panels, rendering.
 - `session.js` — the editing session: identify, descriptor dump, Edit buffer sync,
-  parameter streaming, push, Store, mismatch handling. Takes and returns SysEx bytes;
-  knows nothing of Web MIDI or the page.
+  parameter streaming, push, Store, Patch import/export, bank backup and restore,
+  mismatch handling. Takes and returns SysEx bytes; knows nothing of Web MIDI or the page.
+- `files.js` — the bank file format.
 - `sysex.js` — the SysEx codec, the stored Patch format and the descriptor codes.
 - `test/` — the tests, run in the browser; `run_tests.py` runs them headless.
 
@@ -57,4 +69,5 @@ Serves the repository on a local port (the tests fetch the golden vectors, which
 test. The codec tests check `sysex.js` against
 `tools/host_render/golden/sysex_subtractive.txt`, the same golden byte vectors the
 firmware's `test_sysex` uses, so editor and firmware can't drift apart. The session tests
-replay the device's golden replies through `session.js` and check what it sends back.
+replay the device's golden replies through `session.js` and check what it sends back; the
+bank tests check backup, restore and the bank file the same way.

@@ -195,7 +195,11 @@ can overwrite the region.
   | `33` | Multi store reply | Multi slot, result (as `31`) |
   | `34` | Multi load request | Multi slot (2 × 7 bits): select that Multi |
   | `35` | Multi load reply | Multi slot, result: `0` OK, `1` bad magic, `2` wrong module, `3` truncated, `4` empty slot |
-  | `36`–`3F` | *reserved:* more store and bank messages | |
+  | `36` | bank dump request | — |
+  | `37` | bank slot (both directions) | slot kind (`0` Patch, `1` Multi), slot (2 × 7 bits), the stored Patch or Multi (packed), or no data for an empty slot |
+  | `38` | bank slot reply | slot kind, slot (2 × 7 bits), result (as `31`) |
+  | `39` | bank dump end | Patch slot count, Multi slot count (2 × 7 bits each) |
+  | `3A`–`3F` | *reserved:* more store and bank messages | |
   | `40` | descriptor dump request | — |
   | `41` | descriptor table begin | table, descriptor count (2 × 7 bits) |
   | `42` | descriptor | table, ID, min, max, default (int21 each), unit, curve, class, flags (bit 0 quick edit), default CC (`7F` = none), name, group |
@@ -211,6 +215,19 @@ can overwrite the region.
   pace it the same way. Other SysEx is handled while a dump is in progress; a reply that
   finds the queue full is held and sent before the dump continues. Strings are a
   length byte then 7-bit ASCII; unit, curve and class codes are the `descriptor.h` enum values.
+
+  A **bank dump** answers request `36` with one `37` per user-bank slot — every Patch slot in
+  order, then every Multi slot — and `39` with both slot counts, paced by the outgoing queue
+  like the descriptor dump (after any descriptor dump in progress). A slot carries its stored
+  Patch or Multi byte for byte without the slot's `0xFF` padding; an empty slot, or one holding
+  nothing loadable for this module, carries no data. A **bank load** is the same `37`
+  messages sent to the device: each is written into its slot as it is (no data empties the
+  slot; the header is checked as for a Store, so another module's Patch is refused) and
+  answered by `38`. The sender waits for each answer before sending the next slot, so nothing
+  arrives over DIN while flash is being written. Restoring a dump into the same module
+  therefore leaves the user-bank region byte for byte as it was dumped, older-schema Patches
+  included. A slot needs a sector rewrite only if its contents change, each with the brief
+  audio mute of a Store.
 
   int21 is two's complement over three 7-bit bytes, least significant first. IDs and counts are
   2 × 7 bits, least significant first. Packed data
@@ -231,12 +248,35 @@ value box). It loads a Part's Edit buffer into its own copy, streams each edit a
 parameter change, can push the copy back as an edit-buffer dump, and stores by pushing the
 copy and then sending a store request, so the slot gets what the editor shows.
 
+It exports the copy as a Patch file and imports one into the copy (pushing it to the
+device; a Patch for another module is refused, an older schema's takes defaults), and
+backs up and restores the whole user bank as a bank file, through the bank dump and bank
+load above. A restore refuses a bank file for another module and stops at the first slot
+the device refuses.
+
+#### Files
+
+- **Patch file** (`.t0p`): one stored Patch, header and payload, as it is.
+- **Bank file** (`.t0b`), all integers little-endian:
+
+  | Offset | Size | Field |
+  |---|---|---|
+  | 0 | 4 | magic `T0BK` |
+  | 4 | 1 | format version (1) |
+  | 5 | 1 | module ID |
+  | 6 | 2 | Patch slot count |
+  | 8 | 2 | Multi slot count |
+  | 10 | … | each Patch slot, then each Multi slot: length (2 bytes, 0 = empty), then the stored Patch or Multi as the bank dump carries it |
+
+  The format is the editor's (`tools/editor/files.js`); the device only sees the bank
+  slot messages made from it.
+
 The editor sends nothing to a device whose protocol version isn't the one it speaks (2),
 nor while its copy is for a different module or schema than the device reports. Its SysEx
 codec is tested against the firmware's golden byte vectors.
 
 Still to come: Multi editing (the Multi and Part tables are in the dump but not shown),
-bank dump and restore (#157), stored-format and DX7 `.syx` import/export (#160).
+DX7 `.syx` import (#160).
 
 ## Roadmap
 
@@ -336,7 +376,11 @@ Existing pieces the platform builds on, and how.
    one buffer, cutting the playing buffer short), the 4 KB erase and 16 page programs, and up
    to two buffers before fresh audio after Core 1 resumes — and whether that is acceptable
    mid-performance. To be measured on the rig.
-5. **Cook budget for FM.** Whether a full FM Patch cook fits Core 0's control-rate budget
+5. **Bank restore time.** A restore rewrites a flash sector for each slot whose contents
+   change, up to 160 rewrites (16 per Patch sector) each with a Store's mute; the time
+   and the mutes are to be measured on the rig. Batching a sector's slots into one rewrite
+   would need the load to span messages.
+6. **Cook budget for FM.** Whether a full FM Patch cook fits Core 0's control-rate budget
    while MIDI and the display are busy, or needs to be incremental per parameter.
 
 ## Decision record
@@ -371,6 +415,14 @@ Existing pieces the platform builds on, and how.
 - **Store parks Core 1 cooperatively and keeps the I2S clock running.** Audio is silent, not
   stopped, so the DAC never loses its clocks; the inter-core FIFO keeps carrying only the
   buffer protocol.
+- **Bank dump and load slot by slot, verbatim.** One message per slot fits the parser's
+  buffer for any module whose Patch fits a dump, and copying the stored bytes rather than
+  decoding and re-encoding them is what makes a restore byte-for-byte, older schemas and
+  all. The dump covers Patch and Multi slots together, since a Multi refers to Patches
+  by slot.
+- **A bank load is paced by its answers.** DIN input has a 32-byte FIFO and is lost while
+  flash is written; waiting for each slot's answer keeps the line quiet during the write on
+  either transport, with no flow control in the protocol.
 - **Host tools over runtime complexity.** Format conversion and import (DX7 `.syx`, OPL
   `.sbi`/`.bnk`) stay in host tools and the editor; runtime SysEx carries only the stored
   format.
