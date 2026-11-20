@@ -2665,3 +2665,28 @@ became data.
   start. Both have tests in `test_fm_render`.
 - **Memory**: 202 KB flash with the eight ROM banks (44 KB of them);
   275 KB SRAM in use, mostly the FX buffers as before.
+
+## Patch-platform gate: cooked path (#159, 2026-11-20)
+
+Core 1 on the cooked path, by the baseline's method (above): breadboard
+rig, firmware at `2545668` (the #158 migration, eight ROM banks), GPIO 22
+duty, E.ORGAN 1 (now factory bank 0, slot 16), FX off, N notes held.
+
+| Voices | Baseline (#146) | Cooked path |
+|---:|---:|---:|
+| 0 (idle) | 0.76% | 0.76% |
+| 1 | 5.4% | 5.5% |
+| 2 | 9.9% | 10.0% |
+| 4 | 19.0% | 19.0% |
+| 8 | 37.0% | 37.0% |
+| 16 (full) | 68.7% | 68.7% |
+
+No measurable difference. The +0.1 at 1 and 2 voices is within reading
+resolution: a per-voice cost would grow with the voice count, and 4, 8 and
+16 voices read exactly as before. All 16 voices fit, 31.3% spare. Moving
+routing resolution to Core 0 and the per-voice Patch copy at note-on cost
+nothing visible; the added per-sample FX-send check in the voice output
+loop doesn't show either.
+
+Not yet measured: Core 0 cook time per Patch (`make ENGINE=fm
+PATCH_PROFILE=1`) and change-to-audible latency.

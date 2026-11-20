@@ -325,9 +325,9 @@ as % of the 5.805 ms buffer period, idle (0) / 4 / 16 voices.
 | Quantity | Module | Baseline (#146) | Cooked path | Target |
 |---|---|---|---|---|
 | Core 1 duty per buffer, idle / 4 / 16 voices | subtractive | 0.57 / 22.1 / 81.4% | 0.57 / 19.8 / 72.7% (#152, after the per-voice locals fix): −10.7% at 16 voices | ≤ baseline |
-| Core 1 duty per buffer, idle / 4 / 16 voices | FM | 0.76 / 19.0 / 68.7% | TBD (#159) | ≤ baseline |
+| Core 1 duty per buffer, idle / 4 / 16 voices | FM | 0.76 / 19.0 / 68.7% | 0.76 / 19.0 / 68.7% (#159): unchanged | ≤ baseline |
 | Voice headroom at `MAX_VOICES` = 16 | subtractive | 16 fit, 18.6% spare | 16 fit, 27.3% spare (#152) | no loss |
-| Voice headroom at `MAX_VOICES` = 16 | FM | 16 fit, 31.3% spare | TBD (#159) | no loss |
+| Voice headroom at `MAX_VOICES` = 16 | FM | 16 fit, 31.3% spare | 16 fit, 31.3% spare (#159) | no loss |
 | Core 0 cook time per Patch | subtractive | n/a | cook 1.0–1.7 µs warm, ≤ 20.5 µs cold; Program Change (decode + cook + publish) 3.2 µs warm, ≤ 59 µs cold (#152) | TBD |
 | Core 0 cook time per Patch | FM | n/a | TBD (#159) | TBD |
 | Parameter change → audible latency | all | n/a | subtractive: no delay audible on parameter edits or Patch changes (by ear, not timed); by design 1–2 buffers | ≤ 1 block (≈5.8 ms) + transport |
