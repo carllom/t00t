@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>t00t editor</title>
+<style>
+:root {
+    --bg: #f6f6f4;
+    --panel: #ffffff;
+    --text: #1d1d1b;
+    --muted: #6b6b66;
+    --line: #dcdcd6;
+    --accent: #2f6fdf;
+    --problem-bg: #fdecea;
+    --problem-text: #8a1c12;
+    --ok: #1e7a3a;
+    color-scheme: light dark;
+}
+@media (prefers-color-scheme: dark) {
+    :root {
+        --bg: #161615;
+        --panel: #20201e;
+        --text: #e9e9e4;
+        --muted: #9a9a93;
+        --line: #3a3a36;
+        --accent: #6d9eff;
+        --problem-bg: #3b1714;
+        --problem-text: #ffb4aa;
+        --ok: #6fd28d;
+    }
+}
+* { box-sizing: border-box; }
+body {
+    margin: 0;
+    padding: 16px;
+    background: var(--bg);
+    color: var(--text);
+    font: 14px/1.4 system-ui, sans-serif;
+}
+header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; margin-bottom: 12px; }
+h1 { font-size: 18px; margin: 0; }
+.status { color: var(--muted); }
+button, select, input { font: inherit; color: inherit; }
+button {
+    padding: 4px 12px;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    background: var(--panel);
+    cursor: pointer;
+}
+button:disabled { opacity: 0.5; cursor: default; }
+button.primary { border-color: var(--accent); color: var(--accent); }
+select, input[type="number"], input[type="text"] {
+    padding: 3px 6px;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    background: var(--panel);
+}
+.problem {
+    padding: 8px 12px;
+    margin-bottom: 12px;
+    border-radius: 4px;
+    background: var(--problem-bg);
+    color: var(--problem-text);
+}
+.problem button { margin-left: 8px; }
+.toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 12px;
+    padding: 8px 12px;
+    margin-bottom: 12px;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    background: var(--panel);
+}
+.toolbar .sep { flex: 1; }
+.patch-name { font-weight: 600; }
+.store-result.ok { color: var(--ok); }
+.store-result.failed { color: var(--problem-text); }
+.panels { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 12px; }
+.panel {
+    margin: 0;
+    padding: 8px 12px 12px;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    background: var(--panel);
+}
+.panel legend { padding: 0 4px; font-weight: 600; }
+.param {
+    display: grid;
+    grid-template-columns: 7em 1fr 6.5em;
+    align-items: center;
+    gap: 4px 8px;
+    padding: 4px 0;
+}
+.param label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.param .hint { grid-column: 1 / -1; color: var(--muted); font-size: 12px; margin-top: -4px; }
+.param input[type="range"] { width: 100%; accent-color: var(--accent); }
+.param input[type="number"] { width: 100%; }
+.param select { grid-column: 2 / 4; }
+.hidden { display: none !important; }
+</style>
+</head>
+<body>
+<header>
+    <h1>t00t editor</h1>
+    <select id="port" aria-label="MIDI device"></select>
+    <button id="connect" class="primary">Connect</button>
+    <span id="status" class="status">Not connected</span>
+</header>
+
+<div id="problem" class="problem hidden">
+    <span id="problem-text"></span>
+    <button id="discard" class="hidden">Discard editor copy</button>
+</div>
+
+<div id="toolbar" class="toolbar hidden">
+    <label>Part <select id="part"></select></label>
+    <span id="patch-name" class="patch-name"></span>
+    <button id="reload" title="Replace the editor's copy with the device's Edit buffer">Reload from device</button>
+    <button id="push" title="Send the editor's copy into the device's Edit buffer">Push to device</button>
+    <span class="sep"></span>
+    <label>User slot <input id="slot" type="number" min="0" max="127" value="0"></label>
+    <label>Name <input id="name" type="text" maxlength="16" size="16"></label>
+    <button id="store">Store</button>
+    <span id="store-result" class="store-result"></span>
+</div>
+
+<div id="panels" class="panels"></div>
+
+<script src="sysex.js"></script>
+<script src="session.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

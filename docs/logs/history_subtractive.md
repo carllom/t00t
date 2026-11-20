@@ -465,3 +465,38 @@ over USB with `amidi`; the normal build was flashed back afterwards.
   Patch reference (stored with the Multi) is deliberate.
 - **Not checked:** the vgaboard build fails before and after this change
   (it compiles the LCD and encoder sources without their pins).
+
+## Web MIDI editor: generic live editing (#156, 2026-11-20)
+
+- **Decided with the author:** tests at two seams, the SysEx codec against
+  the firmware's golden vectors and a transport-free session (SysEx bytes
+  in and out, replaying the golden device replies); they run in headless
+  Chromium (`tools/editor/run_tests.py`), the browser the editor targets.
+  Multi editing stays out of this ticket.
+- **Store** pushes the editor's copy before the store request, so the slot
+  gets what the editor shows even after a Program Change on the device.
+- **Mismatch:** the editor sends nothing to a device on another protocol
+  version, nor while its copy is for another module or schema than the
+  device reports (after a reconnect), until the copy is discarded; an
+  Edit buffer for another module is reported, not taken.
+- **On hardware (2026-11-20):** reflashed the breadboard with the
+  protocol 2 build and drove the page in headless Chromium over the
+  DevTools protocol (MIDI SysEx permission granted): identify, descriptor
+  dump and panels, Part 1 synced (Fairlite), CUTOFF/FILTER/RESO edits
+  streamed and read back by Reload, Store to user slot 127 as "EDITOR
+  TEST" (loaded back with Bank Select 64 / Program Change 127 over amidi
+  and decoded: BP, 1234 Hz, RESO 16384), Store to slot 200 answered "no
+  such slot", Part 2 synced (Sq-PWM). The no-Web-MIDI and
+  permission-refused messages were checked the same way.
+- **After review:** the scripts became classic scripts sharing a `t00t`
+  namespace, since Chromium won't load ES modules from `file://` and the
+  editor must run without a server; the whole hardware run above was
+  repeated from `file://` (Store as "EDITOR TEST 2"). User slot 127 still
+  holds "EDITOR TEST 2". Also: a payload cut inside a parameter now gives
+  every later parameter its default (as `patch_decode()` does); names
+  store non-ASCII characters as `?`; a store reply is matched to the Part
+  that stored, so switching Part doesn't lose it; an Edit buffer of
+  another schema than the device's is refused like one of another module;
+  an emptied value box restores the value instead of sending 0.
+- **Not checked:** `test_header` fails before and after this change (no
+  C++ was touched).

@@ -223,11 +223,20 @@ can overwrite the region.
 
 ### Host editor
 
-A static Web MIDI single-page app in the repo. It builds its UI from the descriptor dump
-(groups → panels, ranges → controls), streams parameter changes, syncs and keeps its own copy
-of the Edit buffer, triggers Store, and imports/exports stored-format and external formats
-(DX7 `.syx` first). Its SysEx codec is tested against the same golden byte vectors as the
-firmware.
+`tools/editor/` ([README](../tools/editor/README.md)): a static Web MIDI page for Chromium
+browsers, opened straight from the file system (no server). It identifies the device, reads the descriptor
+dump and builds its UI from the module table (groups → panels; labelled ENUMs → lists,
+other ranges → a slider, exponential where the descriptor's curve says so, plus an exact
+value box). It loads a Part's Edit buffer into its own copy, streams each edit as a
+parameter change, can push the copy back as an edit-buffer dump, and stores by pushing the
+copy and then sending a store request, so the slot gets what the editor shows.
+
+The editor sends nothing to a device whose protocol version isn't the one it speaks (2),
+nor while its copy is for a different module or schema than the device reports. Its SysEx
+codec is tested against the firmware's golden byte vectors.
+
+Still to come: Multi editing (the Multi and Part tables are in the dump but not shown),
+bank dump and restore (#157), stored-format and DX7 `.syx` import/export (#160).
 
 ## Roadmap
 

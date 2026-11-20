@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>t00t editor tests</title>
+</head>
+<body>
+<pre id="results"></pre>
+<script src="../sysex.js"></script>
+<script src="../session.js"></script>
+<script type="module">
+import { run } from "./harness.js";
+
+const out = document.getElementById("results");
+const log = (line) => { out.textContent += line + "\n"; };
+let allOk = true;
+for (const file of ["./sysex.test.js", "./session.test.js"]) {
+    try {
+        await import(file);
+    } catch (e) {
+        log(`FAIL loading ${file}: ${e}`);
+        allOk = false;
+    }
+}
+allOk = (await run(log)) && allOk;
+log(allOk ? "ALL CHECKS PASSED" : "SOME CHECKS FAILED");
+document.title = allOk ? "PASS" : "FAIL";
+out.dataset.done = allOk ? "pass" : "fail";
+</script>
+</body>
+</html>
