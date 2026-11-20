@@ -25,17 +25,19 @@ class PartReceiverT {
 public:
     PartTake take(PartSlotT<Cooked> &slot) {
         Cooked fresh;
-        uint16_t load_id;
-        if (!slot.consume(fresh, load_id)) return PartTake::NONE;
+        uint16_t load_id, seq;
+        if (!slot.consume(fresh, load_id, seq)) return PartTake::NONE;
         prev_ = cur_;
         prev_load_ = cur_load_;
         cur_ = fresh;
         cur_load_ = load_id;
+        cur_seq_ = seq;
         return cur_load_ == prev_load_ ? PartTake::EDIT : PartTake::LOAD;
     }
 
     const Cooked &current() const { return cur_; }
     uint16_t load_id() const { return cur_load_; }
+    uint16_t seq() const { return cur_seq_; }  // the cook sequence number of current()
 
     // The patch current() replaced at the last take(), and its load ID.
     const Cooked &previous() const { return prev_; }
@@ -46,4 +48,5 @@ private:
     Cooked prev_{};
     uint16_t cur_load_ = 0;
     uint16_t prev_load_ = 0;
+    uint16_t cur_seq_ = 0;
 };

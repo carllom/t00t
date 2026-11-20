@@ -30,9 +30,9 @@ DX7 emulator) as ground truth rather than by ear alone.
 
 - **Voices**: `MAX_VOICES = 16`, provisional — see Performance below for
   why this is open again rather than settled
-- **Routing**: free (not fixed to the 32 DX7 algorithms), resolved once at
-  note-on into per-operator bus pointers and a kernel selection; the inner
-  loop is identical either way. Algorithms 4 and 6 (the only two DX7
+- **Routing**: free (not fixed to the 32 DX7 algorithms), resolved on Core 0
+  when a Patch is cooked into per-operator bus assignments, a render order
+  and a kernel selection; the inner loop is identical either way. Algorithms 4 and 6 (the only two DX7
   algorithms with a second, operator-spanning feedback loop) collapse to
   single self-feedback — this matches Dexed exactly, since Dexed's own
   algorithm table never implements that second loop either
@@ -45,59 +45,88 @@ DX7 emulator) as ground truth rather than by ear alone.
   waveforms, key sync, PMD/AMD, per-operator AM sensitivity
 - **Key/rate scaling, velocity sensitivity, detune, fixed-frequency mode**:
   all resolved once at note-on, zero per-sample cost
-- **Multitimbrality**: per-voice, for free — `VoiceParams` carries one
-  patch pointer, so different voices can already be playing different
-  patches simultaneously
+- **Multitimbrality**: a Multi of 16 Parts (`docs/platform.md`), Part n on
+  MIDI channel n by default; Parts on one channel layer, and each has its own
+  volume, pan and FX send. Each voice plays its own copy of its Part's
+  cooked Patch, so every voice can play a different Patch
 - **Sine table**: 4096-entry, no interpolation, 12-bit phase resolution
   (matching real DX7 hardware) — see Decision Record for why
   interpolation isn't used
-- **Patches**: no built-in bank ships in the repository — real DX7 `.syx`
-  banks are Yamaha's commercial data (gitignored, generated locally); the
-  engine plays a single hardcoded test patch until one is converted.
-  `FM_PATCHES` itself lives in RAM, not flash — see Decision Record
-- **No PSRAM, no streaming, no dynamic allocation** — ~12.5 KB of SRAM fixed
-  working set, plus up to ~26.5 KB for the patch table itself (212
-  bytes/patch, up to 128 patches)
+- **Patches**: on the patch platform — a Patch is a DX7 voice in DX7 units
+  (151 Descriptors, below), stored, edited over NRPN/SysEx and the
+  Quick-edit Page, and stored to the module's user bank. Factory banks are
+  the DX7 ROM banks, one per `.syx` file, generated locally (gitignored —
+  Yamaha's data); without them the module has one built-in bank holding the
+  INIT VOICE
+- **No PSRAM, no streaming, no dynamic allocation** — fixed SRAM working set;
+  per voice a ~250-byte copy of its cooked Patch
 
 ### MIDI Mapping (Input Capabilities)
 
 | Message | Function |
 |---|---|
-| Note On/Off | Standard dynamic allocation (`voice_alloc`), one voice slot per note |
+| Note On/Off | Every Part on the channel plays the note (layered), one voice per Part, dynamic allocation (`voice_alloc`) |
 | Pitch Bend | Folded into `phase_inc` by Core 0 before it reaches Core 1 |
 | CC1 | Mod wheel — a separate modulation source competing with the patch's own configured LFO depth (`max()`, not a multiplier — see Decision Record) |
-| CC10 | Pan |
-| CC72 | FX param 1 |
-| CC73 | FX wet/dry mix |
-| CC74 | FX type select |
-| CC75 | FX param 2 |
-| Program Change | Configuration: patch select — `FM_PATCHES[value % FM_PATCH_COUNT]`, always at least one entry |
+| CC7 / CC10 / CC91 | VOLUME / PAN / FX SEND of the channel's Parts |
+| CC72 / CC73 / CC74 / CC75 | The Multi's FX P1 / FX MIX / FX TYPE / FX P2 |
+| NRPN | Any Patch parameter, number = parameter ID (below); MSB 126/127 the Part and Multi parameters (`docs/platform.md`) |
+| CC0 | Bank Select MSB: 0–63 a factory bank (one per `.syx` file), 64 the user bank |
+| Program Change | Loads that slot of the selected bank into every Part on the channel; an empty slot or missing bank is ignored; sounding notes keep their Patch |
+| SysEx | The t00t protocol (`docs/platform.md`): identify, parameter change, edit-buffer and Multi dumps, Store, descriptor dump, bank dump and load |
+
+### Parameters
+
+A Patch is a DX7 voice in DX7 units (`fm_module.h`, IDs permanent). Each
+operator has a block of 22 IDs, OP1's at 0, OP2's at 22 and so on: R1–R4,
+L1–L4, BREAK PT, L DEPTH, R DEPTH, L CURVE, R CURVE, RATE SCL, AMS,
+VELOCITY, LEVEL, MODE, COARSE, FINE, DETUNE, ENABLE. Then, from 132: the
+pitch EG's R1–R4 and L1–L4, ALGORITHM, FEEDBACK, OSC SYNC, the LFO's SPEED,
+DELAY, PMD, AMD, KEY SYNC, WAVE and PMS, and TRANSPOSE. Defaults are the
+DX7's INIT VOICE.
+
+- **Live** (reach sounding notes): the LFO (all but KEY SYNC), the pitch EG
+  and each operator's AMS — the values Core 1 reads every control block.
+- **Note-on** (from the next note): everything else — the algorithm and
+  feedback, operator frequency, the EGs, levels, scaling and velocity,
+  which a note's envelopes and increments take when it starts.
+- EG rates and levels and FINE span 0–127, the 7-bit byte range, beyond the
+  DX7 panel's 0–99; a few factory voices use it.
+- ENABLE switches an operator off (the DX7's operator on/off; bulk `.syx`
+  voices have all six on).
+- OSC SYNC and TRANSPOSE are stored but not applied yet: operator phase
+  always restarts at note-on, and the note plays as received.
+- Quick-edit: ALGORITHM, FEEDBACK, and the LFO's SPEED, DELAY, PMD, AMD.
 
 ### Display (Presentation Capabilities)
 
-Two Pages (`src/wslcd/page.h`/`header.h`), the shared Widget/Header/Page
+Four Pages (`src/wslcd/page.h`/`header.h`), the shared Widget/Header/Page
 library (CONTEXT.md's Widget catalog) applied to FM — same Performance-page
 layout as OPL's own (`docs/module_opl.md`'s Display section):
 
 - **Performance** (required, default): the Header's Resource bar (combined
-  active-voice/CPU indicator) plus the current patch (bank index + DX7 voice
-  name, for whichever channel most recently triggered a note or a Program
-  Change) and the three FX CCs (CC73/72/75) as compact Value bars ("FXMIX"/
-  "FX P1"/"FX P2") with FX type (CC74) as a Label ("OFF"/"DELAY"/"REVERB"/
-  "PHASER"/"FLANGER"/"CHORUS"/"CRUSH"/"DRIVE") and the mod wheel (CC1) as a
-  fourth Value bar ("MOD").
+  active-voice/CPU indicator) plus the current Patch (program number and
+  name of the lowest Part on whichever channel most recently played a note
+  or a Program Change, `*` while edited) and the Multi's FX (CC73/72/75) as
+  compact Value bars ("FXMIX"/"FX P1"/"FX P2") with FX type (CC74) as a
+  Label ("OFF"/"DELAY"/"REVERB"/"PHASER"/"FLANGER"/"CHORUS"/"CRUSH"/"DRIVE")
+  and the mod wheel (CC1) as a fourth Value bar ("MOD").
+- **EDIT**: the Quick-edit Page (`src/patch/quick_edit_page.h`) for that
+  Part — its quick-edit parameters, Compare and Store/rename.
+- **MULTI**: the Multi Page (`src/patch/multi_page.h`) — the Parts, and
+  loading and storing Multis.
 - **DIAG**: the exact-value detail Resource bar deliberately sacrifices —
   CPU% (PercentageBar), per-voice sounding activity (ActivityGrid, one row —
   MAX_VOICES=16 matches `kActivityGridCellsPerRow` exactly), last
   note/velocity/channel, the six-cell operator-role indicator (carrier/
-  modulator/feedback, derived from `FmOpParams` directly — no algorithm
-  number is stored anywhere at runtime), and a compact per-voice grid
+  modulator/feedback, dark when switched off, from the Part's cooked
+  routing), and a compact per-voice grid
   (voice, channel, patch index) covering voices 0–7, which is what makes
   multitimbral use visible instead of assumed.
 
-Reachable via the breadboard's rotary encoder (`src/encoder_nav.h`,
-docs/engine.md's "Encoder navigation" entry) where one's wired;
-Performance-only otherwise (`HAS_ENCODER=0`).
+EDIT, MULTI and DIAG are reachable via the breadboard's rotary encoder
+(`src/encoder_nav.h`, docs/engine.md's "Encoder navigation" entry) where
+one's wired; Performance-only otherwise (`HAS_ENCODER=0`).
 
 ## Technical Overview
 
@@ -119,20 +148,30 @@ src/engines/fm/
   pitch_eg.h          voice-wide pitch EG
   lfo.h               voice-wide LFO
   sine_tab.h          the operator sine table
-  patch.h             FmPatch/FmOpParams (runtime form) + the note-on
-                       routing compiler (fm_resolve_routing())
-  patches.h           GENERATED by tools/syx2patch.py — do not hand-edit;
-                       gitignored, absent until generated locally
+  patch.h             FmPatch/FmOpParams (engine form) + the routing
+                       compiler (fm_resolve_routing())
+  fm_module.h         the module on the patch platform: parameter IDs,
+                       descriptors, the cooked patch and the cook
+  dx7_tables.h        DX7 algorithm and fixed-frequency tables for the cook
+  fm_factory.h        the factory banks: factory_banks.h, or the built-in
+                       INIT VOICE bank
+  factory_banks.h     GENERATED by tools/syx2patch.py bank — do not
+                       hand-edit; gitignored, absent until generated locally
+  fm_render.h         the per-buffer render: voices from their cooked
+                       Patches, the Multi's mix and FX (Core 1 and host)
+  fm_platform.h       the module's platform and Multi, for the display
+  patches.h           GENERATED by tools/syx2patch.py convert — the host
+                       tools' FmPatch table; gitignored
   rig.h               standalone P0 measurement rig (no patch/EG/LFO)
   render.h            fm_render_test_tone(), shared by the device skeleton
                        and the host build
-  input_subsystem.cpp note on/off, bend, pan, mod wheel, patch select
-  display.cpp         Performance + DIAG Pages (see Display above)
+  input_subsystem.cpp notes by Part, bend, mod wheel, the Multi's FX,
+                       NRPN, Bank Select/Program Change, SysEx
+  display.cpp         Performance, EDIT, MULTI and DIAG Pages (see Display above)
 ```
 
-There is no `presets.h`/`VoicePreset` — FM's whole timbre is the single
-`FmPatch` pointer in `VoiceParams`, so it never needed the shared
-preset-table shape speech/chip use. `input_subsystem.cpp`'s own top-level
+There is no `presets.h`/`VoicePreset` — FM's Patches come from the factory
+banks and user bank as DX7 voices. `input_subsystem.cpp`'s own top-level
 `midi_controller_process()` is a one-line call into
 `midi_controller_process_generic()` (`src/midi/midi_controller_generic.h`,
 built from `src/midi/midi_dispatch.h`'s shared, module-agnostic generic
@@ -152,21 +191,33 @@ other engine's measurement-rig levers.
 
 ### Tools
 
-`tools/syx2patch.py` — converts one to four DX7 32-voice bulk `.syx` dumps
-into a single `patches.h`, banks concatenated in the given file order:
+`tools/syx2patch.py` — converts DX7 32-voice bulk `.syx` dumps:
 
 ```
-syx2patch.py convert <in.syx> [in2.syx ...] <out.h>   # writes patches.h
+syx2patch.py bank <in.syx> [in2.syx ...] <out.h>      # writes factory_banks.h, one bank per file
+syx2patch.py convert <in.syx> [in2.syx ...] <out.h>   # writes patches.h, for the host tools
 syx2patch.py dump <in.syx> [in2.syx ...]               # per-voice summary, writes nothing
 ```
 
-Capped at 4 files (128 patches): `FM_PATCH_COUNT` indexes Program Change
-directly, a 7-bit MIDI value, so a larger table would leave some patches
-permanently unreachable.
+`bank` writes the device's factory banks (up to 64 files, Bank Select MSB
+0–63 in file order) as stored-format Patches holding the voices' DX7
+parameters; the device cooks them. `convert` writes the engine-form
+`FmPatch` table the host renderers and the Dexed comparison use (up to 4
+files). For the ROM banks: `bank syx/rom1a.syx … syx/rom4b.syx
+src/engines/fm/factory_banks.h`.
 
-Both the `.syx` input and the generated header are gitignored — real DX7
+The `.syx` inputs and both generated headers are gitignored — real DX7
 patch data is Yamaha's commercial work, the same policy the tracker's
 `xm/` corpus already established for copyrighted third-party content.
+
+`tools/host_render/test_fm_platform` (platform seam: Bank Select, Program
+Change and NRPN into a Multi of FM Parts, cooked patches out),
+`test_fm_render` (Core 1's render against op.h on the same patch, live and
+note-on edits, Patch loads, a note waiting for its cook) and
+`test_fm_equivalence` (every factory Patch through stored format, cook and
+render against the converter's `FmPatch` through op.h, sample for sample;
+needs both generated headers, `[first bank]` matches `patches.h` with
+banks from there) build with `make host`.
 
 `tools/fm_ref/` — builds [Dexed](https://asb2m10.github.io/dexed/) itself
 (fetched at a pinned SHA, never vendored) into a `dexed_render` CLI, the
@@ -335,15 +386,25 @@ is where the DX7's nonlinearity lives:
 level/rate scaling and note-dependent detune all need the actual played
 note, which a bend-scaled `phase_inc` alone can't be inverted back into.
 
-### Per-Voice Multitimbrality
+### Patches on Core 0, Notes on Core 1
 
-`VoiceParams` carries one `const FmPatch *` — the whole timbre, one
-pointer. It costs nothing per sample, needs no `ParamExchange` mechanism
-change, and requires no per-sample dispatch, since every voice runs the
-same kernel regardless of which patch it points at; only the routing
-tables and coefficients differ. Core 0 assigns a patch per MIDI channel
-and writes the pointer at note-on — 16-part multitimbral falls out for
-free.
+Core 0 cooks a Part's Edit buffer (`FmModule::cook()`, `fm_module.h`):
+DX7 values become the engine's `FmPatch` — ratio or fixed Hz, routing
+targets from the algorithm table, feedback on the algorithm's feedback
+operator — and `fm_resolve_routing()` resolves the render order, buses and
+kernels, leaving out switched-off operators. The cook is published to the
+Part's slot (`docs/platform.md`).
+
+A note carries its Part, the Patch load and the Part's latest cook
+sequence number — no patch data, so `ParamExchange` stays small. Core 1
+(`fm_render.h`) copies the Part's cooked Patch into the voice when the
+note starts: the current cook if it is the note's cook or a later one of
+the same Patch, the previous one if the note belongs to the Patch that cook
+replaced, and if the note's cook hasn't arrived yet (still pending on Core
+0) the note waits a buffer. When a Part takes an edit, the live fields of
+its notes on that Patch are refreshed in their copies (`copy_live()`);
+notes on another Patch keep theirs. Every voice runs the same kernel
+whatever Patch it plays; only its copy differs.
 
 ## Status and Plan
 
@@ -368,9 +429,12 @@ By-Ear Pass, and the ORCH-CHIME RAM Fix".
 
 ### Future / TODO
 
-- **Patch bank source** — currently a curated local conversion only; open
-  question whether `.syx` loading should become a runtime feature over
-  MIDI SysEx instead.
+- **DX7 `.syx` import in the editor** — loading a bank into the user
+  bank from the browser; the device itself only ever carries the stored
+  format.
+- **OSC SYNC and TRANSPOSE** — stored with every Patch, not yet applied.
+- **Live EG and level edits** — operator EGs, levels and scaling are
+  note-on class: they enter a note's envelopes when it starts.
 - **Free-routing UI / patch model beyond the 32 DX7 algorithms** — not
   started; the engine can already render arbitrary DAG+feedback routings,
   but nothing exposes that beyond what a converted `.syx` patch specifies.
@@ -472,15 +536,14 @@ By-Ear Pass, and the ORCH-CHIME RAM Fix".
     released-but-decaying voice at lower steal priority), and the
     override silently discarded a real, deliberate part of some patches'
     design (sustained ring-out after key-off).
-18. **`FM_PATCHES` lives in RAM, not flash** — op.h rereads a patch's fields
-    every control block (`am_sensitivity`, `pitch_eg`, `lfo`), not just once
-    at note-on, so unlike the kernel itself (Decision Record above), this
-    table's cost is sensitive to where it sits, and flash placement measured
-    a real, reproducible cost swing for one patch depending on unrelated
-    changes to the rest of the table (a flash XIP-cache placement effect,
-    not a converter or data bug). RAM access has no such sensitivity. This
-    doesn't reopen the kernel-placement question: that one was rejected for
-    a code-only branch-range cost (linker veneers) that plain data never
+18. **The patch data op.h reads lives in RAM, not flash** — op.h rereads a
+    patch's fields every control block (`am_sensitivity`, `pitch_eg`,
+    `lfo`), not just once at note-on, so unlike the kernel itself (Decision
+    Record above), its cost is sensitive to where the data sits (XIP-cache
+    placement). Each voice's copy of its cooked Patch is in RAM; the
+    factory banks in flash are read only by Core 0's cook. This doesn't
+    reopen the kernel-placement question: that one was rejected for a
+    code-only branch-range cost (linker veneers) that plain data never
     pays.
 19. **No operator-budget voice allocation.** Every real DX7 patch uses all
     6 operator slots — none of this engine's factory or converted content
@@ -509,13 +572,12 @@ By-Ear Pass, and the ORCH-CHIME RAM Fix".
     preset selection on Program Change alone (rather than each module
     picking its own CC/PC split) keeps that category's meaning consistent
     across engines.
-22. **`FM_PATCHES`/`FM_PATCH_COUNT`/`FM_PATCH_NAMES` are always defined**
-    (`patch.h`), never conditionally absent — without a locally generated
-    DX7 bank they fall back to a single entry wrapping `FM_TEST_PATCH`,
-    so Program Change and the display never need to branch on whether a
-    real bank exists. `T00T_FM_HAS_PATCHES` still gates the host-render
-    tools' own real-bank-only tests (`render_fm`/`render_fm_patch`),
-    unrelated to this fallback.
+22. **The factory banks always exist** (`fm_factory.h`) — without a locally
+    generated `factory_banks.h` there is one built-in bank holding the INIT
+    VOICE, so Program Change, the Multi and the display never branch on
+    whether a real bank exists. For the host tools, `FM_PATCHES`/
+    `FM_PATCH_COUNT`/`FM_PATCH_NAMES` (`patch.h`) likewise fall back to
+    `FM_TEST_PATCH`; `T00T_FM_HAS_PATCHES` gates their real-bank-only tests.
 23. **`midi_controller_process()` is built from shared, module-agnostic
     generic helpers** (`src/midi/midi_dispatch.h`), not written from
     scratch — comparing this module's freshly-migrated controller against
@@ -531,6 +593,32 @@ By-Ear Pass, and the ORCH-CHIME RAM Fix".
     included), so `midi_controller_process_generic()` needs no per-voice
     tracking arrays and dispatches NOTE the same uniform way as every
     other category.
+
+25. **A Patch is a DX7 voice in DX7 units**, not the engine's `FmPatch` —
+    sound designers and `.syx` files think in algorithm numbers, coarse/fine
+    and 0–99 levels, and the cook (ratio, fixed Hz, routing) is cheap on
+    Core 0. The cook reproduces the converter exactly (the same algorithm
+    table and fixed-frequency values, the ratio in double), so a factory
+    Patch sounds as it did through the converter's table, sample for sample.
+26. **Core 1 copies a note's Patch when the note starts, and a note waits
+    for its cook.** FM's note-on fields are most of the Patch (~250 bytes),
+    too large for `ParamExchange`, which Core 0 copies whole on every MIDI
+    batch. A cook sequence number on each publish lets Core 1 hold a note
+    whose cook is still pending on Core 0 for a buffer, so a note still gets
+    every edit made before it.
+27. **Operator EGs, levels and scaling are note-on class.** The EG takes
+    them when a note starts (`env_dx_init()`); Dexed's own live update of a
+    sounding EG restarts it at stage 3, which isn't a sound worth copying.
+    The LFO, pitch EG and AMS, read every control block, are live.
+28. **A switched-off operator leaves the render order** (`fm_resolve_routing()`'s
+    enable mask) rather than rendering at zero gain: Core 1 pays nothing for
+    it, and an operator only it modulated reads the zero bus.
+29. **One factory bank per `.syx` file**, Bank Select MSB in file order — the
+    DX7's own 32-voice cartridge unit, and up to 64 of them fit the factory
+    half of Bank Select.
+30. **EG rates and levels and FINE span 0–127** — a few factory voices carry
+    values above the panel's 99 that the engine plays as Dexed does, and the
+    stored format would otherwise clamp them.
 
 ## Glossary
 

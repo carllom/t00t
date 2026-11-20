@@ -11,11 +11,11 @@ static constexpr uint32_t BUF_PERIOD_US = 1000000u * SAMPLES_PER_BUFFER / SAMPLE
 
 uint8_t audio_engine_load() { return s_load_pct; }
 
+#if defined(T00T_FM_PROFILE) && T00T_FM_PROFILE
+
 // Stereo dry mix, same shape as the other engines' dry_l/dry_r.
 static int32_t dry_l[SAMPLES_PER_BUFFER];
 static int32_t dry_r[SAMPLES_PER_BUFFER];
-
-#if defined(T00T_FM_PROFILE) && T00T_FM_PROFILE
 
 #include "rig.h"
 
@@ -81,56 +81,17 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
 
 #else
 
-#include "op.h"
-#include "fx/delay.h"
-#include "fx/reverb.h"
-#include "fx/phaser.h"
-#include "fx/flanger.h"
-#include "fx/chorus.h"
-#include "fx/bitcrusher.h"
-#include "fx/overdrive.h"
+#include "fm_render.h"
+#include "core1_park.h"
+#include <atomic>
 
-// FM engine (#44/#45, module_fm.md P1/P2): MAX_VOICES independent 6-operator
-// voices, each driven straight from VoiceParams (phase_inc = bend-scaled
-// note frequency, patch = the whole timbre, amplitude = velocity, gate =
-// held/released) with routing resolved once per note-on (patch.h's
-// fm_resolve_routing()), envelopes stepped once per control block (op.h's
-// fm_voice_step_envelopes(), env_dx.h), and rendered through op.h's
-// kernels. gate=false releases through each operator's EG rather than
-// cutting the voice immediately, and a voice keeps rendering (and keeps its
-// active_mask bit)
-// until its carriers' envelopes actually finish (fm_voice_active()) --
-// mirroring the subtractive engine's trigger/gate/envelope-active idiom.
+// FM engine: MAX_VOICES independent 6-operator voices, each started from
+// its Part's cooked patch (fm_render.h) and driven from VoiceParams
+// (phase_inc = bend-scaled note frequency, amplitude = velocity, gate =
+// held/released), mixed by the Multi's Parts and FX.
 
-// `fx_buf` is the mono send/return scratch for the post-mix effect (mono
-// send / stereo return).
-static int32_t fx_buf[SAMPLES_PER_BUFFER];
-
-// Post-mix effects (Core 1 only). Linked unconditionally -- module_fm.md §2: no
-// sample-RAM pressure to protect, unlike the tracker's skeleton (#13).
-static FxDelay   fx_delay;
-static FxReverb  fx_reverb;
-static FxPhaser  fx_phaser;
-static FxFlanger fx_flanger;
-static FxChorus  fx_chorus;
-static FxBitcrusher fx_bitcrusher;
-static FxOverdrive  fx_overdrive;
-static uint8_t  s_last_fx_type = 0xFF;
-
-// Per-voice render state (Core 1 only, never crosses ParamExchange).
-static FmOp     voice_ops[MAX_VOICES][FM_NUM_OPS];
-static FmRouting voice_routing[MAX_VOICES];
-static uint8_t  voice_last_trigger[MAX_VOICES];
-static bool     voice_routing_valid[MAX_VOICES];
-static bool     voice_gated[MAX_VOICES];  // Core 1's own gate-edge tracking, for the release transition
-static FmPitchEg voice_peg[MAX_VOICES];   // #49: one pitch EG per voice (not per operator -- pitch_eg.h)
-static FmLfo    voice_lfo[MAX_VOICES];    // #49: one LFO per voice (not per operator -- lfo.h)
-
-// Shared bus scratch (module_fm.md §4.3) -- reused across every voice,
-// sequentially, within a pass.
-static int32_t bus_mod0[FM_BLOCK], bus_mod1[FM_BLOCK], bus_mod2[FM_BLOCK];
-static int32_t bus_mod3[FM_BLOCK], bus_mod4[FM_BLOCK], bus_mod5[FM_BLOCK];
-static int32_t bus_out[FM_BLOCK];
+// Render state -- only touched by Core 1.
+static FmRenderState render_state;
 
 void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
     // Init profiling pin
@@ -141,144 +102,41 @@ void audio_engine_run(AudioBuffers *buffers, ParamExchange *params) {
     fm_init_sine_tab();
     osc_init_sine();  // pan.h's pan_gains_q15() reuses the shared sine table for its quadrature gains
     env_dx_init_tables();  // EG exp2 table -- must run before any EG step
-    fx_delay.init();
-    fx_reverb.init();
-    fx_phaser.init();
-    fx_flanger.init();
-    fx_chorus.init();
-    fx_bitcrusher.init();
-    fx_overdrive.init();
-    for (uint32_t v = 0; v < MAX_VOICES; v++) {
-        voice_last_trigger[v] = 0;  // matches VoiceParams' default trigger=0 -- a never-triggered voice must NOT look "changed"
-        voice_routing_valid[v] = false;
-        voice_gated[v] = false;
-        // A zero-initialized EnvDX is NOT idle (stage 0 is a real stage) --
-        // every voice's EGs need an explicit env_dx_reset() so
-        // fm_voice_active() doesn't report a never-triggered voice as active.
-        for (uint32_t i = 0; i < FM_NUM_OPS; i++) env_dx_reset(voice_ops[v][i].eg);
-        fm_pitch_eg_init(voice_peg[v]);  // #49
-        fm_lfo_init(voice_lfo[v]);       // #49
-    }
-
-    FmVoiceBuses bus{ { bus_mod0, bus_mod1, bus_mod2, bus_mod3, bus_mod4, bus_mod5 }, bus_out };
+    fm_render_init(render_state);
 
     while (true) {
         // Wait for DMA ISR to tell us which buffer to fill
         uint32_t buf_index = multicore_fifo_pop_blocking();
 
+        // Parked while Core 0 wrote flash: playback ran on silenced buffers
+        // meanwhile, so drop the fill requests queued up and resume with the
+        // next one, in step with playback again.
+        if (core1_park_point()) {
+            multicore_fifo_drain();
+            continue;
+        }
+
         gpio_put(PROFILE_PIN, 1);
         uint32_t t_start = time_us_32();
 
-        // Snapshot committed params
+        // Latch the voice block before taking new cooked patches: Core 0
+        // publishes a Part's patch before committing the notes that use it,
+        // so every note seen here finds its cook as the Part's current or
+        // previous one, or waits for it (fm_render.h).
         const VoiceParamBlock &vp = params->active();
-
-        for (uint32_t i = 0; i < SAMPLES_PER_BUFFER; i++) {
-            dry_l[i] = 0;
-            dry_r[i] = 0;
+        std::atomic_thread_fence(std::memory_order_acquire);
+        for (uint32_t p = 0; p < FM_PART_COUNT; p++) {
+            fm_render_take_patch(render_state, p, fm_part_slots[p]);
         }
+        fm_render_take_multi(render_state, fm_multi_slot);
 
-        uint32_t active_mask = 0;
-        for (uint32_t v = 0; v < MAX_VOICES; v++) {
-            const VoiceParams &p = vp.voices[v];
-            if (!p.patch) continue;
-
-            // Routing (order/bus pointers/kernel selection/first-writer
-            // flags) is resolved once per note-on, from patch data alone
-            // (module_fm.md §5.6) -- a new `trigger` value is exactly that event.
-            if (p.trigger != voice_last_trigger[v]) {
-                voice_routing_valid[v] = fm_resolve_routing(*p.patch, voice_routing[v]);
-                if (voice_routing_valid[v]) {
-                    fm_voice_note_on<DxEnvGlue>(voice_ops[v], *p.patch, p.phase_inc, p.amplitude, p.note,
-                                                 &voice_peg[v], &voice_lfo[v]);
-                }
-                voice_last_trigger[v] = p.trigger;
-                voice_gated[v] = p.gate;
-            } else if (!p.gate && voice_gated[v]) {
-                // Gate-off edge: release through the EG (#45) instead of
-                // #44's hard cutoff -- mirrors the subtractive engine's
-                // "Detect gate-off edge" (Trigger/Gate Signaling, engine.md).
-                if (voice_routing_valid[v]) fm_voice_note_off<DxEnvGlue>(voice_ops[v], &voice_peg[v]);
-                voice_gated[v] = false;
-            } else {
-                voice_gated[v] = p.gate;
-            }
-            if (!voice_routing_valid[v]) continue;  // patch failed DAG validation (module_fm.md §4.2) -- skip, don't mis-render
-
-            // Keep rendering through release even after gate goes false --
-            // stop only once every carrier's EG has actually gone idle
-            // (fm_voice_active()), never on gate alone. This is what makes
-            // "a voice reports itself free only when its carriers have
-            // actually decayed" true instead of aspirational (module_fm.md #45,
-            // avoiding the tracker's #21 "key-off never frees a voice" bug).
-            if (!p.gate && !fm_voice_active(voice_ops[v], voice_routing[v])) continue;
-
-            // Pitch bend, pitch EG, and LFO increment recompute all happen
-            // inside fm_render_voice(), once per control block.
-            fm_render_voice<FM_TABLE_BITS, DxEnvGlue>(voice_ops[v], *p.patch, voice_routing[v], bus, p.pan,
-                                                       dry_l, dry_r, SAMPLES_PER_BUFFER,
-                                                       &voice_peg[v], &voice_lfo[v], p.phase_inc, p.mod_wheel);
-            active_mask |= (1u << v);
-        }
-
-        // Post-mix effect (delay / reverb, selected by CC74) — identical
-        // shape to the other engines' chain. Mono send / stereo return:
-        // downmix the stereo dry mix to mono, run the (still-mono) effect on
-        // it, then add its wet output identically to both channels. Clear
-        // the newly selected effect's buffer on a type switch so a stale
-        // tail can't leak.
-        bool has_fx = (vp.fx.type == FX_DELAY   || vp.fx.type == FX_REVERB ||
-                       vp.fx.type == FX_PHASER  || vp.fx.type == FX_FLANGER ||
-                       vp.fx.type == FX_CHORUS  || vp.fx.type == FX_BITCRUSHER ||
-                       vp.fx.type == FX_OVERDRIVE);
-        if (vp.fx.type != s_last_fx_type) {
-            if (vp.fx.type == FX_DELAY)        fx_delay.init();
-            else if (vp.fx.type == FX_REVERB)  fx_reverb.init();
-            else if (vp.fx.type == FX_PHASER)  fx_phaser.init();
-            else if (vp.fx.type == FX_FLANGER) fx_flanger.init();
-            else if (vp.fx.type == FX_CHORUS)  fx_chorus.init();
-            else if (vp.fx.type == FX_BITCRUSHER) fx_bitcrusher.init();
-            else if (vp.fx.type == FX_OVERDRIVE)  fx_overdrive.init();
-            s_last_fx_type = vp.fx.type;
-        }
-        if (has_fx) {
-            for (uint32_t i = 0; i < SAMPLES_PER_BUFFER; i++) {
-                fx_buf[i] = (dry_l[i] + dry_r[i]) >> 1;
-            }
-            if (vp.fx.type == FX_DELAY)        fx_delay.process(fx_buf, SAMPLES_PER_BUFFER, vp.fx);
-            else if (vp.fx.type == FX_REVERB)  fx_reverb.process(fx_buf, SAMPLES_PER_BUFFER, vp.fx);
-            else if (vp.fx.type == FX_PHASER)  fx_phaser.process(fx_buf, SAMPLES_PER_BUFFER, vp.fx);
-            else if (vp.fx.type == FX_FLANGER) fx_flanger.process(fx_buf, SAMPLES_PER_BUFFER, vp.fx);
-            else if (vp.fx.type == FX_CHORUS)  fx_chorus.process(fx_buf, SAMPLES_PER_BUFFER, vp.fx);
-            else if (vp.fx.type == FX_BITCRUSHER) fx_bitcrusher.process(fx_buf, SAMPLES_PER_BUFFER, vp.fx);
-            else                                   fx_overdrive.process(fx_buf, SAMPLES_PER_BUFFER, vp.fx);
-        }
-
-        // Crossfade dry/wet by the mix knob (Q15) instead of always summing
-        // full dry underneath -- fx_buf above already carries mix baked in
-        // as its own gain, so CC73=127 now means wet-only, not dry+wet
-        // (dry+near-unity-gain wet was clipping constantly at full mix,
-        // worst on the phaser's zero-delay allpass).
-        int32_t dry_scale = has_fx ? (int32_t)(127 - (int32_t)vp.fx.mix) * 258 : 32768;
-
-        int16_t *out = i2s_buffer_ptr(buffers, buf_index);
-        for (uint32_t i = 0; i < SAMPLES_PER_BUFFER; i++) {
-            int32_t l, r;
-            if (has_fx) {
-                l = (int32_t)(((int64_t)dry_scale * dry_l[i]) >> 15) + fx_buf[i];
-                r = (int32_t)(((int64_t)dry_scale * dry_r[i]) >> 15) + fx_buf[i];
-            } else {
-                l = dry_l[i];
-                r = dry_r[i];
-            }
-            *out++ = (int16_t)__ssat(l, 16);
-            *out++ = (int16_t)__ssat(r, 16);
-        }
+        fm_render_buffer(render_state, vp, i2s_buffer_ptr(buffers, buf_index));
 
         uint32_t busy_us = time_us_32() - t_start;
         gpio_put(PROFILE_PIN, 0);
 
         // Active-voice bitmap to Core 0 (non-blocking).
-        multicore_fifo_push_timeout_us(active_mask, 0);
+        multicore_fifo_push_timeout_us(render_state.active_mask, 0);
 
         // Publish render load for the UI. EMA (alpha 1/8) of the per-buffer render
         // time as a fraction of the buffer deadline.

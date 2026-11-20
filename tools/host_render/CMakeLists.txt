@@ -560,3 +560,51 @@ target_include_directories(test_sysex PRIVATE
 )
 target_compile_definitions(test_sysex PRIVATE
     T00T_SYSEX_GOLDEN="${CMAKE_CURRENT_LIST_DIR}/golden/sysex_subtractive.txt")
+
+# Host test for the FM module on the patch platform (src/engines/fm/
+# fm_module.h) at the platform seam: Bank Select, Program Change and NRPN
+# bytes into a Multi of FM Parts, cooked patches out of the Part slots.
+add_executable(test_fm_platform
+    test_fm_platform.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/../../src/midi/midi_dispatch.cpp
+)
+target_include_directories(test_fm_platform PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}
+    ${CMAKE_CURRENT_LIST_DIR}/../../src/engines/fm
+    ${CMAKE_CURRENT_LIST_DIR}/../../src
+)
+
+# Host test for the FM engine's Core 1 render (src/engines/fm/fm_render.h):
+# cooked patches and a voice block in, audio out, against op.h rendering
+# the same patch directly.
+add_executable(test_fm_render
+    test_fm_render.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/../../src/osc/sine.cpp
+)
+target_include_directories(test_fm_render PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}/host_stub_pico
+    ${CMAKE_CURRENT_LIST_DIR}
+    ${CMAKE_CURRENT_LIST_DIR}/../../src/engines/fm
+    ${CMAKE_CURRENT_LIST_DIR}/../../src
+)
+
+# Render equivalence for the FM factory banks: each factory Patch through
+# the patch platform (stored format -> cook -> fm_render.h) against op.h on
+# the converter's FmPatch. Needs the locally generated factory_banks.h and
+# patches.h (tools/syx2patch.py bank / convert); without them it says so.
+add_executable(test_fm_equivalence
+    test_fm_equivalence.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/../../src/osc/sine.cpp
+)
+target_include_directories(test_fm_equivalence PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}/host_stub_pico
+    ${CMAKE_CURRENT_LIST_DIR}
+    ${CMAKE_CURRENT_LIST_DIR}/../../src/engines/fm
+    ${CMAKE_CURRENT_LIST_DIR}/../../src
+)
+if(EXISTS ${CMAKE_CURRENT_LIST_DIR}/../../src/engines/fm/patches.h)
+    target_compile_definitions(test_fm_equivalence PRIVATE T00T_FM_HAS_PATCHES=1)
+endif()
+if(EXISTS ${CMAKE_CURRENT_LIST_DIR}/../../src/engines/fm/factory_banks.h)
+    target_compile_definitions(test_fm_equivalence PRIVATE T00T_FM_HAS_FACTORY_BANKS=1)
+endif()

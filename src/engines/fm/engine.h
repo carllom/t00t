@@ -19,37 +19,35 @@ static constexpr uint32_t FILTER_BUS_COUNT = 0;   // chip module only (module_ch
 // FM has no fixed channel->voice mapping, so the plain latest-wins
 // ParamExchange/voice_alloc that subtractive/groovebox/speech also use is
 // kept as-is -- no CMakeLists.txt override needed.
+
+// Per-note parameters, written by Core 0 and read by Core 1. The note's
+// sound comes from its Part's cooked patch (fm_module.h): Core 1 copies it
+// when the note starts, once the cook the note was played with has
+// arrived (`load_id`/`cook_seq`), so no patch data crosses ParamExchange.
 struct VoiceParams {
     uint32_t phase_inc;      // Q32 phase inc for a ratio=1.0 operator at the note's (bend-scaled) frequency
-    int16_t  amplitude;      // velocity, 0-32767 -- plain amplitude scaling of carrier output
+    int16_t  amplitude;      // velocity, 0-32767
     uint8_t  trigger;        // generation counter, incremented on each note-on
     bool     gate;           // true while voice should sound
-    int16_t  pan;            // Q15 pan: -32768 = full left, 0 = center, 32767 = full right
-    const FmPatch *patch;    // the whole timbre, one pointer (module_fm.md §6.3) -- &FM_TEST_PATCH by
-                              // default, or one of FM_PATCHES[] once tools/syx2patch.py has been run
-                              // (T00T_FM_HAS_PATCHES)
+    uint8_t  part;           // the Part the note plays on (< FM_PART_COUNT)
     uint8_t  note;           // raw MIDI note (0-127), unbent -- key level/rate scaling need the note itself, not just phase_inc's already-bend-scaled frequency
+    uint16_t load_id;        // the Patch load the note belongs to (PatchPlatformT::load_id())
+    uint16_t cook_seq;       // the Part's latest cook when the note started (PatchPlatformT::cook_seq())
     int16_t  mod_wheel;      // Q15, 0..32767 -- CC1, a source competing with the patch's own LFO PMD/AMD depth (lfo.h's max() rule)
 };
 
 template <>
 inline VoiceParams voice_params_default<VoiceParams>() {
-    return { 0, 0, 0, false, 0, &FM_TEST_PATCH, 0, 0 };
+    return { 0, 0, 0, false, 0, 0, 0, 0, 0 };
 }
 
 using VoiceParamBlock = VoiceParamBlockT<VoiceParams>;
 using ParamExchange = ParamExchangeT<VoiceParams>;
 
-// Channel -> patch lookup for the display (module_fm.md "Display"). Same
-// Core-0-only state input_subsystem.cpp's note-on path already reads;
-// always valid (defaults to &FM_TEST_PATCH), whether or not patches.h is
-// present.
-const FmPatch *fm_channel_patch(uint8_t channel);
-
-// Per-voice channel/patch telemetry for the display's multitimbral grid.
-// `program` is the channel's FM_PATCHES[] index at that voice's last
-// note-on, for display alongside voice_alloc_active_mask() -- the caller
-// decides whether a voice slot is worth showing.
+// Per-voice channel/Part telemetry for the display's multitimbral grid:
+// the channel and the Part's program at that voice's last note-on, for
+// display alongside voice_alloc_active_mask() -- the caller decides whether
+// a voice slot is worth showing.
 struct FmVoiceUiState {
     uint8_t channel;
     uint8_t program;

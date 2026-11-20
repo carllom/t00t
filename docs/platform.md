@@ -69,7 +69,7 @@ channels. This is proven by measurement (the P0 gates), not estimate.
   integer per parameter in its Descriptor domain (packed uint8/uint16), in parameter-ID order.
   Parameters missing from an older schema load as the Descriptor default; a mismatched module
   ID is rejected. Two stored object types: Patch and Multi.
-- **Multi** (`src/patch/multi.h`): N Parts (fixed per module at build time; subtractive 16)
+- **Multi** (`src/patch/multi.h`): N Parts (fixed per module at build time; subtractive and FM 16)
   plus its own settings (`kCommonDescriptors`: FX TYPE, FX MIX, FX P1, FX P2, MASTER). Each
   Part (`kPartDescriptors`): CHANNEL (1–16 or OFF), BANK and PROGRAM (the Patch, as Bank
   Select MSB and Program Change), VOLUME, PAN, FX SEND. FX belong only to the Multi. The
@@ -175,6 +175,13 @@ can overwrite the region.
   Part's latest cook (published or not) into the note at note-on, together with the Patch's
   load ID, so a note always gets every edit made before it and its pitch maths always
   matches its note-on fields.
+  A module whose note-on fields are too large for the per-note parameters (FM: most of a
+  ~250-byte cooked Patch) has Core 1 copy them instead, when the note starts, from its
+  Part's current or previous cook: each publish carries a cook sequence number, the note
+  carries its Part's latest one, and a note whose cook hasn't reached Core 1 yet waits a
+  buffer — the same guarantee, but for one case: an edit still pending on Core 0 when a
+  Program Change replaces it, within one buffer, never reaches the note played between
+  them.
 - SysEx (`src/patch/sysex.h`), processed on Core 0 into Edit buffers — the same path NRPN/CC
   takes. Every message is `F0 7D 54 <command> <body> F7`: `0x7D` is the non-commercial
   manufacturer ID, `0x54` ('T') the t00t sub-ID.
@@ -330,9 +337,9 @@ as % of the 5.805 ms buffer period, idle (0) / 4 / 16 voices.
 | Item | Where | Size | Notes |
 |---|---|---|---|
 | Descriptor tables (module + shared) | flash | TBD | `constexpr`, never touched by Core 1 |
-| Factory banks | flash | subtractive: 11 × 45 B | compiled in |
-| Cooked slot × 2 per Part | SRAM | subtractive: 84 B/slot × 16 = 1.3 KB | plus Core 1's own per-Part (current + previous) and per-voice state, 1.7 KB |
-| Edit buffer per Part + Multi | SRAM | subtractive: 1.8 KB platform state (16 Parts) | Descriptor-domain values, name, cooked copy, NRPN state; the Multi adds ~0.8 KB (values, cooked mix and its slot) |
+| Factory banks | flash | subtractive: 11 × 45 B; FM: 175 B per Patch (the 8 DX7 ROM banks: 256 × 175 B = 44 KB, locally generated) | compiled in |
+| Cooked slot × 2 per Part | SRAM | subtractive: 84 B/slot × 16 = 1.3 KB; FM: 256 B/slot × 16 = 8 KB | plus Core 1's own per-Part (current + previous) and per-voice state: subtractive 1.7 KB; FM 8 KB per-Part and a 250 B Patch copy per voice (4 KB) |
+| Edit buffer per Part + Multi | SRAM | subtractive: 1.8 KB platform state (16 Parts); FM: 24 KB (16 Parts × 151 values, twice) | Descriptor-domain values, name, cooked copy, NRPN state; the Multi adds ~0.8 KB (values, cooked mix and its slot) |
 | SysEx assembly buffer | SRAM | TBD | bounded; over-length messages discarded |
 | User-bank region | flash (end) | 384 KB: 8 modules × (128 Patches × 256 B + 32 Multis × 512 B) | layout above |
 | Store sector buffer | SRAM | 4 KB | one per module build, in the user bank |
@@ -353,7 +360,7 @@ Existing pieces the platform builds on, and how.
 | MIDI parser | [src/midi/midi_parser.h](../src/midi/midi_parser.h) | Extended to assemble F0…F7; today it drops System Common bytes |
 | Input pipeline dispatch (`InputCategory`, mapping tables, `midi_dispatch_program_change`) | [src/input_layer.h](../src/input_layer.h), [src/midi/midi_dispatch.h](../src/midi/midi_dispatch.h) | Program Change / Bank Select as Configuration; descriptor-driven NRPN/CC replaces per-module tables in `src/engines/*/input_subsystem.cpp` |
 | USB-MIDI and DIN transports | [src/midi/usb_midi.cpp](../src/midi/usb_midi.cpp), [src/midi/uart_midi.cpp](../src/midi/uart_midi.cpp) | SysEx input on both; both are receive-only today (see open questions) |
-| FM channel → Patch table on Core 0 | [src/engines/fm/engine.h](../src/engines/fm/engine.h) (`fm_channel_patch`) | Precedent for Part → Patch routing |
+| FM channel → Patch table on Core 0 | `fm_channel_patch`, FM's Input subsystem before #158 | Precedent for Part → Patch routing; replaced by the Multi |
 | FX chain and `EffectParams` | [src/fx/](../src/fx/), [src/engine_base.h](../src/engine_base.h) | Described by the shared common-components Descriptor table; owned by the Multi |
 | Widget library, Page framework, encoder navigation | [src/wslcd/](../src/wslcd/), [src/encoder_nav.h](../src/encoder_nav.h) | Quick-edit Page from Value bar / Value row / Label |
 | Today's const preset tables | [src/engines/subtractive/presets.h](../src/engines/subtractive/presets.h), FM `patches.h` | Source for host-generated factory banks |
@@ -368,10 +375,11 @@ Existing pieces the platform builds on, and how.
 1. **MIDI out over DIN.** Replies go out over USB-MIDI only, since the DIN port is wired
    RX-only; requests arriving over DIN are answered over USB too. DIN replies would need a
    MIDI-out circuit and a free UART TX pin.
-2. **Parts per Multi** for each module (FM 4–8? groovebox = one bass + one drum Part).
-3. **Shipping DX7 factory banks.** FM's `.syx` inputs and generated `patches.h` are
-   gitignored today; factory banks generated from them can't ship in the repo. Does FM ship
-   with a project-authored factory bank, and leave DX7 ROMs to user import?
+2. **Parts per Multi** for the remaining modules (groovebox = one bass + one drum Part?).
+   Subtractive and FM have 16.
+3. **A project-authored FM factory bank.** The DX7 ROM banks are generated locally and
+   can't ship in the repo; without them FM has only the INIT VOICE. A bank of the
+   project's own FM sounds would give every build something to play.
 4. **Store glitch length.** How long audio is silent around a Store — the park wait (up to
    one buffer, cutting the playing buffer short), the 4 KB erase and 16 page programs, and up
    to two buffers before fresh audio after Core 1 resumes — and whether that is acceptable

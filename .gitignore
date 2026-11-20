@@ -11,6 +11,7 @@ syx/
 talkie/
 sam/
 src/engines/fm/patches.h
+src/engines/fm/factory_banks.h
 src/engines/speech/lattice_words.h
 src/engines/speech/sam_allophones.h
 # FM reference rig (tools/fm_ref, history_fm.md) -- host-only build products

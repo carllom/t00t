@@ -435,6 +435,35 @@ def test_unpack_voice_roundtrip() -> None:
         assert op.freq_fine == 33
 
 
+def test_dx7_tables_match_converter() -> None:
+    """src/engines/fm/dx7_tables.h, which the device's cook uses, says what
+    this converter does: each algorithm's per-operator target, extra
+    targets and feedback operator, and the fixed-frequency Hz table."""
+    text = open(os.path.join(HERE, "..", "src", "engines", "fm", "dx7_tables.h")).read()
+    rows = re.findall(r"\{\{ (.*?) \} \},\s*// (\d+)", text)
+    assert len(rows) == 32, f"expected 32 algorithm rows, found {len(rows)}"
+    for body, number in rows:
+        ops = re.findall(r"\{ (\w+), 0x([0-9A-F]{2}), (true|false) \}", body)
+        assert len(ops) == 6, f"algorithm {number}: {len(ops)} operators"
+        decode = sp.ALGORITHM_CACHE[int(number) - 1]
+        for j, r in enumerate(decode.routing):
+            target, mask, fb = ops[5 - j]  # bus order (OP6..OP1) -> engine order
+            want_target = "FM_TARGET_OUT" if r.target == "OUT" else str(5 - r.target)
+            want_mask = sum(1 << (5 - t) for t in r.extra_targets)
+            assert (target, int(mask, 16), fb == "true") == (want_target, want_mask, r.feedback_capable), \
+                f"algorithm {number} OP{6 - j}: table {(target, mask, fb)}, converter {(want_target, want_mask, r.feedback_capable)}"
+    hz = re.findall(r"([0-9]+\.[0-9]{6})f", text.split("kDx7FixedHz")[-1])
+    assert len(hz) == 428, f"expected 428 fixed-frequency entries, found {len(hz)}"
+    for n, value in enumerate(hz):
+        # Coarse 3's fine runs past 99, into the 7-bit byte range.
+        coarse, fine = (n // 100, n % 100) if n < 300 else (3, n - 300)
+        op = sp.DX7Op(eg_rate=[0] * 4, eg_level=[0] * 4, output_level=0, key_vel_sens=0, osc_mode=1,
+                      freq_coarse=coarse, freq_fine=fine, break_point=0, scale_left_depth=0,
+                      scale_right_depth=0, scale_left_curve=0, scale_right_curve=0, rate_scale=0,
+                      detune=7, amp_mod_sens=0)
+        assert value == f"{sp.op_fixed_hz(op):.6f}", f"fixed Hz {n}: table {value}, converter {sp.op_fixed_hz(op):.6f}"
+
+
 def test_bulk_parse_and_checksum() -> None:
     voices = [_pack_voice(f"V{i:02d}", algorithm=i % 32, feedback_level=i % 8) for i in range(32)]
     data = _wrap_bulk(voices)
@@ -585,6 +614,7 @@ def main() -> None:
     run("multi-carrier output_level passes through unattenuated", test_multi_carrier_output_level_passes_through)
     run("multi-modulator output_level passes through unattenuated", test_multi_modulator_output_level_passes_through)
     run("unpack_voice: bit-packing round-trip", test_unpack_voice_roundtrip)
+    run("dx7_tables.h matches the converter (algorithms, fixed Hz)", test_dx7_tables_match_converter)
     run("parse_syx_bulk: checksum validation", test_bulk_parse_and_checksum)
     run("parse_syx_bulk: header/length rejection", test_bulk_parse_rejects_bad_header)
     run("unpack_voice: out-of-range byte fails loud", test_out_of_range_byte_fails_loud)

@@ -183,6 +183,10 @@ public:
     // belong to (receiver.h).
     uint16_t load_id(uint8_t part) const { return edit_[part].load_id; }
 
+    // Changes on every cook of `part`, published with it (part_slot.h): a
+    // note carrying it can tell whether Core 1 has its cook yet.
+    uint16_t cook_seq(uint8_t part) const { return edit_[part].cook_seq; }
+
     // Encode `part`'s Edit buffer as a stored Patch into `out`; returns the
     // byte count, or 0 if `cap` is too small or `part` out of range.
     uint32_t encode_edit_buffer(uint8_t part, uint8_t *out, uint32_t cap) const {
@@ -263,6 +267,7 @@ private:
     void cook(Edit &e) {
         PATCH_PROFILE_START(cook_start);
         Module::cook(e.comparing ? e.stored_values : e.values, e.cooked);
+        e.cook_seq++;
         PATCH_PROFILE_RECORD(cook, cook_start);
     }
 
@@ -273,7 +278,7 @@ private:
 
     void publish(uint8_t part) {
         Edit &e = edit_[part];
-        if (slots_[part].try_publish(e.cooked, e.load_id)) e.pending = false;
+        if (slots_[part].try_publish(e.cooked, e.load_id, e.cook_seq)) e.pending = false;
     }
 
     struct Edit {
@@ -285,6 +290,7 @@ private:
         Cooked cooked;     // of what's heard (see cook())
         uint32_t revision;
         uint16_t load_id;  // changes on every load, not on edits
+        uint16_t cook_seq; // changes on every cook
         bool comparing;
         bool pending;
     };

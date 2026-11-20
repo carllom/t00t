@@ -2599,3 +2599,69 @@ Linear in voice count: ≈4.25% (≈247 µs) per voice. All 16 voices fit, with
 31.3% of the buffer period to spare.
 
 FX-on baseline not measured; FX off is the reference for now.
+
+## FM migration onto the patch platform (#158, 2026-11-20)
+
+The stress test of the patch platform (`docs/platform.md`): FM's sounds
+became data.
+
+- **Descriptors** (`fm_module.h`): a Patch is a DX7 voice in DX7 units, 151
+  parameters — 22 per operator (the 21 VCED operator fields plus ENABLE,
+  the DX7's operator on/off) and 19 voice-wide. Live: the LFO but KEY SYNC,
+  the pitch EG and AMS, the values `op.h` reads every control block.
+  Everything else is note-on, since the EGs take their rates, levels and
+  scaling when a note starts. Ranges follow the converter: EG rates/levels
+  and FINE are 0–127, because ROM3A voice 19, ROM3B voices 1 and 14 and ROM4A
+  voice 7 carry bytes above 99.
+- **Cook on Core 0**: DX7 values to `FmPatch` plus `fm_resolve_routing()`,
+  which moved off Core 1's note-on. The algorithm table and the
+  fixed-frequency Hz table (`dx7_tables.h`) are written out from
+  `syx2patch.py`'s own decoder; `test_syx2patch.py` checks they agree. The
+  converter writes fixed Hz with `%.6f`, which differs from the exact float
+  of 10^(n/100) in 78 of 428 cases, so the table holds the converter's
+  values: the cook then matches the old table bit for bit. The ratio is
+  computed in double for the same reason (no case differs).
+- **Operator enable** leaves the operator out of the render order. That
+  exposed a latent bound in `fm_voice_render_block()`: the bus-clear loop
+  ran to `num_ops`, so with fewer operators rendered a high bus flagged
+  for clearing was skipped. It now walks the set bits of the mask.
+- **Note-on fields on Core 1**: a cooked FM Patch is ~250 bytes, too large
+  for `VoiceParams` (16 voices, copied by the generic controller on every
+  MIDI batch). Notes carry their Part's load ID and cook sequence number
+  (new on every publish, `part_slot.h`); Core 1 copies the Patch when the
+  note starts, from the current or previous cook, and holds a note whose
+  cook hasn't arrived for a buffer, so a note still gets every edit made
+  before it. Live edits are copied into the notes on that Patch's load.
+  A per-voice "attached" flag turned out redundant (mutating it away broke
+  no test): comparing the note's load ID with the Part's is enough.
+- **Factory banks**: `syx2patch.py bank` writes one factory bank per `.syx`
+  file as stored Patches (`factory_banks.h`, gitignored); without it the
+  build has one built-in bank, the INIT VOICE. The device no longer links
+  `FM_PATCHES` (the 27 KB RAM table); host tools still use `patches.h`.
+- **Multi**: 16 Parts, Part n on channel n, all on factory bank 0 slot 0;
+  CC7/10/91 are the Part mix (CC10 was FM's own pan), CC72–75 the Multi's
+  FX. The display gained the shared EDIT and MULTI Pages.
+- **Tests**: `test_fm_platform` (Bank Select, Program Change and NRPN in,
+  cooked patches out; expected routing worked out by hand from the
+  algorithm 1 and 32 diagrams), `test_fm_render` (Core 1's render against
+  op.h on the same patch; live vs note-on edits; a Program Change under a
+  held note; a note waiting for its cook — mutating the wait away fails it)
+  and `test_fm_equivalence`: all 256 ROM voices (ROM1A–ROM4B, `patches.h`
+  regenerated for ROM3/4 and restored) through stored format, cook and
+  render match the converter's `FmPatch` through op.h sample for sample,
+  1.2 s held and 0.6 s released, none silent.
+- **On hardware (2026-11-20)**: flashed through the debug probe and
+  driven over USB MIDI: identify (module 3, 16 Parts, 151 parameters), the
+  descriptor dump (202 messages, 0.12 s), Part 1 on BRASS 1, Bank Select 3 +
+  Program Change 10 loading SYNORGAN 1 (ROM2B), an NRPN ALGORITHM edit read
+  back from the edit buffer, notes played, and a Store to user slot 127
+  (29 ms, Core 1 parked from the new loop) read back by bank dump and
+  emptied again. Not heard: the sound itself, and Core 1/Core 0 cost, are
+  for the FM gate (#159).
+- **After review**: a note released while it waited for its cook (or in
+  the batch that played it) never released and sustained forever; it now
+  releases as it starts. A note whose carriers are all switched off mixed
+  in the output bus the previous voice left; such a voice now doesn't
+  start. Both have tests in `test_fm_render`.
+- **Memory**: 202 KB flash with the eight ROM banks (44 KB of them);
+  275 KB SRAM in use, mostly the FX buffers as before.

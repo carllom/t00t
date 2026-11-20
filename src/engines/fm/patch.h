@@ -196,9 +196,17 @@ struct FmRouting {
 // satisfied entirely inside op_render_fb's own per-sample fb1/fb2 history,
 // not by bus-write ordering -- so there is nothing for a cycle check to
 // reject.
-inline bool fm_resolve_routing(const FmPatch &patch, FmRouting &r) {
+//
+// `enabled` (bit i = operator i) switches operators off: a disabled
+// operator is left out of the render order, so it is silent and modulates
+// nothing, and an operator it alone modulated reads the zero bus. Its
+// out_bus is FM_BUS_ZERO, so it never keeps a voice active.
+inline bool fm_resolve_routing(const FmPatch &patch, FmRouting &r, uint8_t enabled = 0x3F) {
     r.valid = false;
-    r.num_ops = FM_NUM_OPS;
+    const auto on = [enabled](uint8_t i) { return (enabled >> i) & 1u; };
+    uint8_t op_count = 0;
+    for (uint8_t i = 0; i < FM_NUM_OPS; i++) op_count += on(i) ? 1 : 0;
+    r.num_ops = op_count;
 
     // A patch that targets its own index is malformed: that's not a valid
     // way to express self-modulation in this model (use `feedback_level`
@@ -221,6 +229,7 @@ inline bool fm_resolve_routing(const FmPatch &patch, FmRouting &r) {
     // the resolved order is reproducible for testing.
     uint8_t indeg[FM_NUM_OPS] = {0, 0, 0, 0, 0, 0};
     for (uint8_t i = 0; i < FM_NUM_OPS; i++) {
+        if (!on(i)) continue;
         uint8_t t = patch.op[i].mod_target;
         if (t < FM_NUM_OPS) indeg[t]++;
         // Extra fan-out targets are real edges too: they must render after
@@ -231,10 +240,10 @@ inline bool fm_resolve_routing(const FmPatch &patch, FmRouting &r) {
     }
     bool done[FM_NUM_OPS] = {false, false, false, false, false, false};
     uint8_t count = 0;
-    while (count < FM_NUM_OPS) {
+    while (count < op_count) {
         int8_t pick = -1;
         for (uint8_t i = 0; i < FM_NUM_OPS; i++) {
-            if (!done[i] && indeg[i] == 0) { pick = (int8_t)i; break; }
+            if (on(i) && !done[i] && indeg[i] == 0) { pick = (int8_t)i; break; }
         }
         if (pick < 0) return false;  // multi-operator cycle: nodes remain, none ready
         done[(uint8_t)pick] = true;
@@ -250,6 +259,7 @@ inline bool fm_resolve_routing(const FmPatch &patch, FmRouting &r) {
     // operator's own index) if anything targets it, else the zero bus.
     bool has_writer[FM_NUM_OPS] = {false, false, false, false, false, false};
     for (uint8_t i = 0; i < FM_NUM_OPS; i++) {
+        if (!on(i)) continue;
         uint8_t t = patch.op[i].mod_target;
         if (t < FM_NUM_OPS) has_writer[t] = true;
     }
@@ -261,7 +271,7 @@ inline bool fm_resolve_routing(const FmPatch &patch, FmRouting &r) {
     // target has no second modulator (see FmOpParams::extra_target_mask), so
     // this can never overwrite a fan-in arrangement.
     for (uint8_t i = 0; i < FM_NUM_OPS; i++) {
-        if (!patch.op[i].extra_target_mask) continue;
+        if (!on(i) || !patch.op[i].extra_target_mask) continue;
         uint8_t src_bus = patch.op[i].mod_target;
         if (src_bus > FM_NUM_OPS) continue;  // malformed; the checks above already reject it
         for (uint8_t j = 0; j < FM_NUM_OPS; j++) {
@@ -275,7 +285,10 @@ inline bool fm_resolve_routing(const FmPatch &patch, FmRouting &r) {
     int8_t first_writer[FM_TARGET_OUT + 1];
     for (uint8_t b = 0; b <= FM_TARGET_OUT; b++) first_writer[b] = -1;
     r.clear_bus_mask = 0;
-    for (uint8_t k = 0; k < FM_NUM_OPS; k++) {
+    for (uint8_t i = 0; i < FM_NUM_OPS; i++) {
+        if (!on(i)) { r.out_bus[i] = FM_BUS_ZERO; r.kernel[i] = FM_KERNEL_PLAIN; }
+    }
+    for (uint8_t k = 0; k < op_count; k++) {
         uint8_t i = r.order[k];
         uint8_t bus = patch.op[i].mod_target;  // FM_TARGET_OUT doubles as the OUT bus id
         r.out_bus[i] = bus;

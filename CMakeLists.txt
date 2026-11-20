@@ -188,13 +188,14 @@ if(DEFINED FM_BLOCK AND NOT FM_BLOCK STREQUAL "default")
     target_compile_definitions(t00t PRIVATE T00T_FM_BLOCK=${FM_BLOCK})
 endif()
 
-# #47 patch bank (FM engine only): patches.h is generated locally by
-# tools/syx2patch.py from a real DX7 .syx dump and gitignored -- a real DX7
-# bank's patch data is Yamaha's commercial sound-design work, not something
-# to check into git history. Guarded here so the build still succeeds
-# (FM_TEST_PATCH only) when nobody has generated it locally yet.
-if(EXISTS ${CMAKE_CURRENT_LIST_DIR}/src/engines/fm/patches.h)
-    target_compile_definitions(t00t PRIVATE T00T_FM_HAS_PATCHES=1)
+# FM factory banks (FM engine only): factory_banks.h is generated locally by
+# tools/syx2patch.py bank from real DX7 .syx dumps and gitignored -- a real
+# DX7 bank's patch data is Yamaha's commercial sound-design work, not
+# something to check into git history. Guarded here so the build still
+# succeeds (one built-in bank holding the INIT VOICE) when nobody has
+# generated it locally yet.
+if(EXISTS ${CMAKE_CURRENT_LIST_DIR}/src/engines/fm/factory_banks.h)
+    target_compile_definitions(t00t PRIVATE T00T_FM_HAS_FACTORY_BANKS=1)
 endif()
 
 # Chip rig override (chip engine only, see src/engines/chip/audio_engine.cpp).
@@ -215,7 +216,7 @@ endif()
 # main.cpp to run the platform's Core 0 task each pass, and links the
 # user-bank flash writer (src/patch/user_flash.cpp) with the Core 1 park it
 # needs.
-if(T00T_ENGINE STREQUAL "subtractive")
+if(T00T_ENGINE STREQUAL "subtractive" OR T00T_ENGINE STREQUAL "fm")
     target_compile_definitions(t00t PRIVATE HAS_PATCH_PLATFORM=1)
     target_sources(t00t PRIVATE src/patch/user_flash.cpp src/core1_park.cpp)
     target_link_libraries(t00t hardware_flash)

@@ -209,10 +209,10 @@ struct FmVoiceBuses {
 template <uint32_t TABLE_BITS>
 inline void fm_voice_render_block(FmOp ops[FM_NUM_OPS], const FmRouting &r,
                                    const FmVoiceBuses &bus, uint32_t n) {
-    for (uint8_t b = 0; b < r.num_ops; b++) {
-        if (r.clear_bus_mask & (1u << b)) {
-            for (uint32_t i = 0; i < n; i++) bus.mod[b][i] = 0;
-        }
+    // Every flagged modulation bus, whichever operators are rendered.
+    for (uint32_t m = r.clear_bus_mask & ((1u << FM_NUM_OPS) - 1); m; m &= m - 1) {
+        int32_t *b = bus.mod[__builtin_ctz(m)];
+        for (uint32_t i = 0; i < n; i++) b[i] = 0;
     }
     if (r.clear_bus_mask & (1u << FM_TARGET_OUT)) {
         for (uint32_t i = 0; i < n; i++) bus.out[i] = 0;
@@ -459,7 +459,8 @@ inline void fm_voice_step_envelopes(FmOp ops[FM_NUM_OPS], const FmPatch &patch, 
 }
 
 // Renders `frames` samples of one voice in FM_BLOCK-sized sub-blocks,
-// panning the shared output bus into dry_l/dry_r (accumulate: callers with
+// scaling the shared output bus by the stereo gains `gain_l`/`gain_r` (Q15)
+// into dry_l/dry_r (accumulate: callers with
 // multiple voices must clear dry_l/dry_r once up front, same convention as
 // speech's speech_render_voice()). Stops early once every carrier's EG has
 // gone idle mid-buffer (fm_voice_active()) -- the remaining sub-blocks
@@ -474,16 +475,16 @@ inline void fm_voice_step_envelopes(FmOp ops[FM_NUM_OPS], const FmPatch &patch, 
 // pitch bend recompute at all -- every real caller (device and host) passes
 // real state; nullptr only exists for isolated kernel-only tests that don't
 // care about any of this. `TABLE_BITS`/`EnvGlue` are threaded straight
-// through to fm_voice_render_block()/fm_voice_step_envelopes().
+// through to fm_voice_render_block()/fm_voice_step_envelopes(). With
+// `cut_l`/`cut_r` given, the share `cut_q15` of the voice's output is also
+// accumulated there (the part a Multi doesn't send to the FX).
 template <uint32_t TABLE_BITS, typename EnvGlue>
-inline void fm_render_voice(FmOp ops[FM_NUM_OPS], const FmPatch &patch, const FmRouting &r,
-                             const FmVoiceBuses &bus, int16_t pan,
-                             int32_t *dry_l, int32_t *dry_r, uint32_t frames,
-                             FmPitchEg *peg = nullptr, FmLfo *lfo = nullptr,
-                             uint32_t note_inc = 0, int16_t mod_wheel = 0) {
-    int32_t gain_l, gain_r;
-    pan_gains_q15(pan, gain_l, gain_r);
-
+inline void fm_render_voice_gains(FmOp ops[FM_NUM_OPS], const FmPatch &patch, const FmRouting &r,
+                                   const FmVoiceBuses &bus, int32_t gain_l, int32_t gain_r,
+                                   int32_t *dry_l, int32_t *dry_r, uint32_t frames,
+                                   FmPitchEg *peg = nullptr, FmLfo *lfo = nullptr,
+                                   uint32_t note_inc = 0, int16_t mod_wheel = 0,
+                                   int32_t *cut_l = nullptr, int32_t *cut_r = nullptr, int32_t cut_q15 = 0) {
     uint32_t done = 0;
     while (done < frames) {
         uint32_t n = frames - done;
@@ -500,10 +501,29 @@ inline void fm_render_voice(FmOp ops[FM_NUM_OPS], const FmPatch &patch, const Fm
             // is the single point where it stops being phase-deviation and
             // becomes audio (F2, see FM_VOICE_OUT_SHIFT).
             int32_t s = bus.out[i] >> FM_VOICE_OUT_SHIFT;
-            dry_l[done + i] += (s * gain_l) >> 15;
-            dry_r[done + i] += (s * gain_r) >> 15;
+            const int32_t out_l = (s * gain_l) >> 15;
+            const int32_t out_r = (s * gain_r) >> 15;
+            dry_l[done + i] += out_l;
+            dry_r[done + i] += out_r;
+            if (cut_l) {
+                cut_l[done + i] += (int32_t)(((int64_t)out_l * cut_q15) >> 15);
+                cut_r[done + i] += (int32_t)(((int64_t)out_r * cut_q15) >> 15);
+            }
         }
         done += n;
         if (!fm_voice_active(ops, r)) break;
     }
+}
+
+// fm_render_voice_gains() with the stereo gains of `pan` (Q15, centre 0).
+template <uint32_t TABLE_BITS, typename EnvGlue>
+inline void fm_render_voice(FmOp ops[FM_NUM_OPS], const FmPatch &patch, const FmRouting &r,
+                             const FmVoiceBuses &bus, int16_t pan,
+                             int32_t *dry_l, int32_t *dry_r, uint32_t frames,
+                             FmPitchEg *peg = nullptr, FmLfo *lfo = nullptr,
+                             uint32_t note_inc = 0, int16_t mod_wheel = 0) {
+    int32_t gain_l, gain_r;
+    pan_gains_q15(pan, gain_l, gain_r);
+    fm_render_voice_gains<TABLE_BITS, EnvGlue>(ops, patch, r, bus, gain_l, gain_r, dry_l, dry_r, frames,
+                                                peg, lfo, note_inc, mod_wheel);
 }
