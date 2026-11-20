@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
-"""syx2patch.py -- DX7 32-voice .syx bulk dump -> patches.h / factory_banks.h.
+"""syx2patch.py -- DX7 .syx dumps -> patches.h / factory_banks.h.
 
     syx2patch.py bank <in.syx> [in2.syx ...] <out.h>
         Write the FM module's factory banks for the patch platform: one
         factory bank per input file (Bank Select MSB 0, 1, ... in file
-        order), each voice a stored-format Patch (src/patch/stored_format.h)
+        order; a 32-voice bulk dump, or a single-voice dump as a one-Patch
+        bank), each voice a stored-format Patch (src/patch/stored_format.h)
         holding its DX7 parameters in FmModule's descriptor order
         (src/engines/fm/fm_module.h). The device cooks those into the same
         engine form `convert` writes. Up to 64 files (the factory half of
-        Bank Select). Gitignored, like patches.h.
+        Bank Select). Gitignored, like patches.h. The editor's DX7 import
+        (tools/editor/dx7.js) makes the same stored Patches; both are
+        tested against tools/host_render/golden/dx7_syx.txt
+        (tools/dx7_vectors.py).
 
     syx2patch.py convert <in.syx> [in2.syx ...] <out.h>
         Parse one to four 4104-byte DX7 32-voice bulk dumps (F0 43 0n 09 20
@@ -310,8 +314,7 @@ def parse_syx_bulk(data: bytes, path: str) -> List[bytes]:
         )
     if data[3] != 0x09:
         raise Syx2PatchError(
-            f"{path}: format number = {data[3]}, expected 9 (32-voice bulk) -- "
-            f"format 0 would be a single-voice dump, not supported by this converter"
+            f"{path}: format number = {data[3]}, expected 9 (32-voice bulk) or 0 (single voice)"
         )
     byte_count = (data[4] << 7) | data[5]
     if byte_count != 4096:
@@ -400,89 +403,136 @@ class DX7Voice:
     transpose: int
 
 
+VCED_SIZE = 155  # one unpacked voice, as a single-voice dump carries it
+
+
+def vced_from_packed(bulk: bytes) -> bytes:
+    """One 128-byte packed bulk-dump voice in the unpacked 155-byte layout
+    of a single-voice dump (Dexed's Cartridge::unpackProgram, Source/
+    PluginData.cpp, Apache-2.0; the bit layout cross-checked against the DX7
+    MIDI Data Format Sheet): per operator, OP6 first, 21 bytes -- R1-4, L1-4,
+    break point, left/right depth, left/right curve, rate scaling, AMS,
+    velocity, level, mode, coarse, fine, detune -- then pitch EG R1-4, L1-4,
+    algorithm, feedback, oscillator sync, LFO speed, delay, PMD, AMD, sync,
+    wave, PMS, transpose, and the 10-character name. Masks only; the ranges
+    are checked by voice_from_vced()."""
+    b = [x & 0x7F for x in bulk]
+    v: List[int] = []
+    for j in range(6):
+        p = j * 17
+        lrcurve, det_rs, kvs_ams, fcoarse_mode = b[p + 11] & 0x0F, b[p + 12], b[p + 13] & 0x1F, b[p + 15] & 0x3F
+        v += b[p:p + 11]
+        v += [lrcurve & 3, (lrcurve >> 2) & 3, det_rs & 7, kvs_ams & 3, (kvs_ams >> 2) & 7, b[p + 14],
+              fcoarse_mode & 1, (fcoarse_mode >> 1) & 0x1F, b[p + 16], (det_rs >> 3) & 0x0F]
+    oks_fb, lpms_lfw_lks = b[111] & 0x0F, b[116]
+    v += b[102:110]
+    v += [b[110] & 0x1F, oks_fb & 7, (oks_fb >> 3) & 1]
+    v += b[112:116]
+    v += [lpms_lfw_lks & 1, (lpms_lfw_lks >> 1) & 7, (lpms_lfw_lks >> 4) & 7, b[117]]
+    v += b[118:128]
+    return bytes(v)
+
+
 def unpack_voice(bulk: bytes, voice_idx: int, warnings: Optional[List[str]] = None, label: str = "") -> DX7Voice:
-    """Bit-for-bit port of Dexed's Cartridge::unpackProgram (Source/
-    PluginData.cpp, Apache-2.0) -- the packed-format bit layout it implements
-    was cross-checked against the DX7 MIDI Data Format Sheet's own published
-    table (tools/, see #47's implementation notes) and matches exactly.
-    Unlike Dexed's own `normparm` (which silently clamps out-of-range bytes
-    to avoid crashing on already-loaded, possibly-corrupt patches), this
-    raises Syx2PatchError instead -- fail loud, not silent, on this
-    converter's own input path. `label` (a source filename) prefixes every
-    message so warnings stay traceable once multiple banks are concatenated."""
+    """One packed bulk-dump voice (see vced_from_packed())."""
+    return voice_from_vced(vced_from_packed(bulk), voice_idx, warnings, label)
+
+
+def voice_from_vced(vced: bytes, voice_idx: int, warnings: Optional[List[str]] = None, label: str = "") -> DX7Voice:
+    """One unpacked voice (see vced_from_packed() for the layout). Unlike
+    Dexed's own `normparm` (which silently clamps out-of-range bytes to
+    avoid crashing on already-loaded, possibly-corrupt patches), this raises
+    Syx2PatchError instead -- fail loud, not silent, on this converter's own
+    input path. `label` (a source filename) prefixes every message so
+    warnings stay traceable once multiple banks are concatenated."""
     if warnings is None:
         warnings = []
+    v = [x & 0x7F for x in vced]
     ctx = f"{label} voice {voice_idx}" if label else f"voice {voice_idx}"
     ops: List[DX7Op] = []
     for j in range(6):
-        base = j * 17
+        o = v[j * 21:(j + 1) * 21]
         op_ctx = f"{ctx} OP{6 - j}"
-        eg_rate = [_range_check_byte(bulk[base + i] & 0x7F, f"eg_rate{i + 1}", op_ctx, warnings) for i in range(4)]
-        eg_level = [_range_check_byte(bulk[base + 4 + i] & 0x7F, f"eg_level{i + 1}", op_ctx, warnings) for i in range(4)]
-        bp = _range_check(bulk[base + 8] & 0x7F, 0, 99, "break_point", op_ctx)
-        ld = _range_check(bulk[base + 9] & 0x7F, 0, 99, "scale_left_depth", op_ctx)
-        rd = _range_check(bulk[base + 10] & 0x7F, 0, 99, "scale_right_depth", op_ctx)
-        lrcurve = bulk[base + 11] & 0x0F
-        lc = lrcurve & 3
-        rc = (lrcurve >> 2) & 3
-        det_rs = bulk[base + 12] & 0x7F
-        rs = det_rs & 7
-        det = _range_check((det_rs >> 3) & 0x0F, 0, 14, "detune", op_ctx)
-        kvs_ams = bulk[base + 13] & 0x1F
-        ams = kvs_ams & 3
-        kvs = _range_check((kvs_ams >> 2) & 7, 0, 7, "key_vel_sens", op_ctx)
-        ol = _range_check(bulk[base + 14] & 0x7F, 0, 99, "output_level", op_ctx)
-        fcoarse_mode = bulk[base + 15] & 0x3F
-        mode = fcoarse_mode & 1
-        fcoarse = _range_check((fcoarse_mode >> 1) & 0x1F, 0, 31, "freq_coarse", op_ctx)
-        # Same 7-bit widening as the EG fields above. ROM3B voice 14
-        # ("60-S ORGAN") ships freq_fine = 100 on a coarse-0 operator, in a
-        # bank whose checksum validates, and both engines compute the ratio
-        # arithmetically (`coarse_ratio * (1 + fine/100)`, total over the
-        # whole byte range) rather than looking it up -- so 100 is simply
-        # "ratio 0.5 doubled", i.e. 1.0.
-        ffine = _range_check_byte(bulk[base + 16] & 0x7F, "freq_fine", op_ctx, warnings)
+        eg_rate = [_range_check_byte(o[i], f"eg_rate{i + 1}", op_ctx, warnings) for i in range(4)]
+        eg_level = [_range_check_byte(o[4 + i], f"eg_level{i + 1}", op_ctx, warnings) for i in range(4)]
         ops.append(DX7Op(
-            eg_rate=eg_rate, eg_level=eg_level, output_level=ol, key_vel_sens=kvs,
-            osc_mode=mode, freq_coarse=fcoarse, freq_fine=ffine,
-            break_point=bp, scale_left_depth=ld, scale_right_depth=rd,
-            scale_left_curve=lc, scale_right_curve=rc, rate_scale=rs,
-            detune=det, amp_mod_sens=ams,
+            eg_rate=eg_rate, eg_level=eg_level,
+            break_point=_range_check(o[8], 0, 99, "break_point", op_ctx),
+            scale_left_depth=_range_check(o[9], 0, 99, "scale_left_depth", op_ctx),
+            scale_right_depth=_range_check(o[10], 0, 99, "scale_right_depth", op_ctx),
+            scale_left_curve=_range_check(o[11], 0, 3, "scale_left_curve", op_ctx),
+            scale_right_curve=_range_check(o[12], 0, 3, "scale_right_curve", op_ctx),
+            rate_scale=_range_check(o[13], 0, 7, "rate_scale", op_ctx),
+            amp_mod_sens=_range_check(o[14], 0, 3, "amp_mod_sens", op_ctx),
+            key_vel_sens=_range_check(o[15], 0, 7, "key_vel_sens", op_ctx),
+            output_level=_range_check(o[16], 0, 99, "output_level", op_ctx),
+            osc_mode=_range_check(o[17], 0, 1, "osc_mode", op_ctx),
+            freq_coarse=_range_check(o[18], 0, 31, "freq_coarse", op_ctx),
+            # Same 7-bit widening as the EG fields above. ROM3B voice 14
+            # ("60-S ORGAN") ships freq_fine = 100 on a coarse-0 operator, in a
+            # bank whose checksum validates, and both engines compute the ratio
+            # arithmetically (`coarse_ratio * (1 + fine/100)`, total over the
+            # whole byte range) rather than looking it up -- so 100 is simply
+            # "ratio 0.5 doubled", i.e. 1.0.
+            freq_fine=_range_check_byte(o[19], "freq_fine", op_ctx, warnings),
+            detune=_range_check(o[20], 0, 14, "detune", op_ctx),
         ))
 
-    # Voice-wide pitch EG (bulk 102-109) + LFO (bulk 112-116) --
-    # offsets and bit layout cross-checked against Dexed's own
-    # Cartridge::unpackProgram (Source/PluginData.cpp, Apache-2.0): bytes
-    # 102-105 = PEG rates 1-4, 106-109 = PEG levels 1-4 (both plain 0-99,
-    # same as every operator's own eg_rate/eg_level); byte 116 packs LKS
-    # (bit0), LFW (bits1-3), LPMS (bits4-6) -- matching Dexed's own
-    # `lpms_lfw_lks & 1` / `(lpms_lfw_lks >> 1) & 7` / `lpms_lfw_lks >> 4`.
-    pitch_eg_rate = [_range_check(bulk[102 + i] & 0x7F, 0, 99, f"pitch_eg_rate{i + 1}", ctx) for i in range(4)]
-    pitch_eg_level = [_range_check(bulk[106 + i] & 0x7F, 0, 99, f"pitch_eg_level{i + 1}", ctx) for i in range(4)]
+    # Voice-wide pitch EG and LFO: plain 0-99 bytes, like the operators' EGs.
+    pitch_eg_rate = [_range_check(v[126 + i], 0, 99, f"pitch_eg_rate{i + 1}", ctx) for i in range(4)]
+    pitch_eg_level = [_range_check(v[130 + i], 0, 99, f"pitch_eg_level{i + 1}", ctx) for i in range(4)]
+    name = bytes(v[145:155]).decode("ascii", errors="replace").rstrip()
 
-    algorithm = _range_check(bulk[110] & 0x1F, 0, 31, "algorithm", ctx)
-    oks_fb = bulk[111] & 0x0F
-    feedback_level = _range_check(oks_fb & 7, 0, 7, "feedback_level", ctx)
-    osc_key_sync = (oks_fb >> 3) & 1
+    return DX7Voice(ops=ops, name=name, pitch_eg_rate=pitch_eg_rate, pitch_eg_level=pitch_eg_level,
+                    algorithm=_range_check(v[134], 0, 31, "algorithm", ctx),
+                    feedback_level=_range_check(v[135], 0, 7, "feedback_level", ctx),
+                    osc_key_sync=_range_check(v[136], 0, 1, "osc_key_sync", ctx),
+                    lfo_speed=_range_check(v[137], 0, 99, "lfo_speed", ctx),
+                    lfo_delay=_range_check(v[138], 0, 99, "lfo_delay", ctx),
+                    lfo_pmd=_range_check(v[139], 0, 99, "lfo_pmd", ctx),
+                    lfo_amd=_range_check(v[140], 0, 99, "lfo_amd", ctx),
+                    lfo_key_sync=_range_check(v[141], 0, 1, "lfo_key_sync", ctx),
+                    lfo_waveform=_range_check(v[142], 0, 5, "lfo_waveform", ctx),
+                    lfo_pms=_range_check(v[143], 0, 7, "lfo_pms", ctx),
+                    transpose=_range_check(v[144], 0, 48, "transpose", ctx))
 
-    lfo_speed = _range_check(bulk[112] & 0x7F, 0, 99, "lfo_speed", ctx)
-    lfo_delay = _range_check(bulk[113] & 0x7F, 0, 99, "lfo_delay", ctx)
-    lfo_pmd = _range_check(bulk[114] & 0x7F, 0, 99, "lfo_pmd", ctx)
-    lfo_amd = _range_check(bulk[115] & 0x7F, 0, 99, "lfo_amd", ctx)
-    lpms_lfw_lks = bulk[116] & 0x7F
-    lfo_key_sync = lpms_lfw_lks & 1
-    lfo_waveform = _range_check((lpms_lfw_lks >> 1) & 7, 0, 5, "lfo_waveform", ctx)
-    lfo_pms = _range_check((lpms_lfw_lks >> 4) & 7, 0, 7, "lfo_pms", ctx)
 
-    transpose = _range_check(bulk[117] & 0x7F, 0, 48, "transpose", ctx)
-    name_bytes = bytes(bulk[118 + i] & 0x7F for i in range(10))
-    name = name_bytes.decode("ascii", errors="replace").rstrip()
+def parse_syx_single(data: bytes, path: str) -> bytes:
+    """Validates and unwraps a single-voice dump (F0 43 0n 00 01 1B + 155
+    unpacked bytes + checksum + F7) -- returns the 155 bytes."""
+    expected_len = 6 + VCED_SIZE + 1 + 1
+    if len(data) != expected_len:
+        raise Syx2PatchError(
+            f"{path}: expected a {expected_len}-byte single-voice dump "
+            f"(6-byte header + {VCED_SIZE}-byte voice + checksum + F7), got {len(data)} bytes"
+        )
+    if data[0] != 0xF0 or data[1] != 0x43 or (data[2] >> 4) & 0x7 != 0 or data[3] != 0x00:
+        raise Syx2PatchError(f"{path}: not a DX7 single-voice dump (header {data[:4].hex(' ')})")
+    byte_count = (data[4] << 7) | data[5]
+    if byte_count != VCED_SIZE:
+        raise Syx2PatchError(f"{path}: byte count = {byte_count}, expected {VCED_SIZE} (one voice)")
+    voice = data[6:6 + VCED_SIZE]
+    if data[-1] != 0xF7:
+        raise Syx2PatchError(f"{path}: final byte = 0x{data[-1]:02x}, expected 0xF7 (SysEx end)")
+    computed = (-sum(voice)) & 0x7F
+    if computed != data[6 + VCED_SIZE]:
+        raise Syx2PatchError(
+            f"{path}: checksum mismatch (file says 0x{data[6 + VCED_SIZE]:02x}, computed 0x{computed:02x}) "
+            f"-- corrupted or truncated dump"
+        )
+    return voice
 
-    return DX7Voice(ops=ops, algorithm=algorithm, feedback_level=feedback_level, name=name,
-                     pitch_eg_rate=pitch_eg_rate, pitch_eg_level=pitch_eg_level,
-                     lfo_speed=lfo_speed, lfo_delay=lfo_delay, lfo_pmd=lfo_pmd, lfo_amd=lfo_amd,
-                     lfo_key_sync=lfo_key_sync, lfo_waveform=lfo_waveform, lfo_pms=lfo_pms,
-                     osc_key_sync=osc_key_sync, transpose=transpose)
+
+def read_syx_voices(data: bytes, path: str, warnings: List[str]) -> List[DX7Voice]:
+    """The voices of a .syx file: a 32-voice bulk dump (format 9) or a
+    single-voice dump (format 0)."""
+    label = os.path.basename(path)
+    if len(data) > 3 and data[0] == 0xF0 and data[1] == 0x43:
+        if data[3] == 0x00:
+            return [voice_from_vced(parse_syx_single(data, path), 0, warnings, label)]
+        if data[3] != 0x09:
+            raise Syx2PatchError(f"{path}: format number = {data[3]}, expected 9 (32-voice bulk) or 0 (single voice)")
+    return [unpack_voice(raw, i, warnings, label) for i, raw in enumerate(parse_syx_bulk(data, path))]
 
 
 # ---------------------------------------------------------------------------
@@ -877,9 +927,7 @@ def cmd_bank(args: argparse.Namespace) -> None:
     try:
         for syx_path in args.syx:
             with open(syx_path, "rb") as f:
-                raw = parse_syx_bulk(f.read(), syx_path)
-            label = os.path.basename(syx_path)
-            banks.append([unpack_voice(v, i, warnings, label) for i, v in enumerate(raw)])
+                banks.append(read_syx_voices(f.read(), syx_path, warnings))
     except Syx2PatchError as exc:
         print(f"syx2patch: {exc}", file=sys.stderr)
         sys.exit(1)

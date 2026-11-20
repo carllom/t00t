@@ -1,6 +1,6 @@
 // An editing session with one t00t over SysEx: identify, descriptor dump,
-// Edit buffer sync, parameter streaming, Store, Patch import/export and
-// user-bank backup and restore. Transport-free: messages
+// Edit buffer sync, parameter streaming, Store, Patch import/export,
+// storing imported voices, and user-bank backup and restore. Transport-free: messages
 // go out through `send` and come in through receive(), so the Web MIDI
 // page and the tests drive the same code.
 //
@@ -26,9 +26,10 @@ class Session {
         this.dump = [];     // descriptor dump messages so far
         this.lastStore = null;  // { part, slot, result }: result null until the reply
         this.problem = null;    // what is wrong, in words, or null
-        // A bank backup or restore: { kind: "backup" | "restore", done, error,
-        // count (slots so far), total (slots in all, once known), file (a
-        // finished backup's bank file) }, or null.
+        // A bank backup, bank restore or store of imported voices: { kind:
+        // "backup" | "restore" | "import", done, error, count (slots so far),
+        // total (slots in all, once known), file (a finished backup's bank
+        // file), first (an import's first slot) }, or null.
         this.transfer = null;
     }
 
@@ -53,7 +54,7 @@ class Session {
 
     // Edit Part `part` instead, starting from its Edit buffer on the device.
     selectPart(part) {
-        if (!["ready", "syncing"].includes(this.state) || this.restoring() || part < 0 ||
+        if (!["ready", "syncing"].includes(this.state) || this.writingSlots() || part < 0 ||
             part >= this.device.partCount) return;
         this.part = part;
         this.sync();
@@ -92,13 +93,11 @@ class Session {
     // device's module is read the way the device reads one (missing
     // parameters take their default). Returns null, or why it was refused.
     importPatch(stored) {
-        if (this.restoring()) return "Wait for the bank restore to finish.";
+        if (this.writingSlots()) return this.waitText();
         if (this.state !== "ready") return "Not connected to a device ready to edit.";
         const patch = sx.decodePatch(stored, this.tables.module);
         if (patch.error) return patch.error === "truncated" ? "This file is not a Patch (truncated)." : "This file is not a Patch.";
-        if (patch.module !== this.device.module) {
-            return `This Patch is for ${moduleText(patch)}; the device is ${moduleText(this.device)}.`;
-        }
+        if (patch.module !== this.device.module) return this.wrongModuleText(patch.module);
         this.patch = { ...patch, schema: this.device.schema };
         this.push();
         this.onChange(this);
@@ -143,23 +142,54 @@ class Session {
         return true;
     }
 
-    // Whether a backup or restore is under way.
+    // Store the stored Patches `patches` (imported DX7 voices) into the user
+    // Patch slots from `first` on, one slot at a time as a restore sends
+    // them, stopping at the first slot the device refuses. Progress is in
+    // transfer. Returns null, or why nothing was sent.
+    storeVoices(patches, first) {
+        if (this.transferring()) return this.waitText();
+        if (this.state !== "ready") return "Not connected to a device ready to edit.";
+        const decoded = patches.map((stored) => sx.decodePatch(stored, this.tables.module));
+        if (decoded.some((p) => p.error)) return "That is not a Patch.";
+        const other = decoded.find((p) => p.module !== this.device.module);
+        if (other) return this.wrongModuleText(other.module);
+        const badSlots = slotsProblem(patches.length, first);
+        if (badSlots) return badSlots;
+        const queue = patches.map((stored, i) => ({ kind: PATCH, slot: first + i, stored }));
+        this.transfer = { kind: "import", done: queue.length === 0, error: null, count: 0, total: queue.length,
+                          file: null, first, queue };
+        this.sendNextSlot();
+        this.onChange(this);
+        return null;
+    }
+
+    // Whether a backup, restore or store of imported voices is under way.
     transferring() {
         return !!this.transfer && !this.transfer.done && !this.transfer.error;
     }
 
-    // Whether a restore is under way. Nothing else is sent meanwhile: each
-    // slot may have the device writing flash, when DIN input is lost.
-    restoring() {
-        return this.transferring() && this.transfer.kind === "restore";
+    // Whether a restore or a store of imported voices is under way. Nothing
+    // else is sent meanwhile: each slot may have the device writing flash,
+    // when DIN input is lost.
+    writingSlots() {
+        return this.transferring() && this.transfer.kind !== "backup";
+    }
+
+    waitText() {
+        return { backup: "Wait for the bank backup to finish.", restore: "Wait for the bank restore to finish.",
+                 import: "Wait for the voices to be stored." }[this.transfer.kind];
+    }
+
+    wrongModuleText(module) {
+        return `This Patch is for ${moduleText({ module })}; the device is ${moduleText(this.device)}.`;
     }
 
     // Whether the copy can be edited, pushed or stored now.
     editable() {
-        return this.state === "ready" && !this.restoring();
+        return this.state === "ready" && !this.writingSlots();
     }
 
-    // Give up on the backup or restore under way, for `reason`.
+    // Give up on the backup, restore or store under way, for `reason`.
     abortTransfer(reason) {
         if (!this.transferring()) return;
         this.transfer = { ...this.transfer, error: reason };
@@ -196,13 +226,15 @@ class Session {
                                                    multis: t.slots[MULTI] }) };
     }
 
-    // The device's answer for one restored slot.
-    restoredSlot({ kind, slot, result }) {
+    // The device's answer for one slot of a restore or of a store of
+    // imported voices.
+    slotWritten({ kind, slot, result }) {
         const t = this.transfer;
         const expected = t.queue[t.count];
         if (kind !== expected.kind || slot !== expected.slot) return;
         if (result !== sx.STORE_OK) {
-            this.transfer = { ...t, error: `${slotText(kind, slot)} was not restored: ${sx.storeResultText(result)}. ` +
+            const verb = t.kind === "restore" ? "restored" : "stored";
+            this.transfer = { ...t, error: `${slotText(kind, slot)} was not ${verb}: ${sx.storeResultText(result)}. ` +
                                            "The slots before it were." };
             return;
         }
@@ -237,7 +269,7 @@ class Session {
                 if (this.transferring() && this.transfer.kind === "backup") this.backupEnd(m);
                 break;
             case "bankSlotReply":
-                if (this.restoring()) this.restoredSlot(m);
+                if (this.writingSlots()) this.slotWritten(m);
                 break;
             case "storeReply":
                 if (m.part === this.lastStore?.part && m.slot === this.lastStore.slot) {
@@ -331,6 +363,18 @@ class Session {
     }
 }
 
+// Why `count` voices can't go into the user Patch slots from `first` on,
+// or null if they can.
+function slotsProblem(count, first) {
+    if (!Number.isInteger(first)) return `The first user slot must be a whole number, not ${first}.`;
+    const last = first + count - 1;
+    if (first < 0 || last >= sx.USER_PATCH_SLOTS) {
+        return `${count} voices need user slots ${first} to ${last}; the user slots are 0 to ` +
+               `${sx.USER_PATCH_SLOTS - 1}. Nothing was stored.`;
+    }
+    return null;
+}
+
 function moduleText({ module, schema }) {
     const name = sx.MODULE_NAMES[module];
     return `module ${module}${name ? ` (${name})` : ""}${schema === undefined ? "" : `, schema ${schema}`}`;
@@ -341,4 +385,5 @@ function slotText(kind, slot) {
 }
 
 t00t.Session = Session;
+t00t.Session.slotsProblem = slotsProblem;
 })(globalThis.t00t ??= {});

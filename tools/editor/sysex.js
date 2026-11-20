@@ -83,6 +83,9 @@ function storeRequest(part, slot) {
     return frame(Command.STORE_REQUEST, [part, ...id14(slot)]);
 }
 
+// User Patch slots per module (kUserPatchSlots, src/patch/user_bank.h).
+const USER_PATCH_SLOTS = 128;
+
 // The two kinds of user-bank slot (SlotKind, src/patch/user_bank.h).
 const SlotKind = Object.freeze({ PATCH: 0, MULTI: 1 });
 
@@ -320,7 +323,7 @@ function editBufferDump(part, stored) {
 }
 
 t00t.sysex = {
-    PROTOCOL_VERSION, MODULE_NAMES, NAME_LEN, Unit, Curve, ParamClass, SlotKind, STORE_OK,
+    PROTOCOL_VERSION, MODULE_NAMES, NAME_LEN, PATCH_MAGIC, Unit, Curve, ParamClass, SlotKind, STORE_OK, USER_PATCH_SLOTS,
     identifyRequest, descriptorDumpRequest, editBufferRequest, paramChange, editBufferDump, storeRequest,
     bankDumpRequest, bankSlot,
     parse, splitSysEx, assembleDump, decodePatch, encodePatch, storeResultText,

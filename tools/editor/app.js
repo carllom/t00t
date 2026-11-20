@@ -2,7 +2,7 @@
 // built from the device's descriptors -- one panel per group, one control
 // per parameter.
 //
-// A classic script (see sysex.js), loaded after sysex.js, files.js and session.js.
+// A classic script (see sysex.js), loaded after sysex.js, files.js, dx7.js and session.js.
 
 (function (t00t) {
 "use strict";
@@ -25,6 +25,7 @@ let appProblem = null;  // a problem outside the session (browser, ports, no ans
 let builtFor = null;    // the descriptor tables the panels were built from
 const controls = [];    // per module parameter: { update(value) }
 let fileMessage = null; // { text, ok } from the last import, or null
+let dx7Import = null;   // the imported DX7 .syx: { name, voices: [{ name, stored }] }, or null
 let transferTimer = null;
 let transferSeen = null; // the transfer and its count when the timer was last armed
 
@@ -289,6 +290,7 @@ function render() {
     $("panels").inert = !ready;
 
     renderFiles(ready);
+    renderDx7(ready);
 
     const s = session.lastStore;
     const result = $("store-result");
@@ -321,7 +323,8 @@ function renderFiles(ready) {
     const t = session.transfer;
     const busy = session.transferring();
     $("files").classList.toggle("hidden", !session.tables || !session.patch);
-    for (const id of ["export-patch", "import-patch", "backup", "restore"]) $(id).disabled = !ready || busy;
+    for (const id of ["export-patch", "import-patch", "import-dx7", "backup", "restore"]) $(id).disabled = !ready || busy;
+    $("import-dx7").classList.toggle("hidden", session.device?.module !== t00t.dx7.MODULE_FM);
 
     const result = $("file-result");
     result.className = "store-result";
@@ -331,9 +334,14 @@ function renderFiles(ready) {
             result.classList.add("failed");
         } else if (busy) {
             const ofTotal = t.total === null ? "" : ` of ${t.total}`;
-            result.textContent = `${t.kind === "backup" ? "Backing up" : "Restoring"}: slot ${t.count}${ofTotal}…`;
+            const doing = { backup: "Backing up", restore: "Restoring", import: "Storing voices" }[t.kind];
+            result.textContent = `${doing}: slot ${t.count}${ofTotal}…`;
         } else {
-            result.textContent = t.kind === "backup" ? `Backed up ${t.total} slots` : `Restored ${t.total} slots`;
+            result.textContent = {
+                backup: `Backed up ${t.total} slots`,
+                restore: `Restored ${t.total} slots`,
+                import: t.total ? `Stored ${t.total} voices in user slots ${t.first} to ${t.first + t.total - 1}` : "",
+            }[t.kind];
             result.classList.add("ok");
         }
     } else if (fileMessage) {
@@ -359,6 +367,25 @@ function renderFiles(ready) {
         clearTimeout(transferTimer);
         transferSeen = null;
     }
+}
+
+// The imported DX7 file's bar: its voices, and storing them all.
+function renderDx7(ready) {
+    const shown = !!dx7Import && session.device?.module === t00t.dx7.MODULE_FM && !!session.patch;
+    $("dx7").classList.toggle("hidden", !shown);
+    if (!shown) return;
+    const n = dx7Import.voices.length;
+    $("dx7-voice").disabled = $("dx7-store").disabled = !ready || session.transferring();
+    $("dx7-store").textContent = n === 1 ? "Store the voice" : `Store all ${n} voices`;
+    $("dx7-slot").max = String(t00t.sysex.USER_PATCH_SLOTS - n);
+}
+
+// Make imported voice `i` the copy and play it on the device.
+function audition(i) {
+    followName();
+    const error = session.importPatch(dx7Import.voices[i].stored);
+    fileMessage = error ? { text: error, ok: false } : null;
+    render();
 }
 
 async function readFile(inputEl) {
@@ -402,6 +429,43 @@ $("patch-file").onchange = async () => {
     followName();
     const error = session.importPatch(file.bytes);
     fileMessage = error ? { text: error, ok: false } : { text: `Imported ${file.name}`, ok: true };
+    render();
+};
+$("import-dx7").onclick = () => $("dx7-file").click();
+$("dx7-file").onchange = async () => {
+    const file = await readFile($("dx7-file"));
+    if (!file) return;
+    session.transfer = null;
+    const result = t00t.dx7.parseSyx(file.bytes);
+    if (result.error) {
+        fileMessage = { text: `${file.name}: ${result.error}`, ok: false };
+        render();
+        return;
+    }
+    dx7Import = { name: file.name, voices: result.voices };
+    $("dx7-name").textContent = file.name;
+    $("dx7-voice").replaceChildren(...result.voices.map((v, i) => new Option(`${i + 1} ${v.name}`, String(i))));
+    audition(0);
+};
+$("dx7-voice").onchange = () => audition(Number($("dx7-voice").value));
+$("dx7-store").onclick = () => {
+    const first = $("dx7-slot").value === "" ? NaN : Number($("dx7-slot").value);
+    const n = dx7Import.voices.length;
+    const refused = Session.slotsProblem(n, first);
+    if (refused) {
+        fileMessage = { text: refused, ok: false };
+        render();
+        return;
+    }
+    const where = n === 1 ? `user slot ${first}` : `user slots ${first} to ${first + n - 1}`;
+    if (!confirm(`Store ${n === 1 ? "the voice" : `the ${n} voices`} of ${dx7Import.name} into ${where}? ` +
+                 "What those slots hold is replaced.")) return;
+    const error = session.storeVoices(dx7Import.voices.map((v) => v.stored), first);
+    fileMessage = error ? { text: error, ok: false } : null;
+    render();
+};
+$("dx7-close").onclick = () => {
+    dx7Import = null;
     render();
 };
 $("backup").onclick = () => {

@@ -261,6 +261,13 @@ backs up and restores the whole user bank as a bank file, through the bank dump 
 load above. A restore refuses a bank file for another module and stops at the first slot
 the device refuses.
 
+On an FM device it imports DX7 `.syx` files (a 32-voice bulk dump or a single-voice dump),
+converting each voice to a stored FM Patch byte for byte as `tools/syx2patch.py bank` does
+for the factory banks. A chosen voice is imported into the copy and pushed, so it plays and
+can be stored like any Patch; the whole file can be written into consecutive user Patch
+slots with bank slot messages, one at a time as a restore sends them. Both converters are
+tested against the same fixture file (`tools/host_render/golden/dx7_syx.txt`).
+
 #### Files
 
 - **Patch file** (`.t0p`): one stored Patch, header and payload, as it is.
@@ -282,8 +289,7 @@ The editor sends nothing to a device whose protocol version isn't the one it spe
 nor while its copy is for a different module or schema than the device reports. Its SysEx
 codec is tested against the firmware's golden byte vectors.
 
-Still to come: Multi editing (the Multi and Part tables are in the dump but not shown),
-DX7 `.syx` import (#160).
+Still to come: Multi editing (the Multi and Part tables are in the dump but not shown).
 
 ## Roadmap
 

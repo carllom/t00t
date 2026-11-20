@@ -191,7 +191,8 @@ other engine's measurement-rig levers.
 
 ### Tools
 
-`tools/syx2patch.py` — converts DX7 32-voice bulk `.syx` dumps:
+`tools/syx2patch.py` — converts DX7 `.syx` dumps (32-voice bulk; `bank`
+also takes single-voice dumps, as a one-Patch bank):
 
 ```
 syx2patch.py bank <in.syx> [in2.syx ...] <out.h>      # writes factory_banks.h, one bank per file
@@ -209,6 +210,13 @@ src/engines/fm/factory_banks.h`.
 The `.syx` inputs and both generated headers are gitignored — real DX7
 patch data is Yamaha's commercial work, the same policy the tracker's
 `xm/` corpus already established for copyrighted third-party content.
+
+`tools/dx7_vectors.py` — writes `tools/host_render/golden/dx7_syx.txt`:
+synthetic DX7 dumps and the stored Patches `syx2patch.py` makes of them,
+the fixtures both `test_syx2patch.py` and the editor's DX7 import tests
+use. The editor (`tools/editor/`, [README](../tools/editor/README.md))
+imports `.syx` files on an FM device with the same conversion: audition a
+voice, store it, or store a whole bank into user slots.
 
 `tools/host_render/test_fm_platform` (platform seam: Bank Select, Program
 Change and NRPN into a Multi of FM Parts, cooked patches out),
@@ -429,9 +437,6 @@ By-Ear Pass, and the ORCH-CHIME RAM Fix".
 
 ### Future / TODO
 
-- **DX7 `.syx` import in the editor** — loading a bank into the user
-  bank from the browser; the device itself only ever carries the stored
-  format.
 - **OSC SYNC and TRANSPOSE** — stored with every Patch, not yet applied.
 - **Live EG and level edits** — operator EGs, levels and scaling are
   note-on class: they enter a note's envelopes when it starts.

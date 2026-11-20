@@ -2714,3 +2714,28 @@ afterwards.
   scheme.
 - Change-to-audible latency: the author heard no delay on Patch changes
   (by ear, not timed); by design 1–2 buffers.
+
+## DX7 `.syx` import in the editor (#160, 2026-11-21)
+
+- The editor imports DX7 `.syx` files on an FM device (`tools/editor/dx7.js`):
+  32-voice bulk dumps and single-voice dumps, each voice converted to a
+  stored FM Patch. The chosen voice is imported into the editor's copy and
+  pushed to the Part's Edit buffer (audition, then Store as usual); "Store
+  all" writes every voice into consecutive user Patch slots with bank slot
+  messages, each after the device answers the last, as a bank restore does.
+  A store that would run past slot 127, or a device that isn't FM, is
+  refused before anything is sent.
+- `syx2patch.py` now reads single-voice dumps too (`bank` takes them as a
+  one-Patch bank). Both formats unpack through the 155-byte single-voice
+  layout, so one range-checked path validates both; the refactor leaves
+  `bank` and `convert` output byte-identical for the eight ROM banks.
+- Shared fixtures: `tools/dx7_vectors.py` builds a synthetic bank (all 32
+  algorithms, values varied per voice and operator, EG and fine bytes above
+  99, fixed frequency) and a single-voice dump, and writes them with the
+  converter's stored Patches to `tools/host_render/golden/dx7_syx.txt`.
+  `test_syx2patch.py` checks the file is current; the editor's tests check
+  `dx7.js` makes the same bytes. Cross-checked once against the ROM corpus
+  as well: all 256 voices match the converter byte for byte.
+- Not hardware-checked yet: audition and Store all against the device. The
+  page was driven end to end in headless Chromium against a fake FM device
+  on Web MIDI.

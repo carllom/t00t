@@ -21,6 +21,7 @@ import traceback
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import dx7_vectors as fx
 import syx2patch as sp
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -393,12 +394,6 @@ def _pack_voice(name: str, algorithm: int, feedback_level: int) -> bytes:
     return bytes(buf)
 
 
-def _wrap_bulk(voices: list) -> bytes:
-    assert len(voices) == 32
-    payload = b"".join(voices)
-    assert len(payload) == 4096
-    checksum = (-sum(payload)) & 0x7F
-    return b"\xF0\x43\x00\x09\x20\x00" + payload + bytes([checksum]) + b"\xF7"
 
 
 def test_unpack_voice_roundtrip() -> None:
@@ -466,7 +461,7 @@ def test_dx7_tables_match_converter() -> None:
 
 def test_bulk_parse_and_checksum() -> None:
     voices = [_pack_voice(f"V{i:02d}", algorithm=i % 32, feedback_level=i % 8) for i in range(32)]
-    data = _wrap_bulk(voices)
+    data = fx.wrap_bulk(voices)
     chunks = sp.parse_syx_bulk(data, "<test>")
     assert len(chunks) == 32
     assert all(len(c) == 128 for c in chunks)
@@ -482,7 +477,7 @@ def test_bulk_parse_and_checksum() -> None:
 
 def test_bulk_parse_rejects_bad_header() -> None:
     voices = [_pack_voice(f"V{i:02d}", algorithm=0, feedback_level=0) for i in range(32)]
-    good = bytearray(_wrap_bulk(voices))
+    good = bytearray(fx.wrap_bulk(voices))
 
     for offset, bad_value, needle in [(0, 0x00, "0xf0"), (1, 0x00, "yamaha"),
                                        (3, 0x00, "format"), (-1, 0x00, "0xf7")]:
@@ -540,6 +535,81 @@ def test_eg_bytes_above_panel_range_pass_through() -> None:
     voice = sp.unpack_voice(_voice_with_corrupt_byte(4, 127), 0, warnings)   # eg_level1 = 127
     assert voice.ops[0].eg_level[0] == 127
     assert any("above the DX7 panel range" in w for w in warnings)
+
+
+# --- Single-voice dumps and the shared import fixtures ----------------------
+
+def _single_voice_vced() -> bytearray:
+    """An unpacked voice with a distinct value in each of OP1's fields and
+    each voice field; the other operators are zero."""
+    v = bytearray(155)
+    v[105:126] = bytes([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 2, 3, 6, 1, 5, 17, 1, 19, 20, 13])
+    v[126:145] = bytes([21, 22, 23, 24, 25, 26, 27, 28, 29, 6, 1, 31, 32, 33, 34, 1, 4, 7, 40])
+    v[145:155] = b"SINGLE    "
+    return v
+
+
+def test_single_voice_fields() -> None:
+    voices = sp.read_syx_voices(fx.wrap_single(bytes(_single_voice_vced())), "<test>", [])
+    assert len(voices) == 1
+    v = voices[0]
+    op1 = v.ops[5]  # bus order: OP1 is last
+    assert (op1.eg_rate, op1.eg_level) == ([1, 2, 3, 4], [5, 6, 7, 8])
+    assert (op1.break_point, op1.scale_left_depth, op1.scale_right_depth) == (9, 10, 11)
+    assert (op1.scale_left_curve, op1.scale_right_curve, op1.rate_scale) == (2, 3, 6)
+    assert (op1.amp_mod_sens, op1.key_vel_sens, op1.output_level) == (1, 5, 17)
+    assert (op1.osc_mode, op1.freq_coarse, op1.freq_fine, op1.detune) == (1, 19, 20, 13)
+    assert v.ops[0].eg_rate == [0, 0, 0, 0]
+    assert (v.pitch_eg_rate, v.pitch_eg_level) == ([21, 22, 23, 24], [25, 26, 27, 28])
+    assert (v.algorithm, v.feedback_level, v.osc_key_sync) == (29, 6, 1)
+    assert (v.lfo_speed, v.lfo_delay, v.lfo_pmd, v.lfo_amd) == (31, 32, 33, 34)
+    assert (v.lfo_key_sync, v.lfo_waveform, v.lfo_pms, v.transpose) == (1, 4, 7, 40)
+    assert v.name == "SINGLE"
+
+
+def test_single_voice_matches_bulk() -> None:
+    """Every fixture voice converts to the same stored Patch from a
+    single-voice dump as from the bank."""
+    bank = fx.converted(fx.fixture_bank())
+    assert len(bank) == 32
+    for i in range(32):
+        single = fx.converted(fx.wrap_single(fx.voice_vced(i)))
+        assert single == [bank[i]], f"voice {i}"
+
+
+def _expect_error(data: bytes, needle: str) -> None:
+    try:
+        sp.read_syx_voices(data, "<test>", [])
+    except sp.Syx2PatchError as exc:
+        assert needle in str(exc).lower(), str(exc)
+        return
+    assert False, f"expected an error mentioning {needle!r}"
+
+
+def test_single_voice_rejects_bad_dumps() -> None:
+    good = bytearray(fx.wrap_single(bytes(_single_voice_vced())))
+    bad = bytearray(good)
+    bad[10] ^= 1
+    _expect_error(bytes(bad), "checksum")
+    bad = bytearray(good)
+    bad[5] = 0x1C
+    _expect_error(bytes(bad), "byte count")
+    _expect_error(bytes(good[:-2]) + b"\xF7", "bytes")
+    vced = _single_voice_vced()
+    vced[105 + 11] = 4  # OP1 left curve
+    _expect_error(fx.wrap_single(bytes(vced)), "scale_left_curve")
+    vced = _single_voice_vced()
+    vced[105 + 20] = 15  # OP1 detune
+    _expect_error(fx.wrap_single(bytes(vced)), "detune")
+    _expect_error(b"\xF0\x43\x00\x05\x01\x1B" + bytes(good[6:]), "format")
+
+
+def test_import_fixtures_are_current() -> None:
+    """tools/host_render/golden/dx7_syx.txt, which the editor's import is
+    checked against, is what this converter makes of its inputs today."""
+    path = os.path.join(HERE, "host_render", "golden", "dx7_syx.txt")
+    assert open(path).read() == fx.render(), \
+        "dx7_syx.txt is stale: run python3 tools/dx7_vectors.py tools/host_render/golden/dx7_syx.txt"
 
 
 # --- Corpus-dependent checks (real .syx files, gitignored) ------------------
@@ -619,6 +689,10 @@ def main() -> None:
     run("parse_syx_bulk: header/length rejection", test_bulk_parse_rejects_bad_header)
     run("unpack_voice: out-of-range byte fails loud", test_out_of_range_byte_fails_loud)
     run("unpack_voice: EG byte above panel range passes through (F7)", test_eg_bytes_above_panel_range_pass_through)
+    run("single-voice dump: every field read from its place", test_single_voice_fields)
+    run("single-voice dump: converts as the same voice in a bank", test_single_voice_matches_bulk)
+    run("single-voice dump: bad dumps fail loud", test_single_voice_rejects_bad_dumps)
+    run("import fixtures (golden/dx7_syx.txt) are current", test_import_fixtures_are_current)
 
     files = corpus_paths()
     if not files:

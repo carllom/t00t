@@ -41,6 +41,13 @@ MIDI gets a message saying so.
    a backup to the same module gives back exactly what was backed up. Editing, Store and
    Part switching wait while a restore runs, since the device may be writing flash. Formats:
    `docs/platform.md`.
+8. On an FM device, **Import DX7 .syx…** loads a DX7 32-voice bank or single-voice dump.
+   Its voices are converted to FM Patches exactly as the factory banks are
+   (`tools/syx2patch.py`) and listed; the voice chosen becomes the editor's copy and plays
+   on the device, ready to tweak and **Store** like any other. **Store all 32 voices**
+   (or **Store the voice**) writes every voice of the file into the user slots from the
+   one given, in order, after asking, one slot at a time as a restore does; a slot the
+   device refuses stops it and is named.
 
 If the device goes away and comes back, the editor reconnects and keeps its copy. If the
 device is then a different module or schema than the copy was made for, the editor says
@@ -55,6 +62,7 @@ SysEx protocol version is reported and left alone.
   parameter streaming, push, Store, Patch import/export, bank backup and restore,
   mismatch handling. Takes and returns SysEx bytes; knows nothing of Web MIDI or the page.
 - `files.js` — the bank file format.
+- `dx7.js` — DX7 `.syx` dumps to stored FM Patches.
 - `sysex.js` — the SysEx codec, the stored Patch format and the descriptor codes.
 - `test/` — the tests, run in the browser; `run_tests.py` runs them headless.
 
@@ -70,4 +78,8 @@ test. The codec tests check `sysex.js` against
 `tools/host_render/golden/sysex_subtractive.txt`, the same golden byte vectors the
 firmware's `test_sysex` uses, so editor and firmware can't drift apart. The session tests
 replay the device's golden replies through `session.js` and check what it sends back; the
-bank tests check backup, restore and the bank file the same way.
+bank tests check backup, restore and the bank file the same way. The DX7 tests check
+`dx7.js` against `tools/host_render/golden/dx7_syx.txt`: synthetic DX7 dumps and the stored
+Patches `tools/syx2patch.py` makes of them, written by `tools/dx7_vectors.py` and checked
+current by `tools/test_syx2patch.py`, so the editor's import and the factory-bank converter
+can't drift apart.
