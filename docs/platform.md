@@ -329,8 +329,8 @@ as % of the 5.805 ms buffer period, idle (0) / 4 / 16 voices.
 | Voice headroom at `MAX_VOICES` = 16 | subtractive | 16 fit, 18.6% spare | 16 fit, 27.3% spare (#152) | no loss |
 | Voice headroom at `MAX_VOICES` = 16 | FM | 16 fit, 31.3% spare | 16 fit, 31.3% spare (#159) | no loss |
 | Core 0 cook time per Patch | subtractive | n/a | cook 1.0–1.7 µs warm, ≤ 20.5 µs cold; Program Change (decode + cook + publish) 3.2 µs warm, ≤ 59 µs cold (#152) | TBD |
-| Core 0 cook time per Patch | FM | n/a | TBD (#159) | TBD |
-| Parameter change → audible latency | all | n/a | subtractive: no delay audible on parameter edits or Patch changes (by ear, not timed); by design 1–2 buffers | ≤ 1 block (≈5.8 ms) + transport |
+| Core 0 cook time per Patch | FM | n/a | cook 23 µs warm, 74–136 µs cold, ≤ 166 µs; Program Change (decode + cook + publish) 128 µs warm, 274–328 µs cold, ≤ 390 µs (#159) | TBD |
+| Parameter change → audible latency | all | n/a | subtractive and FM: no delay audible on parameter edits or Patch changes (by ear, not timed); by design 1–2 buffers | ≤ 1 block (≈5.8 ms) + transport |
 
 ### Memory
 
@@ -389,8 +389,6 @@ Existing pieces the platform builds on, and how.
    33 ms over USB, so a restore changing all 160 slots takes about 5 s of repeated short
    mutes; whether that is acceptable, and how it sounds, is still to be judged. Batching
    a sector's slots into one rewrite would need the load to span messages.
-6. **Cook budget for FM.** Whether a full FM Patch cook fits Core 0's control-rate budget
-   while MIDI and the display are busy, or needs to be incremental per parameter.
 
 ## Decision record
 

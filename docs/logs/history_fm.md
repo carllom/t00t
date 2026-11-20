@@ -2688,5 +2688,29 @@ routing resolution to Core 0 and the per-voice Patch copy at note-on cost
 nothing visible; the added per-sample FX-send check in the voice output
 loop doesn't show either.
 
-Not yet measured: Core 0 cook time per Patch (`make ENGINE=fm
-PATCH_PROFILE=1`) and change-to-audible latency.
+### Core 0 cook time and latency (2026-11-21)
+
+Measured as for subtractive (`history_subtractive.md`, #152): `make
+ENGINE=fm PATCH_PROFILE=1`, the DWT cycle counter around cook, load (decode
++ cook + publish) and edit (cook + publish), the counters read over SWD
+while running. FX off, no notes held, 150 MHz, the eight ROM banks.
+Program Changes and NRPN edits (OP1 LEVEL) sent over USB with `amidi`,
+in bursts (warm) and 3 s apart (cold); the normal build was flashed back
+afterwards.
+
+| | Warm (burst) | Cold (3 s apart) | Largest seen |
+|---|---:|---:|---:|
+| Cook | 3,440 cycles (23 µs) | 11,000–20,400 cycles (74–136 µs) | 24,883 cycles (166 µs) |
+| Program Change: decode + cook + publish | 19,239 cycles (128 µs) | 41,000–49,200 cycles (274–328 µs) | 58,456 cycles (390 µs) |
+| Parameter edit: cook + publish | 3,632 cycles (24 µs) | 12,500–14,200 cycles (84–95 µs) | 22,867 cycles (152 µs) |
+
+- About 15× subtractive's cook: six operators' worth of DX7 values, the
+  ratio in (software) double so it matches the converter, and the
+  routing resolve that used to run on Core 1 at note-on. A Program Change
+  across banks reads its Patch from a colder part of flash (274–328 µs vs
+  128 µs in a burst). "Largest seen" includes the 16 loads at boot.
+- The worst case, a cold Program Change at 390 µs, is under 7% of one
+  5.8 ms buffer on Core 0, so a whole-Patch cook needs no incremental
+  scheme.
+- Change-to-audible latency: the author heard no delay on Patch changes
+  (by ear, not timed); by design 1–2 buffers.
