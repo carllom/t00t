@@ -64,7 +64,9 @@ channels. This is proven by measurement (the P0 gates), not estimate.
 - **Descriptor tables:** one `constexpr` table per module plus one shared table for the
   common components (FX, master, MIDI). Entry: parameter ID, name, group/Page, integer range,
   display curve/unit, Parameter class, quick-edit flag, optional default CC. Parameter IDs are
-  append-only within a module's schema.
+  append-only within a module's schema. A BITS parameter is a set of named flags in one
+  value (bit n named by label n), so related switches share one stored byte; the editor shows
+  it as checkboxes, the device as the set flags' names.
 - **Stored format:** header (magic, module ID, schema version, name, payload length) plus one
   integer per parameter in its Descriptor domain (packed uint8/uint16), in parameter-ID order.
   Parameters missing from an older schema load as the Descriptor default; a mismatched module
@@ -212,7 +214,7 @@ can overwrite the region.
   | `40` | descriptor dump request | — |
   | `41` | descriptor table begin | table, descriptor count (2 × 7 bits) |
   | `42` | descriptor | table, ID, min, max, default (int21 each), unit, curve, class, flags (bit 0 quick edit), default CC (`7F` = none), name, group |
-  | `43` | descriptor labels | table, ID, label count, labels (ENUM parameters with labels, right after their descriptor) |
+  | `43` | descriptor labels | table, ID, label count, labels (right after their descriptor, for parameters with labels: an ENUM's value names, a BITS parameter's bit names) |
   | `44` | descriptor dump end | — |
   | `45`–`4F` | *reserved:* more descriptor messages | |
   | `60`–`7F` | *reserved:* Data Exchange transfers | |
@@ -318,7 +320,8 @@ this doc to follow the tickets' dependency order. Subtractive is the tracer-bull
 | P0 | #159 | Gate: FM on the cooked path vs baseline | #158 |
 | P8 | #160 | DX7 `.syx` import in the editor | #156, #158 |
 | Pn | #161 | OPL migration onto the platform | #158 |
-| Pn | — | Remaining modules (chip, groovebox, speech, tracker), one ticket each | #158 |
+| Pn | #162 | Chip migration onto the platform | #161 |
+| Pn | — | Remaining modules (groovebox, speech, tracker), one ticket each | #158 |
 
 ## Budgets
 

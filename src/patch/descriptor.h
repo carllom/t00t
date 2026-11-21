@@ -27,6 +27,7 @@ enum class ParamUnit : uint8_t {
     HZ,
     CENTI_HZ,  // Hz * 100
     PERMILLE,  // fraction * 1000
+    BITS,      // a set of flags: bit n is named by label n, the value is their OR
 };
 
 // How a control should map onto the value range.
@@ -49,7 +50,7 @@ struct ParamDescriptor {
     ParamClass cls;
     bool quick_edit;      // shown on the Quick-edit Page
     uint8_t default_cc;   // kNoDefaultCc = none
-    const char *const *labels = nullptr;  // ENUM: one per value from min, or none
+    const char *const *labels = nullptr;  // ENUM: one per value from min, or none; BITS: one per bit from bit 0
     uint8_t label_count = 0;
 };
 
@@ -95,7 +96,8 @@ constexpr bool descriptor_uses_cc(const ParamDescriptor (&table)[N], uint8_t cc)
 
 // Compile-time sanity check for a module's table, meant for a static_assert:
 // IDs equal their index, defaults lie within range, ranges fit 16 bits,
-// default CCs are unreserved and unique.
+// labels match the range (an ENUM's one per value, a BITS parameter's one
+// per bit of 0..max), default CCs are unreserved and unique.
 template <uint32_t N>
 constexpr bool descriptor_table_valid(const ParamDescriptor (&table)[N]) {
     for (uint32_t i = 0; i < N; i++) {
@@ -103,7 +105,12 @@ constexpr bool descriptor_table_valid(const ParamDescriptor (&table)[N]) {
         if (d.id != i) return false;
         if (d.min > d.max || d.def < d.min || d.def > d.max) return false;
         if ((int64_t)d.max - (int64_t)d.min > 0xFFFF) return false;
-        if (d.labels && (d.unit != ParamUnit::ENUM || d.label_count != d.max - d.min + 1)) return false;
+        if (d.unit == ParamUnit::BITS) {
+            if (!d.labels || d.label_count < 1 || d.label_count > 16) return false;
+            if (d.min != 0 || d.max != (int32_t)((1u << d.label_count) - 1)) return false;
+        } else if (d.labels && (d.unit != ParamUnit::ENUM || d.label_count != d.max - d.min + 1)) {
+            return false;
+        }
         if (d.default_cc == kNoDefaultCc) continue;
         if (d.default_cc > 127 || cc_reserved(d.default_cc)) return false;
         if (descriptor_find_cc(table, d.default_cc) != i) return false;  // claimed twice
@@ -112,14 +119,14 @@ constexpr bool descriptor_table_valid(const ParamDescriptor (&table)[N]) {
 }
 
 // One step of a value control (an encoder detent) from `value` in
-// direction `dir` (+1 / -1), clamped to the range: by 1 for an ENUM or a
-// range of at most 127, by about 6% of the distance above min for an
+// direction `dir` (+1 / -1), clamped to the range: by 1 for an ENUM, a
+// BITS parameter (through every combination) or a range of at most 127, by about 6% of the distance above min for an
 // EXPONENTIAL parameter, else by 1/128 of the range -- always at least 1.
 constexpr int32_t param_step(const ParamDescriptor &d, int32_t value, int dir) {
     const int64_t range = (int64_t)d.max - (int64_t)d.min;
     const int64_t off = (int64_t)value - (int64_t)d.min;
     int64_t next = off;
-    if (d.unit == ParamUnit::ENUM || range <= 127) {
+    if (d.unit == ParamUnit::ENUM || d.unit == ParamUnit::BITS || range <= 127) {
         next = off + dir;
     } else if (d.curve == ParamCurve::EXPONENTIAL) {
         const int64_t scaled = dir > 0 ? off + (off * 6 + 50) / 100 : (off * 100 + 53) / 106;
@@ -133,7 +140,8 @@ constexpr int32_t param_step(const ParamDescriptor &d, int32_t value, int dir) {
     return d.min + (int32_t)next;
 }
 
-// `value` as display text into `out` (`n` bytes): an ENUM's label, else the
+// `value` as display text into `out` (`n` bytes): an ENUM's label, a BITS
+// parameter's set bits' labels joined by '+' ("-" for none), else the
 // number in the parameter's unit ("1234Hz", "12.5k", "2.50Hz", "35.0%").
 inline void param_format(const ParamDescriptor &d, int32_t value, char *out, uint32_t n) {
     const long v = value;
@@ -146,6 +154,19 @@ inline void param_format(const ParamDescriptor &d, int32_t value, char *out, uin
                 return;
             }
             break;
+        case ParamUnit::BITS: {
+            if (!d.labels || n == 0) break;
+            uint32_t at = 0;
+            out[0] = '\0';
+            for (uint32_t b = 0; b < d.label_count; b++) {
+                if (!((uint32_t)value & (1u << b))) continue;
+                const int w = snprintf(out + at, n - at, "%s%s", at ? "+" : "", d.labels[b]);
+                if (w < 0 || at + (uint32_t)w >= n) return;  // truncated
+                at += (uint32_t)w;
+            }
+            if (at == 0) snprintf(out, n, "-");
+            return;
+        }
         case ParamUnit::HZ:
             if (a < 10000) snprintf(out, n, "%ldHz", v);
             else snprintf(out, n, "%s%ld.%ldk", sign, a / 1000, (a % 1000) / 100);

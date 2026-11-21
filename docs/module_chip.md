@@ -376,6 +376,10 @@ filter saturation path): `history_chip.md`.
   exist, but no MIDI/instrument path sets them yet, and the wave-table
   format's sync/ring toggle bits and `mod_inc` sweep target go unread as a
   result.
+- **Patch platform migration** — instruments become stored Patches like
+  subtractive's, FM's and OPL's: every table row a parameter, up to 24 rows
+  per table, a wave row's waveform, sync, ring and hold packed into one
+  BITS parameter so a SID Patch fits a 256 B user-bank slot.
 - **Other chip families** — SN76489, NES 2A03, GB DMG, POKEY — as
   additional `VoiceType`s in this same module, not new modules.
 - **Multispeed frame rate** (2×/3×/4×) — open question; affects the

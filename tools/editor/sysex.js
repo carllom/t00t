@@ -19,7 +19,7 @@ const PROTOCOL_VERSION = 2;
 const MODULE_NAMES = { 1: "subtractive", 2: "groovebox", 3: "FM", 4: "OPL", 5: "chip", 6: "speech", 7: "tracker" };
 
 // Descriptor field codes (src/patch/descriptor.h).
-const Unit = Object.freeze({ NONE: 0, ENUM: 1, HZ: 2, CENTI_HZ: 3, PERMILLE: 4 });
+const Unit = Object.freeze({ NONE: 0, ENUM: 1, HZ: 2, CENTI_HZ: 3, PERMILLE: 4, BITS: 5 });
 const Curve = Object.freeze({ LINEAR: 0, EXPONENTIAL: 1 });
 const ParamClass = Object.freeze({ LIVE: 0, NOTE_ON: 1, DATA_EXCHANGE: 2 });
 
@@ -161,6 +161,13 @@ function parseLabels(b) {
     }
     if (at !== b.length) return null;
     return { type: "labels", table: b[0], id: readId14(b, 1), labels };
+}
+
+// A BITS value as the device shows it (param_format(), src/patch/descriptor.h):
+// the set bits' names joined by "+", "-" for none.
+function bitsText(labels, value) {
+    const set = labels.filter((_, bit) => (value >> bit) & 1);
+    return set.length ? set.join("+") : "-";
 }
 
 // A byte stream holding whole SysEx messages, cut into one array per message.
@@ -326,6 +333,6 @@ t00t.sysex = {
     PROTOCOL_VERSION, MODULE_NAMES, NAME_LEN, PATCH_MAGIC, Unit, Curve, ParamClass, SlotKind, STORE_OK, USER_PATCH_SLOTS,
     identifyRequest, descriptorDumpRequest, editBufferRequest, paramChange, editBufferDump, storeRequest,
     bankDumpRequest, bankSlot,
-    parse, splitSysEx, assembleDump, decodePatch, encodePatch, storeResultText,
+    parse, splitSysEx, assembleDump, decodePatch, encodePatch, storeResultText, bitsText,
 };
 })(globalThis.t00t ??= {});

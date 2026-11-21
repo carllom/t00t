@@ -8,7 +8,7 @@
 "use strict";
 
 const { Session } = t00t;
-const { MODULE_NAMES, STORE_OK, Unit, Curve, ParamClass, storeResultText } = t00t.sysex;
+const { MODULE_NAMES, STORE_OK, Unit, Curve, ParamClass, storeResultText, bitsText } = t00t.sysex;
 
 const $ = (id) => document.getElementById(id);
 
@@ -177,6 +177,23 @@ function paramControl(d) {
         select.onchange = () => session.setParam(d.id, Number(select.value));
         row.append(select);
         update = (v) => { select.value = String(v); };
+    } else if (d.unit === Unit.BITS && d.labels) {
+        // One checkbox per flag; the value is the OR of the checked ones.
+        const flags = document.createElement("span");
+        flags.className = "flags";
+        flags.id = id;
+        const boxes = d.labels.map((text, bit) => {
+            const box = document.createElement("input");
+            box.type = "checkbox";
+            box.title = `${d.name}: ${text}`;
+            box.onchange = () => session.setParam(d.id, boxes.reduce((v, b, i) => v | (b.checked ? 1 << i : 0), 0));
+            const item = document.createElement("label");
+            item.append(box, text);
+            flags.append(item);
+            return box;
+        });
+        row.append(flags);
+        update = (v) => boxes.forEach((b, bit) => { b.checked = ((v >> bit) & 1) === 1; });
     } else {
         const map = sliderMapping(d);
         const slider = document.createElement("input");

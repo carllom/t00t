@@ -67,7 +67,21 @@ constexpr ParamDescriptor kDuplicateCc[] = {
     { 0, "X", "G", 0, 1, 0, ParamUnit::NONE, ParamCurve::LINEAR, ParamClass::LIVE, false, 20 },
     { 1, "Y", "G", 0, 1, 0, ParamUnit::NONE, ParamCurve::LINEAR, ParamClass::LIVE, false, 20 },
 };
+constexpr const char *kWaveBits[] = { "TRI", "SAW", "PUL", "NOI" };
+constexpr ParamDescriptor kBits[] = {
+    { 0, "W", "G", 0, 15, 1, ParamUnit::BITS, ParamCurve::LINEAR, ParamClass::LIVE, false, kNoDefaultCc, kWaveBits, 4 },
+};
+constexpr ParamDescriptor kBitsShortRange[] = {
+    { 0, "W", "G", 0, 7, 1, ParamUnit::BITS, ParamCurve::LINEAR, ParamClass::LIVE, false, kNoDefaultCc, kWaveBits, 4 },
+};
+constexpr ParamDescriptor kBitsNoLabels[] = {
+    { 0, "W", "G", 0, 15, 1, ParamUnit::BITS, ParamCurve::LINEAR, ParamClass::LIVE, false, kNoDefaultCc },
+};
 static_assert(descriptor_table_valid(StubModule::kDescriptors), "stub table is valid");
+static_assert(descriptor_table_valid(kBits), "a BITS parameter with one label per bit of 0..max is valid");
+static_assert(!descriptor_table_valid(kBitsShortRange), "a BITS range that doesn't cover every labelled bit is rejected");
+static_assert(!descriptor_table_valid(kBitsNoLabels), "a BITS parameter without bit names is rejected");
+static_assert(param_stored_width(kBits[0]) == 1, "four flags store in one byte");
 static_assert(!descriptor_table_valid(kOnNrpnDataCc), "a default CC on Data Entry (CC6) is rejected");
 static_assert(!descriptor_table_valid(kDuplicateCc), "two parameters on one default CC are rejected");
 

@@ -101,6 +101,9 @@ select, input[type="number"], input[type="text"] {
 .param input[type="range"] { width: 100%; accent-color: var(--accent); }
 .param input[type="number"] { width: 100%; }
 .param select { grid-column: 2 / 4; }
+.param .flags { grid-column: 2 / 4; display: flex; flex-wrap: wrap; gap: 2px 12px; }
+.param .flags label { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.param .flags input { accent-color: var(--accent); margin: 0; }
 .hidden { display: none !important; }
 </style>
 </head>

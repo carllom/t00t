@@ -55,7 +55,8 @@
 //                           each), unit, curve, class, flags (bit 0: quick
 //                           edit), default CC (7F = none), name, group
 //   43   labels             table, ID (2 x 7 bits), label count, labels --
-//                           after its descriptor, for ENUM parameters with labels
+//                           after its descriptor, for parameters with labels
+//                           (an ENUM's value names, a BITS parameter's bit names)
 //   44   dump end           (none)
 //                           Table 0 is the module's, then table 1 the
 //                           Multi's own settings and table 2 a Part's

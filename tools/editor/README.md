@@ -20,9 +20,10 @@ MIDI gets a message saying so.
 1. Pick the t00t in the device list (a port named T00T is chosen by default) and
    **Connect**. The editor identifies the device (module, schema, protocol), reads its
    descriptors and loads Part 1's Edit buffer.
-2. Each descriptor group becomes a panel; ENUM parameters with labels get a list, the rest
-   a slider (exponential where the descriptor says so) and a box for exact values. Every
-   change is sent to the device as you make it. Parameters marked "applies from the next
+2. Each descriptor group becomes a panel; ENUM parameters with labels get a list, BITS
+   parameters (a set of named flags in one value) a checkbox per flag, the rest a slider
+   (exponential where the descriptor says so) and a box for exact values. Every change is
+   sent to the device as you make it. Parameters marked "applies from the next
    note" don't change notes already sounding.
 3. **Part** switches to another Part and loads its Edit buffer.
 4. The editor keeps its own copy of the Patch. If the Patch on the device changes under it

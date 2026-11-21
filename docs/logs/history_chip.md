@@ -1706,3 +1706,30 @@ Verified via `tools/host_render/preview_chip_display.cpp` (new, mirrors
 `preview_opl_display.cpp`/`preview_fm_display.cpp`) against synthetic
 telemetry, and `make ENGINE=chip` builds clean on the actual ARM
 cross-toolchain. Real hardware flashing/encoder feel still untested.
+
+## Patch platform: table schema (#162, plan, 2026-11-21)
+
+Planning for the move onto the patch platform (`docs/platform.md`), after
+OPL. The stored format holds one value per parameter, so the variable-length
+wave, pulse and filter tables become fixed-maximum rows, every row field a
+parameter of its own (editable from the host editor and over NRPN like any
+other; the device's Quick-edit Page covers only a few instrument-wide
+settings).
+
+- **24 rows per table.** A SID Patch with 3-byte rows throughout comes to
+  261 B -- 5 B over the 256 B user-bank slot (24 header, 15 instrument-wide,
+  6 length/loop, 3 x 72 rows). 23 rows would fit as-is.
+- **Wave rows packed to 2 B**: the waveform bits (TRI/SAW/PULSE/NOISE, bits
+  0-3), SYNC (bit 4), RING (bit 5) and HOLD (bit 6, replacing the
+  `WAVE_HOLD` 0xff code) become one parameter, range 0-127, plus the note.
+  That gives 237 B with 24 rows. The cook unpacks it; the engine's own row
+  format needn't follow.
+- **Shown as BITS**: the packed byte is a `ParamUnit::BITS` parameter -- one
+  label per bit, the editor draws a checkbox per bit, the device shows the
+  set bits' names ("TRI+PUL+SYNC"). Added to the platform and editor ahead
+  of the migration; `filter_mode_mask` (LP|BP|HP) is the other use.
+- **Edit-buffer RAM**: about 210 parameters at 128 B each across 16 Parts
+  (two int32 copies per Part) is about 27 KB; chip uses 206 KB of SRAM, so
+  no shrinking of the platform's edit buffers.
+- The AY instrument's rows (1 B tone, 3 B volume) fit 24 rows with room to
+  spare.

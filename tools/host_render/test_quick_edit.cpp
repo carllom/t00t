@@ -259,6 +259,28 @@ void test_values_read_in_their_units() {
     check(a && b && c && d && e && f, "values read as 1234Hz, -12.5k, 2.50Hz, 35.5%, an ENUM label, a plain number");
 }
 
+void test_bits_read_as_their_set_flags_and_step_through_every_combination() {
+    static const char *const kBits[] = { "TRI", "SAW", "PUL", "NOI", "SYNC", "RING", "HOLD" };
+    const ParamDescriptor w = { 0, "W", "G", 0, 127, 1, ParamUnit::BITS, ParamCurve::LINEAR, ParamClass::LIVE, false,
+                                kNoDefaultCc, kBits, 7 };
+    char out[24];
+    param_format(w, 0x05, out, sizeof out);
+    bool a = strcmp(out, "TRI+PUL") == 0;
+    param_format(w, 0x32, out, sizeof out);
+    bool b = strcmp(out, "SAW+SYNC+RING") == 0;
+    param_format(w, 0, out, sizeof out);
+    bool c = strcmp(out, "-") == 0;
+    check(a && b && c, "BITS read as their set flags joined by '+', '-' for none");
+
+    char small[8];
+    param_format(w, 0x7F, small, sizeof small);
+    check(strlen(small) < sizeof small && strncmp(small, "TRI+SAW", 7) == 0, "a long flag list is cut to the buffer");
+
+    check(param_step(w, 1, 1) == 2 && param_step(w, 2, -1) == 1 && param_step(w, 127, 1) == 127 &&
+              param_step(w, 0, -1) == 0,
+          "a BITS value steps by 1 through every combination, clamped");
+}
+
 }  // namespace
 
 int main() {
@@ -274,6 +296,7 @@ int main() {
     test_a_load_during_the_store_dialog_closes_it();
     test_while_comparing_the_rows_show_what_is_heard();
     test_values_read_in_their_units();
+    test_bits_read_as_their_set_flags_and_step_through_every_combination();
     printf(g_ok ? "ALL CHECKS PASSED\n" : "CHECKS FAILED\n");
     return g_ok ? 0 : 1;
 }

@@ -106,6 +106,22 @@ test("codec: a descriptor dump assembles into the module, common and Part tables
        null, "a table missing a descriptor its begin counted is incomplete");
 });
 
+test("codec: a BITS value reads as its set flags, as the device shows it", () => {
+    const bits = ["TRI", "SAW", "PUL", "NOI", "SYNC", "RING", "HOLD"];
+    eq(sx.Unit.BITS, 5, "BITS is descriptor.h's unit code 5");
+    eq(sx.bitsText(bits, 0x05), "TRI+PUL", "two waveforms");
+    eq(sx.bitsText(bits, 0x32), "SAW+SYNC+RING", "a waveform and both flags");
+    eq(sx.bitsText(bits, 0), "-", "none set");
+    const t = sx.assembleDump([
+        { type: "tableBegin", table: 0, count: 1 },
+        { type: "descriptor", table: 0, id: 0, min: 0, max: 127, def: 1, unit: 5, name: "W1 WAVE" },
+        { type: "labels", table: 0, id: 0, labels: bits },
+        { type: "tableBegin", table: 1, count: 0 }, { type: "tableBegin", table: 2, count: 0 },
+        { type: "dumpEnd" },
+    ]);
+    eq(t && t.module[0].labels, bits, "a BITS parameter carries its bit names");
+});
+
 test("codec: stored Patch decodes into values in descriptor order", async () => {
     const g = await golden();
     const t = await subtractiveTables();
