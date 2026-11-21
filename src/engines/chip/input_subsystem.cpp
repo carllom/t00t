@@ -3,10 +3,14 @@
 #include "midi_controller_generic.h"
 #include "voice_alloc.h"
 #include "note_freq.h"
-#include "instruments.h"
-#include "ay_instruments.h"
 #include "speaker_sim.h"
-#include <cmath>
+#include "chip_factory.h"
+#include "chip_platform.h"
+#include "patch/platform_task.h"
+#include "patch/sysex.h"
+#include "patch/user_bank.h"
+#include "patch/user_flash.h"
+#include "midi/midi_out.h"
 
 // chip's Input subsystem: the module-specific tail of the Input pipeline
 // -- mapping table, Handlers, and the Voice Allocation Interface calls
@@ -15,163 +19,169 @@
 // (src/midi/midi_controller_generic.h) -- the mechanism is shared, the
 // mapping table and Handlers are fully this module's own.
 //
-// One combined instrument-selection space spans both chip types
-// (module_chip.md §12.2; SID instruments first, then AY's) so Program
-// Change stays a single "pick a patch" list rather than needing a
-// separate chip-type selector -- a player thinks in patches, not in which
-// silicon a patch happens to come from. Index < INSTRUMENT_COUNT is VT_SID
-// (sub-index unchanged); >= INSTRUMENT_COUNT is VT_AY (sub-index =
-// combined - INSTRUMENT_COUNT).
-static constexpr uint8_t TOTAL_INSTRUMENT_COUNT = INSTRUMENT_COUNT + AY_INSTRUMENT_COUNT;
-
-// midi_note_voice[128] maps note number -> allocated voice across the
-// whole MAX_VOICES pool (not tied to MIDI channel), same shape as the
-// speech engine's controller.
-//
-// Filter-bus binding stays per-channel (chan_bus[]), not per-voice: §5.2's
-// "bus already owned by this instrument -> share it" rule means multiple
-// simultaneous notes on one channel (a chord) share that channel's one
-// bound bus. It's a second allocator-like concern alongside voice_alloc,
-// so it lives in the same place: set_note(), resolved once per note-on,
-// never touched by Configuration (instrument select) itself -- an
-// instrument change only affects the *next* note-on, matching how
-// voice_alloc's own allocation is never retroactive either.
-//
-// Pitch bend is genuinely per-channel (channel_bend[]), not a single
-// global ratio. Live-pushed to every currently-held voice on that channel,
-// same shape as speech's live CCs.
+// Pitch bend is per channel (channel_bend[]), live-pushed to every held
+// voice on that channel.
 
 enum ChipCC : uint8_t {
     CC_SPEAKER  = 17,     // module_chip.md §1: speaker sim preset, banded 0..SPEAKER_PRESET_COUNT-1.
-                           // Global (not per-channel/next-note) -- applies immediately, same as
-                           // CC_FX_TYPE below.
-    CC_FX_TYPE  = 74,     // effect select (engine_base.h EffectParams convention)
+                           // Global (not per-channel/next-note) -- applies immediately, and isn't
+                           // stored with a Patch or a Multi.
+    CC_FX_P1    = 72,     // the Multi's FX
     CC_FX_MIX   = 73,
-    CC_FX_P1    = 72,
+    CC_FX_TYPE  = 74,
     CC_FX_P2    = 75,
 };
 
 static constexpr uint8_t NUM_CHANNELS = 16;
 
 static uint8_t s_speaker_preset_ui = SPEAKER_1702;   // module_chip.md §1: display-only mirror of
-                                                       // shadow.voices[*].speaker_preset --
-                                                       // not in MidiUiState, which is shared
-                                                       // across every engine and has no
-                                                       // speaker-sim concept
+                                                       // shadow.voices[*].speaker_preset
 
-static int8_t  midi_note_voice[128];         // note number -> allocated voice, -1 = none
-static bool    voice_held[MAX_VOICES];       // physically held (for live-CC channel scoping)
-static uint8_t voice_channel[MAX_VOICES];    // which channel triggered this voice
-static uint8_t voice_note[MAX_VOICES];       // which note number this voice is playing
-                                               // (reverse of midi_note_voice[], for pitch bend)
+// --- Notes: the voice each Part plays a note on (-1 for none) ---
+static int8_t note_voice[CHIP_PART_COUNT][128];
 
-static uint8_t chan_instrument[NUM_CHANNELS];  // next-note instrument select (Program Change)
-static float   channel_bend[NUM_CHANNELS];     // per-channel pitch-bend ratio, live
+// --- Per-voice tracking (Core 0) ---
+static bool    voice_held[MAX_VOICES];       // true between note-on and note-off
+static uint8_t voice_channel[MAX_VOICES];    // owning MIDI channel
+static uint8_t voice_part[MAX_VOICES];       // the Part it plays for
+static uint8_t voice_note[MAX_VOICES];       // the note it plays (for pitch bend)
 
-// --- Filter bus binding (module_chip.md §5.2), per channel -------------------------
-// Tonal params (cutoff/resonance/mode) live in the selected instrument
-// itself and are read directly by Core 1 from the feeding voice's own
-// instrument -- see audio_engine.cpp's comment for why FilterBusParams
-// goes unused by chip. This is routing only.
-static int8_t chan_bus[NUM_CHANNELS];        // bus this channel owns, -1 = none
-static int8_t bus_owner[FILTER_BUS_COUNT];   // channel owning this bus, -1 = free
+static float channel_bend[NUM_CHANNELS];     // per-channel pitch-bend ratio, live
 
-static void release_bus(uint8_t ch) {
-    if (chan_bus[ch] >= 0) {
-        bus_owner[chan_bus[ch]] = -1;
-        chan_bus[ch] = -1;
+// --- Patch platform: the Multi's Parts, routed by MIDI channel (patch/multi.h) ---
+PartSlotT<ChipCookedPatch> chip_part_slots[CHIP_PART_COUNT];
+PartSlotT<ChipMultiCooked> chip_multi_slot;
+static UserBank user_bank(ChipModule::kModuleId, user_flash_device());
+static PatchPlatformT<ChipModule> platform(chip_part_slots, kChipFactoryBanks, kChipFactoryBankCount, &user_bank);
+static MultiT<ChipModule> multi(platform, &user_bank, chip_multi_slot);
+
+PatchPlatformT<ChipModule> &chip_platform() { return platform; }
+MultiT<ChipModule> &chip_multi() { return multi; }
+
+// SysEx: the t00t editor protocol (patch/sysex.h), replies over USB.
+static PatchSysExT<ChipModule> sysex(platform, multi, &user_bank, midi_out_send);
+
+void patch_platform_task() {
+    platform.task();
+    multi.task();
+    sysex.task();
+}
+
+// --- Filter bus binding (module_chip.md §5.2), per Part --------------------------
+// Tonal params (cutoff/resonance/mode) live in the Patch itself and are read
+// by Core 1 from the feeding voice's own copy -- this is routing only.
+static int8_t part_bus[CHIP_PART_COUNT];     // bus this Part owns, -1 = none
+static int8_t bus_owner[FILTER_BUS_COUNT];   // Part owning this bus, -1 = free
+
+static void release_bus(uint8_t part) {
+    if (part_bus[part] >= 0) {
+        bus_owner[part_bus[part]] = -1;
+        part_bus[part] = -1;
     }
 }
 
-// bind_filter (module_chip.md §5.2): 1. already owns a bus -> share/reuse
-// it. 2. any free bus -> bind it. 3. none free -> BUS_NONE, render
+// bind_filter (module_chip.md §5.2): 1. the Part already owns a bus ->
+// share it. 2. any free bus -> bind it. 3. none free -> BUS_NONE, render
 // unfiltered (graceful degradation, and period-correct -- most voices in
 // real tunes ran unfiltered, since the filter was scarce). Driven by the
-// selected instrument's uses_filter flag, not a manual toggle.
-static void bind_filter(VoiceParamBlock &shadow, uint32_t voice, uint8_t ch, const Instrument &ins) {
-    if (!ins.uses_filter) {
-        release_bus(ch);
-        shadow.voices[voice].filter_bus = BUS_NONE;
-        return;
+// Patch's FILTER bits, not a manual toggle.
+static uint8_t bind_filter(uint8_t part, const ChipCookedPatch &patch) {
+    if (patch.type != VT_SID || !patch.uses_filter) {
+        release_bus(part);
+        return BUS_NONE;
     }
-    if (chan_bus[ch] < 0) {
+    if (part_bus[part] < 0) {
         for (uint8_t b = 0; b < FILTER_BUS_COUNT; b++) {
-            if (bus_owner[b] < 0) { bus_owner[b] = (int8_t)ch; chan_bus[ch] = (int8_t)b; break; }
+            if (bus_owner[b] < 0) { bus_owner[b] = (int8_t)part; part_bus[part] = (int8_t)b; break; }
         }
     }
-    shadow.voices[voice].filter_bus = (chan_bus[ch] >= 0) ? (uint8_t)chan_bus[ch] : BUS_NONE;
+    return part_bus[part] >= 0 ? (uint8_t)part_bus[part] : BUS_NONE;
 }
 
-// Dispatches on the voice's own (already-set) type -- SID's freq_reg is
-// proportional to frequency, AY's tone period is inverted (note_freq.h),
-// so this cannot be one formula the way it could when only one chip type
-// existed. Correct for both the note-on path (type just written this call)
-// and the pitch-bend live-repush path (type from whatever the voice was
-// triggered as).
-static void set_voice_freq(VoiceParamBlock &shadow, uint32_t voice, uint8_t note, uint8_t ch) {
+// The voice's pitch in both chips' registers -- SID's freq_reg is
+// proportional to frequency, AY's tone period is inverted (note_freq.h).
+static void set_voice_freq(VoiceParams &vp, uint8_t note, uint8_t ch) {
     float hz = chip_note_to_hz(note) * channel_bend[ch];
-    VoiceParams &vp = shadow.voices[voice];
-    vp.freq = (vp.type == VT_AY) ? ay_hz_to_period(hz) : chip_hz_to_freq_reg(hz);
+    vp.sid_freq = chip_hz_to_freq_reg(hz);
+    vp.ay_period = ay_hz_to_period(hz);
+}
+
+static void release_voice(VoiceParamBlock &shadow, int8_t v) {
+    shadow.voices[v].gate = false;
+    voice_held[v] = false;
+    voice_alloc_release(v);
+}
+
+// Whether `v` is still `part`'s voice for `note` on `channel` -- not since
+// stolen for another note or Part.
+static bool voice_plays(int8_t v, uint8_t part, uint8_t note, uint8_t channel) {
+    return v >= 0 && voice_held[v] && voice_part[v] == part && voice_note[v] == note && voice_channel[v] == channel;
 }
 
 // Note setter: the Voice Allocation Interface -- this Handler is where
 // voice_alloc_allocate()/release() actually get called, never upstream in
-// parsing/dispatch (CONTEXT.md's "Voice Allocation Interface" entry).
-// Resolves its own voice via midi_note_voice[], keyed by note number, and
-// binds this note-on's filter bus the same way -- a second, chip-specific
-// resource resolved at the same point in the same Handler.
+// parsing/dispatch (CONTEXT.md's "Voice Allocation Interface" entry). A
+// note plays on every Part on its channel (layered), one voice per Part;
+// each Part resolves its own voice via note_voice[part][note]. The note
+// carries its Part's Patch load and latest cook; Core 1 starts it on that
+// cook (chip_render.h), as the chip type and filter bus Core 0 reads from
+// the same cook here.
 static void set_note(VoiceParamBlock &shadow, const InputValue &value) {
-    if (value.note_on) {
-        // Retrigger: release whatever voice this note number already
-        // owns before reallocating -- may or may not land on the same
+    const uint8_t ch = value.channel;
+    if (!value.note_on) {
+        // Every Part's voice for this note on this channel -- including a
+        // Part moved off the channel since the note started.
+        for (uint32_t p = 0; p < CHIP_PART_COUNT; p++) {
+            const int8_t v = note_voice[p][value.note];
+            if (!voice_plays(v, (uint8_t)p, value.note, ch)) continue;
+            release_voice(shadow, v);
+            note_voice[p][value.note] = -1;
+        }
+        return;
+    }
+
+    const uint32_t mask = multi.parts_on_channel(ch);
+    for (uint8_t part = 0; part < CHIP_PART_COUNT; part++) {
+        if (!(mask & (1u << part))) continue;
+        // Retrigger: release whatever voice this Part already sounds the
+        // note on before reallocating -- may or may not land on the same
         // physical voice, same as any dynamic allocator revoicing a repeat.
-        if (midi_note_voice[value.note] >= 0) {
-            int8_t old = midi_note_voice[value.note];
-            shadow.voices[old].gate = false;
-            voice_held[old] = false;
-            voice_alloc_release(old);
+        if (voice_plays(note_voice[part][value.note], part, value.note, ch)) {
+            release_voice(shadow, note_voice[part][value.note]);
         }
         int v = voice_alloc_allocate();
         if (v < 0) return;
-        midi_note_voice[value.note] = (int8_t)v;
+        note_voice[part][value.note] = (int8_t)v;
         voice_held[v] = true;
-        voice_channel[v] = value.channel;
+        voice_channel[v] = ch;
+        voice_part[v] = part;
         voice_note[v] = value.note;
 
-        uint8_t combined = chan_instrument[value.channel];
-        bool is_ay = combined >= INSTRUMENT_COUNT;
+        const ChipCookedPatch &patch = platform.cooked(part);
         VoiceParams &vp = shadow.voices[v];
-        vp.type = is_ay ? VT_AY : VT_SID;
-        set_voice_freq(shadow, (uint32_t)v, value.note, value.channel);
-        vp.instrument = is_ay ? (uint8_t)(combined - INSTRUMENT_COUNT) : combined;
+        vp.type = patch.type;
+        set_voice_freq(vp, value.note, ch);
+        vp.part = part;
+        vp.load_id = platform.load_id(part);
+        vp.cook_seq = platform.cook_seq(part);
         vp.velocity = value.velocity ? value.velocity : 127;
+        vp.filter_bus = bind_filter(part, patch);
         vp.gate = true;
         vp.trigger++;   // Core 1 hard-restarts the envelope + VM on this edge
-
-        // AY has no filter model (module_chip.md §12.1) -- always BUS_NONE,
-        // same as bind_filter() would resolve for any uses_filter=false
-        // SID instrument, just without a bus to release on this channel.
-        if (is_ay) { release_bus(value.channel); vp.filter_bus = BUS_NONE; }
-        else       bind_filter(shadow, (uint32_t)v, value.channel, INSTRUMENTS[vp.instrument]);
-
-        ui_state.last_note = value.note;
-        ui_state.last_velocity = value.velocity;
-        ui_state.last_channel = value.channel;
-    } else {
-        int8_t v = midi_note_voice[value.note];
-        if (v < 0) return;
-        shadow.voices[v].gate = false;
-        voice_held[v] = false;
-        voice_alloc_release(v);
-        midi_note_voice[value.note] = -1;
     }
+
+    ui_state.last_note = value.note;
+    ui_state.last_velocity = value.velocity;
+    ui_state.last_channel = ch;
+    const uint8_t shown = multi.first_part_on_channel(ch);
+    if (shown < CHIP_PART_COUNT) ui_state.program = (uint8_t)multi.part_param(shown, PART_P_PROGRAM);
 }
 
 // Re-scale frequency for every held voice on a channel after a bend change.
 static void apply_channel_bend(VoiceParamBlock &shadow, uint8_t channel) {
     for (uint32_t v = 0; v < MAX_VOICES; v++) {
         if (voice_held[v] && voice_channel[v] == channel) {
-            set_voice_freq(shadow, v, voice_note[v], channel);
+            set_voice_freq(shadow.voices[v], voice_note[v], channel);
         }
     }
 }
@@ -181,47 +191,49 @@ static void set_pitch_bend(VoiceParamBlock &shadow, const InputValue &value) {
     apply_channel_bend(shadow, value.channel);
 }
 
-// Global speaker-sim preset -- applies immediately to every voice, the
-// same module-global/immediate shape the FX setters below use, unlike
-// instrument select (per-channel, next-note only).
+// Global speaker-sim preset -- applies immediately to every voice, unlike a
+// Patch (per-Part, next-note only).
 static void set_speaker(VoiceParamBlock &shadow, const InputValue &value) {
     uint8_t idx = (uint8_t)((uint32_t)value.scalar * SPEAKER_PRESET_COUNT / 128u);
     for (uint32_t v = 0; v < MAX_VOICES; v++) shadow.voices[v].speaker_preset = idx;
     s_speaker_preset_ui = idx;
 }
 
-// FX setters write shadow.fx -- one instance per VoiceParamBlock, not
-// per-voice -- a true module-global Modifier.
-static void set_fx_type(VoiceParamBlock &shadow, const InputValue &value) {
-    shadow.fx.type = (uint8_t)((uint32_t)value.scalar * FX_COUNT / 128u);
-    ui_state.fx_type = shadow.fx.type;
+// FX setters: the Multi's shared FX (patch/multi.h), whatever channel the
+// CC arrives on. Each takes the CC's raw 0-127 byte via value.scalar.
+static void set_fx_type(VoiceParamBlock &, const InputValue &value) {
+    multi.set_common(COMMON_P_FX_TYPE, (int32_t)((uint32_t)value.scalar * FX_COUNT / 128u));
 }
 
-static void set_fx_mix(VoiceParamBlock &shadow, const InputValue &value) {
-    shadow.fx.mix = (uint8_t)value.scalar;
-    ui_state.fx_mix = shadow.fx.mix;
+static void set_fx_mix(VoiceParamBlock &, const InputValue &value) {
+    multi.set_common(COMMON_P_FX_MIX, (int32_t)value.scalar);
 }
 
-static void set_fx_p1(VoiceParamBlock &shadow, const InputValue &value) {
-    shadow.fx.p1 = (uint8_t)value.scalar;
-    ui_state.fx_p1 = shadow.fx.p1;
+static void set_fx_p1(VoiceParamBlock &, const InputValue &value) {
+    multi.set_common(COMMON_P_FX_P1, (int32_t)value.scalar);
 }
 
-static void set_fx_p2(VoiceParamBlock &shadow, const InputValue &value) {
-    shadow.fx.p2 = (uint8_t)value.scalar;
-    ui_state.fx_p2 = shadow.fx.p2;
+static void set_fx_p2(VoiceParamBlock &, const InputValue &value) {
+    multi.set_common(COMMON_P_FX_P2, (int32_t)value.scalar);
 }
 
-// Instrument select: Program Change is this module's only Configuration
-// input -- the CC16 encoder alternative (BeatStep-Pro-safe, same reasoning
-// fm's CC30 had) is dropped, per the standing Program-Change-alone
-// convention every module on the Router now follows. Affects future notes
-// on the channel only; a currently-held voice's filter-bus binding is
-// untouched until its next note-on.
-static void set_instrument(VoiceParamBlock &, const InputValue &value) {
-    if (value.index >= TOTAL_INSTRUMENT_COUNT) return;
-    chan_instrument[value.channel] = value.index;
-    if (value.channel == ui_state.last_channel) ui_state.program = value.index;
+// Every CC not claimed above goes to the Parts on the channel: the Part
+// parameters' default CCs (volume CC7, pan CC10, FX send CC91) and NRPN
+// parameter edits.
+static void set_param_cc(VoiceParamBlock &, const InputValue &value) {
+    multi.control_change(value.channel, value.id, (uint8_t)value.scalar);
+}
+
+// Patch select: Program Change loads that slot of the bank the channel's
+// Bank Select MSB picks (factory banks 0-63, user banks from 64; see
+// patch/platform.h) into every Part on the channel. An empty slot or a
+// missing bank is ignored; sounding notes keep the Patch they started with.
+// It never selects a Multi.
+static void set_patch(VoiceParamBlock &, const InputValue &value) {
+    multi.program_change(value.channel, midi_channel_bank_msb(value.channel), (uint8_t)value.index);
+    const uint8_t shown = multi.first_part_on_channel(value.channel);
+    if (shown < CHIP_PART_COUNT) ui_state.program = (uint8_t)multi.part_param(shown, PART_P_PROGRAM);
+    ui_state.last_channel = value.channel;
 }
 
 static constexpr InputCategory kCapabilities[] = {
@@ -239,42 +251,56 @@ static constexpr InputMapEntryT<VoiceParamBlock> kMappingTable[] = {
     { InputCategory::MODIFIER,      CC_FX_MIX,              CC_FX_MIX,              0xFF,    0,       set_fx_mix },
     { InputCategory::MODIFIER,      CC_FX_TYPE,             CC_FX_TYPE,             0xFF,    0,       set_fx_type },
     { InputCategory::MODIFIER,      CC_FX_P2,               CC_FX_P2,               0xFF,    0,       set_fx_p2 },
-    { InputCategory::CONFIGURATION, MIDI_CONFIG_ID_PROGRAM, MIDI_CONFIG_ID_PROGRAM, 0xFF,    0,       set_instrument },
+    { InputCategory::MODIFIER,      0,                      127,                    0xFF,    0,       set_param_cc },  // any other CC: Part mix, NRPN
+    { InputCategory::CONFIGURATION, MIDI_CONFIG_ID_PROGRAM, MIDI_CONFIG_ID_PROGRAM, 0xFF,    0,       set_patch },     // Program Change: patch select
 };
 
 static_assert(input_table_declares_capabilities(kMappingTable, kCapabilities),
               "chip mapping table entry uses an InputCategory not in kCapabilities");
 
+// A descriptor default CC that an explicit entry above also claims would
+// never reach the Multi.
+constexpr bool default_ccs_reachable() {
+    for (const auto &e : kMappingTable) {
+        if (e.category != InputCategory::MODIFIER || e.setter == set_param_cc) continue;
+        for (uint32_t cc = e.id_low; cc <= e.id_high; cc++) {
+            if (descriptor_uses_cc(ChipModule::kDescriptors, (uint8_t)cc)) return false;
+            if (descriptor_uses_cc(kPartDescriptors, (uint8_t)cc)) return false;
+        }
+    }
+    return true;
+}
+static_assert(default_ccs_reachable(), "a descriptor default CC is shadowed by an explicit mapping entry");
+
 void midi_controller_init() {
     midi_parser.init();
     midi_bank_select_init();
+    for (auto &part : note_voice) {
+        for (int8_t &v : part) v = -1;
+    }
     for (uint32_t v = 0; v < MAX_VOICES; v++) {
         voice_held[v] = false;
         voice_channel[v] = 0;
+        voice_part[v] = 0;
         voice_note[v] = 0;
     }
-    for (uint32_t n = 0; n < 128; n++) midi_note_voice[n] = -1;
-    for (uint8_t c = 0; c < NUM_CHANNELS; c++) {
-        chan_instrument[c] = INS_ARP_LEAD;
-        channel_bend[c] = 1.0f;
-        chan_bus[c] = -1;
-    }
-    for (uint8_t b = 0; b < FILTER_BUS_COUNT; b++) bus_owner[b] = -1;
+    for (uint8_t c = 0; c < NUM_CHANNELS; c++) channel_bend[c] = 1.0f;
+    for (int8_t &b : part_bus) b = -1;
+    for (int8_t &o : bus_owner) o = -1;
 
+    multi.init();  // the default Multi: Part n on channel n
     ui_state.last_note = 0xFF;
     ui_state.last_velocity = 0;
     ui_state.last_channel = 0;
-    ui_state.program = INS_ARP_LEAD;
+    ui_state.program = (uint8_t)multi.part_param(0, PART_P_PROGRAM);
     ui_state.bend = 0;
     ui_state.mod = 0;
-    ui_state.fx_type = FX_DELAY;
-    ui_state.fx_mix = 0;
-    ui_state.fx_p1 = 55;
-    ui_state.fx_p2 = 36;
 }
 
+static void on_sysex(const uint8_t *msg, uint32_t len) { sysex.handle(msg, len); }
+
 void midi_controller_process(const uint8_t *data, uint32_t len, ParamExchange *params) {
-    midi_controller_process_generic(data, len, params, kMappingTable);
+    midi_controller_process_generic(data, len, params, kMappingTable, on_sysex);
 }
 
 uint8_t chip_speaker_preset_ui() { return s_speaker_preset_ui; }

@@ -34,7 +34,7 @@ struct MidiEvent {
 
 // Longest SysEx message kept, counting the bytes between F0 and F7; a longer
 // one is discarded whole.
-static constexpr uint32_t MIDI_SYSEX_MAX = 256;
+static constexpr uint32_t MIDI_SYSEX_MAX = 320;
 
 // Transport-agnostic MIDI byte-stream parser.
 // Handles running status and system real-time pass-through.

@@ -1733,3 +1733,74 @@ settings).
   no shrinking of the platform's edit buffers.
 - The AY instrument's rows (1 B tone, 3 B volume) fit 24 rows with room to
   spare.
+
+## Chip migration onto the patch platform (#162, 2026-11-21)
+
+Chip's instruments become data, after subtractive, FM and OPL: a Patch is
+one SID or AY instrument with its frame tables, cooked on Core 0 into the
+instrument the frame VM plays, played by chip Parts in a Multi, edited
+over NRPN, SysEx and the Quick-edit Page, and stored in chip's user bank.
+
+- **Schema** (`chip_module.h`): 171 parameters, all note-on. As planned,
+  24 rows per table and the wave row packed into one BITS parameter;
+  SID and AY share the schema behind a TYPE parameter, AY reusing the
+  wave table's notes (arpeggio) and the pulse table (volume envelope), so
+  a Patch stays at 246 bytes. `uses_filter` became "FILTER has a bit set";
+  `hard_restart` isn't stored (never read).
+- **SysEx limit**: a stored Patch must fit one SysEx message, and at
+  `MIDI_SYSEX_MAX` 256 the bank-slot message carries at most 218 bytes.
+  Raised to 320 (274 bytes), so anything a 256-byte user slot holds fits.
+- **Render** (`chip_render.h`): the render moved out of
+  `audio_engine.cpp` unchanged first, and its hashes over a fixed note
+  script (every instrument, a filtered chord, a delay, SID and AY together
+  through another speaker preset) were checked against HEAD's own
+  `audio_engine.cpp` built on the host with stubbed pico-sdk calls --
+  identical. Then the migration: a note copies its Part's cooked patch
+  when it starts (`note_patch()`), voices take their Part's volume and FX
+  send (pan doesn't apply), and the mono mix goes through the Multi's FX
+  and master (`MultiOut::finish_mono()`) before the speaker sim. Filter
+  buses are bound per Part instead of per channel.
+- **Equivalence**: `render_chip` plays every factory Patch through the
+  platform path against those pre-platform hashes -- all 13 cases match.
+  A first run differed by 1-2 LSB everywhere the FX were off: the
+  pre-platform engine's default FX is a delay at mix 0 (its dry/wet
+  crossfade scales the dry mix by 32766/32768), the same as the Multi's
+  default, so the cases keep the Multi's default instead of forcing FX
+  off.
+- **Shared output stage**: `MultiOut` gained `part_gains_mono()` and
+  `finish_mono()`. Routing `finish()` through the new FX helpers too
+  moved FM's code layout (`finish()` inlined into `audio_engine_run`),
+  so `finish()` keeps its own copy and FM, OPL and subtractive compile
+  as measured.
+- **Factory bank**: `gen_chip_bank` writes `factory_bank.h` from
+  `instruments.h` and `ay_instruments.h`, SID's first so program numbers
+  are unchanged, checking each conversion lossless.
+- **Input / display**: Parts by channel (layered), CC7/91 Part mix, CC17
+  speaker preset (global, not stored), CC72-75 the Multi's FX, NRPN,
+  Bank Select/Program Change, SysEx; EDIT and MULTI Pages added, DIAG's
+  grid shows each voice's Part.
+- **Tests**: `test_chip_platform` (Program Change, NRPN row edits incl.
+  BITS rows, Part CCs, Store and reload, factory bank = instruments,
+  sizes), `test_chip_render` (edits wait for the next note, Program Change
+  under a held note, a note waiting for its cook, Part volume incl. a
+  filter bus, pan ignored, send 0 under a delay, a note released while
+  waiting), `render_chip`.
+- **After review**: a note can start on a later cook than the one Core 0
+  read at note-on (an edit, or a Program Change whose predecessor's cook
+  was replaced before it was published), so a changed TYPE played the new
+  Patch's data on the old chip, and a filter switched off left the note on
+  a bus with no mode -- silent. Core 0 now sends the pitch in both chips'
+  registers; Core 1 plays the chip its own copy names and routes through
+  the bus only if the copy filters. PERF's program number now comes from
+  the shown Part, not the last Program Change (a Multi load didn't update
+  it). Left as they were (chip's filter-bus binding, per channel before):
+  a released Part's bus can be rebound to another Part while its tail
+  still feeds it, and a Part's bus is only freed when that Part plays an
+  unfiltered Patch, so after four Parts have filtered, a fifth plays
+  unfiltered.
+- **Memory**: 155 KB flash, 275 KB SRAM in use (206 KB before): the
+  per-voice Patch copies (9.5 KB), Core 1's per-Part current and previous
+  cooks (9.5 KB), the Part slots (9.7 KB) and the Edit buffers (27 KB).
+- **Not yet checked on hardware**: identify, descriptor dump, Program
+  Change, NRPN, Store, sound, and Core 1 duty.
+

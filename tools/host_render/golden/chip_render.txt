@@ -1,0 +1,16 @@
+# chip render-equivalence golden: <case> <FNV-1a 64 of int16 stereo>  # case name
+# the pre-platform engine (instrument tables, before the patch platform), same note script
+# note script: C4 vel 100 at buffer 0, G4 vel 127 at buffer 40, release at 120, 300 buffers
+0 fdb638a4c21b57c1  # ARP_LEAD
+1 c9d17ff216411b01  # PWM_PLUCK
+2 a492f27d646f3fb5  # FILTER_PAD
+3 109232cfbe86ae49  # VIBRATO_LEAD
+4 c39f62a638fcaec5  # LEAD
+5 8fda0584159e5875  # BUZZ_BASS
+6 a809f5d262e31a01  # NOISE_PERC
+7 26735509ce90110d  # ARP
+8 d8bc6e282af95121  # PLUCK
+9 71c16493218891f5  # LEAD_YM
+10 11d2ad3e80c6cad1  # FILTER_PAD chord
+11 2d91f9b1651d3219  # ARP_LEAD delay
+12 dc469ede9808bf45  # PWM_PLUCK + AY ARP, GAMEBOY speaker

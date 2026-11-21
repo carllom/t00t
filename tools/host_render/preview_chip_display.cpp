@@ -80,7 +80,7 @@ int main() {
 
     ValueRow<int> preset_row;
     char text[24];
-    snprintf(text, sizeof(text), "#%-3d %.10s", 4, "VIBRATO_LD");
+    snprintf(text, sizeof(text), "#%-3d %.16s%s", 3, "VIBRATO LEAD", "*");
     value_row_draw_value(preset_row, 4, text, 4, PRESET_Y, 28, 1, COL_VALUE, COL_BG);
 
     int fx_mix = 55, fx_p1 = 90, fx_p2 = 30;
@@ -121,7 +121,7 @@ int main() {
 
     ValueRow<int> note_row;
     char ntext[20];
-    snprintf(ntext, sizeof(ntext), "%s%d v%d", "C", 4, 100);
+    snprintf(ntext, sizeof(ntext), "%s%d v%d c%d", "C", 4, 100, 1);
     value_row_draw_value(note_row, 1, ntext, BAR_X, NOTE_Y, 18, 2, COL_VALUE, COL_BG);
 
     ValueRow<int> grid_cells[GRID_VOICES];
@@ -132,7 +132,7 @@ int main() {
         bool cell_active = active[v];
         uint16_t fg = COL_LABEL;
         if (cell_active) {
-            snprintf(gtext, sizeof(gtext), "%d:%d/%02d", v, v % 6 + 1, (v * 7) % 100);
+            snprintf(gtext, sizeof(gtext), "%d:P%d/%d", v, v % 3 + 1, (v * 7) % 24);
             fg = (v % 2 == 0) ? COL_HELD : COL_RINGING;
         } else {
             gtext[0] = '\0';

@@ -42,56 +42,88 @@ build-phase results, measurement scorecards, and bug-discovery narrative.
 
 ### MIDI Mapping (Input Capabilities)
 
-Notes trigger voices through the standard dynamic allocator; pitch bend is
-per-channel, live-pushed to every held voice on that channel.
+The module is a Multi of 16 Parts on the patch platform (`docs/platform.md`),
+Part N on channel N by default.
 
 | CC / Message | Function |
 |---|---|
-| Note On/Off | Standard dynamic allocation |
+| Note On/Off | Every Part on the channel plays the note (layered), one voice per Part, dynamic allocation (`voice_alloc`) |
 | Pitch Bend | Per-channel, applied to every currently-held voice |
-| CC17 | Speaker simulation preset (global, applies immediately) |
-| CC72 | FX param 1 |
-| CC73 | FX wet/dry mix |
-| CC74 | FX type select |
-| CC75 | FX param 2 |
-| Program Change | Configuration: instrument select (next note) — one combined space spanning both SID and AY instruments |
+| CC7 / CC91 | VOLUME / FX SEND of the channel's Parts (CC10, PAN, is stored but doesn't apply: the module is mono) |
+| CC17 | Speaker simulation preset (global, applies immediately, not stored) |
+| CC72 / CC73 / CC74 / CC75 | The Multi's FX P1 / FX MIX / FX TYPE / FX P2 |
+| NRPN | Any Patch parameter, number = parameter ID (below); MSB 126/127 the Part and Multi parameters (`docs/platform.md`) |
+| CC0 | Bank Select MSB: 0 the factory bank, 64 the user bank |
+| Program Change | Loads that slot of the selected bank into every Part on the channel; an empty slot or missing bank is ignored; sounding notes keep their Patch |
+| SysEx | The t00t protocol (`docs/platform.md`): identify, parameter change, edit-buffer and Multi dumps, Store, descriptor dump, bank dump and load |
 
-A player picks a patch, not a silicon — instrument index `< INSTRUMENT_COUNT`
-is SID, the rest is AY, but the selection is one linear list either way.
+A player picks a Patch, not a silicon: the factory bank holds the SID
+instruments first, then the AY ones, as one list.
+
+### Parameters
+
+A Patch is one instrument, SID or AY, with its frame tables
+(`chip_module.h`, IDs permanent). TYPE (0) picks the chip; the settings
+that follow serve both chips or one of them, and each chip ignores the
+other's:
+
+- Both: VIB DEPTH, VIB SPEED, VIB DELAY, GATE OFF.
+- SID: ATTACK, DECAY, SUSTAIN, RELEASE, FIRST WAVE, PULSE INIT, FILTER,
+  CUTOFF, RESONANCE.
+- AY: MODEL, VOLUME, LEVEL FROM (volume or the hardware envelope), ENV
+  PERIOD, ENV SHAPE, MIXER, NOISE PERIOD.
+- Three frame tables of up to 24 rows, each with a LENGTH and a LOOP (a
+  LOOP at or past the LENGTH holds the last row). The WAVE/TONE table's
+  rows are WAVE and NOTE; the PULSE/VOLUME and FILTER tables' rows are
+  DELTA and FRAMES. An AY Patch plays the WAVE/TONE table's notes as its
+  arpeggio and the PULSE/VOLUME table as its software volume envelope; the
+  FILTER table is SID's.
+
+- Every parameter is **note-on**: a voice takes its Patch when the note
+  starts, so an edit is heard from the next note.
+- BITS parameters (a checkbox per flag in the editor): FIRST WAVE (TRI, SAW,
+  PUL, NOI), FILTER (LP, BP, HP — none set plays the voice dry, with no filter
+  bus), MIXER (TONE, NOISE), and each wave row's WAVE (TRI, SAW, PUL, NOI,
+  SYNC, RING, HOLD — HOLD keeps the previous row's waveform and changes only
+  the note; SYNC and RING are stored but not wired yet).
+- A stored Patch is 246 bytes, inside a 256-byte user-bank slot.
+- Defaults are an INIT instrument: a sustained SID sawtooth, no tables.
+- Quick-edit: ATTACK, DECAY, SUSTAIN, RELEASE, VIB DEPTH, CUTOFF.
 
 ### Display (Presentation Capabilities)
 
-Two Pages (`src/wslcd/page.h`/`header.h`), the shared Widget/Header/Page
-library (CONTEXT.md's Widget catalog) applied to chip — same
-Performance-page layout as OPL's and FM's own (`docs/module_opl.md` /
-`docs/module_fm.md`'s Display sections), except chip has no continuous
-mod-wheel-style modifier: the half-width slot below the FX rows is SPKR
-(the active speaker simulation preset, CC17 — a selection with a name, not
-a 0-127 value) shown as a Label exactly like FX type, rather than a Value
-bar.
+Four Pages (`src/wslcd/page.h`/`header.h`), the shared Widget/Header/Page
+library (CONTEXT.md's Widget catalog) applied to chip — same layout as
+OPL's and FM's own (`docs/module_opl.md` / `docs/module_fm.md`'s Display
+sections), except chip has no mod wheel: the half-width slot below the FX
+rows is SPKR (the active speaker simulation preset, CC17 — a selection with
+a name, not a 0-127 value) shown as a Label like FX type.
 
 - **Performance** (required, default): the Header's Resource bar (combined
-  active-voice/CPU indicator) plus the currently selected instrument
-  (combined SID+AY number + name) and the three FX CCs (CC73/72/75) as
+  active-voice/CPU indicator) plus the current Patch (program number and
+  name of the lowest Part on whichever channel most recently played a note
+  or a Program Change, `*` while edited) and the Multi's FX (CC73/72/75) as
   compact Value bars ("FXMIX"/"FX P1"/"FX P2") with FX type (CC74) as a
   Label ("OFF"/"DELAY"/"REVERB"/"PHASER"/"FLANGER"/"CHORUS"/"CRUSH"/"DRIVE")
-  sharing FXMIX's row, and the speaker
-  preset (CC17) as a Label (its name, e.g. "Game Boy") in MOD's usual slot.
+  sharing FXMIX's row, and the speaker preset (CC17) as a Label (its name,
+  e.g. "Game Boy").
+- **EDIT**: the Quick-edit Page (`src/patch/quick_edit_page.h`) for that
+  Part — its quick-edit parameters, Compare and Store/rename.
+- **MULTI**: the Multi Page (`src/patch/multi_page.h`) — the Parts, and
+  loading and storing Multis.
 - **DIAG**: the exact-value detail Resource bar deliberately sacrifices —
   CPU% (PercentageBar), per-voice sounding activity (ActivityGrid, two rows
   — MAX_VOICES=32 exceeds `kActivityGridCellsPerRow` (16), so it wraps),
-  last note/velocity, and a fixed 8-voice grid (of 32) showing each voice's
-  instrument index and current wave-table row, colour-coded held vs.
-  ringing-out. The grid covers voices 0–7 only — `voice_alloc` always
-  allocates from voice 0 first, so this is representative up to 8-note
-  polyphony; past that the voice-count row stays exact but the grid stops
-  being the whole picture. Both SID and AY voices report real telemetry
-  (instrument names are shown only on Performance's instrument row, not in
-  the grid, which stays numeric — a name doesn't fit eight cells at once).
+  last note/velocity/channel, and a fixed 8-voice grid (of 32) showing each
+  voice's Part and current wave-table row ("voice:Ppart/row"), colour-coded
+  held vs. ringing-out. The grid covers voices 0–7 only — `voice_alloc`
+  always allocates from voice 0 first, so this is representative up to
+  8-note polyphony; past that the voice-count row stays exact but the grid
+  stops being the whole picture.
 
-Reachable via the breadboard's rotary encoder (`src/encoder_nav.h`,
-docs/engine.md's "Encoder navigation" entry) where one's wired;
-Performance-only otherwise (`HAS_ENCODER=0`).
+EDIT, MULTI and DIAG are reachable via the breadboard's rotary encoder
+(`src/encoder_nav.h`, docs/engine.md's "Encoder navigation" entry) where
+one's wired; Performance-only otherwise (`HAS_ENCODER=0`).
 
 ## Technical Overview
 
@@ -111,17 +143,28 @@ validation harness:
 
 Engine (`src/engines/chip/`):
 
-- `engine.h` — `VoiceType` (`VT_SID`/`VT_AY`), `MAX_VOICES = 32`
-- `audio_engine.cpp` — per-voice dispatch, two-phase bus render, frame VM tick
+- `engine.h` — `VoiceType` (`VT_SID`/`VT_AY`), `MAX_VOICES = 32`, `VoiceParams`
+- `chip_module.h` — the patch platform module: descriptors, the cooked
+  patch (`ChipCookedPatch`), the cook
+- `chip_render.h` — Core 1's per-buffer render (per-voice dispatch,
+  two-phase bus render, frame VM tick, the Multi's output stage, the speaker
+  sim), shared with the host tests
+- `audio_engine.cpp` — Core 1's loop around `chip_render.h`, and the
+  measurement rig behind `CHIP_PROFILE=1`
 - `input_subsystem.cpp` — the Input pipeline's module-specific tail:
   mapping table, Handlers, Voice Allocation Interface calls, and
   filter-bus binding (a second, chip-specific allocator-like concern
   resolved in the same NOTE Handler as voice allocation), built on
   `src/midi/midi_dispatch.h`/`midi_controller_generic.h`'s shared generic
-  dispatch layer (also used by `subtractive`/`fm`)
-- `display.cpp` — Performance + DIAG Pages (see Display above)
-- `instrument.h` / `instruments.h` — SID instrument format / GENERATED table
-- `ay_instrument.h` / `ay_instruments.h` — AY instrument format / hand-written table
+  dispatch layer; owns the patch platform, the Multi and the SysEx handler
+- `chip_platform.h` — the platform and Multi accessors the display uses
+- `chip_factory.h` / `factory_bank.h` — the factory bank / its GENERATED
+  stored Patches
+- `display.cpp` — Performance, EDIT, MULTI and DIAG Pages (see Display above)
+- `instrument.h` / `instruments.h` — SID instrument and frame-table row
+  formats / GENERATED table, the factory bank's source
+- `ay_instrument.h` / `ay_instruments.h` — AY instrument format /
+  hand-written table, the factory bank's source
 - `speaker_sim.h` — the output stage
 - `note_freq.h` — frequency-register conversion
 - `rig.h` — the P0-era CPU measurement rig, preserved behind `CHIP_PROFILE=1`
@@ -145,6 +188,15 @@ model can't represent: WAVECMD rows, absolute-pitch wavetable rows, and
 per-song shared-table tricks. Verified against 200 real community
 instruments (89 converted correctly; the rest are documented, correct
 refusals).
+
+`tools/host_render/gen_chip_bank.cpp` — `instruments.h` and
+`ay_instruments.h` → `src/engines/chip/factory_bank.h` as stored Patches,
+checking each conversion is lossless (`--check` fails on a stale file).
+`tools/host_render/render_chip.cpp` — render equivalence: every factory
+Patch through the platform path, hashed against
+`tools/host_render/golden/chip_render.txt` (the engine's hashes from before
+the patch platform). `test_chip_platform` / `test_chip_render` — host tests
+at the platform seam and at Core 1's render.
 
 `tools/sid_ref/` and `tools/ay_ref/` — reference-diff harnesses against
 reSID and ayumi respectively; see their own `README.md` for setup.
@@ -222,17 +274,17 @@ Voices carry a `filter_bus` index into a small typed pool of 4
 per-voice or per-chip filter. This bounds worst-case CPU by construction
 rather than letting it depend on what's played.
 
-Binding policy: a channel that already owns a bus reuses it; an unowned
-channel takes any free bus; a channel that finds none free renders
-unfiltered rather than stealing one. Bus ownership is per-channel and
-sticky (held for the channel's lifetime). Last-write-wins when several
-notes share a bus and their filter settings disagree — the same thing
-real chip-tune drivers did, and the simplest implementation. Because
-binding is 1:1 per channel, a bound bus's tonal parameters are read
-directly from whichever voice is currently feeding it (tracked in the
-same per-sub-block voice scan the render loop already does) rather than
-pushed separately from Core 0 — once a voice carries an instrument index,
-there's nothing left for a separate live channel to usefully carry.
+Binding policy: a Part that already owns a bus reuses it; an unowned Part
+takes any free bus; a Part that finds none free renders unfiltered rather
+than stealing one. A Part whose Patch has no FILTER bits set releases its
+bus on its next note. Last-write-wins when several notes share a bus and
+their filter settings disagree — the same thing real chip-tune drivers
+did, and the simplest implementation. Because binding is 1:1 per Part, a
+bound bus's tonal parameters are read directly from the copy of the Patch
+held by whichever voice is currently feeding it (tracked in the same
+per-sub-block voice scan the render loop already does) rather than pushed
+separately from Core 0, and the bus output takes that Part's volume and
+FX send.
 
 Idle buses (no voice currently feeding them) skip their clear+filter tick
 individually rather than all-or-nothing, and a bus's filter state resets
@@ -273,6 +325,29 @@ scale, not calibrated to cents or semitones.
 Sync/ring toggle bits and `mod_inc` sweeps are reserved in the wave-table
 row format but not read by the VM yet — see Future/TODO, since the
 sub-oscillator they'd control isn't wired into the real engine either.
+
+### Patches on Core 0, Notes on Core 1
+
+Core 0 cooks a Part's Edit buffer (`ChipModule::cook()`, `chip_module.h`)
+into the instrument the frame VM plays — its tables inline, the ADSR
+nibbles packed, each wave row's bits unpacked — and publishes it to the
+Part's slot (`docs/platform.md`).
+
+A note carries its Part, the Patch load and the Part's latest cook
+sequence number, its pitch in both chips' registers, and the filter bus
+Core 0 bound for it. Core 1 (`chip_render.h`) copies the Part's cooked
+Patch into the voice when the note starts (`PartReceiverT::note_patch()`):
+the current cook if it is the note's cook or a later one of the same
+Patch, the previous one if the note belongs to the Patch that cook
+replaced, and if the note's cook hasn't arrived yet the note waits a
+buffer. The voice plays the chip its copy names — a later cook can have
+changed TYPE — and uses the bus only if the copy filters. With every
+parameter note-on, the frame VM plays a sounding note's copy unchanged.
+
+The mix stays mono: each voice (or filter bus) is scaled by its Part's
+volume, its unsent share kept out of the FX, then the Multi's FX and
+master run on the mono sum (`MultiOut::finish_mono()`,
+`src/patch/multi_out.h`) and the speaker sim follows.
 
 ### AY-3-8910/YM2149
 
@@ -376,10 +451,6 @@ filter saturation path): `history_chip.md`.
   exist, but no MIDI/instrument path sets them yet, and the wave-table
   format's sync/ring toggle bits and `mod_inc` sweep target go unread as a
   result.
-- **Patch platform migration** — instruments become stored Patches like
-  subtractive's, FM's and OPL's: every table row a parameter, up to 24 rows
-  per table, a wave row's waveform, sync, ring and hold packed into one
-  BITS parameter so a SID Patch fits a 256 B user-bank slot.
 - **Other chip families** — SN76489, NES 2A03, GB DMG, POKEY — as
   additional `VoiceType`s in this same module, not new modules.
 - **Multispeed frame rate** (2×/3×/4×) — open question; affects the
@@ -462,6 +533,26 @@ filter saturation path): `history_chip.md`.
     selection itself (Configuration) never touches the filter bus directly
     — a channel's binding only changes on its *next* note-on, unchanged
     from the pre-migration behavior.
+14. **SID and AY instruments share one Patch schema**, a TYPE parameter
+    picking the chip. AY reuses SID's tables (the wave table's notes as its
+    arpeggio, the pulse table as its volume envelope) rather than carrying
+    its own, so a Patch fits a 256-byte user-bank slot; two full parameter
+    sets would need 350 bytes and bigger slots.
+15. **Frame tables have a fixed 24 rows**, every row field a parameter of
+    its own: the stored format holds one value per parameter, and fixed
+    rows keep the host editor and NRPN reaching every row with no special
+    case. A wave row's waveform bits, SYNC, RING and HOLD share one BITS
+    parameter (one byte instead of two), which is what lets 24 rows fit.
+16. **Every chip parameter is note-on**: Core 1 copies a note's Patch when
+    it starts, as on FM and OPL; an edit is heard from the next note.
+17. **The module stays mono**: a Part's volume and FX send apply, its pan
+    doesn't — the speaker sim models one cone after the FX.
+18. **The speaker sim preset is a global control, not stored** in a Patch
+    or a Multi: it describes the listening setup, not a sound.
+19. **FILTER's bits decide the filter bus**: a Patch with none set plays
+    dry and holds no bus, so there is no separate "uses filter" flag to
+    disagree with the mode. An instrument's `hard_restart` field isn't
+    stored, since the engine never reads it (Decision 10).
 
 ## Glossary
 

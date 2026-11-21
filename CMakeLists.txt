@@ -216,7 +216,8 @@ endif()
 # main.cpp to run the platform's Core 0 task each pass, and links the
 # user-bank flash writer (src/patch/user_flash.cpp) with the Core 1 park it
 # needs.
-if(T00T_ENGINE STREQUAL "subtractive" OR T00T_ENGINE STREQUAL "fm" OR T00T_ENGINE STREQUAL "opl")
+if(T00T_ENGINE STREQUAL "subtractive" OR T00T_ENGINE STREQUAL "fm" OR T00T_ENGINE STREQUAL "opl"
+   OR T00T_ENGINE STREQUAL "chip")
     target_compile_definitions(t00t PRIVATE HAS_PATCH_PLATFORM=1)
     target_sources(t00t PRIVATE src/patch/user_flash.cpp src/core1_park.cpp)
     target_link_libraries(t00t hardware_flash)

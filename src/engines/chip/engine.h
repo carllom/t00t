@@ -4,10 +4,10 @@
 
 // Chip module engine skeleton (module_chip.md §1).
 //
-// An instrument drives waveform/pw/ADSR/filter itself (§6's frame table
-// VM), so VoiceParams carries an instrument index instead of raw
-// synthesis params; Core 0 only supplies note/gate/instrument-select
-// (§7.1).
+// A Patch drives waveform/pw/ADSR/filter itself (§6's frame table VM), so
+// VoiceParams carries the note's Part and Patch load instead of raw
+// synthesis params; Core 1 copies the Part's cooked patch when the note
+// starts (chip_render.h).
 //
 // MAX_VOICES = 32 (allocation pool / active-voice bitmap width -- a
 // separate concern from the ~20-voice CPU budget target); FILTER_BUS_COUNT
@@ -43,27 +43,28 @@ enum VoiceType : uint8_t {
 static constexpr uint8_t BUS_NONE = 0xff;
 
 struct VoiceParams {
-    VoiceType type;
-    uint16_t freq;        // The target chip's own pitch register, already converted by
-                           // Core 0 (note_freq.h) -- SID's freq_reg for VT_SID (§4.1),
-                           // AY's 12-bit tone period for VT_AY (inverted: period, not
-                           // frequency-proportional). Bend already applied. Each type's
-                           // own frame VM layers arpeggio + vibrato on top of this on
-                           // Core 1: SID's wave table multiplies/adds a ratio onto
-                           // freq_reg (§6); AY's tone table divides period by the same
-                           // ratio instead, since AY's period is inversely proportional
-                           // to pitch (module_chip.md §12.2, note_freq.h).
-    uint8_t  instrument;   // index into INSTRUMENTS[] (VT_SID, engines/chip/instruments.h)
-                           // or AY_INSTRUMENTS[] (VT_AY, ay_instruments.h) -- which table
-                           // depends on type, resolved by input_subsystem.cpp at note-on
-                           // from one combined selection space (TOTAL_INSTRUMENT_COUNT)
+    VoiceType type;       // the chip of the Part's Patch as Core 0 saw it at note-on;
+                           // VT_SILENT until the voice first plays. Core 1 plays the chip
+                           // its own copy of the Patch names, which can be a later cook.
+    uint16_t sid_freq;    // The note's pitch in both chips' own registers, converted by
+    uint16_t ay_period;   // Core 0 (note_freq.h), so Core 1 has the one its Patch copy
+                           // needs: SID's freq_reg (§4.1) and AY's 12-bit tone period
+                           // (inverted: period, not frequency-proportional). Bend already
+                           // applied. Each chip's own frame VM layers arpeggio + vibrato
+                           // on top on Core 1: SID's wave table multiplies a ratio onto
+                           // freq_reg (§6); AY's divides the period by the same ratio,
+                           // since AY's period is inversely proportional to pitch
+                           // (module_chip.md §12.2, note_freq.h).
+    uint8_t  part;         // the Part this note plays for
+    uint16_t load_id;      // the Part's Patch load when the note started
+    uint16_t cook_seq;     // that Patch's latest cook when the note started
     uint8_t  trigger;      // generation counter, incremented on each note-on
     uint8_t  velocity;     // 1-127 (§13.7)
     bool     gate;
-    uint8_t  filter_bus;   // index into VoiceParamBlock::bus[], or BUS_NONE (§5) --
+    uint8_t  filter_bus;   // filter bus index (< FILTER_BUS_COUNT), or BUS_NONE (§5) --
                            // set by Core 0's bind_filter() at note-on, from the
-                           // selected instrument's uses_filter flag. Always BUS_NONE
-                           // for VT_AY -- this chip has no filter model.
+                           // Part's Patch's FILTER bits; Core 1 routes the voice
+                           // through it only if its own Patch copy filters.
     uint8_t  speaker_preset;   // module_chip.md §10: SpeakerPreset (speaker_sim.h).
                            // A single global choice, not really per-voice, but
                            // VoiceParams is the only Core0->Core1 channel and
@@ -74,18 +75,17 @@ struct VoiceParams {
                            // every other engine to carry unused.
 };
 
-// Telemetry for the LCD (module_chip.md §1): current table row + active
-// instrument, same shape as speech's per-voice phoneme display -- enough
+// Telemetry for the LCD (module_chip.md §1): current table row + its
+// Part, same shape as speech's per-voice phoneme display -- enough
 // for the display to show what each voice is actually doing without
 // widening the reverse channel bitmap itself.
 struct ChipVoiceUiState {
-    VoiceType type;        // module_chip.md §12.4: VT_SILENT/VT_SID/VT_AY -- display.cpp
-                            // needs this to know which instrument table `instrument`
-                            // indexes and how to label the voice
+    VoiceType type;        // module_chip.md §12.4: VT_SILENT/VT_SID/VT_AY -- how
+                            // display.cpp labels the voice
     bool    held;         // gate currently true (note held, not just ringing out)
-    uint8_t instrument;    // index into INSTRUMENTS[] (VT_SID) or AY_INSTRUMENTS[] (VT_AY)
-    uint8_t wave_pos;      // current row in the instrument's wave table (VT_SID) or
-                            // tone table (VT_AY) -- same field, same meaning either way
+    uint8_t part;          // the Part the voice plays for
+    uint8_t wave_pos;      // current row in the Patch's wave table (VT_SID) or its
+                            // arpeggio (VT_AY) -- same field, same meaning either way
 };
 void chip_voice_ui_state(uint32_t voice, ChipVoiceUiState *out);
 uint8_t chip_speaker_preset_ui();   // SpeakerPreset (speaker_sim.h), for display.cpp

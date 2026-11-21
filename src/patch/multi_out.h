@@ -19,6 +19,10 @@
 // engine's render owns one, and per buffer calls begin(), then part_gains()
 // for each sounding voice and adds the voice into dry_l/dry_r (and its
 // unsent share into cut_l/cut_r), then finish().
+//
+// A mono module mixes into dry_l (and cut_l) only, takes its gains from
+// part_gains_mono(), and ends with finish_mono(), which leaves the int16
+// conversion to the module's own output stage.
 
 // A voice's stereo gains (Q15) from its Part's pan and volume, and the
 // share of it not sent to the FX (Q15, 0 = all sent).
@@ -89,6 +93,20 @@ struct MultiOut {
         return g;
     }
 
+    // A mono module's voice gains: its Part's volume in `l` and `r` (pan
+    // doesn't apply), and the share not sent to the FX. The first voice in
+    // a buffer with a cut clears cut_l.
+    PartGains part_gains_mono(const PartMixCooked &mix) {
+        PartGains g;
+        g.l = g.r = mix.volume_q15;
+        g.cut_q15 = 32768 - mix.send_q15;
+        if (g.cut_q15 && !any_cut) {
+            for (uint32_t i = 0; i < SAMPLES_PER_BUFFER; i++) cut_l[i] = 0;
+            any_cut = true;
+        }
+        return g;
+    }
+
     // End a buffer: run the FX and master on the mix and write `out`
     // (SAMPLES_PER_BUFFER interleaved stereo int16 frames). Mono send /
     // stereo return: the sent share of the dry mix is downmixed to mono,
@@ -154,5 +172,62 @@ struct MultiOut {
             *out++ = (int16_t)__ssat(l, 16);
             *out++ = (int16_t)__ssat(r, 16);
         }
+    }
+
+    // End a mono buffer: run the FX and master on dry_l (less cut_l, the
+    // unsent share) as finish() does, and write the mix, still at the
+    // voices' own scale, into `out` (SAMPLES_PER_BUFFER values).
+    void finish_mono(const EffectParams &fx, int32_t master_q15, int32_t *out) {
+        const bool has_fx = select_fx(fx);
+        if (has_fx) {
+            if (any_cut) {
+                for (uint32_t i = 0; i < SAMPLES_PER_BUFFER; i++) dry_l[i] -= cut_l[i];
+            }
+            for (uint32_t i = 0; i < SAMPLES_PER_BUFFER; i++) fx_buf[i] = dry_l[i];
+            process_fx(fx);
+        }
+        const int32_t dry_scale = has_fx ? (int32_t)(127 - (int32_t)fx.mix) * 258 : 32768;
+        const bool add_cut = has_fx && any_cut;
+        for (uint32_t i = 0; i < SAMPLES_PER_BUFFER; i++) {
+            int32_t m = has_fx ? (int32_t)(((int64_t)dry_scale * dry_l[i]) >> 15) + fx_buf[i] : dry_l[i];
+            if (add_cut) m += cut_l[i];
+            if (master_q15 != 32768) m = (int32_t)(((int64_t)m * master_q15) >> 15);
+            out[i] = m;
+        }
+    }
+
+private:
+    // finish_mono()'s FX selection and processing. finish() keeps its own
+    // copy: routing it through these changes how the stereo engines' render
+    // compiles, and their CPU load was measured on finish() as it is.
+
+    // Whether `fx` selects an effect; a type switch clears the newly
+    // selected effect's buffer so a stale tail can't resurface.
+    bool select_fx(const EffectParams &fx) {
+        if (fx.type != last_fx_type) {
+            if (fx.type == FX_DELAY)        fx_delay.init();
+            else if (fx.type == FX_REVERB)  fx_reverb.init();
+            else if (fx.type == FX_PHASER)  fx_phaser.init();
+            else if (fx.type == FX_FLANGER) fx_flanger.init();
+            else if (fx.type == FX_CHORUS)  fx_chorus.init();
+            else if (fx.type == FX_BITCRUSHER) fx_bitcrusher.init();
+            else if (fx.type == FX_OVERDRIVE)  fx_overdrive.init();
+            last_fx_type = fx.type;
+        }
+        return fx.type == FX_DELAY   || fx.type == FX_REVERB ||
+               fx.type == FX_PHASER  || fx.type == FX_FLANGER ||
+               fx.type == FX_CHORUS  || fx.type == FX_BITCRUSHER ||
+               fx.type == FX_OVERDRIVE;
+    }
+
+    // Run the selected effect on fx_buf in place.
+    void process_fx(const EffectParams &fx) {
+        if (fx.type == FX_DELAY)        fx_delay.process(fx_buf, SAMPLES_PER_BUFFER, fx);
+        else if (fx.type == FX_REVERB)  fx_reverb.process(fx_buf, SAMPLES_PER_BUFFER, fx);
+        else if (fx.type == FX_PHASER)  fx_phaser.process(fx_buf, SAMPLES_PER_BUFFER, fx);
+        else if (fx.type == FX_FLANGER) fx_flanger.process(fx_buf, SAMPLES_PER_BUFFER, fx);
+        else if (fx.type == FX_CHORUS)  fx_chorus.process(fx_buf, SAMPLES_PER_BUFFER, fx);
+        else if (fx.type == FX_BITCRUSHER) fx_bitcrusher.process(fx_buf, SAMPLES_PER_BUFFER, fx);
+        else                                fx_overdrive.process(fx_buf, SAMPLES_PER_BUFFER, fx);
     }
 };

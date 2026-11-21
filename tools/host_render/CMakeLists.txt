@@ -488,6 +488,20 @@ target_include_directories(render_subtractive PRIVATE
 target_compile_definitions(render_subtractive PRIVATE
     T00T_SUBTRACTIVE_GOLDEN="${CMAKE_CURRENT_LIST_DIR}/golden/subtractive_render.txt")
 
+# Render-equivalence check for the chip engine: a fixed note script per
+# factory Patch through the device path (stored Patch -> cook -> Part slot ->
+# src/engines/chip/chip_render.h), hashed against golden/chip_render.txt --
+# the pre-platform engine's hashes for the same script.
+add_executable(render_chip render_chip.cpp)
+target_include_directories(render_chip PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}/host_stub_pico
+    ${CMAKE_CURRENT_LIST_DIR}
+    ${CMAKE_CURRENT_LIST_DIR}/../../src/engines/chip
+    ${CMAKE_CURRENT_LIST_DIR}/../../src
+)
+target_compile_definitions(render_chip PRIVATE
+    T00T_CHIP_GOLDEN="${CMAKE_CURRENT_LIST_DIR}/golden/chip_render.txt")
+
 # Host test for the patch platform core (src/patch/), at the
 # platform seam: raw MIDI bytes in, cooked-slot commits observed through a
 # stub module, factory banks and a user bank on RAM-backed flash
@@ -595,6 +609,41 @@ target_include_directories(test_fm_render PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}/host_stub_pico
     ${CMAKE_CURRENT_LIST_DIR}
     ${CMAKE_CURRENT_LIST_DIR}/../../src/engines/fm
+    ${CMAKE_CURRENT_LIST_DIR}/../../src
+)
+
+# Generates src/engines/chip/factory_bank.h from instruments.h and
+# ay_instruments.h as stored-format Patches; --check fails if the checked-in
+# file is stale.
+add_executable(gen_chip_bank gen_chip_bank.cpp)
+target_include_directories(gen_chip_bank PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}/host_stub_pico
+    ${CMAKE_CURRENT_LIST_DIR}/../../src/engines/chip
+    ${CMAKE_CURRENT_LIST_DIR}/../../src
+)
+
+# Host test for the chip module on the patch platform (src/engines/chip/
+# chip_module.h) at the platform seam: Program Change, NRPN and Part CC
+# bytes into a Multi of chip Parts, cooked patches out of the Part slots.
+add_executable(test_chip_platform
+    test_chip_platform.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/../../src/midi/midi_dispatch.cpp
+)
+target_include_directories(test_chip_platform PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}/host_stub_pico
+    ${CMAKE_CURRENT_LIST_DIR}
+    ${CMAKE_CURRENT_LIST_DIR}/../../src/engines/chip
+    ${CMAKE_CURRENT_LIST_DIR}/../../src
+)
+
+# Host test for the chip engine's Core 1 render (src/engines/chip/
+# chip_render.h): cooked patches and a voice block in, audio out -- note
+# timing against cooks, Program Changes under held notes, the Part mix.
+add_executable(test_chip_render test_chip_render.cpp)
+target_include_directories(test_chip_render PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}/host_stub_pico
+    ${CMAKE_CURRENT_LIST_DIR}
+    ${CMAKE_CURRENT_LIST_DIR}/../../src/engines/chip
     ${CMAKE_CURRENT_LIST_DIR}/../../src
 )
 
