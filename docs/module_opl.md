@@ -347,7 +347,7 @@ per-patch cost lands in a ~54–67 c/f/voice range** — two patches bracketing
 that one axis is reasonable coverage here, unlike the DX7 module's free
 6-operator routing space, where per-patch cost genuinely spans a wide range
 and needs broader sampling. At 9 voices + reverb, even the more expensive
-patch (BELL) is only 26.0% duty. Full numbers: `history_opl.md`, "Hardware
+patch (BELL) is only about 26.5% duty. Full numbers: `history_opl.md`, "Hardware
 Voice-Count Sweep, Post-`num_ops` Fix" and "Second Patch: OPL ORGAN".
 
 ### Future / TODO

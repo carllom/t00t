@@ -722,6 +722,8 @@ subtractive (the pilot) and FM (the stress test).
   note waiting for its cook; Part pan, volume and an unsent Part under a
   full-mix delay).
 - **Memory**: 139 KB flash, 250 KB SRAM in use.
+- **Core 1 duty on hardware**: BELL, 9 voices + reverb, about 26.5%,
+  against 26.0% before the migration: half a point more, at the edge of
+  the measuring precision.
 - **Not yet checked on hardware**: identify, descriptor dump, Program
-  Change, NRPN, Store, sound, and Core 1 duty against the pre-platform
-  measurements above (BELL, 9 voices + reverb: 26.0%).
+  Change, NRPN and Store.
