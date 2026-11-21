@@ -64,24 +64,12 @@ inline float opl_vibrato_step(OplVibrato &vib, uint32_t n, int16_t mod_wheel) {
     return s * depth * OPL_VIBRATO_MAX_CENTS;
 }
 
-// Resolves `patch`'s algorithm into `routing` (a copy of one of patch.h's
-// OPL_ROUTINGS[] literals -- 2-op or 4-op, whichever the patch picked) and
-// triggers every real operator's phase/table and envelope, `routing.num_ops`
-// of them. `routing` is a per-voice copy, not a pointer straight at the
-// constexpr literal, because the patch's own feedback amount (not
-// compile-time) still needs patching into kernel[0]/fb_shift[0]/
-// clear_bus_mask below -- always op0, 2-op or 4-op alike (see OplPatch's
-// `feedback` field comment, patch.h).
-inline void opl_voice_note_on(FmOp ops[FM_NUM_OPS], EnvOpl env[4], FmRouting &routing,
-                               const OplPatch &patch, uint32_t note_inc, int16_t amplitude,
-                               uint8_t midinote, OplVibrato &vib) {
-    routing = opl_routing_for(patch.algorithm);
-    if (patch.feedback > 0) {
-        routing.kernel[0] = FM_KERNEL_FEEDBACK;
-        routing.fb_shift[0] = (uint8_t)(8 - patch.feedback);
-        routing.clear_bus_mask |= (uint8_t)(1u << routing.out_bus[0]);
-    }
-
+// Triggers every real operator's phase/table and envelope for `patch`,
+// `routing.num_ops` of them, with `routing` already resolved from it
+// (opl_resolve_routing()).
+inline void opl_voice_start(FmOp ops[FM_NUM_OPS], EnvOpl env[4], const FmRouting &routing,
+                             const OplPatch &patch, uint32_t note_inc, int16_t amplitude,
+                             uint8_t midinote, OplVibrato &vib) {
     vib.phase = 0;
     for (uint8_t i = 0; i < routing.num_ops; i++) {
         const OplOpParams &p = patch.op[i];
@@ -98,6 +86,15 @@ inline void opl_voice_note_on(FmOp ops[FM_NUM_OPS], EnvOpl env[4], FmRouting &ro
         op.table = opl_waveform_table(p.ws);
         env_opl_init(env[i], p, midinote, amplitude);
     }
+}
+
+// Resolves `patch`'s routing into `routing` (a per-voice copy, 2-op or 4-op,
+// whichever the patch picked) and starts the voice on it.
+inline void opl_voice_note_on(FmOp ops[FM_NUM_OPS], EnvOpl env[4], FmRouting &routing,
+                               const OplPatch &patch, uint32_t note_inc, int16_t amplitude,
+                               uint8_t midinote, OplVibrato &vib) {
+    opl_resolve_routing(patch, routing);
+    opl_voice_start(ops, env, routing, patch, note_inc, amplitude, midinote, vib);
 }
 
 inline void opl_voice_note_off(EnvOpl env[4], const FmRouting &routing) {
@@ -127,16 +124,17 @@ inline void opl_voice_step_envelopes(FmOp ops[FM_NUM_OPS], EnvOpl env[4], const 
     }
 }
 
-// Renders `frames` samples in FM_BLOCK-sized sub-blocks, panning the shared
-// output bus into dry_l/dry_r (accumulate -- callers with multiple voices
-// must clear dry_l/dry_r once up front). Stops early once opl_voice_active()
-// goes false mid-buffer, mirroring ../fm/op.h's own fm_render_voice().
-inline void opl_render_voice(FmOp ops[FM_NUM_OPS], EnvOpl env[4], const FmRouting &routing,
-                              const FmVoiceBuses &bus, int16_t pan, int32_t *dry_l, int32_t *dry_r,
-                              uint32_t frames, OplVibrato &vib, int16_t mod_wheel) {
-    int32_t gain_l, gain_r;
-    pan_gains_q15(pan, gain_l, gain_r);
-
+// Renders `frames` samples in FM_BLOCK-sized sub-blocks into dry_l/dry_r
+// at stereo gains `gain_l`/`gain_r` (Q15), and, given `cut_l`, the share
+// `cut_q15` of it into cut_l/cut_r too (accumulate -- callers with
+// multiple voices must clear the buffers once up front). Stops early once
+// opl_voice_active() goes false mid-buffer, mirroring ../fm/op.h's own
+// fm_render_voice().
+inline void opl_render_voice_gains(FmOp ops[FM_NUM_OPS], EnvOpl env[4], const FmRouting &routing,
+                                    const FmVoiceBuses &bus, int32_t gain_l, int32_t gain_r,
+                                    int32_t *dry_l, int32_t *dry_r, uint32_t frames, OplVibrato &vib,
+                                    int16_t mod_wheel, int32_t *cut_l = nullptr, int32_t *cut_r = nullptr,
+                                    int32_t cut_q15 = 0) {
     uint32_t done = 0;
     while (done < frames) {
         uint32_t n = frames - done;
@@ -156,10 +154,25 @@ inline void opl_render_voice(FmOp ops[FM_NUM_OPS], EnvOpl env[4], const FmRoutin
         fm_voice_render_block<OPL_TABLE_BITS>(ops, routing, bus, n);
         for (uint32_t i = 0; i < n; i++) {
             int32_t s = bus.out[i] >> FM_VOICE_OUT_SHIFT;
-            dry_l[done + i] += (s * gain_l) >> 15;
-            dry_r[done + i] += (s * gain_r) >> 15;
+            const int32_t out_l = (s * gain_l) >> 15;
+            const int32_t out_r = (s * gain_r) >> 15;
+            dry_l[done + i] += out_l;
+            dry_r[done + i] += out_r;
+            if (cut_l) {
+                cut_l[done + i] += (int32_t)(((int64_t)out_l * cut_q15) >> 15);
+                cut_r[done + i] += (int32_t)(((int64_t)out_r * cut_q15) >> 15);
+            }
         }
         done += n;
         if (!opl_voice_active(env, routing)) break;
     }
+}
+
+// opl_render_voice_gains() with the stereo gains of `pan` (Q15, centre 0).
+inline void opl_render_voice(FmOp ops[FM_NUM_OPS], EnvOpl env[4], const FmRouting &routing,
+                              const FmVoiceBuses &bus, int16_t pan, int32_t *dry_l, int32_t *dry_r,
+                              uint32_t frames, OplVibrato &vib, int16_t mod_wheel) {
+    int32_t gain_l, gain_r;
+    pan_gains_q15(pan, gain_l, gain_r);
+    opl_render_voice_gains(ops, env, routing, bus, gain_l, gain_r, dry_l, dry_r, frames, vib, mod_wheel);
 }

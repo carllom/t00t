@@ -676,3 +676,52 @@ so the whole chord holds at full level for as long as the note is held.
 
 All 9 patches verified via `render_opl` (bounded audio, idle within the
 release tail) on the host build.
+
+## OPL migration onto the patch platform (#161, 2026-11-21)
+
+OPL's sounds became data on the patch platform (`docs/platform.md`), after
+subtractive (the pilot) and FM (the stress test).
+
+- **Shared output stage first**: subtractive and FM carried identical
+  copies of the Multi's Part gains, FX chain, master and interleave in their
+  render states. Both moved onto `src/patch/multi_out.h` before OPL used it,
+  checked by `render_subtractive`'s golden render and `test_fm_render`/
+  `test_fm_equivalence` (all 256 ROM voices) staying sample-exact. The
+  per-sample code is unchanged, but the compiler's inlining moved: FM's
+  `fm_render_buffer` (13.6 KB, out of line before) is now inlined into
+  `audio_engine_run`, with `MultiOut::finish` (3.9 KB) out of line instead;
+  total code within 136 bytes. FM's "which cook does this note start on" rule
+  moved into `PartReceiverT::note_patch()` for OPL to share.
+- **Descriptors** (`opl_module.h`): a Patch is an OPL3 voice in register
+  units, 42 parameters: 10 per operator for four operators (MULT, KSL, TL,
+  AR, DR, SL, RR, EG TYPE, KSR, WAVE), then ALGORITHM and FEEDBACK. All
+  note-on: `opl_voice.h` reads a patch only when a note starts.
+- **Cook on Core 0**: `opl_resolve_routing()` (algorithm literal plus op1's
+  feedback) split out of `opl_voice_note_on()`, which keeps its signature
+  as resolve + `opl_voice_start()`, so the host renderers are untouched;
+  all 13 of their WAVs (`render_opl`, `test_opl_4op`) are byte-identical to
+  before the split.
+- **Note-on fields on Core 1**, as FM: notes carry Part, load ID and cook
+  sequence; Core 1 copies the 84-byte cooked Patch when the note starts.
+  `VoiceParams` lost its patch pointer and pan (now the Part's PAN).
+- **Factory bank**: `gen_opl_bank` writes `factory_bank.h` from the 9
+  `patches.h` patches, checked lossless (cooked registers and routing equal
+  the source patch's) and checked in. The device no longer links
+  `OPL_PATCHES`.
+- **Multi**: 16 Parts, Part n on channel n, all on factory bank 0 slot 0
+  (OPL LEAD); CC7/10/91 the Part mix, CC72–75 the Multi's FX. The display
+  gained the EDIT and MULTI Pages, and the DIAG operator indicator now shows
+  all four operators from the cooked routing.
+- **Tests**: `test_opl_platform` (Program Change, NRPN and Part CCs in,
+  cooked patches out; routings worked out by hand from the connection
+  diagrams; the factory bank against `patches.h`; a Store loaded back by
+  Bank Select 64) and `test_opl_render` (every factory patch on the cooked
+  path renders the same samples as `opl_voice.h` with mod-wheel vibrato;
+  note-on edits wait for the next note; a Program Change under a held note;
+  a note played just before a Program Change starts on the previous cook; a
+  note waiting for its cook; Part pan, volume and an unsent Part under a
+  full-mix delay).
+- **Memory**: 139 KB flash, 250 KB SRAM in use.
+- **Not yet checked on hardware**: identify, descriptor dump, Program
+  Change, NRPN, Store, sound, and Core 1 duty against the pre-platform
+  measurements above (BELL, 9 voices + reverb: 26.0%).

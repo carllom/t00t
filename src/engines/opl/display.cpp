@@ -14,6 +14,9 @@
 #include "voice_alloc.h"
 #include "midi/midi_controller.h"
 #include "engine.h"
+#include "opl_platform.h"
+#include "patch/multi_page.h"
+#include "patch/quick_edit_page.h"
 #include "pico/time.h"
 #include <cstdio>
 
@@ -25,13 +28,16 @@
 #endif
 
 // OPL status display (Core 0, low priority): the shared Widget/Header/Page
-// library (#124) applied to OPL -- Performance page (Header's Resource bar
-// folding voices+CPU, the current preset, and FXMIX/FX P1/FX P2/FX type/MOD
-// as compact Value bars/Label) plus a DIAG page carrying the exact-value
-// detail Resource bar deliberately sacrifices (CPU%, per-voice activity,
-// last note, operator/algorithm indicator) -- reachable via the rotary
-// encoder (encoder_nav.h) where one's wired (HAS_ENCODER), Performance-only
-// otherwise.
+// library applied to OPL -- Performance page (Header's Resource bar folding
+// voices+CPU, the current Patch, and the Multi's FXMIX/FX P1/FX P2/FX type
+// plus MOD as compact Value bars/Label). EDIT is the Quick-edit Page (patch/
+// quick_edit_page.h): the last-played Part's quick-edit parameters, Compare
+// and Store. MULTI (patch/multi_page.h) lists the Multi's Parts and loads
+// and stores Multis. DIAG carries the exact-value detail Resource bar
+// deliberately sacrifices (CPU%, per-voice activity, last note, the
+// operator/algorithm indicator). EDIT, MULTI and DIAG are reachable via the
+// rotary encoder (encoder_nav.h) where one's wired (HAS_ENCODER),
+// Performance-only otherwise.
 
 static const uint16_t COL_BG        = gfx_rgb(0, 0, 0);
 static const uint16_t COL_TITLE     = gfx_rgb(150, 90, 30);   // amber -- distinct from the other engines' bars
@@ -44,6 +50,10 @@ static const uint16_t COL_FILL      = gfx_rgb(70, 130, 180);
 static const uint16_t COL_CARRIER   = gfx_rgb(60, 220, 90);
 static const uint16_t COL_MODULATOR = gfx_rgb(80, 180, 255);
 static const uint16_t COL_FEEDBACK  = gfx_rgb(255, 200, 60);
+static const uint16_t COL_SEL       = gfx_rgb(220, 150, 30);   // amber: selected row
+static const uint16_t COL_SEL_OFF   = gfx_rgb(60, 40, 10);
+static const uint16_t COL_ACT       = gfx_rgb(40, 180, 80);    // green: value being changed
+static const uint16_t COL_ACT_OFF   = gfx_rgb(10, 50, 20);
 
 static constexpr int BODY_Y0 = 36;
 
@@ -69,14 +79,8 @@ static const char *NOTE_NAMES[12] =
     { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
 static const char *FX_TYPE_NAMES[FX_COUNT] = { "OFF", "DELAY", "REVERB", "PHASER", "FLANGER", "CHORUS", "CRUSH", "DRIVE" };
 
-enum { PAGE_PERFORMANCE = 0, PAGE_DIAG = 1, PAGE_COUNT = 2 };
-
-struct PresetKey {
-    uint8_t program;
-    const OplPatch *patch;
-    bool operator==(const PresetKey &o) const { return program == o.program && patch == o.patch; }
-    bool operator!=(const PresetKey &o) const { return !(*this == o); }
-};
+enum { PAGE_PERFORMANCE = 0, PAGE_EDIT = 1, PAGE_MULTI = 2, PAGE_DIAG = 3, PAGE_COUNT = 4 };
+static const char *const PAGE_NAMES[PAGE_COUNT] = { "PERF", "EDIT", "MULTI", "DIAG" };
 
 struct NoteKey {
     uint8_t note, velocity, channel;
@@ -89,7 +93,7 @@ struct NoteKey {
 static Header<PAGE_COUNT> hdr;
 static ResourceBar resource_bar;
 
-static ValueRow<PresetKey> preset_row;
+static ValueRow<uint32_t> preset_row;  // keyed by the Part and its platform revision
 static ValueBar<uint8_t> fxmix_bar, fx_p1_bar, fx_p2_bar, mod_bar;
 static Label<uint8_t> fx_type_label;
 
@@ -97,18 +101,41 @@ static PercentageBar cpu_bar;
 static ValueRow<uint32_t> voices_row;
 static ActivityGrid<(int)MAX_VOICES> voice_grid;
 static ValueRow<NoteKey> note_row;
-static const OplPatch *last_algo_patch = nullptr;
+static uint32_t last_algo_key = 0xFFFFFFFF;
 
-static void draw_algo_indicator(const OplPatch *patch) {
-    // Reads op0/op1's carrier/modulator role off the patch's own resolved
-    // routing rather than a hardcoded per-algorithm rule -- correct for a
-    // 4-op patch's first Operator pair too, not just OPL2's original two
-    // Algorithms. op2/op3 aren't shown yet (see Future/TODO).
-    const FmRouting &routing = opl_routing_for(patch->algorithm);
-    for (uint8_t i = 0; i < 2; i++) {
-        bool carrier = routing.out_bus[i] == FM_TARGET_OUT;
-        uint16_t fg = carrier ? COL_CARRIER : COL_MODULATOR;
-        uint16_t fill = (i == 0 && patch->feedback > 0) ? COL_FEEDBACK : fg;
+using OplQuickEdit = QuickEditT<OplModule>;
+static OplQuickEdit &quick_edit() {
+    static OplQuickEdit qe(opl_platform());
+    return qe;
+}
+static QuickEditPage<OplModule> quick_edit_page;
+
+using OplMultiEdit = MultiEditT<OplModule>;
+static OplMultiEdit &multi_edit() {
+    static OplMultiEdit me(opl_multi());
+    return me;
+}
+static MultiPage<OplModule> multi_page;
+
+static const EditPageStyle kEditStyle = {
+    COL_VALUE, COL_BG, COL_FILL, COL_OFF, COL_SEL, COL_SEL_OFF, COL_ACT, COL_ACT_OFF,
+    BAR_X, BODY_Y0, DIAG_BAR_W, LCD_H,
+};
+
+// The Part the UI shows for MIDI channel `channel`: the lowest Part on it,
+// else Part 0.
+static uint8_t shown_part(uint8_t channel) {
+    const uint8_t part = opl_multi().first_part_on_channel(channel);
+    return part < OPL_PART_COUNT ? part : 0;
+}
+
+// Carrier, modulator or feedback per operator, from the routing the Part's
+// latest cook resolved; operators past the Algorithm's count show dark.
+static void draw_algo_indicator(const OplCookedPatch &c) {
+    for (uint8_t i = 0; i < OPL_NUM_OPS; i++) {
+        uint16_t fill = i >= c.routing.num_ops ? COL_OFF
+                      : c.routing.kernel[i] == FM_KERNEL_FEEDBACK ? COL_FEEDBACK
+                      : c.routing.out_bus[i] == FM_TARGET_OUT ? COL_CARRIER : COL_MODULATOR;
         int x = i * ALGO_CELL_PITCH + 2;
         gfx_fill_rect(x, ALGO_Y, ALGO_CELL_W, ALGO_CELL_H, fill);
         char op_label[3];
@@ -117,6 +144,20 @@ static void draw_algo_indicator(const OplPatch *patch) {
     }
 }
 
+#if HAS_ENCODER
+// While EDIT or MULTI is showing, that Page gets every UI command first --
+// EDIT on the last-played Part as of now rather than as of the last redraw.
+static bool claim_ui_command(UiCommand command) {
+    const uint8_t page = encoder_nav_page_index();
+    if (page == PAGE_MULTI) return multi_edit().command(command);
+    if (page != PAGE_EDIT) return false;
+    MidiUiState m;
+    midi_controller_ui_state(&m);
+    quick_edit().follow_part(shown_part(m.last_channel));
+    return quick_edit().command(command);
+}
+#endif
+
 void display_init() {
     lcd_init();
     lcd_fill(COL_BG);
@@ -124,14 +165,13 @@ void display_init() {
 
 #if HAS_ENCODER
     encoder_nav_init(PAGE_COUNT, PAGE_PERFORMANCE);
+    encoder_nav_set_claim(claim_ui_command);
 #endif
 }
 
 void display_task() {
-    static PageRefreshCadence cadence{};  // base 10Hz -- neither Page needs the faster override
     static absolute_time_t next = {0};
     if (!time_reached(next)) return;
-    next = make_timeout_time_ms(1000 / refresh_rate_hz(cadence));
 
     static bool    first = true;
     static uint8_t last_page = 0xFF;
@@ -141,6 +181,9 @@ void display_task() {
 #else
     uint8_t page = PAGE_PERFORMANCE;
 #endif
+    // EDIT and MULTI take the faster rate so the encoder feels immediate.
+    const PageRefreshCadence cadence{ page == PAGE_EDIT || page == PAGE_MULTI };
+    next = make_timeout_time_ms(1000 / refresh_rate_hz(cadence));
 
     header_draw_module_name(hdr, "OPL", LCD_W, COL_TITLE_FG, COL_TITLE);
 
@@ -151,7 +194,7 @@ void display_task() {
                              LCD_W - kResourceBarMaxPx - row1_margin,
                              kHeaderRow1Y + (kHeaderRow1H - 8) / 2, 8, COL_BG);
 
-    header_draw_page_row(hdr, page, page == PAGE_PERFORMANCE ? "PERF" : "DIAG", LCD_W,
+    header_draw_page_row(hdr, page, PAGE_NAMES[page < PAGE_COUNT ? page : 0], LCD_W,
                           COL_TITLE_FG, COL_TITLE, COL_TITLE_FG, COL_OFF, 1, 8);
 
     if (first || page != last_page) {
@@ -163,41 +206,57 @@ void display_task() {
             fx_p2_bar.initialized = false;
             fx_type_label.initialized = false;
             mod_bar.initialized = false;
+        } else if (page == PAGE_EDIT) {
+            quick_edit_page_invalidate(quick_edit_page);
+        } else if (page == PAGE_MULTI) {
+            multi_page_invalidate(multi_page);
         } else {
             cpu_bar.bar.initialized = false;
             voices_row.initialized = false;
             voice_grid.initialized = false;
             note_row.initialized = false;
-            last_algo_patch = nullptr;
+            last_algo_key = 0xFFFFFFFF;
         }
         last_page = page;
     }
 
     MidiUiState m;
     midi_controller_ui_state(&m);
-    const OplPatch *patch = opl_channel_patch(m.last_channel);
+    const PatchPlatformT<OplModule> &platform = opl_platform();
+    const uint8_t part = shown_part(m.last_channel);
+    const uint32_t patch_key = (platform.revision(part) << 4) | part;
 
     if (page == PAGE_PERFORMANCE) {
-        PresetKey preset{ m.program, patch };
-        if (!preset_row.initialized || preset_row.value != preset) {
+        if (!preset_row.initialized || preset_row.value != patch_key) {
             char text[24];
-            snprintf(text, sizeof(text), "#%-3d %.10s", m.program, patch->name);
-            value_row_draw_value(preset_row, preset, text, 4, PRESET_Y, 28, 1, COL_VALUE, COL_BG);
+            snprintf(text, sizeof(text), "#%-3d %.16s%s", m.program, platform.name(part),
+                     platform.edited(part) ? "*" : "");
+            value_row_draw_value(preset_row, patch_key, text, 4, PRESET_Y, 28, 1, COL_VALUE, COL_BG);
         }
 
-        uint8_t fx_type = m.fx_type < FX_COUNT ? m.fx_type : 0;
-        label_draw_value(fx_type_label, m.fx_type, FX_TYPE_NAMES[fx_type], BAR_X, FX_ROW1_Y, 14, 1,
-                          COL_VALUE, COL_BG);
-        value_bar_draw_value(fxmix_bar, m.fx_mix, "FXMIX", m.fx_mix / 127.0f, BAR_X2, FX_ROW1_Y,
+        // The FX belong to the Multi.
+        const MultiT<OplModule> &multi = opl_multi();
+        const uint8_t fx_type = (uint8_t)multi.common(COMMON_P_FX_TYPE);
+        const uint8_t fx_mix = (uint8_t)multi.common(COMMON_P_FX_MIX);
+        const uint8_t fx_p1 = (uint8_t)multi.common(COMMON_P_FX_P1);
+        const uint8_t fx_p2 = (uint8_t)multi.common(COMMON_P_FX_P2);
+        label_draw_value(fx_type_label, fx_type, FX_TYPE_NAMES[fx_type < FX_COUNT ? fx_type : 0], BAR_X, FX_ROW1_Y,
+                          14, 1, COL_VALUE, COL_BG);
+        value_bar_draw_value(fxmix_bar, fx_mix, "FXMIX", fx_mix / 127.0f, BAR_X2, FX_ROW1_Y,
                               BAR_HALF_W, BAR_H, 1, COL_VALUE, COL_FILL, COL_OFF);
 
-        value_bar_draw_value(fx_p1_bar, m.fx_p1, "FX P1", m.fx_p1 / 127.0f, BAR_X, FX_ROW2_Y,
+        value_bar_draw_value(fx_p1_bar, fx_p1, "FX P1", fx_p1 / 127.0f, BAR_X, FX_ROW2_Y,
                               BAR_HALF_W, BAR_H, 1, COL_VALUE, COL_FILL, COL_OFF);
-        value_bar_draw_value(fx_p2_bar, m.fx_p2, "FX P2", m.fx_p2 / 127.0f, BAR_X2, FX_ROW2_Y,
+        value_bar_draw_value(fx_p2_bar, fx_p2, "FX P2", fx_p2 / 127.0f, BAR_X2, FX_ROW2_Y,
                               BAR_HALF_W, BAR_H, 1, COL_VALUE, COL_FILL, COL_OFF);
 
         value_bar_draw_value(mod_bar, m.mod, "MOD", m.mod / 127.0f, BAR_X, MOD_Y, BAR_HALF_W, BAR_H,
                               1, COL_VALUE, COL_FILL, COL_OFF);
+    } else if (page == PAGE_EDIT) {
+        quick_edit().follow_part(part);
+        quick_edit_page_draw(quick_edit_page, quick_edit(), platform, kEditStyle);
+    } else if (page == PAGE_MULTI) {
+        multi_page_draw(multi_page, multi_edit(), opl_multi(), platform, kEditStyle);
     } else {
         percentage_bar_draw_value(cpu_bar, load, "CPU", BAR_X, CPU_Y, DIAG_BAR_W, 20, 2, COL_VALUE,
                                    COL_OFF);
@@ -228,9 +287,9 @@ void display_task() {
             value_row_draw_value(note_row, note, text, BAR_X, NOTE_Y, 18, 2, COL_VALUE, COL_BG);
         }
 
-        if (patch != last_algo_patch) {
-            draw_algo_indicator(patch);
-            last_algo_patch = patch;
+        if (patch_key != last_algo_key) {
+            draw_algo_indicator(platform.cooked(part));
+            last_algo_key = patch_key;
         }
     }
 

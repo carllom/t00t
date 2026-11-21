@@ -2739,3 +2739,16 @@ afterwards.
 - Not hardware-checked yet: audition and Store all against the device. The
   page was driven end to end in headless Chromium against a fake FM device
   on Web MIDI.
+
+## Shared Multi output stage (#161, 2026-11-21)
+
+Ahead of the OPL migration, the Multi's Part gains, FX chain, master level
+and stereo interleave — identical in subtractive's and FM's render — moved
+into one shared `MultiOut` (`src/patch/multi_out.h`), and FM's note-to-cook
+lookup into `PartReceiverT::note_patch()`. Renders are sample-exact before
+and after (`render_subtractive`'s golden, `test_fm_render`,
+`test_fm_equivalence`). The per-sample work is the same, but the compiler
+now inlines the engine's render into `audio_engine_run` and keeps
+`MultiOut::finish` out of line, so register allocation in the inner loops
+and the code layout in flash changed. Re-measured on the rig with FX off:
+Core 1 duty unchanged within measuring precision.

@@ -60,9 +60,9 @@ struct OplPatch {
 // the arrays below are unused padding, past `num_ops`.
 //
 // A patch's chosen feedback amount isn't compile-time, so kernel[0]/
-// fb_shift[0]/clear_bus_mask on op0 are patched into a per-voice copy of
-// whichever literal below applies, at note-on (opl_voice.h) -- always op0,
-// 2-op or 4-op alike.
+// fb_shift[0]/clear_bus_mask on op0 are patched into a copy of whichever
+// literal below applies (opl_resolve_routing()) -- always op0, 2-op or 4-op
+// alike.
 
 // FM chain: op0 modulates op1 (bus 1), op1 is the carrier.
 inline constexpr FmRouting OPL_ROUTING_FM = {
@@ -160,4 +160,16 @@ static constexpr uint8_t OPL_ALGO_COUNT = 6;
 // real, playable routing.
 inline const FmRouting &opl_routing_for(OplAlgorithm algo) {
     return OPL_ROUTINGS[(uint8_t)algo % OPL_ALGO_COUNT];
+}
+
+// `patch`'s routing: a copy of its algorithm's literal, with the patch's
+// feedback on op0 patched in. Pure data, so the patch platform resolves it
+// once per cook rather than at every note-on.
+inline void opl_resolve_routing(const OplPatch &patch, FmRouting &routing) {
+    routing = opl_routing_for(patch.algorithm);
+    if (patch.feedback > 0) {
+        routing.kernel[0] = FM_KERNEL_FEEDBACK;
+        routing.fb_shift[0] = (uint8_t)(8 - patch.feedback);
+        routing.clear_bus_mask |= (uint8_t)(1u << routing.out_bus[0]);
+    }
 }

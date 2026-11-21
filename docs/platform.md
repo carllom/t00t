@@ -69,7 +69,7 @@ channels. This is proven by measurement (the P0 gates), not estimate.
   integer per parameter in its Descriptor domain (packed uint8/uint16), in parameter-ID order.
   Parameters missing from an older schema load as the Descriptor default; a mismatched module
   ID is rejected. Two stored object types: Patch and Multi.
-- **Multi** (`src/patch/multi.h`): N Parts (fixed per module at build time; subtractive and FM 16)
+- **Multi** (`src/patch/multi.h`): N Parts (fixed per module at build time; subtractive, FM and OPL 16)
   plus its own settings (`kCommonDescriptors`: FX TYPE, FX MIX, FX P1, FX P2, MASTER). Each
   Part (`kPartDescriptors`): CHANNEL (1–16 or OFF), BANK and PROGRAM (the Patch, as Bank
   Select MSB and Program Change), VOLUME, PAN, FX SEND. FX belong only to the Multi. The
@@ -82,7 +82,8 @@ channels. This is proven by measurement (the P0 gates), not estimate.
 - **Mix (Core 1, once per buffer from the cooked Multi):** a voice's stereo gains are its
   Part's pan gains times its volume; the FX gets the sent share of the mix (each Part times
   its FX SEND), and FX MIX crossfades only that share dry/wet, so the unsent share stays dry
-  at unity; MASTER scales the output. At unity volume, full send and unity master the mix is
+  at unity; MASTER scales the output (one output stage for every module,
+  `src/patch/multi_out.h`). At unity volume, full send and unity master the mix is
   bit for bit the single-Patch mix; what that costs is a loop-invariant branch per sample per
   voice (send below full?) and per output sample (master below unity?). A sounding Part with
   send below full adds a per-sample accumulation for its voices.
@@ -176,7 +177,8 @@ can overwrite the region.
   load ID, so a note always gets every edit made before it and its pitch maths always
   matches its note-on fields.
   A module whose note-on fields are too large for the per-note parameters (FM: most of a
-  ~250-byte cooked Patch) has Core 1 copy them instead, when the note starts, from its
+  ~250-byte cooked Patch; OPL: all of an 84-byte one) has Core 1 copy them instead
+  (`PartReceiverT::note_patch()`), when the note starts, from its
   Part's current or previous cook: each publish carries a cook sequence number, the note
   carries its Part's latest one, and a note whose cook hasn't reached Core 1 yet waits a
   buffer — the same guarantee, but for one case: an edit still pending on Core 0 when a
@@ -315,7 +317,8 @@ this doc to follow the tickets' dependency order. Subtractive is the tracer-bull
 | P8 | #158 | FM migration onto the platform (stress test) | #152, #155 |
 | P0 | #159 | Gate: FM on the cooked path vs baseline | #158 |
 | P8 | #160 | DX7 `.syx` import in the editor | #156, #158 |
-| Pn | — | Remaining modules (OPL, chip, groovebox, speech, tracker), one ticket each | #158 |
+| Pn | #161 | OPL migration onto the platform | #158 |
+| Pn | — | Remaining modules (chip, groovebox, speech, tracker), one ticket each | #158 |
 
 ## Budgets
 
@@ -343,9 +346,9 @@ as % of the 5.805 ms buffer period, idle (0) / 4 / 16 voices.
 | Item | Where | Size | Notes |
 |---|---|---|---|
 | Descriptor tables (module + shared) | flash | TBD | `constexpr`, never touched by Core 1 |
-| Factory banks | flash | subtractive: 11 × 45 B; FM: 175 B per Patch (the 8 DX7 ROM banks: 256 × 175 B = 44 KB, locally generated) | compiled in |
-| Cooked slot × 2 per Part | SRAM | subtractive: 84 B/slot × 16 = 1.3 KB; FM: 256 B/slot × 16 = 8 KB | plus Core 1's own per-Part (current + previous) and per-voice state: subtractive 1.7 KB; FM 8 KB per-Part and a 250 B Patch copy per voice (4 KB) |
-| Edit buffer per Part + Multi | SRAM | subtractive: 1.8 KB platform state (16 Parts); FM: 24 KB (16 Parts × 151 values, twice) | Descriptor-domain values, name, cooked copy, NRPN state; the Multi adds ~0.8 KB (values, cooked mix and its slot) |
+| Factory banks | flash | subtractive: 11 × 45 B; FM: 175 B per Patch (the 8 DX7 ROM banks: 256 × 175 B = 44 KB, locally generated); OPL: 9 × 66 B | compiled in |
+| Cooked slot × 2 per Part | SRAM | subtractive: 84 B/slot × 16 = 1.3 KB; FM: 256 B/slot × 16 = 8 KB; OPL: 184 B/slot × 16 = 2.9 KB | plus Core 1's own per-Part (current + previous) and per-voice state: subtractive 1.7 KB; FM 8 KB per-Part and a 250 B Patch copy per voice (4 KB); OPL 2.7 KB per-Part and an 84 B copy per voice (0.8 KB) |
+| Edit buffer per Part + Multi | SRAM | subtractive: 1.8 KB platform state (16 Parts); FM: 24 KB (16 Parts × 151 values, twice); OPL: 7.6 KB (16 Parts × 42 values, twice) | Descriptor-domain values, name, cooked copy, NRPN state; the Multi adds ~0.8 KB (values, cooked mix and its slot) |
 | SysEx assembly buffer | SRAM | TBD | bounded; over-length messages discarded |
 | User-bank region | flash (end) | 384 KB: 8 modules × (128 Patches × 256 B + 32 Multis × 512 B) | layout above |
 | Store sector buffer | SRAM | 4 KB | one per module build, in the user bank |
@@ -382,7 +385,7 @@ Existing pieces the platform builds on, and how.
    RX-only; requests arriving over DIN are answered over USB too. DIN replies would need a
    MIDI-out circuit and a free UART TX pin.
 2. **Parts per Multi** for the remaining modules (groovebox = one bass + one drum Part?).
-   Subtractive and FM have 16.
+   Subtractive, FM and OPL have 16.
 3. **A project-authored FM factory bank.** The DX7 ROM banks are generated locally and
    can't ship in the repo; without them FM has only the INIT VOICE. A bank of the
    project's own FM sounds would give every build something to play.

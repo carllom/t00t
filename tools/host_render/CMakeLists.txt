@@ -543,6 +543,16 @@ target_include_directories(gen_subtractive_bank PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}/../../src
 )
 
+# Generates src/engines/opl/factory_bank.h from patches.h as stored-format
+# Patches, checking the conversion is lossless. `--check <file>` verifies
+# the checked-in header is up to date.
+add_executable(gen_opl_bank gen_opl_bank.cpp)
+target_include_directories(gen_opl_bank PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}
+    ${CMAKE_CURRENT_LIST_DIR}/../../src/engines/opl
+    ${CMAKE_CURRENT_LIST_DIR}/../../src
+)
+
 # Host test for the t00t SysEx protocol (src/patch/sysex.h) at the platform
 # seam: MIDI bytes through the shared parse-and-dispatch loop, replies and
 # cooked commits out, against golden/sysex_subtractive.txt (written by
@@ -585,6 +595,33 @@ target_include_directories(test_fm_render PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}/host_stub_pico
     ${CMAKE_CURRENT_LIST_DIR}
     ${CMAKE_CURRENT_LIST_DIR}/../../src/engines/fm
+    ${CMAKE_CURRENT_LIST_DIR}/../../src
+)
+
+# Host test for the OPL module on the patch platform (src/engines/opl/
+# opl_module.h) at the platform seam: Program Change, NRPN and Part CC bytes
+# into a Multi of OPL Parts, cooked patches out of the Part slots.
+add_executable(test_opl_platform
+    test_opl_platform.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/../../src/midi/midi_dispatch.cpp
+)
+target_include_directories(test_opl_platform PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}
+    ${CMAKE_CURRENT_LIST_DIR}/../../src/engines/opl
+    ${CMAKE_CURRENT_LIST_DIR}/../../src
+)
+
+# Host test for the OPL engine's Core 1 render (src/engines/opl/
+# opl_render.h): cooked patches and a voice block in, audio out, against
+# opl_voice.h rendering the same patch directly.
+add_executable(test_opl_render
+    test_opl_render.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/../../src/osc/sine.cpp
+)
+target_include_directories(test_opl_render PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}/host_stub_pico
+    ${CMAKE_CURRENT_LIST_DIR}
+    ${CMAKE_CURRENT_LIST_DIR}/../../src/engines/opl
     ${CMAKE_CURRENT_LIST_DIR}/../../src
 )
 

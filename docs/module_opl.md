@@ -60,9 +60,15 @@ for how the 4-op extension was designed.
   note-on, zero per-sample cost
 - **No pitch envelope, no per-operator amplitude/pitch LFO sensitivity** —
   real OPL2 hardware has neither
-- **Patches**: a small hand-authored set ships in the repository
-  (`patches.h`), checked in directly — no bank converter exists yet (see
-  Future/TODO). 9 patches total: the original 5 2-op patches (LEAD, BELL,
+- **Multitimbrality**: a Multi of 16 Parts (`docs/platform.md`), Part n on
+  MIDI channel n by default; Parts on one channel layer, and each has its own
+  volume, pan and FX send. Each voice plays its own copy of its Part's
+  cooked Patch, so every voice can play a different Patch
+- **Patches**: on the patch platform — a Patch is an OPL3 voice in register
+  units (42 Descriptors, below), edited over NRPN/SysEx and the Quick-edit
+  Page, and stored to the module's user bank. One factory bank, generated
+  from the hand-authored set in `patches.h` (no `.sbi`/`.op2` converter
+  exists yet, see Future/TODO): the original 5 2-op patches (LEAD, BELL,
   BASS, ORGAN, PERC), plus 4 covering each 4-op Algorithm and exercising all
   8 waveforms between them (CHAIN EP, DUAL SAW, BRASS, ORGAN PAD)
 - **Patch shape**: a single `OplPatch` struct serves both 2-op and 4-op
@@ -77,41 +83,59 @@ for how the 4-op extension was designed.
 
 | Message | Function |
 |---|---|
-| Note On/Off | Standard dynamic allocation (`voice_alloc`), one voice slot per note |
+| Note On/Off | Every Part on the channel plays the note (layered), one voice per Part, dynamic allocation (`voice_alloc`) |
 | Pitch Bend | Folded into `phase_inc` by Core 0 before it reaches Core 1 |
 | CC1 | Mod wheel — scales vibrato depth |
-| CC10 | Pan |
-| CC72 | FX param 1 |
-| CC73 | FX wet/dry mix |
-| CC74 | FX type select |
-| CC75 | FX param 2 |
-| Program Change | Patch select — `OPL_PATCHES[value % OPL_PATCH_COUNT]` |
+| CC7 / CC10 / CC91 | VOLUME / PAN / FX SEND of the channel's Parts |
+| CC72 / CC73 / CC74 / CC75 | The Multi's FX P1 / FX MIX / FX TYPE / FX P2 |
+| NRPN | Any Patch parameter, number = parameter ID (below); MSB 126/127 the Part and Multi parameters (`docs/platform.md`) |
+| CC0 | Bank Select MSB: 0 the factory bank, 64 the user bank |
+| Program Change | Loads that slot of the selected bank into every Part on the channel; an empty slot or missing bank is ignored; sounding notes keep their Patch |
+| SysEx | The t00t protocol (`docs/platform.md`): identify, parameter change, edit-buffer and Multi dumps, Store, descriptor dump, bank dump and load |
+
+### Parameters
+
+A Patch is an OPL3 voice in register units (`opl_module.h`, IDs
+permanent). Each operator has a block of 10 IDs, OP1's at 0, OP2's at 10,
+OP3's at 20, OP4's at 30: MULT, KSL, TL, AR, DR, SL, RR, EG TYPE, KSR, WAVE.
+Then ALGORITHM (40) and FEEDBACK (41). OP1–OP4 are the engine's op0–op3; a
+2-op Algorithm leaves OP3 and OP4 unused.
+
+- Every parameter is **note-on**: the voice takes its operators' registers
+  when a note starts, so an edit is heard from the next note.
+- MULT shows the register's ratio (0.5, 1 … 15, with the hardware's repeated
+  10, 12 and 15); KSL its slope (OFF, 3dB, 1.5dB, 6dB per octave, in register
+  order); ALGORITHM its connection ("1>2", "1+2", "1>2>3>4", "1>2+3>4",
+  "1+2>3>4", "1+2>3+4": `>` modulates, `+` sums).
+- Defaults are an INIT VOICE: 1>2 with OP1 at TL 63, so OP2 alone plays a
+  sustained sine.
+- Quick-edit: OP1 MULT and TL, OP2 MULT and WAVE, ALGORITHM, FEEDBACK.
 
 ### Display (Presentation Capabilities)
 
-Two Pages (`src/wslcd/page.h`/`header.h`), the shared Widget/Header/Page
+Four Pages (`src/wslcd/page.h`/`header.h`), the shared Widget/Header/Page
 library (CONTEXT.md's Widget catalog) applied to OPL:
 
 - **Performance** (required, default): the Header's Resource bar (combined
-  active-voice/CPU indicator) plus the current preset (number + name, for
-  whichever channel most recently triggered a note or a Program Change) and
-  the three FX CCs (CC73/72/75) as compact Value bars ("FXMIX"/"FX P1"/
-  "FX P2") with FX type (CC74) as a Label ("OFF"/"DELAY"/"REVERB"/"PHASER"/
-  "FLANGER"/"CHORUS"/"CRUSH"/"DRIVE")
+  active-voice/CPU indicator) plus the current Patch (program number and
+  name of the lowest Part on whichever channel most recently played a note
+  or a Program Change, `*` while edited) and the Multi's FX (CC73/72/75) as
+  compact Value bars ("FXMIX"/"FX P1"/"FX P2") with FX type (CC74) as a
+  Label ("OFF"/"DELAY"/"REVERB"/"PHASER"/"FLANGER"/"CHORUS"/"CRUSH"/"DRIVE")
   and the mod wheel (CC1) as a fourth Value bar ("MOD").
+- **EDIT**: the Quick-edit Page (`src/patch/quick_edit_page.h`) for that
+  Part — its quick-edit parameters, Compare and Store/rename.
+- **MULTI**: the Multi Page (`src/patch/multi_page.h`) — the Parts, and
+  loading and storing Multis.
 - **DIAG**: the exact-value detail Resource bar deliberately sacrifices —
   CPU% (PercentageBar), per-voice sounding activity (ActivityGrid), last
-  note/velocity/channel, and a two-cell algorithm indicator (carrier vs.
-  modulator role for op0/op1, feedback highlighted on op0 — a much smaller
-  version of the DX7 module's six-cell diagram). Still fixed at two cells
-  regardless of the currently-playing patch's real operator count — a 4-op
-  voice's op2/op3 aren't shown yet; extending this indicator is separate
-  display/UI work (wayfinder map "Display: shared UI components and page
-  structure", issue #115), not part of the 4-op voice work itself.
+  note/velocity/channel, and a four-cell operator-role indicator (carrier,
+  modulator or feedback per operator, from the Part's cooked routing; the
+  cells past a 2-op Algorithm's operators show dark).
 
-Reachable via the breadboard's rotary encoder (`src/encoder_nav.h`,
-docs/engine.md's "Encoder navigation" entry) where one's wired;
-Performance-only otherwise (`HAS_ENCODER=0`).
+EDIT, MULTI and DIAG are reachable via the breadboard's rotary encoder
+(`src/encoder_nav.h`, docs/engine.md's "Encoder navigation" entry) where
+one's wired; Performance-only otherwise (`HAS_ENCODER=0`).
 
 ## Technical Overview
 
@@ -120,19 +144,29 @@ Performance-only otherwise (`HAS_ENCODER=0`).
 ```
 src/engines/opl/
   engine.h            VoiceParams, VoiceParamBlock, ParamExchange
-  audio_engine.cpp    audio_engine_run(): render pass, voice loop, FX insert
+  audio_engine.cpp    audio_engine_run(): Core 1's buffer loop around opl_render.h
   opl_scale.h         OPL_TABLE_BITS -- no separate gain-domain anchor
                        (see Decision Record)
   waveforms.h         the eight OPL3/4 waveform tables
-  patch.h             OplOpParams/OplPatch (runtime form) + the six fixed
+  patch.h             OplOpParams/OplPatch (engine form) + the six fixed
                        algorithm routings (OPL_ROUTINGS[]), expressed as
-                       FmRouting literals
+                       FmRouting literals, and opl_resolve_routing()
   env_opl.h           EnvOpl, OPL's own envelope
   opl_voice.h         note-on/step/note-off/active/render voice glue,
                        calling ../fm/op.h's kernels directly
-  patches.h           hand-authored test patches, checked in
-  input_subsystem.cpp note on/off, bend, pan, mod wheel, patch select
-  display.cpp         Performance + DIAG Pages (see Display above)
+  opl_module.h        the module on the patch platform: parameter IDs,
+                       descriptors, the cooked patch and the cook
+  opl_factory.h       the factory banks
+  factory_bank.h      GENERATED by tools/host_render/gen_opl_bank from
+                       patches.h — do not hand-edit; checked in
+  opl_render.h        the per-buffer render: voices from their cooked
+                       Patches, the Multi's mix and FX (Core 1 and host)
+  opl_platform.h      the module's platform and Multi, for the display
+  patches.h           the hand-authored patches, checked in: the factory
+                       bank's source and the host renderers' patch table
+  input_subsystem.cpp notes by Part, bend, mod wheel, the Multi's FX,
+                       NRPN, Bank Select/Program Change, SysEx
+  display.cpp         Performance, EDIT, MULTI and DIAG Pages (see Display above)
 ```
 
 There is no `rig.h`/measurement rig and no free-routing DAG resolver —
@@ -146,6 +180,20 @@ below, which still reflects 2-op-only measurements.
 Build with `make ENGINE=opl`.
 
 ### Tools
+
+`tools/host_render/gen_opl_bank.cpp` — writes `factory_bank.h` from
+`patches.h` as stored Patches, checking that cooking each one gives back
+its registers and routing; `--check <file>` fails if the checked-in header
+is stale. Rerun it after editing `patches.h`:
+`gen_opl_bank src/engines/opl/factory_bank.h`.
+
+`tools/host_render/test_opl_platform` (platform seam: Program Change, NRPN
+and Part CCs into a Multi of OPL Parts, cooked patches out; the factory bank
+against `patches.h`; a Store loaded back from the user bank) and
+`test_opl_render` (Core 1's render against `opl_voice.h` on the same patch,
+sample for sample for every factory patch; edits waiting for the next note,
+Patch loads under a held note, a note waiting for its cook, the Part mix)
+build with `make host`.
 
 `tools/host_render/render_opl.cpp` — renders every patch in `patches.h`
 through the exact device code path to a WAV file and confirms note-off
@@ -242,18 +290,37 @@ note-off/active/render functions, but for `OplPatch`/`EnvOpl` and a variable
 2 or 4 real operators — every function loops `i < routing.num_ops` rather
 than a hardcoded bound, so the same glue drives both operator counts. A
 patch's algorithm selects one of `patch.h`'s `OPL_ROUTINGS[]` literals; since
-a patch's feedback amount isn't compile-time, it's copied into a per-voice
-`FmRouting` and patched (`kernel[0]`/`fb_shift[0]`/`clear_bus_mask`) at
-note-on rather than baked into the literal — always operator 0, 2-op or
-4-op alike (real hardware's second Operator pair has its own feedback
-register too, but it's architecturally unwired on every 4-op connection, so
-this module doesn't model it).
+a patch's feedback amount isn't compile-time, `opl_resolve_routing()` copies
+the literal and patches it (`kernel[0]`/`fb_shift[0]`/`clear_bus_mask`)
+rather than baking it into the literal — always operator 0, 2-op or 4-op
+alike (real hardware's second Operator pair has its own feedback register
+too, but it's architecturally unwired on every 4-op connection, so this
+module doesn't model it). On the device that happens in the cook;
+`opl_voice_start()` then starts a voice on a resolved routing.
 
 Vibrato is one small fixed-rate sine LFO per voice (not a reuse of the DX7
 module's full per-patch-configurable one — real OPL2 hardware has a single
 global fixed-rate vibrato, not a per-patch one), scaled by the mod wheel and
 folded into every real operator's phase increment (`routing.num_ops` of
 them) once per control block.
+
+### Patches on Core 0, Notes on Core 1
+
+Core 0 cooks a Part's Edit buffer (`OplModule::cook()`, `opl_module.h`):
+register values become the engine's `OplPatch`, and `opl_resolve_routing()`
+resolves its Algorithm and feedback into an `FmRouting`. The cook is
+published to the Part's slot (`docs/platform.md`).
+
+A note carries its Part, the Patch load and the Part's latest cook
+sequence number — no patch data, so `ParamExchange` stays small. Core 1
+(`opl_render.h`) copies the Part's cooked Patch into the voice when the
+note starts (`PartReceiverT::note_patch()`): the current cook if it is the
+note's cook or a later one of the same Patch, the previous one if the note
+belongs to the Patch that cook replaced, and if the note's cook hasn't
+arrived yet the note waits a buffer. With every parameter note-on, a
+sounding note plays its copy unchanged. Voices mix through the Multi's
+output stage (`src/patch/multi_out.h`): each by its Part's volume, pan and
+FX send, then the shared FX and the master level.
 
 ## Status and Plan
 
@@ -291,13 +358,11 @@ Voice-Count Sweep, Post-`num_ops` Fix" and "Second Patch: OPL ORGAN".
   `eg/attack-*` cases, at a deliberately wide tolerance), not the shape
   itself. Closing this would need the ramp itself to become non-linear, not
   just another round of rate-table tuning.
-- **Patch bank converter** — hand-authored patches only for now; no
-  `.op2`/GENMIDI-class converter exists yet.
-- **4-op display/DIAG support** — the DIAG page's algorithm indicator is
-  still fixed at two cells (op0/op1 only); a 4-op voice's op2/op3 aren't
-  shown. Separate display/UI work (wayfinder map "Display: shared UI
-  components and page structure", issue #115), not part of the 4-op voice
-  work itself (wayfinder map [4-operator OPL4-class voices for the opl engine](https://github.com/carllom/t00t/issues/136)).
+- **Patch bank import** — hand-authored patches only for now; no
+  `.sbi`/`.bnk`/`.op2`/GENMIDI-class converter exists yet. On the patch
+  platform it belongs in host tools and the editor, writing stored Patches.
+- **Live parameters** — every parameter is note-on; TL or WAVE could be
+  made live by having Core 1 re-read them from the Part's cook each block.
 - **4-op hardware performance pass** — per-voice cost for a 4-op voice
   hasn't been measured on real hardware yet; Performance above still
   reflects 2-op-only numbers.
@@ -311,8 +376,8 @@ Voice-Count Sweep, Post-`num_ops` Fix" and "Second Patch: OPL ORGAN".
   AdLib-tracker-format-playback goal depends on it.
 - **Per-voice display grid** — the DX7 module's multitimbral grid (which
   voice is playing which patch on which channel) has no OPL equivalent
-  yet; this module's panel currently only shows the most-recently-touched
-  channel's patch.
+  yet; this module's panel shows the Patch of the most-recently-touched
+  channel's lowest Part.
 
 ## Decision Record
 
@@ -419,6 +484,23 @@ Voice-Count Sweep, Post-`num_ops` Fix" and "Second Patch: OPL ORGAN".
     look qualitatively wrong, so its table must use the real exponential
     formula (`amplitude ∝ 2^(-32*p)` per half-cycle) rather than this
     module's usual "geometry over exact ROM values" approximation license.
+
+13. **Patch parameters are OPL3 registers, not musical units.** A Patch's
+    values are the chip's own register fields (MULT code, TL in 0.75 dB
+    steps, 4-bit rates), so a voice from a real OPL bank file maps onto a
+    Patch field for field and an editor shows what the hardware has; the
+    labels carry the musical meaning (MULT's ratio, KSL's slope).
+14. **Every parameter is note-on.** The voice glue takes all of a patch's
+    registers when a note starts; making some live would put a per-block
+    re-read on Core 1 for values a player rarely moves mid-note.
+15. **Core 1 copies a note's cooked Patch at note-on**, as FM does, rather
+    than Core 0 writing it into `VoiceParams`: a cooked OPL Patch is about
+    80 bytes, which the generic controller would copy for every voice on
+    every MIDI batch.
+16. **The factory bank is generated from `patches.h` and checked in.** The
+    patches are the project's own, so unlike FM's DX7 banks they can ship;
+    `patches.h` stays the single source, shared with the host renderers, and
+    the generator's lossless check plus `--check` keep the bank in step.
 
 ## Glossary
 

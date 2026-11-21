@@ -533,3 +533,15 @@ over USB with `amidi`; the normal build was flashed back afterwards.
 - **Not checked:** a restore driven from the editor page on hardware (its
   slot messages equal the dump's in the session tests), a restore over
   DIN, and the mute of a full restore by ear.
+
+## Shared Multi output stage (#161, 2026-11-21)
+
+Ahead of the OPL migration, the Multi's Part gains, FX chain, master level
+and stereo interleave — identical in subtractive's and FM's render — moved
+into one shared `MultiOut` (`src/patch/multi_out.h`), and FM's note-to-cook
+lookup into `PartReceiverT::note_patch()`. Renders are sample-exact before
+and after (`render_subtractive`'s golden, `test_fm_render`,
+`test_fm_equivalence`). The per-sample code is the same, but the compiler
+now inlines the engine's render into `audio_engine_run` and keeps
+`MultiOut::finish` out of line, so the code layout in flash changed; Core 1
+duty not re-measured on the rig yet.

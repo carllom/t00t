@@ -2,21 +2,13 @@
 
 #include "engine.h"
 #include "patch.h"
+#include "patch/multi_out.h"
 #include "patch/receiver.h"
 #include "osc/oscillator.h"
 #include "osc/sample.h"
 #include "envelope.h"
 #include "filter.h"
-#include "fx/delay.h"
-#include "fx/reverb.h"
-#include "fx/phaser.h"
-#include "fx/flanger.h"
-#include "fx/chorus.h"
-#include "fx/bitcrusher.h"
-#include "fx/overdrive.h"
-#include "pan.h"
 #include <cmath>
-#include <arm_acle.h>
 
 // The subtractive engine's per-buffer render: every voice, the post-mix
 // effect and the stereo interleave, with no hardware access -- shared by
@@ -77,27 +69,9 @@ struct SubRenderState {
     // FX send.
     SubMultiCooked multi;
 
-    // Stereo dry mix (int32_t to avoid overflow during summation); each voice's
+    // The Parts' mix, the shared FX and the output. Each voice's
     // contribution is split L/R by its Part's pan and scaled by its volume.
-    // `cut_l`/`cut_r` collect the share of it the Parts don't send to the
-    // FX -- only written in a buffer where a sounding Part's send is below
-    // full (`any_cut`). `fx_buf` is the mono send/return scratch for the
-    // post-mix effect (mono send / stereo return).
-    int32_t dry_l[SAMPLES_PER_BUFFER];
-    int32_t dry_r[SAMPLES_PER_BUFFER];
-    int32_t cut_l[SAMPLES_PER_BUFFER];
-    int32_t cut_r[SAMPLES_PER_BUFFER];
-    int32_t fx_buf[SAMPLES_PER_BUFFER];
-
-    // Post-mix effect state
-    FxDelay   fx_delay;
-    FxReverb  fx_reverb;
-    FxPhaser  fx_phaser;
-    FxFlanger fx_flanger;
-    FxChorus  fx_chorus;
-    FxBitcrusher fx_bitcrusher;
-    FxOverdrive  fx_overdrive;
-    uint8_t  last_fx_type;  // detect type switch to clear buffers
+    MultiOut out;
 };
 
 // Expects osc_init_sine() to have run (the sine wavetable is shared global state).
@@ -126,14 +100,7 @@ inline void sub_render_init(SubRenderState &s) {
         s.filter[v].init();
     }
 
-    s.fx_delay.init();
-    s.fx_reverb.init();
-    s.fx_phaser.init();
-    s.fx_flanger.init();
-    s.fx_chorus.init();
-    s.fx_bitcrusher.init();
-    s.fx_overdrive.init();
-    s.last_fx_type = 0xFF;
+    s.out.init();
 }
 
 // Take `part`'s newest cooked patch from its slot, if one was published.
@@ -172,12 +139,7 @@ inline uint32_t sub_render_active_mask(const SubRenderState &s) {
 // Render one buffer from `vp` and `s.part` into `out`
 // (SAMPLES_PER_BUFFER interleaved stereo int16 frames).
 inline void sub_render_buffer(SubRenderState &s, const VoiceParamBlock &vp, int16_t *out) {
-    // Clear the stereo dry mix
-    for (uint32_t i = 0; i < SAMPLES_PER_BUFFER; i++) {
-        s.dry_l[i] = 0;
-        s.dry_r[i] = 0;
-    }
-    bool any_cut = false;
+    s.out.begin();
 
     // Render all voices
     for (uint32_t v = 0; v < MAX_VOICES; v++) {
@@ -262,25 +224,9 @@ inline void sub_render_buffer(SubRenderState &s, const VoiceParamBlock &vp, int1
         // Dedicated mod-wheel vibrato LFO increment
         const float mod_phase_inc = MOD_VIBRATO_HZ / (float)SAMPLE_RATE;
 
-        // This voice's stereo gains from its Part's pan and volume, and the
-        // share of it not sent to the FX (constant across the buffer). At
-        // unity volume and full send the gains are the pan gains exactly
-        // and nothing is cut.
-        const PartMixCooked &mix = s.multi.part[s.voice_part[v]];
-        int32_t gain_l, gain_r;
-        pan_gains_q15((int16_t)mix.pan_q15, gain_l, gain_r);
-        if (mix.volume_q15 != 32768) {
-            gain_l = (gain_l * mix.volume_q15) >> 15;
-            gain_r = (gain_r * mix.volume_q15) >> 15;
-        }
-        const int32_t cut_q15 = 32768 - mix.send_q15;
-        if (cut_q15 && !any_cut) {
-            for (uint32_t i = 0; i < SAMPLES_PER_BUFFER; i++) {
-                s.cut_l[i] = 0;
-                s.cut_r[i] = 0;
-            }
-            any_cut = true;
-        }
+        // This voice's stereo gains and unsent share, constant across the buffer.
+        const PartGains g = s.out.part_gains(s.multi.part[s.voice_part[v]]);
+        const int32_t gain_l = g.l, gain_r = g.r, cut_q15 = g.cut_q15;
 
         float lfo_cur = s.lfo_val_state[v];
         float fhalf_cur = s.f_half_state[v];
@@ -386,11 +332,11 @@ inline void sub_render_buffer(SubRenderState &s, const VoiceParamBlock &vp, int1
 
                 const int32_t out_l = (int32_t)(((int64_t)scaled * gain_l) >> 15);
                 const int32_t out_r = (int32_t)(((int64_t)scaled * gain_r) >> 15);
-                s.dry_l[blk + i] += out_l;
-                s.dry_r[blk + i] += out_r;
+                s.out.dry_l[blk + i] += out_l;
+                s.out.dry_r[blk + i] += out_r;
                 if (cut_q15) {
-                    s.cut_l[blk + i] += (int32_t)(((int64_t)out_l * cut_q15) >> 15);
-                    s.cut_r[blk + i] += (int32_t)(((int64_t)out_r * cut_q15) >> 15);
+                    s.out.cut_l[blk + i] += (int32_t)(((int64_t)out_l * cut_q15) >> 15);
+                    s.out.cut_r[blk + i] += (int32_t)(((int64_t)out_r * cut_q15) >> 15);
                 }
 
                 phase += eff_phase_inc;
@@ -418,74 +364,5 @@ inline void sub_render_buffer(SubRenderState &s, const VoiceParamBlock &vp, int1
         s.f_half_state[v] = fhalf_cur;
     }
 
-    // Post-mix effect (delay, reverb, phaser, flanger, or chorus, the
-    // Multi's FX TYPE). Mono send / stereo return: downmix the sent share
-    // of the stereo dry mix to mono, run the (still-mono) effect on it,
-    // then add its wet output identically to both channels — only the dry
-    // path carries pan. Clear the newly selected effect's buffer on a type
-    // switch so a stale tail can't resurface.
-    const EffectParams &fx = s.multi.fx;
-    bool has_fx = (fx.type == FX_DELAY   || fx.type == FX_REVERB ||
-                   fx.type == FX_PHASER  || fx.type == FX_FLANGER ||
-                   fx.type == FX_CHORUS  || fx.type == FX_BITCRUSHER ||
-                   fx.type == FX_OVERDRIVE);
-    if (fx.type != s.last_fx_type) {
-        if (fx.type == FX_DELAY)        s.fx_delay.init();
-        else if (fx.type == FX_REVERB)  s.fx_reverb.init();
-        else if (fx.type == FX_PHASER)  s.fx_phaser.init();
-        else if (fx.type == FX_FLANGER) s.fx_flanger.init();
-        else if (fx.type == FX_CHORUS)  s.fx_chorus.init();
-        else if (fx.type == FX_BITCRUSHER) s.fx_bitcrusher.init();
-        else if (fx.type == FX_OVERDRIVE)  s.fx_overdrive.init();
-        s.last_fx_type = fx.type;
-    }
-    if (has_fx) {
-        // The sent share: the dry mix less what the Parts don't send.
-        if (any_cut) {
-            for (uint32_t i = 0; i < SAMPLES_PER_BUFFER; i++) {
-                s.dry_l[i] -= s.cut_l[i];
-                s.dry_r[i] -= s.cut_r[i];
-            }
-        }
-        for (uint32_t i = 0; i < SAMPLES_PER_BUFFER; i++) {
-            s.fx_buf[i] = (s.dry_l[i] + s.dry_r[i]) >> 1;
-        }
-        if (fx.type == FX_DELAY)        s.fx_delay.process(s.fx_buf, SAMPLES_PER_BUFFER, fx);
-        else if (fx.type == FX_REVERB)  s.fx_reverb.process(s.fx_buf, SAMPLES_PER_BUFFER, fx);
-        else if (fx.type == FX_PHASER)  s.fx_phaser.process(s.fx_buf, SAMPLES_PER_BUFFER, fx);
-        else if (fx.type == FX_FLANGER) s.fx_flanger.process(s.fx_buf, SAMPLES_PER_BUFFER, fx);
-        else if (fx.type == FX_CHORUS)  s.fx_chorus.process(s.fx_buf, SAMPLES_PER_BUFFER, fx);
-        else if (fx.type == FX_BITCRUSHER) s.fx_bitcrusher.process(s.fx_buf, SAMPLES_PER_BUFFER, fx);
-        else                                s.fx_overdrive.process(s.fx_buf, SAMPLES_PER_BUFFER, fx);
-    }
-
-    // Crossfade the sent share dry/wet by the mix knob (Q15) rather than
-    // summing full dry underneath -- fx_buf above already carries mix as
-    // its own gain, so FX MIX 127 is wet-only; dry plus near-unity wet would
-    // clip at full mix. The unsent share stays dry at unity.
-    int32_t dry_scale = has_fx ? (int32_t)(127 - (int32_t)fx.mix) * 258 : 32768;
-    const bool add_cut = has_fx && any_cut;
-    const int32_t master = s.multi.master_q15;
-
-    // Clip, add the wet return to both channels, and interleave into stereo int16_t.
-    for (uint32_t i = 0; i < SAMPLES_PER_BUFFER; i++) {
-        int32_t l, r;
-        if (has_fx) {
-            l = (int32_t)(((int64_t)dry_scale * s.dry_l[i]) >> 15) + s.fx_buf[i];
-            r = (int32_t)(((int64_t)dry_scale * s.dry_r[i]) >> 15) + s.fx_buf[i];
-            if (add_cut) {
-                l += s.cut_l[i];
-                r += s.cut_r[i];
-            }
-        } else {
-            l = s.dry_l[i];
-            r = s.dry_r[i];
-        }
-        if (master != 32768) {
-            l = (int32_t)(((int64_t)l * master) >> 15);
-            r = (int32_t)(((int64_t)r * master) >> 15);
-        }
-        *out++ = (int16_t)__ssat(l, 16);
-        *out++ = (int16_t)__ssat(r, 16);
-    }
+    s.out.finish(s.multi.fx, s.multi.master_q15, out);
 }
